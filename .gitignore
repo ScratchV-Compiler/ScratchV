@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+*.s
+*.o
+*.ll
+models/
+venv/
+.venv/
+.claude/
+scratchv.egg-info/
