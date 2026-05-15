@@ -200,14 +200,78 @@ For more accurate performance estimation, use:
 Add verification to your workflow:
 
 ```bash
-# 1. Compile with ScratchV
+# 1. Compile with ScratchV (RISC-V backend)
 scratchv model.onnx -o output.s --optimize
 
-# 2. Verify with TinyFive adapter
-python -m scratchv.simulator.tinyfive output.s
+# 2. Compile with LLVM backend
+scratchv model.onnx --backend llvm -o model.ll --optimize
 
-# 3. Compare instruction counts
+# 3. Verify against ONNX Runtime
+scratchv model.onnx --verify
+
+# 4. LLVM IR toolchain
+opt -O2 model.ll -o optimized.bc   # LLVM optimization
+llc model.ll -o model.s            # LLVM → native assembly
+lli model.ll                       # LLVM JIT execution
+
+# 5. Compare instruction counts
 #    (before vs after optimization)
 ```
 
-See `scratchv/simulator/tinyfive.py` for the built-in adapter.
+---
+
+## LLVM IR Verification
+
+ScratchV can generate **LLVM IR** (`.ll`) as an alternative backend target:
+
+- **Zero dependencies**: LLVM IR is generated as human-readable text
+- **Optimization pipeline**: LLVM's `opt` tool applies additional optimization
+- **JIT execution**: `lli` runs LLVM IR directly on your machine
+- **Cross-compilation**: `llc` targets any architecture LLVM supports
+
+### Pipeline
+
+```
+ONNX/DSL → ScratchV IR → Optimizer → LLVM IR → opt → lli/JIT → Result
+                                           ↘
+                                     ONNX Runtime → Reference → Compare
+```
+
+### Verification with numpy reference
+
+```python
+from scratchv.verification.verifier import numpy_reference, DSLInterpreter
+
+# Numpy reference computation for any op
+result = numpy_reference("Relu", np.array([-1.0, 0.0, 1.0]))
+
+# Full DSL program interpretation
+interpreter = DSLInterpreter()
+result = interpreter.run(dsl_source, {"x": input_array})
+```
+
+### Verification with ONNX Runtime
+
+```python
+from scratchv.verification.verifier import verify_onnx_model
+
+result = verify_onnx_model("model.onnx", verbose=True)
+# Returns: {"success": bool, "max_error": float, ...}
+```
+
+### End-to-end verification
+
+```bash
+# Full pipeline demo
+python examples/end_to_end_pipeline.py --backend llvm
+
+# ONNX → LLVM → Reference comparison
+python examples/onnx_llvm_verification.py
+
+# Optimization impact analysis
+python examples/llvm_optimization_pipeline.py
+```
+
+See `scratchv/verification/verifier.py` for the full verification framework.
+
+See `scratchv/backend/llvm_codegen.py` for the LLVM IR codegen backend.

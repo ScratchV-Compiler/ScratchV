@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scratchv"
-version = "0.1.0"
-description = "A compiler from ONNX models to RISC-V assembly"
+version = "0.2.0"
+description = "A compiler from ONNX models to RISC-V assembly and LLVM IR"
 requires-python = ">=3.10"
 dependencies = [
     "onnx>=1.14",
@@ -13,8 +13,20 @@ dependencies = [
     "protobuf>=4.21",
 ]
 
+[project.optional-dependencies]
+riscv = ["tinyfive"]
+llvm = ["llvmlite"]  # optional: LLVM IR JIT execution
+verify = ["onnxruntime"]  # optional: ONNX Runtime comparison
+all = ["tinyfive", "llvmlite", "onnxruntime"]
+
+[project.urls]
+Source = "https://github.com/kinsomwang/ScratchV"
+
 [project.scripts]
 scratchv = "scratchv.main:main"
 
 [tool.setuptools.packages.find]
 include = ["scratchv*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -27,18 +27,21 @@ ScratchV/
 │   │   ├── peephole.py          #   Redundant pattern elimination
 │   │   ├── muladd_fusion.py     #   Mul+Add instruction combining
 │   │   └── licm.py              #   Loop Invariant Code Motion
-│   ├── backend/             # RISC-V code generation
+│   ├── backend/             # Code generation
 │   │   ├── instruction_select.py #   IR → RISC-V pseudo-instructions
 │   │   ├── register_alloc.py     #   Register allocation (naive + greedy)
-│   │   └── asm_emit.py           #   Assembly text emission
-│   ├── simulator/           # Verification & profiling
+│   │   ├── asm_emit.py           #   RISC-V assembly text emission
+│   │   └── llvm_codegen.py       #   LLVM IR text generation
+│   ├── verification/        # Verification & comparison
+│   │   └── verifier.py      #   ONNX Runtime + numpy reference comparison
+│   ├── simulator/           # Simulation
 │   │   └── tinyfive.py      #   TinyFive adapter with instruction counting
 │   └── main.py              # CLI entry point
-├── tests/                   # 37+ unit tests
-├── examples/                # DSL models, ONNX generator, TinyFive verify script
+├── tests/                   # 50+ unit tests (including LLVM codegen + verification)
+├── examples/                # DSL models, ONNX generator, pipeline demos
 ├── docs/
-│   ├── verification.md      # Guide: TinyFive, Spike, QEMU simulation
-│   └── optimization_guide.md # 6 beginner-friendly optimization passes
+│   ├── verification.md      # Guide: TinyFive, Spike, QEMU, LLVM IR, ONNX Runtime
+│   └── optimization_guide.md # Optimization passes guide
 └── models/                  # Generated ONNX models
 ```
 
@@ -72,8 +75,11 @@ pipx inject scratchv onnx numpy tinyfive
 ### Compile a DSL model
 
 ```bash
-# Simple add
+# Simple add (RISC-V backend)
 scratchv examples/simple_add.dsl -o output.s --dump-ir
+
+# LLVM IR backend
+scratchv examples/simple_add.dsl --backend llvm -o output.ll --dump-ir
 
 # Full optimization pipeline
 scratchv examples/relu_test.dsl -o relu.s --optimize all --dump-ir
@@ -88,8 +94,14 @@ scratchv examples/matmul_test.dsl -o matmul.s --optimize all
 # Generate test ONNX models
 python examples/gen_onnx_model.py
 
-# Compile with optimizations
+# Compile with RISC-V backend
 scratchv models/add.onnx -o add.s --optimize all
+
+# Compile with LLVM backend
+scratchv models/add.onnx --backend llvm -o add.ll --optimize all
+
+# Verify against ONNX Runtime
+scratchv models/add.onnx --verify
 ```
 
 ### Verify with TinyFive
@@ -98,21 +110,65 @@ scratchv models/add.onnx -o add.s --optimize all
 python examples/verify_with_tinyfive.py examples/simple_add.dsl
 ```
 
+### End-to-end pipeline demos
+
+```bash
+# Full pipeline (ONNX → LLVM IR → verification)
+python examples/end_to_end_pipeline.py --backend llvm
+
+# ONNX → LLVM IR → ONNX Runtime comparison
+python examples/onnx_llvm_verification.py
+
+# LLVM optimization impact analysis
+python examples/llvm_optimization_pipeline.py
+```
+
 ### Command-line options
 
 | Flag | Description |
 | :--- | :--- |
-| `-o FILE` | Output assembly file (default: output.s) |
+| `-o FILE` | Output file (default: output.s for riscv, output.ll for llvm) |
+| `--backend {riscv,llvm}` | Target backend (default: riscv) |
 | `--dump-ir` | Print IR before and after optimization |
 | `--optimize {none,basic,all}` | Optimization level (default: none) |
 | `--reg-alloc {naive,greedy}` | Register allocation strategy (default: greedy) |
+| `--verify` | Verify output against ONNX Runtime / numpy reference |
+| `--rtol FLOAT` | Relative tolerance for verification (default: 1e-5) |
+| `--atol FLOAT` | Absolute tolerance for verification (default: 1e-8) | |
 
 ## Pipeline Overview
 
 ```
-ONNX Model  ──▶  ONNX Parser  ──▶  IR (3-addr)  ──▶  Optimizer  ──▶  Instruction Selector
-                                                                           │
-RISC-V Assembly  ◀──  Asm Emitter  ◀──  Reg Allocator  ◀──  Machine Instrs
+                        ┌──────────────────────────────────────────┐
+                        │           ScratchV Compiler              │
+                        │                                          │
+ONNX Model ──▶ ONNX Parser ──▶ IR (3-addr) ──▶ Optimizer ──┐     │
+                        │                              │     │
+DSL Source ──▶ DSL Parser ────┘                       │     │
+                                                      │     │
+                          ┌───────────────────────────┘     │
+                          ▼                                 │
+               ┌─────────────────┐                          │
+               │ Instruction Sel │──▶ Reg Alloc ──▶ Asm Emit │──▶ RISC-V Assembly
+               └─────────────────┘                          │
+                          │                                  │
+                          ▼                                  │
+                  ┌──────────────┐                           │
+                  │ LLVM Codegen  │──▶ LLVM IR (.ll)         │
+                  └──────────────┘       │                   │
+                                         ▼                   │
+                               ┌──────────────────┐          │
+                               │ opt / llc / lli  │          │
+                               │ (external tools) │          │
+                               └──────────────────┘          │
+                        ┌─────────────────────────┐          │
+                        │ Verification Framework   │          │
+                        │ • ONNX Runtime reference │          │
+                        │ • Numpy reference        │          │
+                        │ • DSL interpreter        │          │
+                        │ • TinyFive simulator     │          │
+                        └─────────────────────────┘          │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ### Optimization Passes
