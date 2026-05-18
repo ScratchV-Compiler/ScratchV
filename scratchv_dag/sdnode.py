@@ -11,7 +11,6 @@ RISC-V and similar architectures.
 from __future__ import annotations
 
 import enum
-import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class MVT(enum.Enum):
-    """Machine Value Type — represents the type of a value flowing through the DAG.
+    """Machine Value Type for values flowing through the DAG.
 
     Attributes:
         i8 / i16 / i32 / i64:  Integer types of varying width.
@@ -30,14 +29,14 @@ class MVT(enum.Enum):
         Void:                  No value (e.g. void return).
     """
 
-    i8    = "i8"
-    i16   = "i16"
-    i32   = "i32"
-    i64   = "i64"
-    f32   = "f32"
-    f64   = "f64"
+    i8 = "i8"
+    i16 = "i16"
+    i32 = "i32"
+    i64 = "i64"
+    f32 = "f32"
+    f64 = "f64"
     Other = "other"
-    Void  = "void"
+    Void = "void"
 
     @property
     def is_integer(self) -> bool:
@@ -75,7 +74,8 @@ class MVT(enum.Enum):
         """
         if is_float:
             return {32: MVT.f32, 64: MVT.f64}.get(bits, MVT.f32)
-        return {8: MVT.i8, 16: MVT.i16, 32: MVT.i32, 64: MVT.i64}.get(bits, MVT.i32)
+        mapping = {8: MVT.i8, 16: MVT.i16, 32: MVT.i32, 64: MVT.i64}
+        return mapping.get(bits, MVT.i32)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -91,21 +91,21 @@ class SDNodeOpcode(enum.Enum):
     """
 
     # ── Constants ──────────────────────────────────────────────────────────
-    Constant       = "Constant"         # Integer constant
-    ConstantFP     = "ConstantFP"       # Floating-point constant
-    Undef          = "Undef"            # Undefined / poisoning value
+    Constant = "Constant"         # Integer constant
+    ConstantFP = "ConstantFP"       # Floating-point constant
+    Undef = "Undef"            # Undefined / poisoning value
     TargetConstant = "TargetConstant"   # Target-specific constant (CSR# etc.)
 
     # ── Integer arithmetic ─────────────────────────────────────────────────
-    ADD  = "ADD"
-    SUB  = "SUB"
-    MUL  = "MUL"
-    DIV  = "DIV"     # Signed division
+    ADD = "ADD"
+    SUB = "SUB"
+    MUL = "MUL"
+    DIV = "DIV"     # Signed division
     UDIV = "UDIV"    # Unsigned division
-    SRA  = "SRA"     # Shift right arithmetic
-    SRL  = "SRL"     # Shift right logical
-    SHL  = "SHL"     # Shift left
-    NEG  = "NEG"     # 0 - x
+    SRA = "SRA"     # Shift right arithmetic
+    SRL = "SRL"     # Shift right logical
+    SHL = "SHL"     # Shift left
+    NEG = "NEG"     # 0 - x
 
     # ── Floating-point arithmetic ──────────────────────────────────────────
     FADD = "FADD"
@@ -118,40 +118,40 @@ class SDNodeOpcode(enum.Enum):
     # ── Comparison & branches ──────────────────────────────────────────────
     SETCC = "SETCC"   # Set on condition code → returns i1
     BR_CC = "BR_CC"   # Branch on condition code
-    BR    = "BR"      # Unconditional branch
+    BR = "BR"      # Unconditional branch
     BRIND = "BRIND"   # Indirect branch (register target)
-    RET   = "RET"     # Return from function
-    CALL  = "CALL"    # Function call
+    RET = "RET"     # Return from function
+    CALL = "CALL"    # Function call
 
     # ── Type conversion ────────────────────────────────────────────────────
-    FP_EXTEND  = "FP_EXTEND"
-    FP_TRUNC   = "FP_TRUNC"
-    INT_TO_FP  = "INT_TO_FP"
-    FP_TO_INT  = "FP_TO_INT"
+    FP_EXTEND = "FP_EXTEND"
+    FP_TRUNC = "FP_TRUNC"
+    INT_TO_FP = "INT_TO_FP"
+    FP_TO_INT = "FP_TO_INT"
     ANY_EXTEND = "ANY_EXTEND"
-    TRUNCATE   = "TRUNCATE"
-    BITCAST    = "BITCAST"
+    TRUNCATE = "TRUNCATE"
+    BITCAST = "BITCAST"
 
     # ── Memory ─────────────────────────────────────────────────────────────
-    LOAD        = "LOAD"
-    STORE       = "STORE"
+    LOAD = "LOAD"
+    STORE = "STORE"
     TokenFactor = "TokenFactor"
 
     # ── Pseudo / register ──────────────────────────────────────────────────
-    CopyFromReg  = "CopyFromReg"
-    CopyToReg    = "CopyToReg"
-    Register     = "Register"
-    LI_Pseudo    = "LI_Pseudo"
-    MV_Pseudo    = "MV_Pseudo"
-    CALL_Pseudo  = "CALL_Pseudo"
-    RET_Pseudo   = "RET_Pseudo"
-    LoadAddress  = "LoadAddress"
+    CopyFromReg = "CopyFromReg"
+    CopyToReg = "CopyToReg"
+    Register = "Register"
+    LI_Pseudo = "LI_Pseudo"
+    MV_Pseudo = "MV_Pseudo"
+    CALL_Pseudo = "CALL_Pseudo"
+    RET_Pseudo = "RET_Pseudo"
+    LoadAddress = "LoadAddress"
 
     # ── Neural-network ops ─────────────────────────────────────────────────
-    RELU    = "RELU"
+    RELU = "RELU"
     MAXPOOL = "MAXPOOL"
-    GELU    = "GELU"
-    MATMUL  = "MATMUL"
+    GELU = "GELU"
+    MATMUL = "MATMUL"
 
     # ── Property helpers ───────────────────────────────────────────────────
 
@@ -414,9 +414,9 @@ class SelectionDAG:
     Typical usage::
 
         dag = SelectionDAG()
-        a   = dag.get_constant(42, MVT.i32)
-        b   = dag.get_constant(10, MVT.i32)
-        c   = dag.get_add(a, b)
+        a = dag.get_constant(42, MVT.i32)
+        b = dag.get_constant(10, MVT.i32)
+        c = dag.get_add(a, b)
         print(dag.dump())
     """
 

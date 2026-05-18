@@ -1,12 +1,14 @@
 """Dead code elimination pass.
 
-Removes instructions whose result is never used (no other instruction references it
-and it's not a function return value).
+Removes instructions whose result is never used.
+
 """
 
 from __future__ import annotations
 
-from scratchv.ir.types import OpCode, Instruction, BasicBlock, Function, Program
+from scratchv.ir.types import (
+    OpCode, Instruction, BasicBlock, Function, Program,
+)
 
 
 class DeadCodeEliminator:
@@ -17,7 +19,10 @@ class DeadCodeEliminator:
         self._stats = {"eliminated": 0}
 
     def run(self) -> int:
-        """Run dead code elimination. Returns number of eliminated instructions."""
+        """Run dead code elimination.
+
+        Returns number of eliminated instructions.
+        """
         for func in self.program.functions:
             self._eliminate_function(func)
         return self._stats["eliminated"]
@@ -31,8 +36,10 @@ class DeadCodeEliminator:
         used: set[str | None] = set()
         # Return values and branch targets are always live
         for instr in block.instructions:
-            if instr.opcode in (OpCode.RETURN, OpCode.BR, OpCode.BR_IF, OpCode.STORE,
-                                OpCode.ENDFOR, OpCode.FOR):
+            if instr.opcode in (
+                    OpCode.RETURN, OpCode.BR,
+                    OpCode.BR_IF, OpCode.STORE,
+                    OpCode.ENDFOR, OpCode.FOR):
                 used.add(instr.dest.name if instr.dest else None)
             for op in instr.operands:
                 used.add(op.name)

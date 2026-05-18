@@ -1,52 +1,45 @@
 # ScratchV developer makefile
 .POSIX:
 
-.PHONY: install test clean lint check docs examples
+.PHONY: install test bench bench-cnn clean lint
 
-# ── Installation ──────────────────────────────────────────────────────────────
+# ── Installation ──────────────────────────────────────────────────────────
 
 install:
 	pip install -e .
 	pip install -e ".[all]" 2>/dev/null || pip install -e .
 
-# ── Testing ───────────────────────────────────────────────────────────────────
+# ── 课题功能测试 ──────────────────────────────────────────────────────────
 
 test:
 	python3 -m pytest tests/ -v --tb=short
 
-test-coverage:
-	python3 -m pytest tests/ --cov=scratchv --cov=scratchv_dag --cov-report=term
+# ── 模型性能基准 ──────────────────────────────────────────────────────────
 
-# ── Lint ──────────────────────────────────────────────────────────────────────
+bench:
+	python3 -m pytest benchmarks/test_benchmark.py -v --tb=short
+	python3 benchmarks/bench_runner.py benchmarks/cases \
+		--output-json benchmark_reports/dsl_bench.json \
+		--output-html benchmark_reports/dsl_bench.html
 
-lint:
-	-python3 -m flake8 scratchv/ scratchv_dag/ tests/ 2>/dev/null || echo "install flake8: pip install flake8"
-	-python3 -m mypy scratchv/ scratchv_dag/ --ignore-missing-imports 2>/dev/null || echo "install mypy: pip install mypy"
+# ── CNN RISC-V 编译 + 估算 ────────────────────────────────────────────────
 
-# ── Clean ─────────────────────────────────────────────────────────────────────
+bench-cnn:
+	python3 scratchv/standalone/onnx_to_riscv_standalone.py models/graph/cnn.onnx \
+		-o /tmp/cnn_riscv.bin --estimate --report
+	@echo "Reports: benchmark_reports/"
+
+# ── Clean ─────────────────────────────────────────────────────────────────
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null
 	find . -type f -name '*.pyc' -delete
-	rm -rf .pytest_cache
-	rm -rf scratchv.egg-info scratchv_dag.egg-info
-	rm -rf dist build
+	rm -rf .pytest_cache scratchv.egg-info scratchv_dag.egg-info dist build
 	rm -f output.s output.ll
+	rm -rf benchmark_reports
 
-# ── Checks (runs before PR) ───────────────────────────────────────────────────
+# ── Lint (development only) ───────────────────────────────────────────────
 
-check: clean test
-
-# ── Quick examples ────────────────────────────────────────────────────────────
-
-examples:
-	@echo "=== DSL examples ==="
-	python3 -m scratchv examples/simple_add.dsl -o /tmp/simple_add.s --dump-ir
-	python3 -m scratchv examples/relu_test.dsl -o /tmp/relu.s --optimize all
-	python3 -m scratchv examples/matmul_test.dsl -o /tmp/matmul.s --optimize all
-
-# ── Build docs preview (if pandoc is available) ────────────────────────────────
-
-docs:
-	@echo "Documentation is markdown — no build required."
-	@ls docs/*.md
+lint:
+	-python3 -m flake8 scratchv/ scratchv_dag/ tests/ 2>/dev/null || echo "pip install flake8"
+	-python3 -m mypy scratchv/ scratchv_dag/ --ignore-missing-imports 2>/dev/null || echo "pip install mypy"

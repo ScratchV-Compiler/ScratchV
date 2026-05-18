@@ -13,7 +13,7 @@ The fused instruction is represented as MUL_ADD in IR:
 
 from __future__ import annotations
 
-from scratchv.ir.types import OpCode, Instruction, BasicBlock, Function, Program
+from scratchv.ir.types import OpCode, Instruction, BasicBlock, Program
 
 
 class MulAddFusion:
@@ -40,9 +40,13 @@ class MulAddFusion:
             if self._matches_pattern(mul, add):
                 # Replace mul with fused instruction
                 a, b = mul.operands[0], mul.operands[1]
-                acc = add.operands[0] if add.operands[1].name == mul.dest.name else add.operands[1]
+                assert mul.dest is not None
+                if add.operands[1].name == mul.dest.name:
+                    acc = add.operands[0]
+                else:
+                    acc = add.operands[1]
                 fused = Instruction(
-                    opcode=OpCode.ADD,  # Keep as ADD for RV32IM (no native FMA)
+                    opcode=OpCode.ADD,  # RV32IM has no native FMA
                     dest=add.dest,
                     operands=[acc, a, b],
                 )

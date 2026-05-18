@@ -71,8 +71,9 @@ class CacheConfig:
         assert self.total_size > 0, "total_size must be positive"
         assert self.total_size % self.line_size == 0, \
             "total_size must be a multiple of line_size"
-        assert self.line_size > 0 and (self.line_size & (self.line_size - 1)) == 0, \
-            "line_size must be a positive power of two"
+        assert self.line_size > 0, "line_size must be positive"
+        assert (self.line_size & (self.line_size - 1)) == 0, \
+            "line_size must be a power of two"
         assert self.associativity > 0, "associativity must be positive"
         assert self.num_sets > 0, "total_size too small for given config"
 
@@ -172,7 +173,7 @@ class L1Cache:
         "_mask_offset", "_mask_index", "_tag_shift",
     )
 
-    def __init__(self, config: CacheConfig = None) -> None:
+    def __init__(self, config: CacheConfig | None = None) -> None:
         self.config = config if config is not None else CacheConfig()
         self.stats = CacheStats()
         self._clock = 0
@@ -185,8 +186,8 @@ class L1Cache:
 
         # Precompute address-decomposition masks
         self._mask_offset = int(math.log2(self.config.line_size))
-        self._mask_index  = int(math.log2(self.config.num_sets))
-        self._tag_shift   = self._mask_offset + self._mask_index
+        self._mask_index = int(math.log2(self.config.num_sets))
+        self._tag_shift = self._mask_offset + self._mask_index
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -197,7 +198,7 @@ class L1Cache:
         """
         latency = 0
         first = addr // self.config.line_size
-        last  = (addr + size - 1) // self.config.line_size
+        last = (addr + size - 1) // self.config.line_size
 
         for line_addr in range(first, last + 1):
             block_addr = line_addr * self.config.line_size
@@ -217,7 +218,7 @@ class L1Cache:
         """
         latency = 0
         first = addr // self.config.line_size
-        last  = (addr + size - 1) // self.config.line_size
+        last = (addr + size - 1) // self.config.line_size
 
         for line_addr in range(first, last + 1):
             block_addr = line_addr * self.config.line_size
@@ -255,10 +256,10 @@ class L1Cache:
 
     # ── Internals ──────────────────────────────────────────────────────────
 
-    def _addr_to_set_tag(self, addr: int) -> (int, int):
+    def _addr_to_set_tag(self, addr: int) -> tuple[int, int]:
         """Decompose a byte address into ``(set_index, tag)``."""
         set_idx = (addr >> self._mask_offset) & (self.config.num_sets - 1)
-        tag     = addr >> self._tag_shift
+        tag = addr >> self._tag_shift
         return set_idx, tag
 
     def _access_line(self, block_addr: int, is_write: bool) -> int:

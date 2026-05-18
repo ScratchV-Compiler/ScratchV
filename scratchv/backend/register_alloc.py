@@ -1,101 +1,44 @@
 """Register allocation for RISC-V.
 
 Implements two strategies:
-1. Naive: map every virtual register to a stack slot (load/store around each use).
-2. Greedy: simple local greedy allocator using callee-saved registers first.
+1. Naive: map every virtual register to a stack slot (load/store).
+2. Greedy: simple local greedy allocator using callee-saved regs first.
+
+Machine instruction types (MachineOp, MachineOperand, MachineInstr) are
+defined in ``scratchv.backend.machine_types`` and re-exported here for
+backward compatibility.
 """
 
 from __future__ import annotations
 
-import enum
-from dataclasses import dataclass, field
 from typing import Optional
 
+from scratchv.backend.machine_types import (  # noqa: F401 — re-export
+    ALL_REGS,
+    ARG_REGS,
+    CALLEE_SAVED,
+    MachineInstr,
+    MachineOp,
+    MachineOperand,
+    STACK_BASE,
+    TEMP_REGS,
+    ZERO_REG,
+)
 
-class MachineOp(enum.Enum):
-    """RISC-V machine instruction opcodes used by the compiler."""
-    # ALU
-    ADD = "add"
-    ADDI = "addi"
-    SUB = "sub"
-    MUL = "mul"
-    DIV = "div"
-    MAX = "max"     # pseudo: max rd, rs1, rs2
-    # Memory
-    LW = "lw"
-    SW = "sw"
-    # Control
-    J = "j"
-    JAL = "jal"
-    JALR = "jalr"
-    BEQ = "beq"
-    BNE = "bne"
-    BLT = "blt"
-    BGE = "bge"
-    BNEZ = "bnez"   # pseudo
-    # Pseudo
-    LI = "li"
-    MV = "mv"
-    CALL = "call"
-    LABEL = ".label"
-    # Directive
-    SECTION = ".section"
-    GLOBL = ".globl"
-    SIZE = ".size"
-    TYPE = ".type"
-
-
-@dataclass
-class MachineOperand:
-    """A register or immediate operand."""
-    kind: str  # "reg", "imm", "vreg"
-    value: str | int
-
-    @staticmethod
-    def vreg(name: str) -> "MachineOperand":
-        return MachineOperand("vreg", name)
-
-    @staticmethod
-    def immediate(val: int) -> "MachineOperand":
-        return MachineOperand("imm", val)
-
-    @staticmethod
-    def reg(name: str) -> "MachineOperand":
-        return MachineOperand("reg", name)
-
-    def __repr__(self) -> str:
-        if self.kind == "imm":
-            return str(self.value)
-        return f"%{self.value}"
-
-
-@dataclass
-class MachineInstr:
-    """A machine-level instruction using virtual or physical registers."""
-    op: MachineOp
-    dst: Optional[MachineOperand] = None
-    src1: Optional[MachineOperand] = None
-    src2: Optional[MachineOperand] = None
-    comment: str = ""
-
-    def __repr__(self) -> str:
-        parts = [self.op.value]
-        for op in (self.dst, self.src1, self.src2):
-            if op is not None:
-                parts.append(str(op))
-        s = " ".join(parts)
-        if self.comment:
-            s += f"  # {self.comment}"
-        return s
-
-
-# RISC-V register sets
-CALLEE_SAVED = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11"]
-TEMP_REGS = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"]
-ARG_REGS = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"]
-ALL_REGS = TEMP_REGS + CALLEE_SAVED  # 19 allocatable registers
-STACK_BASE = "sp"
-ZERO_REG = "x0"
+# Re-export for backward compatibility — new code should import directly
+# from scratchv.backend.machine_types.
+__all__ = [
+    "MachineOp",
+    "MachineOperand",
+    "MachineInstr",
+    "CALLEE_SAVED",
+    "TEMP_REGS",
+    "ARG_REGS",
+    "ALL_REGS",
+    "STACK_BASE",
+    "ZERO_REG",
+    "RegisterAllocator",
+]
 
 
 class RegisterAllocator:
@@ -141,9 +84,16 @@ class RegisterAllocator:
 
             # After: store dst back to stack if it's a vreg
             if instr.dst and instr.dst.kind == "vreg":
-                slot = self._get_spill_slot(instr.dst.value)
-                self._emit(MachineInstr(MachineOp.SW, MachineOperand.reg(f"{STACK_BASE}({-slot})" if slot > 0 else "0(sp)"),
-                                        dst if dst else MachineOperand.reg("zero"), comment=f"spill {instr.dst.value}"))
+                v = instr.dst.value
+                assert isinstance(v, str)
+                slot = self._get_spill_slot(v)
+                mem = f"{STACK_BASE}({-slot})" if slot > 0 else "0(sp)"
+                self._emit(MachineInstr(
+                    MachineOp.SW,
+                    MachineOperand.reg(mem),
+                    dst if dst else MachineOperand.reg("zero"),
+                    comment=f"spill {instr.dst.value}",
+                ))
 
         return self._output
 
@@ -164,10 +114,16 @@ class RegisterAllocator:
             dst = self._resolve_dst(instr.dst)
 
             # Allocate destination register
-            if instr.dst and instr.dst.kind == "vreg" and instr.dst.value not in self._vreg_map:
-                dst = self._assign_reg(instr.dst.value)
+            if instr.dst and instr.dst.kind == "vreg" \
+                    and instr.dst.value not in self._vreg_map:
+                v2 = instr.dst.value
+                assert isinstance(v2, str)
+                reg_name = self._assign_reg(v2)
+                dst = MachineOperand.reg(reg_name)
             elif instr.dst and instr.dst.kind == "vreg":
-                dst = MachineOperand.reg(self._vreg_map[instr.dst.value])
+                v3 = instr.dst.value
+                assert isinstance(v3, str)
+                dst = MachineOperand.reg(self._vreg_map[v3])
 
             self._emit(MachineInstr(instr.op, dst, src1, src2, instr.comment))
 
@@ -182,9 +138,12 @@ class RegisterAllocator:
             return op
         if op.kind == "vreg":
             if op.value in self._vreg_map:
-                return MachineOperand.reg(self._vreg_map[op.value])
+                r = self._vreg_map[op.value]  # type: ignore[index]
+                return MachineOperand.reg(r)
             # Assign a register
-            reg = self._assign_reg(op.value)
+            v = op.value
+            assert isinstance(v, str)
+            reg = self._assign_reg(v)
             return MachineOperand.reg(reg)
         return op
 
@@ -195,8 +154,11 @@ class RegisterAllocator:
             return op
         if op.kind == "vreg":
             if op.value in self._vreg_map:
-                return MachineOperand.reg(self._vreg_map[op.value])
-            reg = self._assign_reg(op.value)
+                r2 = self._vreg_map[op.value]  # type: ignore[index]
+                return MachineOperand.reg(r2)
+            v = op.value
+            assert isinstance(v, str)
+            reg = self._assign_reg(v)
             return MachineOperand.reg(reg)
         return op
 
@@ -218,8 +180,12 @@ class RegisterAllocator:
         if lru_vreg:
             # Spill: store to stack
             slot = self._get_spill_slot(lru_vreg)
-            self._emit(MachineInstr(MachineOp.SW, MachineOperand.reg(f"{STACK_BASE}({-slot})"),
-                                    MachineOperand.reg(lru_reg), comment=f"spill {lru_vreg}"))
+            mem = f"{STACK_BASE}({-slot})"
+            self._emit(MachineInstr(
+                MachineOp.SW, MachineOperand.reg(mem),
+                MachineOperand.reg(lru_reg),
+                comment=f"spill {lru_vreg}",
+            ))
         self._reg_pool[lru_reg] = vreg_name
         self._vreg_map[vreg_name] = lru_reg
         return lru_reg
@@ -228,9 +194,13 @@ class RegisterAllocator:
         """Spill all registers at basic block boundaries."""
         for phys_reg, vreg_name in list(self._reg_pool.items()):
             if vreg_name is not None:
-                slot = self._get_spill_slot(vreg_name)
-                self._emit(MachineInstr(MachineOp.SW, MachineOperand.reg(f"{STACK_BASE}({-slot})"),
-                                        MachineOperand.reg(phys_reg), comment=f"spill {vreg_name}"))
+                slot = self._get_spill_slot(vreg_name)  # type: ignore[arg-type]
+                mem = f"{STACK_BASE}({-slot})"
+                self._emit(MachineInstr(
+                    MachineOp.SW, MachineOperand.reg(mem),
+                    MachineOperand.reg(phys_reg),
+                    comment=f"spill {vreg_name}",
+                ))
                 self._reg_pool[phys_reg] = None
         self._vreg_map.clear()
 
@@ -242,10 +212,13 @@ class RegisterAllocator:
 
     def _spill_operand(self, op: MachineOperand) -> MachineOperand:
         """Return a temp register holding the spilled value."""
-        slot = self._get_spill_slot(op.value)
+        v = op.value
+        assert isinstance(v, str)
+        slot = self._get_spill_slot(v)
         temp = MachineOperand.reg("t0")
+        mem = f"{STACK_BASE}({-slot})" if slot != 0 else "0(sp)"
         self._emit(MachineInstr(MachineOp.LW, temp,
-                                MachineOperand.reg(f"{STACK_BASE}({-slot})" if slot != 0 else "0(sp)"),
+                                MachineOperand.reg(mem),
                                 comment=f"load {op.value}"))
         return temp
 

@@ -1,13 +1,13 @@
 """Tests for advanced optimizer passes: peephole, muladd_fusion, LICM."""
 
 from scratchv.ir.builder import IRBuilder
-from scratchv.ir.types import OpCode, DataType, Value
-from scratchv.optimizer.peephole import PeepholeOptimizer
+from scratchv.ir.types import OpCode
+from scratchv.optimizer.peephole import IRPeepholeOptimizer
 from scratchv.optimizer.muladd_fusion import MulAddFusion
 from scratchv.optimizer.licm import LICM
 
 
-class TestPeepholeOptimizer:
+class TestIRPeepholeOptimizer:
     def test_eliminate_addi_zero(self):
         builder = IRBuilder()
         builder.new_function("test")
@@ -19,8 +19,8 @@ class TestPeepholeOptimizer:
         builder._emit(OpCode.ADD, c, [a, zero])
         builder.ret(c)
 
-        opt = PeepholeOptimizer(builder.program)
-        count = opt.run()
+        opt = IRPeepholeOptimizer(builder.program)
+        opt.run()
         # The addi 0 should have been removed
         block = builder.program.functions[0].blocks[0]
         assert all(i.opcode != OpCode.ADD for i in block.instructions)
@@ -35,10 +35,10 @@ class TestPeepholeOptimizer:
         builder._emit(OpCode.MUL, c, [a, one])
         builder.ret(c)
 
-        opt = PeepholeOptimizer(builder.program)
+        opt = IRPeepholeOptimizer(builder.program)
         count = opt.run()
         assert count >= 1
-        # MUL with 1 should be replaced (not necessarily eliminated, but changed)
+        # MUL with 1 should be replaced
         block = builder.program.functions[0].blocks[0]
         has_mul = any(i.opcode == OpCode.MUL for i in block.instructions)
         assert not has_mul
@@ -53,13 +53,14 @@ class TestPeepholeOptimizer:
         builder._emit(OpCode.MUL, c, [a, zero])
         builder.ret(c)
 
-        opt = PeepholeOptimizer(builder.program)
-        count = opt.run()
+        opt = IRPeepholeOptimizer(builder.program)
+        opt.run()
         block = builder.program.functions[0].blocks[0]
         mul_instrs = [i for i in block.instructions if i.opcode == OpCode.MUL]
         assert len(mul_instrs) == 0
         # Should be replaced with load_const 0
-        lc_instrs = [i for i in block.instructions if i.opcode == OpCode.LOAD_CONST]
+        lc_instrs = [i for i in block.instructions
+                     if i.opcode == OpCode.LOAD_CONST]
         assert any(i.attrs.get("value") == 0 for i in lc_instrs)
 
 
@@ -112,7 +113,7 @@ class TestLICM:
 
         # Loop with invariant mul inside
         iv = builder.for_loop(0, 10)  # FOR
-        # This mul depends on a, b which are defined outside the loop → invariant
+        # This mul depends on a, b defined outside the loop -> invariant
         c = builder.mul(a, b)
         builder.add(c, iv)  # this depends on iv → variant, keep
         builder.endfor()
@@ -125,9 +126,9 @@ class TestLICM:
         block = builder.program.functions[0].blocks[0]
         # Find the FOR and check if mul is before it
         for_idx = next(i for i, instr in enumerate(block.instructions)
-                      if instr.opcode == OpCode.FOR)
+                       if instr.opcode == OpCode.FOR)
         mul_idx = next(i for i, instr in enumerate(block.instructions)
-                      if instr.opcode == OpCode.MUL)
+                       if instr.opcode == OpCode.MUL)
         assert mul_idx < for_idx, "MUL should be hoisted before FOR"
 
     def test_no_hoist_variant(self):
@@ -137,18 +138,18 @@ class TestLICM:
 
         iv = builder.for_loop(0, 10)
         # This add depends on iv (loop variant) → should not be hoisted
-        c = builder.add(iv, builder.load_const(1.0))
+        builder.add(iv, builder.load_const(1.0))
         builder.endfor()
         builder.ret()
 
         opt = LICM(builder.program)
-        count = opt.run()
-        # The load_const IS invariant and gets hoisted (correct behavior).
-        # But the 'add' depending on 'iv' stays in the loop.
+        opt.run()
+        # The load_const IS invariant and gets hoisted.
+        # But the add depending on iv stays in the loop.
         # Verify the add remains after the FOR.
         block = builder.program.functions[0].blocks[0]
         for_idx = next(i for i, instr in enumerate(block.instructions)
-                      if instr.opcode == OpCode.FOR)
+                       if instr.opcode == OpCode.FOR)
         add_instrs = [i for i in block.instructions if i.opcode == OpCode.ADD]
         # The ADD (variant) should still be inside the loop (after FOR)
         assert all(block.instructions.index(i) > for_idx for i in add_instrs)

@@ -2,15 +2,7 @@
 
 from __future__ import annotations
 
-from scratchv.ir.types import (
-    OpCode,
-    DataType,
-    Value,
-    Instruction,
-    BasicBlock,
-    Function,
-    Program,
-)
+from scratchv.ir.types import DataType, Value, Program
 from scratchv.ir.builder import IRBuilder
 
 
@@ -45,7 +37,7 @@ class ONNXParser:
         # Create IR function from ONNX graph
         func_name = graph.name or "main"
         func = self.builder.new_function(func_name)
-        entry = self.builder.new_block("entry")
+        self.builder.new_block("entry")  # entry block
 
         # Map ONNX initializers (constants) to IR values
         for init in graph.initializer:
@@ -115,7 +107,8 @@ class ONNXParser:
             self._value_map[name] = val
         return self._value_map[name]
 
-    def _define_outputs(self, outputs: list[str], value: Value | None = None) -> Value:
+    def _define_outputs(self, outputs: list[str],
+                        value: Value | None = None) -> Value:
         """Register output names for a node."""
         if value is None:
             value = self.builder.make_value()
@@ -125,37 +118,53 @@ class ONNXParser:
 
     # --- Operator handlers ---
 
-    def _handle_add(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_add(self, node, inputs: list[Value],
+                    outputs: list[str]) -> None:
         a, b = inputs[0], inputs[1]
         if a.is_constant and b.is_constant:
-            result = self.builder.make_value(is_constant=True, const_value=a.const_value + b.const_value)  # noqa: E501
+            assert a.const_value is not None
+            assert b.const_value is not None
+            result = self.builder.make_value(
+                is_constant=True,
+                const_value=a.const_value + b.const_value,
+            )
         else:
             result = self.builder.add(a, b)
         self._define_outputs(outputs, result)
 
-    def _handle_mul(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_mul(self, node, inputs: list[Value],
+                    outputs: list[str]) -> None:
         a, b = inputs[0], inputs[1]
         if a.is_constant and b.is_constant:
-            result = self.builder.make_value(is_constant=True, const_value=a.const_value * b.const_value)  # noqa: E501
+            assert a.const_value is not None
+            assert b.const_value is not None
+            result = self.builder.make_value(
+                is_constant=True,
+                const_value=a.const_value * b.const_value,
+            )
         else:
             result = self.builder.mul(a, b)
         self._define_outputs(outputs, result)
 
-    def _handle_sub(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_sub(self, node, inputs: list[Value],
+                    outputs: list[str]) -> None:
         a, b = inputs[0], inputs[1]
         result = self.builder.sub(a, b)
         self._define_outputs(outputs, result)
 
-    def _handle_div(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_div(self, node, inputs: list[Value],
+                    outputs: list[str]) -> None:
         a, b = inputs[0], inputs[1]
         result = self.builder.div(a, b)
         self._define_outputs(outputs, result)
 
-    def _handle_relu(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_relu(self, node, inputs: list[Value],
+                     outputs: list[str]) -> None:
         result = self.builder.relu(inputs[0])
         self._define_outputs(outputs, result)
 
-    def _handle_matmul(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_matmul(self, node, inputs: list[Value],
+                       outputs: list[str]) -> None:
         a, b = inputs[0], inputs[1]
         m = a.shape[0] if len(a.shape) > 0 else 1
         k = a.shape[1] if len(a.shape) > 1 else 1
@@ -163,11 +172,13 @@ class ONNXParser:
         result = self.builder.matmul(a, b, m, n, k)
         self._define_outputs(outputs, result)
 
-    def _handle_gelu(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_gelu(self, node, inputs: list[Value],
+                     outputs: list[str]) -> None:
         result = self.builder.gelu(inputs[0])
         self._define_outputs(outputs, result)
 
-    def _handle_softmax(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_softmax(self, node, inputs: list[Value],
+                        outputs: list[str]) -> None:
         axis = -1
         for attr in node.attribute:
             if attr.name == "axis":
@@ -175,7 +186,8 @@ class ONNXParser:
         result = self.builder.softmax(inputs[0], axis=axis)
         self._define_outputs(outputs, result)
 
-    def _handle_maxpool(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_maxpool(self, node, inputs: list[Value],
+                        outputs: list[str]) -> None:
         kernel = 2
         stride = 2
         for attr in node.attribute:
@@ -186,10 +198,58 @@ class ONNXParser:
         result = self.builder.maxpool(inputs[0], kernel, stride)
         self._define_outputs(outputs, result)
 
-    def _handle_neg(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_neg(self, node, inputs: list[Value],
+                    outputs: list[str]) -> None:
         result = self.builder.neg(inputs[0])
         self._define_outputs(outputs, result)
 
-    def _handle_exp(self, node, inputs: list[Value], outputs: list[str]) -> None:
+    def _handle_exp(self, node, inputs: list[Value],
+                    outputs: list[str]) -> None:
         result = self.builder.exp(inputs[0])
+        self._define_outputs(outputs, result)
+
+    def _handle_conv(self, node, inputs: list[Value],
+                     outputs: list[str]) -> None:
+        x, w, b = inputs[0], inputs[1], inputs[2]
+        out_channels = w.shape[0] if len(w.shape) > 0 else 1
+        kernel_size = w.shape[2] if len(w.shape) > 2 else 3
+        stride = 1
+        padding = 1
+        for attr in node.attribute:
+            if attr.name == "kernel_shape":
+                kernel_size = attr.ints[0]
+            elif attr.name == "strides":
+                stride = attr.ints[0]
+            elif attr.name == "pads":
+                padding = attr.ints[0]
+        result = self.builder.conv(x, w, b, out_channels,
+                                   kernel_size, stride, padding)
+        self._define_outputs(outputs, result)
+
+    def _handle_gemm(self, node, inputs: list[Value],
+                     outputs: list[str]) -> None:
+        a, w, b = inputs[0], inputs[1], inputs[2]
+        trans_a = False
+        trans_b = False
+        for attr in node.attribute:
+            if attr.name == "transA":
+                trans_a = attr.i != 0
+            elif attr.name == "transB":
+                trans_b = attr.i != 0
+        result = self.builder.gemm(a, w, b, trans_a, trans_b)
+        self._define_outputs(outputs, result)
+
+    def _handle_sigmoid(self, node, inputs: list[Value],
+                        outputs: list[str]) -> None:
+        result = self.builder.sigmoid(inputs[0])
+        self._define_outputs(outputs, result)
+
+    def _handle_reshape(self, node, inputs: list[Value],
+                        outputs: list[str]) -> None:
+        # The second input contains the target shape
+        shape: tuple[int, ...] = ()
+        if len(inputs) > 1 and inputs[1].is_constant:
+            # shape is a constant — extract it from attrs
+            shape = inputs[1].shape
+        result = self.builder.reshape(inputs[0], shape)
         self._define_outputs(outputs, result)

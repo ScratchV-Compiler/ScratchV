@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from scratchv.ir.builder import IRBuilder
-from scratchv.ir.types import Value, DataType, Program
+from scratchv.ir.types import Value, Program
 
 
 class DSLParseError(Exception):
@@ -38,7 +38,7 @@ class DSLParser:
 
     def parse(self, text: str) -> Program:
         lines = text.strip().split("\n")
-        func = self.builder.new_function("main")
+        self.builder.new_function("main")
         self.builder.new_block("entry")
 
         for line in lines:
@@ -49,7 +49,10 @@ class DSLParser:
 
         if not self._loop_stack:
             block = self.builder.current_block
-            has_ret = block and block.instructions and block.instructions[-1].opcode.name == "RETURN"
+            if block and block.instructions:
+                has_ret = block.instructions[-1].opcode.name == "RETURN"
+            else:
+                has_ret = False
             if not has_ret:
                 self.builder.ret()
         return self.builder.program
@@ -104,9 +107,11 @@ class DSLParser:
         self._vars[name] = v
         return v
 
-    def _parse_kwargs(self, args: list[str]) -> dict:
-        kwargs = {}
-        plain = []
+    def _parse_kwargs(
+            self, args: list[str],
+    ) -> tuple[list[str], dict[str, int | float | str]]:
+        kwargs: dict[str, int | float | str] = {}
+        plain: list[str] = []
         for a in args:
             if ":" in a:
                 k, v = a.split(":", 1)
@@ -138,15 +143,24 @@ class DSLParser:
             "exp": lambda: self.builder.exp(resolved[0]),
             "relu": lambda: self.builder.relu(resolved[0]),
             "gelu": lambda: self.builder.gelu(resolved[0]),
-            "dot": lambda: self.builder.dot(resolved[0], resolved[1], kwargs.get("len", kwargs.get("length", 1))),
+            "dot": lambda: self.builder.dot(
+                resolved[0], resolved[1],
+                kwargs.get("len", kwargs.get("length", 1)),
+            ),
             "matmul": lambda: self.builder.matmul(
                 resolved[0], resolved[1],
                 kwargs.get("rows", kwargs.get("m", 1)),
                 kwargs.get("cols", kwargs.get("n", 1)),
                 kwargs.get("inner", kwargs.get("k", 1)),
             ),
-            "softmax": lambda: self.builder.softmax(resolved[0], kwargs.get("axis", -1)),
-            "maxpool": lambda: self.builder.maxpool(resolved[0], kwargs.get("kernel", 2), kwargs.get("stride", 2)),
+            "softmax": lambda: self.builder.softmax(
+                resolved[0], kwargs.get("axis", -1),
+            ),
+            "maxpool": lambda: self.builder.maxpool(
+                resolved[0],
+                kwargs.get("kernel", 2),
+                kwargs.get("stride", 2),
+            ),
         }
         handler = handlers.get(op)
         if handler is None:

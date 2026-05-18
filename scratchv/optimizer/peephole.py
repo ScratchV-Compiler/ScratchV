@@ -9,10 +9,10 @@ Scans basic blocks for common redundant patterns:
 
 from __future__ import annotations
 
-from scratchv.ir.types import OpCode, Instruction, BasicBlock, Function, Program
+from scratchv.ir.types import OpCode, Instruction, BasicBlock, Program
 
 
-class PeepholeOptimizer:
+class IRPeepholeOptimizer:
     """Eliminate redundant instruction patterns in IR."""
 
     def __init__(self, program: Program):
@@ -20,7 +20,10 @@ class PeepholeOptimizer:
         self._stats = {"eliminated": 0}
 
     def run(self) -> int:
-        """Run peephole optimization. Returns number of eliminated instructions."""
+        """Run peephole optimization.
+
+        Returns number of eliminated instructions.
+        """
         for func in self.program.functions:
             for block in func.blocks:
                 self._optimize_block(block)
@@ -104,9 +107,11 @@ class PeepholeOptimizer:
         if instr.opcode != OpCode.BR:
             return False
         next_instr = instrs[i + 1]
-        return next_instr.opcode == OpCode.LABEL and next_instr.target == instr.target
+        return (next_instr.opcode == OpCode.LABEL
+                and next_instr.target == instr.target)
 
     def _make_zero_operand(self, instr: Instruction):
         """Create a zero constant value."""
         from scratchv.ir.types import Value, DataType
-        return Value(name="_zero", dtype=DataType.INT32, is_constant=True, const_value=0)
+        return Value(name="_zero", dtype=DataType.INT32,
+                     is_constant=True, const_value=0)

@@ -40,7 +40,8 @@ class TestConstantFolder:
         count = folder.run()
         assert count == 1
         # The mul (index 2) was replaced by load_const 10.0
-        assert builder.program.functions[0].blocks[0].instructions[2].attrs["value"] == 10.0
+        block = builder.program.functions[0].blocks[0]
+        assert block.instructions[2].attrs["value"] == 10.0
 
     def test_no_fold_with_variable(self):
         builder = IRBuilder()
@@ -65,7 +66,7 @@ class TestDeadCodeEliminator:
 
         a = builder.load_const(1.0)
         b = builder.load_const(2.0)
-        c = builder.add(a, b)  # unused!
+        builder.add(a, b)  # unused!
         d = builder.load_const(3.0)
         builder.ret(d)
 

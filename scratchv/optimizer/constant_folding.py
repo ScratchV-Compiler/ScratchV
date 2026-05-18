@@ -6,7 +6,9 @@ replacing them with load_const instructions.
 
 from __future__ import annotations
 
-from scratchv.ir.types import OpCode, Instruction, BasicBlock, Function, Program
+from scratchv.ir.types import (
+    OpCode, Instruction, BasicBlock, Function, Program,
+)
 
 
 class ConstantFolder:
@@ -38,7 +40,9 @@ class ConstantFolder:
 
     def _try_fold(self, instr: Instruction) -> Instruction | None:
         """Try to fold an instruction. Returns a replacement or None."""
-        if instr.opcode not in (OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV):
+        if instr.opcode not in (
+                OpCode.ADD, OpCode.SUB,
+                OpCode.MUL, OpCode.DIV):
             return None
         if len(instr.operands) != 2:
             return None

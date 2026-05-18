@@ -1,8 +1,7 @@
 """Tests for the IR module."""
 
 from scratchv.ir.builder import IRBuilder
-from scratchv.ir.types import OpCode, DataType, Value
-from scratchv.ir.printer import IRPrinter
+from scratchv.ir.types import OpCode
 
 
 class TestIRBuilder:
@@ -35,8 +34,10 @@ class TestIRBuilder:
         r = builder.add(c1, c2)
         builder.ret(r)
 
-        const_instrs = [i for i in builder.current_block.instructions if i.opcode == OpCode.LOAD_CONST]
-        add_instrs = [i for i in builder.current_block.instructions if i.opcode == OpCode.ADD]
+        const_instrs = [i for i in builder.current_block.instructions
+                        if i.opcode == OpCode.LOAD_CONST]
+        add_instrs = [i for i in builder.current_block.instructions
+                      if i.opcode == OpCode.ADD]
         assert len(const_instrs) == 2
         assert len(add_instrs) == 1
 
@@ -58,7 +59,7 @@ class TestIRBuilder:
         builder.new_function("test")
         builder.new_block("entry")
 
-        iv = builder.for_loop(0, 10)
+        builder.for_loop(0, 10)
         builder.endfor()
         builder.ret()
 
