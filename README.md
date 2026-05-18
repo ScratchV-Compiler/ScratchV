@@ -13,35 +13,45 @@ code executable on QEMU, Spike, TinyFive, or real hardware.
 
 ```
 ScratchV/
-├── scratchv/
-│   ├── ir/                  # Intermediate representation (three-address code)
-│   │   ├── types.py         #   Core types: Value, Instruction, BasicBlock, Function, Program
-│   │   ├── builder.py       #   IR construction helper (chainable API)
-│   │   └── printer.py       #   IR text dump
-│   ├── frontend/            # Input parsing
-│   │   ├── onnx_parser.py   #   ONNX model → IR
-│   │   └── dsl_parser.py    #   Simple DSL → IR (test without ONNX dep)
-│   ├── optimizer/           # IR → IR optimizations
-│   │   ├── constant_folding.py  #   Compile-time constant evaluation
-│   │   ├── dead_code.py         #   Unused instruction removal
-│   │   ├── peephole.py          #   Redundant pattern elimination
-│   │   ├── muladd_fusion.py     #   Mul+Add instruction combining
-│   │   └── licm.py              #   Loop Invariant Code Motion
-│   ├── backend/             # Code generation
-│   │   ├── instruction_select.py #   IR → RISC-V pseudo-instructions
-│   │   ├── register_alloc.py     #   Register allocation (naive + greedy)
-│   │   ├── asm_emit.py           #   RISC-V assembly text emission
-│   │   └── llvm_codegen.py       #   LLVM IR text generation
-│   ├── verification/        # Verification & comparison
-│   │   └── verifier.py      #   ONNX Runtime + numpy reference comparison
-│   ├── simulator/           # Simulation
-│   │   └── tinyfive.py      #   TinyFive adapter with instruction counting
-│   └── main.py              # CLI entry point
-├── tests/                   # 50+ unit tests (including LLVM codegen + verification)
+├── scratchv/                # Main compiler package
+│   ├── ir/                  #   Intermediate representation (three-address code)
+│   │   ├── types.py         #     Value, Instruction, BasicBlock, Function, Program
+│   │   ├── builder.py       #     IR construction helper (chainable API)
+│   │   └── printer.py       #     IR text dump
+│   ├── frontend/            #   Input parsing
+│   │   ├── onnx_parser.py   #     ONNX model → IR
+│   │   └── dsl_parser.py    #     Simple DSL → IR (test without ONNX dep)
+│   ├── optimizer/           #   IR → IR optimizations
+│   │   ├── constant_folding.py  #     Compile-time constant evaluation
+│   │   ├── dead_code.py         #     Unused instruction removal
+│   │   ├── peephole.py          #     Redundant pattern elimination
+│   │   ├── muladd_fusion.py     #     Mul+Add instruction combining
+│   │   └── licm.py              #     Loop Invariant Code Motion
+│   ├── backend/             #   Code generation
+│   │   ├── instruction_select.py #     IR → RISC-V pseudo-instructions
+│   │   ├── register_alloc.py     #     Register allocation (naive + greedy)
+│   │   ├── asm_emit.py           #     RISC-V assembly text emission
+│   │   └── llvm_codegen.py       #     LLVM IR text generation
+│   ├── verification/        #   Verification & comparison
+│   │   └── verifier.py      #     ONNX Runtime + numpy reference comparison
+│   ├── simulator/           #   Simulation
+│   │   └── tinyfive.py      #     TinyFive adapter with instruction counting
+│   └── main.py              #   CLI entry point
+├── scratchv_dag/            # Standalone DAG / memory library
+│   ├── sdnode.py            #   SDNode, MVT, SelectionDAG container
+│   ├── selection_dag.py     #   DAGBuilder, DAGCombiner, DAGScheduler
+│   ├── cache.py             #   4 MB L1 cache simulator (LRU, write-back)
+│   ├── allocator.py         #   Buddy allocator with cache-line alignment
+│   └── README.md            #   Standalone docs
+├── tests/                   # 60+ unit tests
 ├── examples/                # DSL models, ONNX generator, pipeline demos
 ├── docs/
-│   ├── verification.md      # Guide: TinyFive, Spike, QEMU, LLVM IR, ONNX Runtime
-│   └── optimization_guide.md # Optimization passes guide
+│   ├── verification.md      #   Verification guide (TinyFive, Spike, QEMU, …)
+│   ├── optimization_guide.md #   Optimization passes guide
+│   └── developer_guide.md   #   Internal architecture & extension guide
+├── CHANGELOG.md             # Release history
+├── CONTRIBUTING.md          # Contribution guidelines
+├── Makefile                 # Dev targets (test, clean, lint, …)
 └── models/                  # Generated ONNX models
 ```
 
@@ -151,6 +161,13 @@ DSL Source ──▶ DSL Parser ────┘                       │     �
                ┌─────────────────┐                          │
                │ Instruction Sel │──▶ Reg Alloc ──▶ Asm Emit │──▶ RISC-V Assembly
                └─────────────────┘                          │
+                          │                                  │
+                          ▼                                  │
+           ┌─────────────────────────┐                      │
+           │  scratchv_dag (DAG)     │                      │
+           │  DAGBuilder → Combiner   │                      │
+           │  → Scheduler            │                      │
+           └─────────────────────────┘                      │
                           │                                  │
                           ▼                                  │
                   ┌──────────────┐                           │

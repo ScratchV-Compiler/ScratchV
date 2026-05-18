@@ -1,13 +1,17 @@
-"""Code generation module: LLVM-style SelectionDAG infrastructure."""
-from scratchv.codegen.sdnode import (
+"""Code generation module — re-exports from scratchv_dag.
+
+This package provides DAG-based instruction selection infrastructure.
+The implementation lives in the standalone ``scratchv_dag`` package;
+this module serves as a compatibility shim.
+"""
+# flake8: noqa
+from scratchv_dag import (               # noqa: F401
     MVT,
     SDNodeOpcode,
     SDNodeFlags,
     SDValue,
     SDNode,
     SelectionDAG,
-)
-from scratchv.codegen.selection_dag import (
     DAGBuilder,
     DAGCombiner,
     DAGScheduler,
