@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 
 class OpCode(enum.Enum):
@@ -77,17 +77,17 @@ class DataType(enum.Enum):
         return mapping.get(elem_type, DataType.FLOAT32)
 
 
-@dataclass(slots=True)
+@dataclass
 class Value:
     """An SSA-like typed value (result of an instruction or a function argument)."""
     name: str
     dtype: DataType = DataType.FLOAT32
     is_constant: bool = False
-    const_value: Optional[float | int] = None
+    const_value: Optional[Union[float, int]] = None
     shape: tuple[int, ...] = ()
 
 
-@dataclass(slots=True)
+@dataclass
 class Instruction:
     """A single three-address-code instruction."""
     opcode: OpCode
@@ -129,7 +129,7 @@ class BasicBlock:
         return "\n".join(lines)
 
 
-@dataclass(slots=True)
+@dataclass
 class Function:
     """An IR function: a collection of basic blocks forming a CFG."""
     name: str

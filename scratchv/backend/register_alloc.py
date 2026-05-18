@@ -45,7 +45,7 @@ class MachineOp(enum.Enum):
     TYPE = ".type"
 
 
-@dataclass(slots=True)
+@dataclass
 class MachineOperand:
     """A register or immediate operand."""
     kind: str  # "reg", "imm", "vreg"
@@ -69,7 +69,7 @@ class MachineOperand:
         return f"%{self.value}"
 
 
-@dataclass(slots=True)
+@dataclass
 class MachineInstr:
     """A machine-level instruction using virtual or physical registers."""
     op: MachineOp
