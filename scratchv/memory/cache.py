@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
-@dataclass(slots=True)
+@dataclass
 class CacheConfig:
     """Configuration for the L1 cache."""
     total_size: int = 4 * 1024 * 1024   # 4 MB
@@ -38,7 +38,7 @@ class CacheConfig:
         assert self.num_sets > 0
 
 
-@dataclass(slots=True)
+@dataclass
 class CacheStats:
     """Cache performance counters."""
     hits: int = 0
@@ -84,7 +84,7 @@ class CacheStats:
 # Cache line
 # ═══════════════════════════════════════════════════════════
 
-@dataclass(slots=True)
+@dataclass
 class CacheLine:
     """A single cache line."""
     tag: int = 0

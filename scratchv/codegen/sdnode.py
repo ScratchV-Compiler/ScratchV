@@ -178,7 +178,7 @@ class SDNodeFlags:
 # SDValue — edge in the DAG (node + result index)
 # ═══════════════════════════════════════════════════════════
 
-@dataclass(slots=True)
+@dataclass
 class SDValue:
     """Reference to a value produced by an SDNode."""
     node: SDNode

@@ -23,7 +23,7 @@ class AllocationPolicy(Enum):
     BUDDY      = "buddy"
 
 
-@dataclass(slots=True)
+@dataclass
 class MemoryRegion:
     """A contiguous memory region."""
     name: str
@@ -42,7 +42,7 @@ class MemoryRegion:
                 f"{self.size}B, {status}, align={self.alignment})")
 
 
-@dataclass(slots=True)
+@dataclass
 class AllocStats:
     """Allocation statistics."""
     total_allocated: int = 0

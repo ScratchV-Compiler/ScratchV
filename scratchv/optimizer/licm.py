@@ -12,6 +12,8 @@ is loop-invariant if all its operands are:
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 from scratchv.ir.types import OpCode, Instruction, BasicBlock, Function, Program
 
 
