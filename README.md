@@ -2,10 +2,10 @@
 
 **From ONNX to RISC-V assembly — a minimal compiler built from scratch.**
 
-ScratchV is a 12-week educational project that implements a complete compiler
+ScratchV is a educational project that implements a complete compiler
 toolchain: parse an ONNX model (or a simple DSL), lower it through a custom
 intermediate representation (IR), apply optimizations, and emit RISC-V assembly
-code executable on QEMU, Spike, TinyFive, or real hardware.
+code executable on TinyFive, or real hardware.
 
 ---
 
@@ -62,40 +62,12 @@ ScratchV/
 **Recommended: virtual environment**
 
 ```bash
-python3 -m venv .venv
+python3.8 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-pip install onnx numpy         # ONNX model support
-pip install tinyfive           # assembly verification (optional)
-```
-
-**Alternative (pipx):**
-
-```bash
-pipx install .
-pipx inject scratchv onnx numpy tinyfive
-```
-
-> Debian/Ubuntu users: if you get an "externally-managed-environment" error,
-> use the venv method above, or append `--break-system-packages`:
-> ```bash
-> pip install --break-system-packages -e .
-> ```
-
-### Compile a DSL model
-
-```bash
-# Simple add (RISC-V backend)
-scratchv examples/simple_add.dsl -o output.s --dump-ir
-
-# LLVM IR backend
-scratchv examples/simple_add.dsl --backend llvm -o output.ll --dump-ir
-
-# Full optimization pipeline
-scratchv examples/relu_test.dsl -o relu.s --optimize all --dump-ir
-
-# Matrix multiply
-scratchv examples/matmul_test.dsl -o matmul.s --optimize all
+pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
+pip install onnx -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
+pip install tinyfive -i https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn
 ```
 
 ### Compile an ONNX model
@@ -112,6 +84,23 @@ scratchv models/add.onnx --backend llvm -o add.ll --optimize all
 
 # Verify against ONNX Runtime
 scratchv models/add.onnx --verify
+```
+
+### Compile a DSL model
+
+```bash
+# Simple add (RISC-V backend)
+scratchv examples/simple_add.dsl -o output.s --dump-ir
+
+# LLVM IR backend
+scratchv examples/simple_add.dsl --backend llvm -o output.ll --dump-ir
+
+# Full optimization pipeline
+scratchv examples/relu_test.dsl -o relu.s --optimize all --dump-ir
+
+# Matrix multiply
+scratchv examples/matmul_test.dsl -o matmul.s --optimize all
+python -m scratchv.main examples/matmul_test.dsl -o matmul.s --optimize all
 ```
 
 ### Verify with TinyFive
@@ -188,7 +177,7 @@ DSL Source ──▶ DSL Parser ────┘                       │     �
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Optimization Passes
+<!-- ### Optimization Passes
 
 | Pass | Level | Description |
 | :--- | :--- | :--- |
@@ -207,20 +196,9 @@ DSL Source ──▶ DSL Parser ────┘                       │     �
 | QEMU | System emulator | Full-system testing |
 | Custom simulator | Python | Teaching, deep understanding |
 
-See `docs/verification.md` for the complete verification guide.
+See `docs/verification.md` for the complete verification guide. -->
 
-## Roadmap (12 Weeks)
-
-| Weeks | Phase | Goal |
-| :--- | :--- | :--- |
-| 1-2 | Setup | Toolchain, QEMU, run baseline benchmarks |
-| 3-4 | IR | ONNX parser, core IR, basic ops (Add, Mul, MatMul) |
-| 5-6 | Optimizer | CF + DCE + peephole, more ops (ReLU, MaxPool, GELU) |
-| 7-8 | Backend I | Instruction selection, naive reg alloc, control flow |
-| 9-10 | Backend II | Greedy reg alloc, LICM, muladd fusion, benchmark validation |
-| 11-12 | Docs | Design doc, user manual, final presentation, perf analysis |
-
-## DSL Syntax
+<!-- ## DSL Syntax
 
 ```
 # Arithmetic
@@ -241,7 +219,7 @@ p = maxpool(x, kernel:2, stride:2)
 
 # Return
 return result
-```
+``` -->
 
 ## License
 
