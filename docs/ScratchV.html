@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>🧭 探索“AI模型→芯片指令”的神奇之旅 | 零基础友好开源项目招募</title>
+    <title>🧠 从AI模型到芯片指令 | 零基础编译器开源项目招募</title>
     <style>
         * {
             margin: 0;
@@ -12,351 +12,467 @@
         }
 
         body {
-            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', 'Noto Sans', sans-serif;
-            background-color: #faf9f8;
-            color: #1e1e2a;
+            background: linear-gradient(145deg, #f9fafc 0%, #f1f5f9 100%);
+            font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            color: #0a1c2f;
             line-height: 1.5;
-            padding: 2rem 1rem;
+            scroll-behavior: smooth;
         }
 
         .container {
-            max-width: 1100px;
+            max-width: 1200px;
             margin: 0 auto;
-            background: white;
-            border-radius: 28px;
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.05);
-            padding: 2rem 1.8rem;
-            transition: all 0.2s;
+            padding: 2rem 1.5rem;
         }
 
-        @media (max-width: 680px) {
-            body {
-                padding: 1rem 0.75rem;
-            }
-            .container {
-                padding: 1.5rem 1rem;
-                border-radius: 24px;
-            }
+        /* 卡片与装饰 */
+        .card {
+            background: rgba(255,255,255,0.92);
+            backdrop-filter: blur(2px);
+            border-radius: 2rem;
+            box-shadow: 0 12px 30px rgba(0,0,0,0.05), 0 4px 8px rgba(0,0,0,0.02);
+            padding: 2rem;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+        }
+
+        .card:hover {
+            box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.15);
+        }
+
+        .glass-header {
+            background: rgba(255,255,255,0.85);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(100,116,139,0.2);
         }
 
         h1 {
-            font-size: 1.9rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #1e3c72, #2b4c7c);
+            font-size: 2.8rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #1E2B3C, #2C4B6E, #0F2B3D);
             background-clip: text;
             -webkit-background-clip: text;
             color: transparent;
-            margin-bottom: 0.75rem;
-            line-height: 1.3;
             letter-spacing: -0.01em;
+            line-height: 1.2;
         }
 
         h2 {
-            font-size: 1.6rem;
-            font-weight: 600;
-            margin-top: 2rem;
-            margin-bottom: 1rem;
-            padding-bottom: 0.3rem;
-            border-bottom: 3px solid #e2e8f0;
-            color: #0f2b3d;
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin: 0 0 1rem 0;
+            border-left: 6px solid #3b82f6;
+            padding-left: 1rem;
+            color: #0c4a6e;
         }
 
         h3 {
             font-size: 1.3rem;
             font-weight: 600;
-            margin: 1.5rem 0 0.8rem 0;
-            color: #1e4a6b;
+            margin: 1.2rem 0 0.6rem 0;
+            color: #1e293b;
         }
 
-        p, li, .qa-block, .note {
-            margin-bottom: 1rem;
-            color: #2c3e44;
-        }
-
-        strong {
-            color: #0b3b4f;
+        .badge {
+            display: inline-block;
+            background: #e0f2fe;
+            color: #0369a1;
+            border-radius: 100px;
+            padding: 0.2rem 0.8rem;
+            font-size: 0.8rem;
             font-weight: 600;
         }
 
-        hr {
-            margin: 1.8rem 0;
-            border: none;
-            height: 2px;
-            background: linear-gradient(90deg, #cbd5e1, #f1f5f9);
+        .timeline-grid, .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.8rem;
+            margin: 2rem 0;
         }
 
-        ul, ol {
-            margin: 0.8rem 0 1rem 1.8rem;
+        .phase-card {
+            background: white;
+            border-radius: 1.5rem;
+            padding: 1.5rem;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.03);
+            border: 1px solid #e2e8f0;
+            transition: all 0.2s;
         }
 
-        li {
-            margin-bottom: 0.4rem;
+        .phase-card h3 {
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
 
-        .table-wrapper {
-            overflow-x: auto;
-            margin: 1.2rem 0 1.8rem 0;
-            border-radius: 16px;
-            border: 1px solid #e2edf2;
-            background: #ffffff;
+        .phase-number {
+            background: #1e293b;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 40px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.95rem;
-            min-width: 480px;
+            background: white;
+            border-radius: 1.2rem;
+            overflow: hidden;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+
+        th, td {
+            text-align: left;
+            padding: 1rem 1.2rem;
+            border-bottom: 1px solid #e9eef3;
         }
 
         th {
-            background-color: #eef2f8;
-            padding: 12px 16px;
-            text-align: left;
-            font-weight: 600;
-            color: #1e3a4d;
-            border-bottom: 1px solid #dce5ec;
-        }
-
-        td {
-            padding: 10px 16px;
-            border-bottom: 1px solid #edf2f7;
-            vertical-align: top;
+            background-color: #f8fafc;
+            font-weight: 700;
+            color: #0f3b5c;
         }
 
         tr:last-child td {
             border-bottom: none;
         }
 
-        .badge {
-            display: inline-block;
-            background: #eef2ff;
-            padding: 0.2rem 0.6rem;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: 500;
+        .btn-primary {
+            background: linear-gradient(100deg, #1e2f3e, #0f2c3f);
+            color: white;
+            border: none;
+            padding: 0.9rem 2rem;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-radius: 60px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            text-decoration: none;
+            box-shadow: 0 6px 14px rgba(0, 52, 89, 0.2);
         }
 
-        .quote-note {
-            background: #f1f9fe;
-            border-left: 5px solid #2c7da0;
-            padding: 0.8rem 1.2rem;
-            margin: 1rem 0;
-            border-radius: 14px;
-        }
-
-        .checklist {
-            list-style-type: none;
-            margin-left: 0;
-        }
-        .checklist li:before {
-            content: "✅ ";
-            margin-right: 0.4rem;
+        .btn-primary:hover {
+            background: linear-gradient(100deg, #143141, #0a2538);
+            transform: translateY(-2px);
+            box-shadow: 0 12px 20px -8px rgba(0,0,0,0.25);
         }
 
         .faq-item {
-            margin-bottom: 1.2rem;
-            background: #fefcf7;
-            padding: 0.6rem 1rem;
-            border-radius: 20px;
-            border: 1px solid #ffe9ce;
+            background: white;
+            border-radius: 1.2rem;
+            padding: 1rem 1.5rem;
+            margin-bottom: 1rem;
+            border-left: 4px solid #3b82f6;
         }
 
-        .faq-question {
-            font-weight: 700;
-            color: #b45309;
-            display: block;
-            margin-bottom: 0.3rem;
+        .footer {
+            text-align: center;
+            border-top: 1px solid #dce3ec;
+            padding-top: 2rem;
+            margin-top: 3rem;
+            font-size: 0.9rem;
+            color: #475569;
+        }
+
+        .hashtags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            justify-content: center;
+            margin-top: 1.5rem;
+        }
+
+        .hashtags span {
+            background: #eef2ff;
+            padding: 0.3rem 1rem;
+            border-radius: 40px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: #1e40af;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+            h1 {
+                font-size: 2rem;
+            }
+            h2 {
+                font-size: 1.5rem;
+            }
+            .card {
+                padding: 1.2rem;
+            }
+            th, td {
+                padding: 0.8rem;
+                font-size: 0.85rem;
+            }
         }
 
         .highlight {
-            background: #fef9e3;
-            padding: 0.1rem 0.2rem;
-            border-radius: 8px;
+            background: linear-gradient(120deg, #fff3bf 0%, #fff3bf 40%, transparent 80%);
             font-weight: 500;
+            padding: 0 0.2rem;
         }
 
-        .button-like {
-            display: inline-block;
-            background: #1f6392;
-            color: white;
-            padding: 0.6rem 1.4rem;
-            border-radius: 40px;
-            text-decoration: none;
-            font-weight: 600;
-            margin-top: 0.5rem;
-            transition: 0.2s;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        hr {
+            margin: 2rem 0;
+            border: 0;
+            height: 1px;
+            background: linear-gradient(to right, #cbd5e1, transparent);
         }
-        .button-like:hover {
-            background: #0e4b72;
-            transform: translateY(-1px);
+        .list-styled {
+            padding-left: 1.5rem;
+            margin: 1rem 0;
         }
-
-        footer {
-            margin-top: 2.5rem;
-            text-align: center;
-            font-size: 0.85rem;
-            color: #6c7a7f;
-            border-top: 1px solid #e9edf2;
-            padding-top: 1.8rem;
+        .list-styled li {
+            margin: 0.6rem 0;
         }
-
-        a {
-            color: #1f6392;
+        /* 表格中的文档链接样式 */
+        .doc-link {
+            color: #2563eb;
             text-decoration: none;
             font-weight: 500;
+            border-bottom: 1px dashed #94a3b8;
+            transition: color 0.2s, border-bottom-color 0.2s;
         }
-        a:hover {
-            text-decoration: underline;
+        .doc-link:hover {
+            color: #1e40af;
+            border-bottom-color: #1e40af;
         }
-
-        .tagline {
-            font-size: 0.95rem;
-            margin: 0.5rem 0 1rem 0;
-            color: #4b6a7c;
-        }
-
-        @media (max-width: 560px) {
-            h1 { font-size: 1.6rem; }
-            h2 { font-size: 1.4rem; }
-            .container { padding: 1.2rem; }
-            th, td { padding: 8px 12px; }
+        .badge-sm {
+            background: #e6f0ff;
+            color: #075985;
+            font-size: 0.7rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 30px;
+            font-weight: 500;
+            white-space: nowrap;
         }
     </style>
 </head>
 <body>
+
 <div class="container">
-    <h1>🧭 探索“AI模型→芯片指令”的神奇之旅 | 零基础友好开源项目招募</h1>
-    <div class="tagline"></div>
-
-    <h2>你有没有好奇过……</h2>
-    <ul>
-        <li>你写的 Python 代码，电脑到底是怎么“听懂”并执行的？</li>
-        <li>那些炫酷的 AI 模型（比如能识别猫狗、写诗的那种），最后是怎么在小小的芯片上跑起来的？</li>
-        <li>编译器——这个听起来很高深的东西，到底在做什么？</li>
-    </ul>
-    <p>如果这些问题让你心里痒痒的，哪怕你现在<strong>只学过一点点编程</strong>，甚至<strong>还没上过编译原理课</strong>——<strong>这个项目就是为你准备的</strong>。</p>
-
-    <hr>
-
-    <h2>📌 我们要一起做什么？</h2>
-    <p>用 <strong>三个月</strong> 的时间，<strong>从零开始</strong>，一起<strong>亲手搭建一个迷你编译器</strong>。</p>
-    <ul>
-        <li><strong>输入</strong>：一个简单的 AI 模型文件（比如一个会做加法、乘法的“小模型”）</li>
-        <li><strong>输出</strong>：一段可以被 RISC-V 芯片执行的指令（汇编代码，看起来像 <code>add</code>、<code>load</code> 这种“芯片语言”）</li>
-        <li><strong>然后</strong>：放到模拟芯片的软件（tinyfive）里跑一跑，看它能不能正确计算</li>
-    </ul>
-    <p><strong>整个过程完全由你自己动手实现：读懂模型 → 翻译成中间语言 → 优化 → 生成指令</strong><br>
-    我们不会依赖像 LLVM、MLIR 这种巨型框架——<strong>每一步都让你亲手写出来，真正搞懂背后的原理</strong>。</p>
-    <div class="quote-note">✨ 你不需要有编译器基础，我们会从最最基础的概念讲起。</div>
-
-    <h2>🗺️ 三个月的学习路线（带飞计划）</h2>
-    <p>我们为你设计了<strong>循序渐进</strong>的里程碑，每周任务清晰，有人答疑，不让你一个人瞎撞。</p>
-
-    <div class="table-wrapper">
-        <table>
-            <thead>
-                <tr><th>阶段</th><th>你会学到什么</th><th>感受</th></tr>
-            </thead>
-            <tbody>
-                <tr><td><strong>phase 1</strong></td><td>跑通别人写好的完整例子，看懂模型 → 指令的“魔法”全过程</td><td>哇，原来是这样！</td></tr>
-                <tr><td><strong>phase 2</strong></td><td>自己写代码：把一个简单的 ONNX 模型（比如加法、矩阵乘）翻译成自己的中间语言；或者写一个后端，生成 RISC-V 汇编</td><td>开始创造，成就感爆棚</td></tr>
-                <tr><td><strong>phase 3</strong></td><td>让你的编译器跑通更多模型，优化编译器，使得编译出的指令更短、运行更快，写文档，把项目变成你简历上的骄傲</td><td>我居然做出了一个编译器！</td></tr>
-            </tbody>
-        </table>
+    <!-- Hero 部分 -->
+    <div class="card" style="background: linear-gradient(115deg, #ffffff 0%, #fefefe 100%); margin-bottom: 2rem;">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;">
+            <div style="flex: 1;">
+                <span class="badge">✨ 零基础 · 完全开源 · 动手创造</span>
+                <h1 style="margin-top: 0.5rem;">🧭 探索“AI模型→芯片指令”<br>的神奇之旅</h1>
+                <p style="font-size: 1.2rem; color: #2c3e4e; margin-top: 1rem; max-width: 90%;">零基础友好 · 亲手搭建迷你编译器 · 三个月从模型到RISC-V指令</p>
+            </div>
+            <div style="font-size: 3.5rem;">⚙️✨</div>
+        </div>
+        <div style="margin-top: 1rem; background: #eef4ff; border-radius: 2rem; padding: 0.8rem 1.5rem;">
+            <p style="font-weight: 500;">💡 你有没有好奇过……</p>
+            <ul class="list-styled" style="margin-bottom: 0;">
+                <li>你写的 Python 代码，电脑到底是怎么“听懂”并执行的？</li>
+                <li>那些炫酷的 AI 模型（比如能识别猫狗、写诗的那种），最后是怎么在小小的芯片上跑起来的？</li>
+                <li>编译器——这个听起来很高深的东西，到底在做什么？</li>
+            </ul>
+            <p style="margin-top: 0.5rem;">✨ 如果这些问题让你心里痒痒的，哪怕你现在<strong>只学过一点点编程</strong>，甚至<strong>还没上过编译原理课</strong>——<strong>这个项目就是为你准备的</strong>。</p>
+        </div>
     </div>
 
-    <p><strong>每周只需要 8~10 小时</strong>（包含学习、写代码、和小伙伴讨论），我们会提供：</p>
-    <ul>
-        <li>预置的框架和 benchmark（你不用从负数开始）</li>
-        <li>每周一次线上答疑 + 讲解</li>
-        <li>详细的参考资料和代码示例</li>
-    </ul>
-
-    <h2>🔥 为什么你值得来试一试？</h2>
-    <h3>1. 不需要“大神基础”，只需要“好奇心和耐心”</h3>
-    <ul>
-        <li>你学过一点点 Python 或 C？够了。</li>
-        <li>你听说过“数组”、“函数”、“循环”？完全够。</li>
-        <li>你甚至不知道 RISC-V 是什么？没关系，我们用两周带你入门。</li>
-    </ul>
-    <p>我们不会丢给你一堆论文和源码，而是<strong>像教小朋友搭积木一样，一块一块搭起来</strong>。</p>
-
-    <h3>2. 你会获得“真东西”，而不是调包侠</h3>
-    <ul>
-        <li>学完这个项目，你不再是只会 <code>import torch</code> 的 AI 使用者。</li>
-        <li>你将<strong>理解从数学模型到机器指令的完整链路</strong>，这是做高性能计算、AI 芯片、系统软件的核心能力。</li>
-        <li>项目完成之后，你的简历上会多一行：<strong>“独立实现了一个 AI 到 RISC-V 的完整编译器”</strong>——HR 和面试官会眼前一亮的。</li>
-    </ul>
-
-    <h3>3. 温暖的开源社区，一起成长</h3>
-    <ul>
-        <li>每周线上会议，有问题随时问，不会觉得孤单。</li>
-        <li>小组内 peer review 代码，互相改 bug，一起庆祝每个 milestone 的达成。</li>
-        <li>完成项目后，你的代码会成为开源项目的一部分，帮助后来者。</li>
-    </ul>
-
-    <h2>🙋 谁适合报名？</h2>
-    <p>我们特别欢迎这样的你：</p>
-    <ul class="checklist">
-        <li>大二、大三、研一，或者自学编程爱好者</li>
-        <li>学过一门编程语言（Python / C / C++ 都行）</li>
-        <li>对“计算机到底怎么跑程序”有好奇心，愿意花时间钻研</li>
-        <li><strong>不怕犯错，敢写代码</strong>（Bug 是学习的一部分！）</li>
-        <li>每周能拿出 8～10 小时（周末集中两天，或者平时每晚 1-2 小时）</li>
-    </ul>
-    <p>你可能<strong>还没学过编译原理</strong>、<strong>还没搞懂指令集</strong>、<strong>甚至对汇编有点畏惧</strong>——都没关系。<br>我们就是来带你一步步跨过这些坎的。</p>
-
-    <h2>📅 关键时间节点</h2>
-    <div class="table-wrapper">
-        <table>
-            <thead><tr><th>时间</th><th>事项</th></tr></thead>
-            <tbody>
-                <tr><td><strong>即日起</strong></td><td>开始报名</td></tr>
-                <tr><td><strong>6 月 20 日</strong></td><td>线上宣讲 + 课题选择 + <strong>报名截止</strong></td></tr>
-                <tr><td><strong>7 月 10 日</strong></td><td>项目正式开启（启动会 + 第一周任务发布）</td></tr>
-                <tr><td><strong>8 月 1 日</strong></td><td>Phase 1 关键成果验收（里程碑 checkpoint）</td></tr>
-                <tr><td><strong>8 月 28 日</strong></td><td>Phase 2 关键成果验收（第二个里程碑）</td></tr>
-                <tr><td><strong>9 月 27 日</strong></td><td>项目结项（成果展示 + 结项总结）</td></tr>
-            </tbody>
-        </table>
+    <!-- 我们要一起做什么？ -->
+    <div class="card" style="margin-bottom: 2rem;">
+        <h2>📌 我们要一起做什么？</h2>
+        <p>用 <strong>三个月</strong> 的时间，<strong>从零开始</strong>，一起<strong>亲手搭建一个迷你编译器</strong>。</p>
+        <div style="background: #f1f5f9; border-radius: 1.2rem; padding: 1.2rem; margin: 1rem 0;">
+            <p>🔹 <strong>输入</strong>：一个简单的 AI 模型文件（比如一个会做加法、乘法的“小模型”）<br>
+            🔹 <strong>输出</strong>：一段可以被 RISC-V 芯片执行的指令（汇编代码，看起来像 <code>add</code>、<code>load</code> 这种“芯片语言”）<br>
+            🔹 <strong>然后</strong>：放到模拟芯片的软件（tinyfive）里跑一跑，看它能不能正确计算</p>
+        </div>
+        <p><strong>整个过程完全由你自己动手实现：读懂模型 → 翻译成中间语言 → 优化 → 生成指令</strong><br>
+        我们不会依赖像 LLVM、MLIR 这种巨型框架——<strong>每一步都让你亲手写出来，真正搞懂背后的原理</strong>。</p>
+        <p>✨ 你不需要有编译器基础，我们会从最最基础的概念讲起。</p>
     </div>
 
-    <h2>💬 常见疑问</h2>
-    <div class="faq-item">
-        <span class="faq-question">Q：我连 ONNX 都没听过，能行吗？</span>
-        <p>A：当然可以。我们第 1 周就会带你跑通一个例子，ONNX 只是一个文件格式，你把它当成“模型存盘”就好。</p>
-    </div>
-    <div class="faq-item">
-        <span class="faq-question">Q：我没学过编译原理，会不会听不懂？</span>
-        <p>A：我们会用很直观的比喻（比如把编译器想像成“翻译官”，把模型语言翻译成芯片语言），避开理论轰炸，先动手再做总结。</p>
-    </div>
-    <div class="faq-item">
-        <span class="faq-question">Q：需要买 RISC-V 开发板吗？</span>
-        <p>A：不需要。全程用软件仿真模拟器，在你的笔记本电脑上就能跑。</p>
-    </div>
-    <div class="faq-item">
-        <span class="faq-question">Q：如果我中途跟不上怎么办？</span>
-        <p>A：每个阶段都有进度检查，我们会主动帮你。项目设计时已经留出了缓冲时间，而且你可以选择只完成核心路径，放弃一些附加优化。<strong>完成比完美更重要。</strong></p>
+    <!-- ============================== -->
+    <!-- 新增：GitHub Docs 文档库表格 (topics) -->
+    <!-- ============================== -->
+    <div class="card" style="margin-bottom: 2rem;">
+        <h2>📚 课题精选</h2>
+        <p>以下文档来自于官方仓库 <code>ScratchV-Compiler/ScratchV/docs/topics</code>，同学可以任选一个或多个课题，也可以自由提出新的问题。 🚀</p>
+        <div style="overflow-x: auto; margin-top: 1.2rem;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>📄 课题名称</th>
+                        <th>📝 说明</th>
+                        <th>📌 难度</th>
+                        <th>🔗 文档跳转</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>课题06：编译器性能测试套件</td><td>自动化编译、模拟运行并对比输出，生成性能报告</td><td><span class="badge-sm">中</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%986%EF%BC%9A%E7%BC%96%E8%AF%91%E5%99%A8%E6%80%A7%E8%83%BD%E6%B5%8B%E8%AF%95%E5%A5%97%E4%BB%B6.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题07：编译器日志增强器</td><td>为编译各阶段添加分级彩色日志，支持输出到文件</td><td><span class="badge-sm">低</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%987%EF%BC%9A%E7%BC%96%E8%AF%91%E5%99%A8%E6%97%A5%E5%BF%97%E5%A2%9E%E5%BC%BA%E5%99%A8.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题09：DSL错误提示美化器</td><td>改进语法错误报告，显示行号、代码行和修复建议</td><td><span class="badge-sm">中</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%989%EF%BC%9ADSL%E9%94%99%E8%AF%AF%E6%8F%90%E7%A4%BA%E7%BE%8E%E5%8C%96%E5%99%A8.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题01：DSL前端增强器</td><td>为DSL增加if/else和while语法，扩展解析器和IR生成</td><td><span class="badge-sm">中</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%981%EF%BC%9ADSL%E5%89%8D%E7%AB%AF%E5%A2%9E%E5%BC%BA%E5%99%A8.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题13：窥孔优化器</td><td>在汇编层面匹配并替换低效指令模式，减少指令数</td><td><span class="badge-sm">低</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%9813%EF%BC%9A%E7%AA%A5%E5%AD%94%E4%BC%98%E5%8C%96%E5%99%A8.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题14：常量加载合并优化</td><td>将lui+addi对合并为单条li，并消除冗余lui</td><td><span class="badge-sm">低</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%9814%EF%BC%9A%E5%B8%B8%E9%87%8F%E5%8A%A0%E8%BD%BD%E5%90%88%E5%B9%B6%E4%BC%98%E5%8C%96.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题05：RISC-V汇编代码美化器</td><td>对齐汇编字段并为每条指令自动添加注释</td><td><span class="badge-sm">低</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%985%EF%BC%9ARISC-V%E6%B1%87%E7%BC%96%E4%BB%A3%E7%A0%81%E7%BE%8E%E5%8C%96%E5%99%A8.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题20：项目代码规范与格式化</td><td>引入Black、isort、Ruff和mypy统一代码风格并添加pre-commit</td><td><span class="badge-sm">低</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%9820%EF%BC%9A%E9%A1%B9%E7%9B%AE%E4%BB%A3%E7%A0%81%E8%A7%84%E8%8C%83%E4%B8%8E%E6%A0%BC%E5%BC%8F%E5%8C%96.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题21：IR 验证器</td><td>检查IR的变量定义、标签存在、类型一致和控制流完整性</td><td><span class="badge-sm">中</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%9821%EF%BC%9AIR%E9%AA%8C%E8%AF%81%E5%99%A8.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题28：完善后端指令选择</td><td>增加对除法、取模等算子和float64双精度浮点类型的支持</td><td><span class="badge-sm">中</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%9828%EF%BC%9A%E5%AE%8C%E5%96%84%E5%90%8E%E7%AB%AF%E6%8C%87%E4%BB%A4%E9%80%89%E6%8B%A9.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题11：控制流图（CFG）生成器</td><td>从IR构建CFG，实现不可达块消除和循环检测并可视化</td><td><span class="badge-sm">高</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%9811%EF%BC%9A%E6%8E%A7%E5%88%B6%E6%B5%81%E5%9B%BE%EF%BC%88CFG%EF%BC%89%E7%94%9F%E6%88%90%E5%99%A8.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题12：RISC-V后端指令计数统计器</td><td>统计汇编中各类指令数量并生成可视化报告</td><td><span class="badge-sm">高</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%9812%EF%BC%9ARISC-V%E5%90%8E%E7%AB%AF%E6%8C%87%E4%BB%A4%E8%AE%A1%E6%95%B0%E7%BB%9F%E8%AE%A1%E5%99%A8.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题17：寄存器分配（基本块内线性扫描）</td><td>使用线性扫描算法为虚拟寄存器分配物理寄存器并处理溢出</td><td><span class="badge-sm">高</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%9817%EF%BC%9A%E5%AF%84%E5%AD%98%E5%99%A8%E5%88%86%E9%85%8D%EF%BC%88%E5%9F%BA%E6%9C%AC%E5%9D%97%E5%86%85%E7%BA%BF%E6%80%A7%E6%89%AB%E6%8F%8F%EF%BC%89.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                    <tr><td>课题18：指令调度（基本块内列表调度）</td><td>在基本块内重排指令以减少流水线冒险，提高指令级并行性</td><td><span class="badge-sm">高</span></td><td><a href="https://github.com/ScratchV-Compiler/ScratchV/blob/jzj_dev/docs/topics/%E8%AF%BE%E9%A2%9818%EF%BC%9A%E6%8C%87%E4%BB%A4%E8%B0%83%E5%BA%A6%EF%BC%88%E5%9F%BA%E6%9C%AC%E5%9D%97%E5%86%85%E5%88%97%E8%A1%A8%E8%B0%83%E5%BA%A6%EF%BC%89.md" target="_blank" class="doc-link">查看文档 →</a></td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div style="margin-top: 1rem; font-size: 0.85rem; background: #f8fafc; padding: 0.8rem 1rem; border-radius: 1rem;">
+            💡 <strong>项目地址</strong>：<a href="https://github.com/ScratchV-Compiler/ScratchV/tree/jzj_dev/docs/topics" target="_blank" style="color:#0369a1;">https://github.com/ScratchV-Compiler/ScratchV/tree/jzj_dev/docs/topics</a> <br>
+            📌 更多文档持续更新中，欢迎关注仓库动态，一起参与贡献！
+        </div>
     </div>
 
-    <h2>🌟 从今天起，给自己一个“创造编译器”的机会</h2>
-    <p>也许你现在觉得编译器遥不可及，<br>但三个月后，你会看着自己写的代码，把一行行模型规则变成芯片指令，<br>那种“我居然做到了”的感觉，会是你大学期间最难忘的回忆之一。</p>
-    <p><strong>不要让“基础不够”成为不敢开始的理由。</strong><br><strong>我们等你一起来，写出属于你的第一个编译器。</strong></p>
-
-    <p>👉 <strong>立即报名</strong>：<a href="https://your-form-link.com" target="_blank" rel="noopener noreferrer">【问卷星】</a><br>
-    📧 咨询邮箱：<a href="mailto:mentor@example.com">mentor@example.com</a><br>
-    qq群：xxxxxxxxx</p>
-
-    <p>📢 欢迎转发给同样好奇的小伙伴，一起挑战！</p>
-    <div class="quote-note" style="background:#f2f0fc; border-left-color:#6c5b7b;">
-        <strong>#零基础编译器 #RISC-V #开源项目 #动手实践 #从兴趣到能力</strong><br>
-        你不需要很厉害才能开始，但你需要开始才能很厉害。
+    <!-- 三个月的学习路线（带飞计划） -->
+    <div class="card" style="margin-bottom: 2rem;">
+        <h2>🗺️ 三个月的学习路线（带飞计划）</h2>
+        <p>我们为你设计了<strong>循序渐进</strong>的里程碑，每周任务清晰，有人答疑，不让你一个人瞎撞。</p>
+        <div class="timeline-grid">
+            <div class="phase-card">
+                <h3><span class="phase-number">1</span> Phase 1 · 初探魔法</h3>
+                <p><strong>你会学到什么：</strong> 跑通别人写好的完整例子，看懂模型 → 指令的“魔法”全过程</p>
+                <p><strong>感受：</strong> 🎉 哇，原来是这样！</p>
+            </div>
+            <div class="phase-card">
+                <h3><span class="phase-number">2</span> Phase 2 · 亲手创造</h3>
+                <p><strong>你会学到什么：</strong> 自己写代码：把一个简单的 ONNX 模型（比如加法、矩阵乘）翻译成自己的中间语言；或者写一个后端，生成 RISC-V 汇编</p>
+                <p><strong>感受：</strong> 🚀 开始创造，成就感爆棚</p>
+            </div>
+            <div class="phase-card">
+                <h3><span class="phase-number">3</span> Phase 3 · 优化绽放</h3>
+                <p><strong>你会学到什么：</strong> 让你的编译器跑通更多模型，优化编译器，使得编译出的指令更短、运行更快，写文档，把项目变成你简历上的骄傲</p>
+                <p><strong>感受：</strong> 🏆 我居然做出了一个编译器！</p>
+            </div>
+        </div>
+        <div style="background: #f1f6fe; border-radius: 1.2rem; padding: 1rem; margin-top: 0.8rem;">
+            <p>📅 <strong>每周只需要 8~10 小时</strong>（包含学习、写代码、和小伙伴讨论），我们会提供：</p>
+            <ul class="list-styled">
+                <li>预置的框架和 benchmark（你不用从负数开始）</li>
+                <li>每周一次线上答疑 + 讲解</li>
+                <li>详细的参考资料和代码示例</li>
+            </ul>
+        </div>
     </div>
 
-    <footer>
-        🧡 开源社区 · 从兴趣到能力 · 期待你的加入
-    </footer>
+    <!-- 为什么你值得来试一试 -->
+    <div class="card" style="margin-bottom: 2rem;">
+        <h2>🔥 为什么你值得来试一试？</h2>
+        <div class="features-grid">
+            <div style="background: white; padding: 1.2rem; border-radius: 1.2rem; border:1px solid #eef2ff">
+                <div style="font-size: 2rem;">🧠</div>
+                <h3>不需要“大神基础”</h3>
+                <p>只需要好奇心和耐心。你学过一点 Python 或 C？够了。甚至不知道 RISC-V？我们用两周带你入门。像搭积木一样，一块一块搭起来。</p>
+            </div>
+            <div style="background: white; padding: 1.2rem; border-radius: 1.2rem; border:1px solid #eef2ff">
+                <div style="font-size: 2rem;">⚡</div>
+                <h3>你会获得“真东西”</h3>
+                <p>不再是只会 <code>import torch</code> 的调包侠。理解从数学模型到机器指令的完整链路——高性能计算、AI 芯片、系统软件的核心能力。简历上留下<strong>“独立实现了一个AI到RISC-V的完整编译器”</strong>。</p>
+            </div>
+            <div style="background: white; padding: 1.2rem; border-radius: 1.2rem; border:1px solid #eef2ff">
+                <div style="font-size: 2rem;">🤝</div>
+                <h3>温暖的开源社区</h3>
+                <p>每周线上会议，随时提问，peer review 代码，一起庆祝每个里程碑。完成项目后代码成为开源项目的一部分，帮助后来者。</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 谁适合报名 + 报名画像 -->
+    <div class="card" style="margin-bottom: 2rem;">
+        <h2>🙋 谁适合报名？</h2>
+        <p>我们特别欢迎这样的你：</p>
+        <div style="display: flex; flex-wrap: wrap; gap: 0.8rem; margin: 1rem 0;">
+            <span class="badge" style="background:#dbeafe;">✅ 大二、大三、研一，或自学编程爱好者</span>
+            <span class="badge" style="background:#dbeafe;">✅ 学过一门编程语言（Python / C / C++ 都行）</span>
+            <span class="badge" style="background:#dbeafe;">✅ 对“计算机到底怎么跑程序”有好奇心</span>
+            <span class="badge" style="background:#dbeafe;">✅ 不怕犯错，敢写代码（Bug是学习的一部分！）</span>
+            <span class="badge" style="background:#dbeafe;">✅ 每周能拿出 8～10 小时</span>
+        </div>
+        <p>你可能<strong>还没学过编译原理、还没搞懂指令集、甚至对汇编有点畏惧</strong>——都没关系。我们就是来带你一步步跨过这些坎的。</p>
+    </div>
+
+    <!-- 关键时间节点 (表格) -->
+    <div class="card" style="margin-bottom: 2rem;">
+        <h2>📅 关键时间节点</h2>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr><th>时间</th><th>事项</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td><strong>即日起</strong></td><td>开始报名</td></tr>
+                    <tr><td><strong>6 月 20 日</strong></td><td>线上宣讲 + 课题选择 + <strong>报名截止</strong></td></tr>
+                    <tr><td><strong>7 月 10 日</strong></td><td>项目正式开启（启动会 + 第一周任务发布）</td></tr>
+                    <tr><td><strong>8 月 1 日</strong></td><td>Phase 1 关键成果验收（里程碑 checkpoint）</td></tr>
+                    <tr><td><strong>8 月 28 日</strong></td><td>Phase 2 关键成果验收（第二个里程碑）</td></tr>
+                    <tr><td><strong>9 月 27 日</strong></td><td>项目结项（成果展示 + 结项总结）</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 常见疑问 -->
+    <div class="card" style="margin-bottom: 2rem;">
+        <h2>💬 常见疑问</h2>
+        <div class="faq-item">
+            <p><strong>Q：我连 ONNX 都没听过，能行吗？</strong><br>A：当然可以。我们第 1 周就会带你跑通一个例子，ONNX 只是一个文件格式，你把它当成“模型存盘”就好。</p>
+        </div>
+        <div class="faq-item">
+            <p><strong>Q：我没学过编译原理，会不会听不懂？</strong><br>A：我们会用很直观的比喻（比如把编译器想像成“翻译官”，把模型语言翻译成芯片语言），避开理论轰炸，先动手再做总结。</p>
+        </div>
+        <div class="faq-item">
+            <p><strong>Q：需要买 RISC-V 开发板吗？</strong><br>A：不需要。全程用软件仿真模拟器，在你的笔记本电脑上就能跑。</p>
+        </div>
+        <div class="faq-item">
+            <p><strong>Q：如果我中途跟不上怎么办？</strong><br>A：每个阶段都有进度检查，我们会主动帮你。项目设计时已经留出了缓冲时间，而且你可以选择只完成核心路径，放弃一些附加优化。<strong>完成比完美更重要。</strong></p>
+        </div>
+    </div>
+
+    <!-- 鼓励段落 + 从今天起 -->
+    <div class="card" style="background: linear-gradient(115deg, #f0f9ff, #e6f0fa); margin-bottom: 2rem;">
+        <h2 style="border-left-color: #f97316;">🌟 从今天起，给自己一个“创造编译器”的机会</h2>
+        <p>也许你现在觉得编译器遥不可及，<br>
+        但三个月后，你会看着自己写的代码，把一行行模型规则变成芯片指令，<br>
+        那种“我居然做到了”的感觉，会是你大学期间最难忘的回忆之一。</p>
+        <p style="font-weight: 600; font-size: 1.2rem;">不要让“基础不够”成为不敢开始的理由。<br>我们等你一起来，写出属于你的第一个编译器。</p>
+    </div>
+
+    <!-- 报名 + 联系方式 -->
+    <div class="card" style="text-align: center; background: white;">
+        <h2>📢 立即加入，开启旅程</h2>
+        <p style="margin: 0.5rem 0 1rem;">👉 <strong>立即报名</strong>：<a href="https://your-form-link.com" target="_blank" style="color:#1e4a76; font-weight: bold;">【问卷星报名链接】</a> (点击填写基本信息)</p>
+        <p>📧 QQ群：<strong>xxxxxxxxx</strong> (加群获取详细任务文档及预习资料)</p>
+        <p style="font-size: 0.9rem; margin-top: 0.5rem;">欢迎转发给同样好奇的小伙伴，一起挑战！</p>
+        <div class="hashtags">
+            <span>#零基础编译器</span>
+            <span>#RISC-V</span>
+            <span>#开源项目</span>
+            <span>#动手实践</span>
+            <span>#从兴趣到能力</span>
+        </div>
+        <p style="margin-top: 1rem; font-weight: 500;">✨ 你不需要很厉害才能开始，但你需要开始才能很厉害。 ✨</p>
+    </div>
+
+    <!-- 完全保留原文末尾的号召标志 -->
+    <div class="footer">
+        <p>🧭 开源项目 · 零基础友好 · 从模型到指令 · 三个月蜕变<br>🤝 一起打造属于你的第一个AI编译器</p>
+        <p style="font-size: 0.8rem;">© 2026 开源社区招募 | 全程软件仿真 | 无需硬件</p>
+    </div>
 </div>
 </body>
 </html>
