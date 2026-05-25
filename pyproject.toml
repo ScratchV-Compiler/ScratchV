@@ -4,17 +4,47 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scratchv"
-version = "0.1.0"
-description = "A compiler from ONNX models to RISC-V assembly"
-requires-python = ">=3.10"
+version = "0.3.0"
+description = "A compiler from ONNX models to RISC-V assembly and LLVM IR"
+readme = "README.md"
+license = {text = "MIT"}
+keywords = ["compiler", "risc-v", "onnx", "llvm", "machine-learning"]
+requires-python = ">=3.8"
 dependencies = [
     "onnx>=1.14",
     "numpy>=1.24",
     "protobuf>=4.21",
 ]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+riscv = ["tinyfive"]
+llvm = ["llvmlite"]      # optional: LLVM IR JIT execution
+verify = ["onnxruntime"] # optional: ONNX Runtime comparison
+all = ["tinyfive", "llvmlite", "onnxruntime"]
+
+[project.urls]
+Source = "https://github.com/kinsomwang/ScratchV"
+Documentation = "https://github.com/kinsomwang/ScratchV/tree/main/docs"
 
 [project.scripts]
 scratchv = "scratchv.main:main"
 
 [tool.setuptools.packages.find]
-include = ["scratchv*"]
+include = ["scratchv", "scratchv.*", "scratchv_dag", "scratchv_dag.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
