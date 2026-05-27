@@ -71,3 +71,16 @@ jobs:
           python3.12 -m scratchv examples/simple_add.dsl -o /tmp/simple_add.s --dump-ir
           python3.12 -m scratchv examples/relu_test.dsl -o /tmp/relu.s --optimize all
           python3.12 -m scratchv examples/matmul_test.dsl -o /tmp/matmul.s --optimize all
+
+  benchmark:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install
+        run: |
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install -e ".[all]"
+
+      - name: Run benchmark tests
+        run: python3.12 -m pytest benchmarks/test_benchmark.py -v --tb=short
