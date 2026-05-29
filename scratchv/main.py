@@ -16,32 +16,50 @@ import sys
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="ScratchV: ONNX model to RISC-V assembly / LLVM IR compiler",
+        description="ScratchV: ONNX model -> RISC-V assembly / LLVM IR",
     )
     parser.add_argument("input", nargs="?", help="Input file (.onnx or .dsl)")
     parser.add_argument("-o", "--output", default=None, help="Output file")
-    parser.add_argument("--dsl", help="Use DSL parser instead of ONNX (or pass .dsl file as input)")
-    parser.add_argument("--backend", choices=["riscv", "llvm"], default="riscv",
-                        help="Target backend (default: riscv)")
-    parser.add_argument("--dump-ir", action="store_true", help="Dump IR before codegen")
-    parser.add_argument("--optimize", choices=["none", "basic", "all"], default="none",
-                        help="Optimization level: basic (fold+dce), all (+peephole+fuse+licm)")
-    parser.add_argument("--reg-alloc", choices=["naive", "greedy"], default="greedy",
-                        help="Register allocation strategy (default: greedy)")
+    parser.add_argument(
+        "--dsl",
+        help="Use DSL parser instead of ONNX",
+    )
+    parser.add_argument(
+        "--backend", choices=["riscv", "llvm"], default="riscv",
+        help="Target backend (default: riscv)",
+    )
+    parser.add_argument(
+        "--dump-ir", action="store_true",
+        help="Dump IR before codegen",
+    )
+    parser.add_argument(
+        "--optimize", choices=["none", "basic", "all"],
+        default="none",
+        help="Optimization level (none, basic, all)",
+    )
+    parser.add_argument(
+        "--reg-alloc", choices=["naive", "greedy"],
+        default="greedy",
+        help="Register allocation strategy (default: greedy)",
+    )
     parser.add_argument("--verify", action="store_true",
                         help="Verify output against ONNX Runtime reference")
     parser.add_argument("--rtol", type=float, default=1e-5,
                         help="Relative tolerance for verification")
     parser.add_argument("--atol", type=float, default=1e-8,
                         help="Absolute tolerance for verification")
-    parser.add_argument("--version", action="version", version="ScratchV 0.1.0")
+    parser.add_argument(
+        "--version", action="version",
+        version="ScratchV 0.1.0",
+    )
     return parser
 
 
 def parse_input(args) -> object:
     """Parse input file (ONNX or DSL) into an IR Program."""
     input_path = args.input
-    use_dsl = args.dsl is not None or (input_path and input_path.endswith(".dsl"))
+    use_dsl = args.dsl is not None or (
+        input_path and input_path.endswith(".dsl"))
 
     if use_dsl:
         from scratchv.frontend.dsl_parser import DSLParser
@@ -118,7 +136,8 @@ def run_verification(args, program) -> None:
     from scratchv.verification.verifier import verify_dsl
 
     input_path = args.input
-    use_dsl = args.dsl is not None or (input_path and input_path.endswith(".dsl"))
+    use_dsl = args.dsl is not None or (
+        input_path and input_path.endswith(".dsl"))
 
     if use_dsl:
         with open(input_path or args.dsl) as f:
@@ -126,25 +145,38 @@ def run_verification(args, program) -> None:
 
         # Generate some random test inputs
         import numpy as np
-        # Extract variable names from DSL (simple heuristic)
+        # Extract variable names from DSL
         import re
         input_vars = set()
-        for m in re.finditer(r'\b(add|sub|mul|div|relu|gelu|exp|neg|matmul|dot|maxpool|softmax)\(([^)]+)', source):
+        op_pat = (
+            r'\b(add|sub|mul|div|relu|gelu|exp|neg|'
+            r'matmul|dot|maxpool|softmax)\(([^)]+)'
+        )
+        for m in re.finditer(op_pat, source):
             args_text = m.group(2)
             for arg in args_text.split(","):
                 arg = arg.strip().split(":")[0].strip()
                 if arg and not arg[0].isdigit():
                     input_vars.add(arg)
         # Remove return/loop variable names
-        input_vars = {v for v in input_vars if v.lower() not in (
+        skip = (
             "add", "sub", "mul", "div", "relu", "gelu", "exp", "neg",
-            "matmul", "dot", "maxpool", "softmax", "return", "for", "endfor"
-        )}
+            "matmul", "dot", "maxpool", "softmax",
+            "return", "for", "endfor",
+        )
+        input_vars = {v for v in input_vars if v.lower() not in skip}
 
-        feed_dict = {v: np.random.randn(4).astype(np.float32) for v in input_vars}
-        result = verify_dsl(source, feed_dict, rtol=args.rtol, atol=args.atol)
+        feed_dict = {
+            v: np.random.randn(4).astype(np.float32)
+            for v in input_vars
+        }
+        result = verify_dsl(
+            source, feed_dict,
+            rtol=args.rtol, atol=args.atol)
         status = "✓ PASS" if result["success"] else "✗ FAIL"
-        print(f"  Verification: {status}  (max error: {result['max_error']:.6e})", file=sys.stderr)
+        err = result['max_error']
+        msg = f"  Verification: {status}  (max error: {err:.6e})"
+        print(msg, file=sys.stderr)
     else:
         # ONNX model verification
         from scratchv.verification.verifier import verify_onnx_model
@@ -160,7 +192,7 @@ def run_verification(args, program) -> None:
                 run_optimizer(prog, args.optimize, False)
 
             # Compile and return a placeholder
-            # Full JIT execution needs runtime linking — see docs/verification.md
+            # Full JIT needs runtime linking
             return {}
 
         result = verify_onnx_model(
@@ -217,7 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     with open(args.output, "w") as f:
         f.write(asm_text)
 
-    print(f"✓ {args.backend.upper()} output written to {args.output}", file=sys.stderr)
+    msg = f"OK {args.backend.upper()} output written to {args.output}"
+    print(msg, file=sys.stderr)
 
     # --- Verify ---
     if args.verify:

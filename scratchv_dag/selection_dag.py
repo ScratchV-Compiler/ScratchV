@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from scratchv_dag.sdnode import (
     MVT,
     SDNodeOpcode,
-    SDNodeFlags,
     SDValue,
     SelectionDAG,
 )
@@ -28,7 +27,9 @@ from scratchv_dag.sdnode import (
 # We re-use the existing backend's MachineInstr types for scheduling
 # output so the DAG scheduler integrates directly into the ScratchV
 # backend pipeline.
-from scratchv.backend.register_alloc import MachineInstr, MachineOp, MachineOperand
+from scratchv.backend.register_alloc import (
+    MachineInstr, MachineOp, MachineOperand,
+)
 
 # Re-export for convenience.
 __all__ = [
@@ -151,25 +152,37 @@ class DAGBuilder:
     def _build_add(self, instr: Any) -> None:
         lhs = self._get_val(instr.operands[0])
         rhs = self._get_val(instr.operands[1])
-        val = self.dag.get_fadd(lhs, rhs) if lhs.value_type.is_float else self.dag.get_add(lhs, rhs)
+        if lhs.value_type.is_float:
+            val = self.dag.get_fadd(lhs, rhs)
+        else:
+            val = self.dag.get_add(lhs, rhs)
         self._set_val(instr.dest, val)
 
     def _build_sub(self, instr: Any) -> None:
         lhs = self._get_val(instr.operands[0])
         rhs = self._get_val(instr.operands[1])
-        val = self.dag.get_fsub(lhs, rhs) if lhs.value_type.is_float else self.dag.get_sub(lhs, rhs)
+        if lhs.value_type.is_float:
+            val = self.dag.get_fsub(lhs, rhs)
+        else:
+            val = self.dag.get_sub(lhs, rhs)
         self._set_val(instr.dest, val)
 
     def _build_mul(self, instr: Any) -> None:
         lhs = self._get_val(instr.operands[0])
         rhs = self._get_val(instr.operands[1])
-        val = self.dag.get_fmul(lhs, rhs) if lhs.value_type.is_float else self.dag.get_mul(lhs, rhs)
+        if lhs.value_type.is_float:
+            val = self.dag.get_fmul(lhs, rhs)
+        else:
+            val = self.dag.get_mul(lhs, rhs)
         self._set_val(instr.dest, val)
 
     def _build_div(self, instr: Any) -> None:
         lhs = self._get_val(instr.operands[0])
         rhs = self._get_val(instr.operands[1])
-        val = self.dag.get_fdiv(lhs, rhs) if lhs.value_type.is_float else self.dag.get_div(lhs, rhs)
+        if lhs.value_type.is_float:
+            val = self.dag.get_fdiv(lhs, rhs)
+        else:
+            val = self.dag.get_div(lhs, rhs)
         self._set_val(instr.dest, val)
 
     def _build_neg(self, instr: Any) -> None:
@@ -192,7 +205,10 @@ class DAGBuilder:
     def _build_load_const(self, instr: Any) -> None:
         v = instr.attrs.get("value", 0)
         vt = _ir_to_mvt(instr.dest.dtype) if instr.dest else MVT.f32
-        val = self.dag.get_constant_fp(float(v), vt) if vt.is_float else self.dag.get_constant(int(v), vt)
+        if vt.is_float:
+            val = self.dag.get_constant_fp(float(v), vt)
+        else:
+            val = self.dag.get_constant(int(v), vt)
         self._set_val(instr.dest, val)
 
     # ── Memory ─────────────────────────────────────────────────────────────
@@ -221,7 +237,10 @@ class DAGBuilder:
         start = instr.attrs.get("start", 0)
         val = self.dag.get_constant(start, MVT.i32)
         self._value_map[instr.dest.name] = val
-        self._loop_ctx = {"iv_name": instr.dest.name, "end": instr.attrs.get("end", 0)}
+        self._loop_ctx = {
+            "iv_name": instr.dest.name,
+            "end": instr.attrs.get("end", 0),
+        }
 
     def _build_endfor(self, instr: Any) -> None:
         if self._loop_ctx is None:
@@ -241,7 +260,8 @@ class DAGBuilder:
         targets = (instr.target or "").split(",")
         true_t = targets[0].strip() if targets else ""
         false_t = targets[1].strip() if len(targets) > 1 else ""
-        self._chain = self.dag.get_br_cc(cond, true_t, false_t, chain=self._chain)
+        self._chain = self.dag.get_br_cc(
+            cond, true_t, false_t, chain=self._chain)
 
     def _build_return(self, instr: Any) -> None:
         vals = [self._get_val(instr.operands[0])] if instr.operands else None
@@ -386,7 +406,7 @@ class DAGCombiner:
                 pass
 
     def _replace_with_constant(self, old_node: Any, val: int) -> None:
-        """Replace *old_node* with a new Constant node tagged for replacement."""
+        """Replace *old_node* with a new Constant node."""
         new_val = self.dag.get_constant(val, old_node.value_type())
         old_node._attributes["replaced_by"] = new_val
         self._changed = True
@@ -481,13 +501,15 @@ class DAGScheduler:
         if opcode == SDNodeOpcode.LOAD:
             dst = MachineOperand.vreg(f"t{node.node_id}")
             addr = _op_to_operand(node.operands[1])
-            result.append(MachineInstr(MachineOp.LW, dst, addr, comment="load"))
+            result.append(MachineInstr(
+                MachineOp.LW, dst, addr, comment="load"))
             return
 
         if opcode == SDNodeOpcode.STORE:
             addr = _op_to_operand(node.operands[1])
             val = _op_to_operand(node.operands[2])
-            result.append(MachineInstr(MachineOp.SW, addr, val, comment="store"))
+            result.append(MachineInstr(
+                MachineOp.SW, addr, val, comment="store"))
             return
 
         # Control
@@ -500,8 +522,10 @@ class DAGScheduler:
             cond = _op_to_operand(node.operands[1])
             true_t = node.get_attr("true_target", "")
             false_t = node.get_attr("false_target", "")
-            result.append(MachineInstr(MachineOp.BNEZ, cond, comment=true_t))
-            result.append(MachineInstr(MachineOp.J, comment=false_t))
+            result.append(MachineInstr(
+                MachineOp.BNEZ, cond, comment=true_t))
+            result.append(MachineInstr(
+                MachineOp.J, comment=false_t))
             return
 
         if opcode == SDNodeOpcode.RET:
@@ -534,7 +558,7 @@ class DAGScheduler:
         result.append(MachineInstr(machine_op, dst, src1, src2))
 
 
-# ── Helper ────────────────────────────────────────────────────────────────────
+# ── Helper ────────────────────────────────────────────────────────────
 
 def _op_to_operand(sdval: SDValue) -> MachineOperand:
     """Convert an SDValue to a MachineOperand (vreg, imm, or phys reg)."""
@@ -542,32 +566,34 @@ def _op_to_operand(sdval: SDValue) -> MachineOperand:
     if opc == SDNodeOpcode.Constant:
         return MachineOperand.immediate(sdval.node.get_constant_int() or 0)
     if opc == SDNodeOpcode.ConstantFP:
-        return MachineOperand.immediate(int(sdval.node.get_constant_fp() or 0.0))
+        val = int(sdval.node.get_constant_fp() or 0.0)
+        return MachineOperand.immediate(val)
     if opc == SDNodeOpcode.Register:
         return MachineOperand.reg(sdval.node.get_attr("reg_name", "zero"))
     return MachineOperand.vreg(f"t{sdval.node.node_id}")
 
 
-# ── SDNode → MachineOp lookup table ───────────────────────────────────────────
+# ── SDNode -> MachineOp lookup table ──────────────────────────────────
 
 _SDNODE_TO_MACHINE_OP: Dict[SDNodeOpcode, MachineOp] = {
-    SDNodeOpcode.ADD:  MachineOp.ADD,
-    SDNodeOpcode.SUB:  MachineOp.SUB,
-    SDNodeOpcode.MUL:  MachineOp.MUL,
-    SDNodeOpcode.DIV:  MachineOp.DIV,
+    SDNodeOpcode.ADD: MachineOp.ADD,
+    SDNodeOpcode.SUB: MachineOp.SUB,
+    SDNodeOpcode.MUL: MachineOp.MUL,
+    SDNodeOpcode.DIV: MachineOp.DIV,
     SDNodeOpcode.FADD: MachineOp.ADD,
     SDNodeOpcode.FSUB: MachineOp.SUB,
     SDNodeOpcode.FMUL: MachineOp.MUL,
     SDNodeOpcode.FDIV: MachineOp.DIV,
-    SDNodeOpcode.NEG:  MachineOp.SUB,
+    SDNodeOpcode.NEG: MachineOp.SUB,
     SDNodeOpcode.SETCC: MachineOp.SUB,
     SDNodeOpcode.LOAD: MachineOp.LW,
     SDNodeOpcode.STORE: MachineOp.SW,
-    SDNodeOpcode.BR:   MachineOp.J,
+    SDNodeOpcode.BR: MachineOp.J,
     SDNodeOpcode.BR_CC: MachineOp.BNEZ,
-    SDNodeOpcode.RET:  MachineOp.JALR,
+    SDNodeOpcode.RET: MachineOp.JALR,
     SDNodeOpcode.CALL: MachineOp.CALL,
     SDNodeOpcode.LI_Pseudo: MachineOp.LI,
     SDNodeOpcode.MV_Pseudo: MachineOp.MV,
-    SDNodeOpcode.RELU: MachineOp.MAX,
+    SDNodeOpcode.RELU:
+        MachineOp.MAX,
 }

@@ -8,7 +8,6 @@ Supports three reference modes:
 
 from __future__ import annotations
 
-import sys
 import math
 import numpy as np
 from typing import Any
@@ -44,9 +43,9 @@ class ONNXReference:
     def run(self, feed_dict: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         """Run inference and return output name -> array mapping."""
         if not self.available:
-            raise RuntimeError("ONNX Runtime not available. Install with: pip install onnxruntime")
+            raise RuntimeError(
+                "ONNX Runtime not available. Install: pip install onnxruntime")
 
-        import onnxruntime
         outputs = [o.name for o in self._session.get_outputs()]
         result = self._session.run(outputs, feed_dict)
         return dict(zip(outputs, result))
@@ -91,7 +90,8 @@ def numpy_reference(op_type: str, *inputs: np.ndarray, **attrs) -> np.ndarray:
 
 def _numpy_gelu(inputs: list[np.ndarray], **attrs) -> np.ndarray:
     x = inputs[0]
-    return x * 0.5 * (1.0 + np.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * x**3)))
+    inner = np.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * x**3))
+    return x * 0.5 * (1.0 + inner)
 
 
 def _numpy_softmax(inputs: list[np.ndarray], **attrs) -> np.ndarray:
@@ -144,7 +144,8 @@ class DSLInterpreter:
     def __init__(self):
         self._vars: dict[str, np.ndarray] = {}
 
-    def run(self, dsl_source: str, inputs: dict[str, np.ndarray]) -> np.ndarray:
+    def run(self, dsl_source: str,
+            inputs: dict[str, np.ndarray]) -> np.ndarray:
         """Run a DSL program with given input values.
 
         Args:
@@ -221,9 +222,11 @@ class DSLInterpreter:
             "neg": lambda: -resolved[0],
             "exp": lambda: np.exp(resolved[0]),
             "relu": lambda: np.maximum(resolved[0], 0.0),
-            "gelu": lambda: resolved[0] * 0.5 * (1.0 + np.tanh(
-                math.sqrt(2.0 / math.pi) * (resolved[0] + 0.044715 * resolved[0]**3)
-            )),
+            "gelu": lambda: resolved[0] * 0.5 * (
+                1.0 + np.tanh(
+                    math.sqrt(2.0 / math.pi)
+                    * (resolved[0] + 0.044715 * resolved[0]**3)
+                )),
             "matmul": lambda: resolved[0] @ resolved[1],
             "dot": lambda: np.dot(resolved[0], resolved[1]),
             "softmax": lambda: _numpy_softmax(resolved, **kwargs),
@@ -257,7 +260,7 @@ def verify_onnx_model(
         verbose: Print detailed comparison.
 
     Returns:
-        dict with keys: success, max_error, mismatched_outputs, reference, compiled
+        dict with: success, max_error, mismatched_outputs, reference, compiled
     """
     import onnx
 
@@ -273,7 +276,7 @@ def verify_onnx_model(
     ref = ONNXReference(model_path)
     if not ref.available:
         if verbose:
-            print("ONNX Runtime not available. Installing: pip install onnxruntime")
+            print("ONNX Runtime not available.")
         return {"success": False, "error": "onnxruntime not available"}
 
     reference = ref.run(feed_dict)
@@ -335,7 +338,7 @@ def verify_dsl(
     # Compile through ScratchV
     from scratchv.frontend.dsl_parser import DSLParser
     parser = DSLParser()
-    program = parser.parse(dsl_source)
+    parser.parse(dsl_source)
 
     # For now, compare with expected (full compilation pipeline comparison
     # requires an execution environment for the generated assembly)

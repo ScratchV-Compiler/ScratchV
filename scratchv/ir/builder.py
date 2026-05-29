@@ -14,7 +14,7 @@ from scratchv.ir.types import (
 
 
 class IRBuilder:
-    """Helper that tracks a 'current' function, block, and a unique name counter."""
+    """Tracks current function, block, and unique name counter."""
 
     def __init__(self):
         self.program = Program()
@@ -27,15 +27,21 @@ class IRBuilder:
         return f"{prefix}_{self._name_counter}"
 
     def _emit(self, opcode: OpCode, dest: Value | None = None,
-              operands: list[Value] | None = None, **attrs) -> Instruction:
-        instr = Instruction(opcode=opcode, dest=dest, operands=operands or [], attrs=attrs)
+              operands: list[Value] | None = None,
+              **attrs) -> Instruction:
+        instr = Instruction(
+            opcode=opcode, dest=dest,
+            operands=operands or [], attrs=attrs)
         if self.current_block is not None:
             self.current_block.add(instr)
         return instr
 
     # --- Function ---
 
-    def new_function(self, name: str, params: list[Value] | None = None) -> Function:
+    def new_function(
+            self, name: str,
+            params: list[Value] | None = None,
+    ) -> Function:
         func = Function(name=name, params=params or [])
         self.program.add_function(func)
         self.current_func = func
@@ -49,13 +55,20 @@ class IRBuilder:
 
     # --- Values ---
 
-    def make_value(self, name: str | None = None, dtype: DataType = DataType.FLOAT32,
-                   is_constant: bool = False, const_value: float | int | None = None) -> Value:
+    def make_value(self, name: str | None = None,
+                   dtype: DataType = DataType.FLOAT32,
+                   is_constant: bool = False,
+                   const_value: float | int | None = None) -> Value:
         return Value(name=name or self._fresh(), dtype=dtype,
                      is_constant=is_constant, const_value=const_value)
 
-    def make_const(self, value: float | int, dtype: DataType = DataType.FLOAT32) -> Value:
-        return self.make_value(dtype=dtype, is_constant=True, const_value=value)
+    def make_const(
+            self, value: float | int,
+            dtype: DataType = DataType.FLOAT32,
+    ) -> Value:
+        return self.make_value(
+            dtype=dtype, is_constant=True, const_value=value,
+        )
 
     # --- Instructions ---
 
@@ -89,7 +102,10 @@ class IRBuilder:
         self._emit(OpCode.EXP, dest, [val])
         return dest
 
-    def load_const(self, val: float | int, dtype: DataType = DataType.FLOAT32) -> Value:
+    def load_const(
+            self, val: float | int,
+            dtype: DataType = DataType.FLOAT32,
+    ) -> Value:
         dest = self.make_value(dtype=dtype, is_constant=True, const_value=val)
         self._emit(OpCode.LOAD_CONST, dest, value=val)
         return dest
@@ -119,8 +135,11 @@ class IRBuilder:
     def br(self, target_block: str) -> Instruction:
         return self._emit(OpCode.BR, target=target_block)
 
-    def br_if(self, cond: Value, true_block: str, false_block: str) -> Instruction:
-        return self._emit(OpCode.BR_IF, operands=[cond], target=f"{true_block},{false_block}")
+    def br_if(self, cond: Value, true_block: str,
+              false_block: str) -> Instruction:
+        return self._emit(
+            OpCode.BR_IF, operands=[cond],
+            target=f"{true_block},{false_block}")
 
     def ret(self, val: Value | None = None) -> Instruction:
         operands = [val] if val else []

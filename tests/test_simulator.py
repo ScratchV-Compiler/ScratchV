@@ -1,6 +1,6 @@
 """Tests for the TinyFive simulator adapter."""
 
-from scratchv.simulator.tinyfive import ProfiledMachine, StubProfiledMachine, verify_assembly
+from scratchv.simulator.tinyfive import StubProfiledMachine, verify_assembly
 
 
 class TestStubProfiledMachine:

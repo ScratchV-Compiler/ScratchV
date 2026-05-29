@@ -6,7 +6,9 @@ or ``riscv64-linux-gnu-gcc``.
 
 from __future__ import annotations
 
-from scratchv.backend.register_alloc import MachineInstr, MachineOp, MachineOperand
+from scratchv.backend.register_alloc import (
+    MachineInstr, MachineOp, MachineOperand,
+)
 
 
 # RW───RV32IM pseudo-instruction expansion ────────────────────────────────────
@@ -37,7 +39,8 @@ _OP_NAMES = {
 def _fmt_op(op: MachineOperand | None) -> str:
     if op is None:
         return ""
-    return str(op).lstrip("%")  # strip % from vreg names since we've resolved them
+    # strip % from vreg names since we've resolved them
+    return str(op).lstrip("%")
 
 
 class AsmEmitter:

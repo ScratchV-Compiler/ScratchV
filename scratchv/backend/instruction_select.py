@@ -1,13 +1,16 @@
-"""Instruction selection: maps IR instructions to RISC-V-like pseudo-instructions.
+"""Instruction selection: IR instructions to RISC-V pseudo-instructions.
 
-This phase lowers each IR instruction to a sequence of RISC-V machine instructions,
-producing a flat list of MachineInstrs that still use virtual registers.
+This phase lowers each IR instruction to a sequence of RISC-V machine
+instructions, producing a flat list of MachineInstrs that still use
+virtual registers.
 """
 
 from __future__ import annotations
 
-from scratchv.ir.types import OpCode, Instruction, BasicBlock, Function, Program
-from scratchv.backend.register_alloc import MachineInstr, MachineOp, MachineOperand
+from scratchv.ir.types import Instruction, Function, Program
+from scratchv.backend.register_alloc import (
+    MachineInstr, MachineOp, MachineOperand,
+)
 
 
 class InstructionSelector:
@@ -19,7 +22,10 @@ class InstructionSelector:
         self._label_counter = 0
 
     def run(self) -> list[MachineInstr]:
-        """Select instructions for all functions. Returns flat list of MachineInstrs."""
+        """Select instructions for all functions.
+
+        Returns flat list of MachineInstrs.
+        """
         self._instructions = []
         for func in self.program.functions:
             self._select_function(func)
@@ -41,17 +47,21 @@ class InstructionSelector:
     def _select_instruction(self, instr: Instruction) -> None:
         handler = getattr(self, f"_select_{instr.opcode.value}", None)
         if handler is None:
-            raise ValueError(f"No instruction selection for opcode: {instr.opcode}")
+            raise ValueError(
+                f"No instruction selection for opcode: {instr.opcode}")
         handler(instr)
 
-    def _emit(self, op: MachineOp, dst=None, src1=None, src2=None, comment: str = "") -> None:
-        self._instructions.append(MachineInstr(op, dst, src1, src2, comment))
+    def _emit(self, op: MachineOp, dst=None, src1=None, src2=None,
+              comment: str = "") -> None:
+        self._instructions.append(
+            MachineInstr(op, dst, src1, src2, comment))
 
     def _emit_label(self, name: str) -> None:
-        self._instructions.append(MachineInstr(MachineOp.LABEL, comment=name))
+        self._instructions.append(
+            MachineInstr(MachineOp.LABEL, comment=name))
 
     def _op(self, instr: Instruction, idx: int):
-        """Get an operand from an IR instruction, converting constants inline."""
+        """Get an operand from an IR instruction as a machine operand."""
         op = instr.operands[idx]
         # Small integers can be encoded as immediate operands
         if op.is_constant and op.const_value is not None:
@@ -68,20 +78,26 @@ class InstructionSelector:
     def _select_load_const(self, instr: Instruction) -> None:
         val = instr.attrs.get("value", 0)
         dst = self._dst(instr)
-        # Use LI pseudo-instruction (expanded to addi x0, imm or lui+addi)
-        self._emit(MachineOp.LI, dst, MachineOperand.immediate(int(val)), comment=f"const {val}")
+        # LI pseudo-instruction (expands to addi x0, imm or lui+addi)
+        self._emit(MachineOp.LI, dst,
+                   MachineOperand.immediate(int(val)),
+                   comment=f"const {val}")
 
     def _select_add(self, instr: Instruction) -> None:
-        self._emit(MachineOp.ADD, self._dst(instr), self._op(instr, 0), self._op(instr, 1))
+        self._emit(MachineOp.ADD, self._dst(instr),
+                   self._op(instr, 0), self._op(instr, 1))
 
     def _select_sub(self, instr: Instruction) -> None:
-        self._emit(MachineOp.SUB, self._dst(instr), self._op(instr, 0), self._op(instr, 1))
+        self._emit(MachineOp.SUB, self._dst(instr),
+                   self._op(instr, 0), self._op(instr, 1))
 
     def _select_mul(self, instr: Instruction) -> None:
-        self._emit(MachineOp.MUL, self._dst(instr), self._op(instr, 0), self._op(instr, 1))
+        self._emit(MachineOp.MUL, self._dst(instr),
+                   self._op(instr, 0), self._op(instr, 1))
 
     def _select_div(self, instr: Instruction) -> None:
-        self._emit(MachineOp.DIV, self._dst(instr), self._op(instr, 0), self._op(instr, 1))
+        self._emit(MachineOp.DIV, self._dst(instr),
+                   self._op(instr, 0), self._op(instr, 1))
 
     def _select_neg(self, instr: Instruction) -> None:
         # RISC-V: sub rd, x0, rs
@@ -200,26 +216,20 @@ class InstructionSelector:
                    MachineOperand.vreg("ra"), comment="ret")
 
     def _select_matmul(self, instr: Instruction) -> None:
-        a = self._op(instr, 0)
-        b = self._op(instr, 1)
         m = instr.attrs.get("m", 1)
         n = instr.attrs.get("n", 1)
         k = instr.attrs.get("k", 1)
         dst = self._dst(instr)
 
-        # Generate nested loops: for i in range(m): for j in range(n): sum += a[i,k] * b[k,j]
-        # Allocate temp for sum
-        sum_reg = MachineOperand.vreg("matmul_sum")
-        self._emit(MachineOp.LI, sum_reg, MachineOperand.immediate(0))
-
+        # Nested loops for i in range(m): for j in range(n):
+        #   sum += a[i,k] * b[k,j]
         # We emit a call to a runtime matmul helper for now
-        self._emit(MachineOp.CALL, comment=f"matmul m={m} n={n} k={k}")
+        self._emit(MachineOp.CALL,
+                   comment=f"matmul m={m} n={n} k={k}")
         if dst:
             self._emit(MachineOp.MV, dst, MachineOperand.vreg("a0"))
 
     def _select_dot(self, instr: Instruction) -> None:
-        a = self._op(instr, 0)
-        b = self._op(instr, 1)
         length = instr.attrs.get("length", 1)
         dst = self._dst(instr)
 

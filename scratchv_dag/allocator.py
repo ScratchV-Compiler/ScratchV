@@ -17,10 +17,9 @@ pool and does not interact with actual OS memory mapping.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -31,7 +30,7 @@ class AllocationPolicy(Enum):
     """Strategy used by the memory allocator."""
     FIRST_FIT = "first_fit"
     """Simple bump-pointer allocation through the general region."""
-    BUDDY     = "buddy"
+    BUDDY = "buddy"
     """Buddy-system: power-of-two blocks, split, and coalesce."""
 
 
@@ -253,9 +252,9 @@ class MemoryAllocator:
     def reset(self) -> None:
         """Reset all state — all memory becomes free again."""
         self._scratchpad_cursor = 0
-        gen = self._regions[0]
         gen_size = self.pool_size - self.scratchpad.size
-        self._regions = [MemoryRegion("general", self.scratchpad.size, gen_size)]
+        self._regions = [
+            MemoryRegion("general", self.scratchpad.size, gen_size)]
         self._freed_regions.clear()
         self._general_cursor = self._regions[0].base
         self.stats = AllocStats()

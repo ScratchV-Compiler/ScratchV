@@ -61,7 +61,9 @@ class OpCode(enum.Enum):
         )
 
     def is_control_flow(self) -> bool:
-        return self in (OpCode.FOR, OpCode.ENDFOR, OpCode.BR, OpCode.BR_IF, OpCode.RETURN)
+        return self in (
+            OpCode.FOR, OpCode.ENDFOR, OpCode.BR,
+            OpCode.BR_IF, OpCode.RETURN)
 
 
 class DataType(enum.Enum):
@@ -73,13 +75,16 @@ class DataType(enum.Enum):
 
     @staticmethod
     def from_onnx(elem_type: int) -> DataType:
-        mapping = {1: DataType.FLOAT32, 6: DataType.INT32, 7: DataType.INT64, 11: DataType.FLOAT64}
+        mapping = {
+            1: DataType.FLOAT32, 6: DataType.INT32,
+            7: DataType.INT64, 11: DataType.FLOAT64,
+        }
         return mapping.get(elem_type, DataType.FLOAT32)
 
 
 @dataclass
 class Value:
-    """An SSA-like typed value (result of an instruction or a function argument)."""
+    """An SSA-like typed value (instruction result or function arg)."""
     name: str
     dtype: DataType = DataType.FLOAT32
     is_constant: bool = False
@@ -170,13 +175,18 @@ class Program:
         for func in self.functions:
             lines.append(f"fun ${func.name}(")
             if func.params:
-                lines.append("  params: " + ", ".join(f"${p.name}: {p.dtype.value}" for p in func.params))
+                params_str = ", ".join(
+                    f"${{p.name}}: {p.dtype.value}"
+                    for p in func.params)
+                lines.append("  params: " + params_str)
             for block in func.blocks:
                 lines.append(f"  .{block.name}:")
                 for inst in block.instructions:
                     rhs = f"{inst.opcode.value}"
                     if inst.operands:
-                        rhs += " " + " ".join(f"${v.name}" for v in inst.operands)
+                        ops_str = " ".join(
+                            f"${v.name}" for v in inst.operands)
+                        rhs += " " + ops_str
                     if inst.target:
                         rhs += f" -> {inst.target}"
                     if inst.attrs:

@@ -1,18 +1,18 @@
 """
-scratchv_dag — LLVM-style SelectionDAG infrastructure with cache-aware memory allocation.
+scratchv_dag — LLVM-style SelectionDAG with cache-aware allocation.
 
-This package provides a DAG-based instruction selection framework inspired by
-LLVM's SelectionDAG, plus a 4 MB L1 cache simulator and a buddy-system memory
-allocator designed for edge NPU scenarios. It operates as a standalone component
-or as part of the ScratchV compiler toolchain.
+DAG-based instruction selection framework inspired by
+LLVM's SelectionDAG, plus a 4 MB L1 cache simulator and buddy allocator
+for edge NPU scenarios. Operates standalone or as part of ScratchV.
+
 
 Submodules:
-    sdnode          Core SDNode / SelectionDAG types (opcodes, MVT, DAG container).
-    selection_dag   DAG builder (IR → DAG), DAG combiner (constant folding),
-                    and DAG scheduler (DAG → machine instructions).
-    cache           4 MB set-associative L1 cache simulator with LRU replacement.
-    allocator       Buddy-system memory allocator with cache-line alignment
-                    and scratchpad region support.
+    sdnode          Core SDNode / SelectionDAG types.
+    selection_dag   DAG builder (IR -> DAG), DAG combiner (const folding),
+                    and DAG scheduler (DAG -> machine instructions).
+    cache           4 MB L1 cache simulator with LRU replacement.
+    allocator       Buddy-system memory allocator with cache-line
+                    alignment and scratchpad region support.
 """
 
 from __future__ import annotations

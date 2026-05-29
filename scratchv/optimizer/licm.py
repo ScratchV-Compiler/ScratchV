@@ -12,9 +12,9 @@ is loop-invariant if all its operands are:
 
 from __future__ import annotations
 
-from __future__ import annotations
-
-from scratchv.ir.types import OpCode, Instruction, BasicBlock, Function, Program
+from scratchv.ir.types import (
+    OpCode, Instruction, BasicBlock, Function, Program,
+)
 
 
 class LICM:
@@ -25,7 +25,10 @@ class LICM:
         self._stats = {"hoisted": 0}
 
     def run(self) -> int:
-        """Run LICM on all functions. Returns number of hoisted instructions."""
+        """Run LICM on all functions.
+
+        Returns number of hoisted instructions.
+        """
         for func in self.program.functions:
             self._process_function(func)
         return self._stats["hoisted"]
@@ -51,7 +54,8 @@ class LICM:
                 continue
 
             # Collect loop-variant names (loop variable induction var)
-            iv_name = instrs[loop_start].dest.name if instrs[loop_start].dest else ""
+            dest = instrs[loop_start].dest
+            iv_name = dest.name if dest else ""
             variant_names = {iv_name}
 
             # Find instructions defined within the loop (excluding FOR itself)
@@ -100,8 +104,10 @@ class LICM:
                       loop_defs: set[str]) -> bool:
         """Check if an instruction is loop-invariant."""
         # Control flow and store instructions are never invariant
-        if instr.opcode in (OpCode.STORE, OpCode.BR, OpCode.BR_IF, OpCode.RETURN,
-                            OpCode.FOR, OpCode.ENDFOR, OpCode.LABEL):
+        if instr.opcode in (
+                OpCode.STORE, OpCode.BR, OpCode.BR_IF,
+                OpCode.RETURN, OpCode.FOR, OpCode.ENDFOR,
+                OpCode.LABEL):
             return False
         # An instruction is invariant if all its operands are:
         # - constants, or

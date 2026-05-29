@@ -152,7 +152,11 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
         from tinyfive.machine import Machine
         m = Machine(mem_size=4096)
     except ImportError:
-        return {"success": False, "instr_count": 0, "error": "tinyfive not installed"}
+        return {
+            "success": False,
+            "instr_count": 0,
+            "error": "tinyfive not installed",
+        }
 
     lines = asm_code.strip().split("\n")
     m.pc = 4 * 128
@@ -183,6 +187,7 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
     instr_count = [0]
 
     original_exe = m.exe
+
     def counted_exe(*a, **kw):
         instr_count[0] += 1
         return original_exe(*a, **kw)
@@ -191,7 +196,11 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
     try:
         m.exe()
     except Exception as e:
-        return {"success": False, "instr_count": instr_count[0], "error": str(e)}
+        return {
+            "success": False,
+            "instr_count": instr_count[0],
+            "error": str(e),
+        }
     finally:
         m.exe = original_exe
 
