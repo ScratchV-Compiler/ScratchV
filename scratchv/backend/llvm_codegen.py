@@ -271,7 +271,9 @@ class LLVMCodegen:
 
     def _emit_load_const(self, instr: Instruction) -> None:
         dst = self._dest(instr)
-        val = instr.attrs.get("value", 0)
+        raw_val = instr.attrs.get("value", 0)
+        assert isinstance(raw_val, (int, float))
+        val: float | int = raw_val
         ty = _llvm_type(instr.dest.dtype) if instr.dest else "float"
         self._p(f"  {dst} = fadd {ty} {_llvm_const_val(val, ty)}, 0.0")
 

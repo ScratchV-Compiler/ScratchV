@@ -547,15 +547,15 @@ class DAGScheduler:
             return
 
         # Generic binary operation
-        dst: MachineOperand | None = None
-        src1: MachineOperand | None = None
-        src2: MachineOperand | None = None
+        gen_dst: MachineOperand | None = None
+        gen_src1: MachineOperand | None = None
+        gen_src2: MachineOperand | None = None
         if node.num_values > 0 and node._num_types > node.num_chain_results:
-            dst = MachineOperand.vreg(f"t{node.node_id}")
+            gen_dst = MachineOperand.vreg(f"t{node.node_id}")
         if len(node.operands) >= 2:
-            src1 = _op_to_operand(node.operands[0])
-            src2 = _op_to_operand(node.operands[1])
-        result.append(MachineInstr(machine_op, dst, src1, src2))
+            gen_src1 = _op_to_operand(node.operands[0])
+            gen_src2 = _op_to_operand(node.operands[1])
+        result.append(MachineInstr(machine_op, gen_dst, gen_src1, gen_src2))
 
 
 # ── Helper ────────────────────────────────────────────────────────────

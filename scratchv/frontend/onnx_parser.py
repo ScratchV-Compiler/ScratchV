@@ -247,7 +247,7 @@ class ONNXParser:
     def _handle_reshape(self, node, inputs: list[Value],
                         outputs: list[str]) -> None:
         # The second input contains the target shape
-        shape = ()
+        shape: tuple[int, ...] = ()
         if len(inputs) > 1 and inputs[1].is_constant:
             # shape is a constant — extract it from attrs
             shape = inputs[1].shape

@@ -213,7 +213,7 @@ class RISCVAEncoder:
 
     def _encode_line(
             self, line: str, idx: int,
-    ) -> tuple[int, tuple] | None:
+    ) -> tuple[int, tuple[str, str] | None] | None:
         """Encode a single assembly line."""
         # Tokenize
         tokens = line.replace(",", " ").split()

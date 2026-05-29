@@ -178,7 +178,8 @@ class RegisterAllocator:
                     and instr.dst.value not in self._vreg_map:
                 v2 = instr.dst.value
                 assert isinstance(v2, str)
-                dst = self._assign_reg(v2)
+                reg_name = self._assign_reg(v2)
+                dst = MachineOperand.reg(reg_name)
             elif instr.dst and instr.dst.kind == "vreg":
                 v3 = instr.dst.value
                 assert isinstance(v3, str)
@@ -272,7 +273,9 @@ class RegisterAllocator:
 
     def _spill_operand(self, op: MachineOperand) -> MachineOperand:
         """Return a temp register holding the spilled value."""
-        slot = self._get_spill_slot(op.value)
+        v = op.value
+        assert isinstance(v, str)
+        slot = self._get_spill_slot(v)
         temp = MachineOperand.reg("t0")
         mem = f"{STACK_BASE}({-slot})" if slot != 0 else "0(sp)"
         self._emit(MachineInstr(MachineOp.LW, temp,

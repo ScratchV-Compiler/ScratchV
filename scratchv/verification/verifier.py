@@ -46,8 +46,10 @@ class ONNXReference:
             raise RuntimeError(
                 "ONNX Runtime not available. Install: pip install onnxruntime")
 
-        outputs = [o.name for o in self._session.get_outputs()]
-        result = self._session.run(outputs, feed_dict)
+        sess = self._session
+        assert sess is not None
+        outputs = [o.name for o in sess.get_outputs()]
+        result = sess.run(outputs, feed_dict)
         return dict(zip(outputs, result))
 
 
@@ -201,15 +203,14 @@ class DSLInterpreter:
 
     def _dispatch(self, op: str, args: list[str]) -> np.ndarray:
         plain = []
-        kwargs = {}
+        kwargs: dict[str, int | str] = {}
         for a in args:
             if ":" in a:
                 k, v = a.split(":", 1)
                 try:
                     kwargs[k.strip()] = int(v.strip())
                 except ValueError:
-                    pass
-                kwargs[k.strip()] = v.strip()
+                    kwargs[k.strip()] = v.strip()
             else:
                 plain.append(a)
 

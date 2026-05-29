@@ -117,8 +117,8 @@ class Instruction:
         if self.target:
             parts.append(f"-> {self.target}")
         if self.attrs:
-            for k, v in self.attrs.items():
-                parts.append(f"[{k}={v}]")
+            for attr_k, attr_v in self.attrs.items():
+                parts.append(f"[{attr_k}={attr_v}]")
         return " ".join(parts)
 
 

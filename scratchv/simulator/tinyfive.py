@@ -40,7 +40,7 @@ class ProfiledMachine:
         """Load assembly instructions into the machine."""
         if not self._available:
             return
-        self._machine.pc = origin
+        self._machine.pc = origin  # type: ignore[attr-defined]
         for line in asm_lines:
             line = line.split("#")[0].strip()
             if not line or line.endswith(":"):
@@ -48,7 +48,7 @@ class ProfiledMachine:
             parts = re.split(r'[,\s]+', line)
             op = parts[0].lower()
             args = [self._parse_arg(a) for a in parts[1:] if a]
-            self._machine.asm(op, *args)
+            self._machine.asm(op, *args)  # type: ignore[attr-defined]
 
     def _parse_arg(self, arg: str):
         try:
@@ -62,42 +62,42 @@ class ProfiledMachine:
             return
 
         # Wrap the execute loop with a counter
-        original_exe = self._machine.exe
+        original_exe = self._machine.exe  # type: ignore[attr-defined]
         self.instr_count = 0
 
         def counted_exe(*args, **kwargs):
             self.instr_count += 1
             return original_exe(*args, **kwargs)
 
-        self._machine.exe = counted_exe
+        self._machine.exe = counted_exe  # type: ignore[attr-defined]
         try:
-            self._machine.exe(n=n, start=start)
+            self._machine.exe(n=n, start=start)  # type: ignore[attr-defined]
         finally:
-            self._machine.exe = original_exe
+            self._machine.exe = original_exe  # type: ignore[attr-defined]
 
     def get_reg(self, idx: int) -> int:
         """Read register value."""
         if not self._available:
             return 0
-        return self._machine.x[idx]
+        return self._machine.x[idx]  # type: ignore[attr-defined]
 
     def write_mem_i32(self, addr: int, value: int):
         """Write a 32-bit integer to memory."""
         if not self._available:
             return
-        self._machine.write_i32(value, addr)
+        self._machine.write_i32(value, addr)  # type: ignore[attr-defined]
 
     def read_mem_i32(self, addr: int) -> int:
         """Read a 32-bit integer from memory."""
         if not self._available:
             return 0
-        return self._machine.read_i32(addr)
+        return self._machine.read_i32(addr)  # type: ignore[attr-defined]
 
     def print_perf(self):
         """Print performance counters if available."""
         if self._available:
             try:
-                self._machine.print_perf()
+                self._machine.print_perf()  # type: ignore[attr-defined]
             except AttributeError:
                 pass
         print(f"  Instruction count: {self.instr_count}")
@@ -159,7 +159,7 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
         }
 
     lines = asm_code.strip().split("\n")
-    m.pc = 4 * 128
+    m.pc = 4 * 128  # type: ignore[attr-defined]
 
     for line in lines:
         line = line.split("#")[0].strip()
@@ -170,31 +170,31 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
         if not parts:
             continue
         op = parts[0].lower()
-        args = []
+        args: list[str | int] = []
         for a in parts[1:]:
             if not a:
                 continue
             try:
                 args.append(int(a))
             except ValueError:
-                args.append(str(a))
+                args.append(str(a))  # type: ignore[arg-type]
         try:
-            m.asm(op, *args)
+            m.asm(op, *args)  # type: ignore[attr-defined]
         except Exception as e:
             return {"success": False, "instr_count": 0, "error": str(e)}
 
     # Count instructions
     instr_count = [0]
 
-    original_exe = m.exe
+    original_exe = m.exe  # type: ignore[attr-defined]
 
     def counted_exe(*a, **kw):
         instr_count[0] += 1
         return original_exe(*a, **kw)
 
-    m.exe = counted_exe
+    m.exe = counted_exe  # type: ignore[attr-defined]
     try:
-        m.exe()
+        m.exe()  # type: ignore[attr-defined]
     except Exception as e:
         return {
             "success": False,
@@ -202,13 +202,13 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
             "error": str(e),
         }
     finally:
-        m.exe = original_exe
+        m.exe = original_exe  # type: ignore[attr-defined]
 
     result = {"success": True, "instr_count": instr_count[0], "error": None}
     if verbose:
         print(f"Instructions executed: {instr_count[0]}")
         try:
-            m.print_perf()
+            m.print_perf()  # type: ignore[attr-defined]
         except AttributeError:
             pass
     return result
