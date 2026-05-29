@@ -66,6 +66,21 @@ class MachineOp(enum.Enum):
     FCVT_S_D = "fcvt.s.d"
     FCVT_D_S = "fcvt.d.s"
     LI_D = "li.d"
+    # Float single-precision
+    FADD_S = "fadd.s"
+    FSUB_S = "fsub.s"
+    FMUL_S = "fmul.s"
+    FDIV_S = "fdiv.s"
+    FMAX_S = "fmax.s"
+    FMIN_S = "fmin.s"
+    FLE_S = "fle.s"
+    FLT_S = "flt.s"
+    FEQ_S = "feq.s"
+    FSQRT_S = "fsqrt.s"
+    FLW = "flw"
+    FSW = "fsw"
+    FMV_S = "fmv.s"
+    FMV_S_X = "fmv.s.x"
 
 
 @dataclass
