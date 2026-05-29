@@ -76,7 +76,9 @@ class InstructionSelector:
     # --- Per-opcode selectors ---
 
     def _select_load_const(self, instr: Instruction) -> None:
-        val = instr.attrs.get("value", 0)
+        raw_val = instr.attrs.get("value", 0)
+        assert isinstance(raw_val, (int, float))
+        val = int(raw_val)
         dst = self._dst(instr)
         # LI pseudo-instruction (expands to addi x0, imm or lui+addi)
         self._emit(MachineOp.LI, dst,
@@ -110,7 +112,7 @@ class InstructionSelector:
         dst = self._dst(instr)
         self._emit(MachineOp.CALL, comment="exp")
         if dst:
-            self._emit(MachineOp.MV, dst, MachineOperand.vreg("a0"))
+            self._emit(MachineOp.MV, dst, MachineOperand.reg("a0"))
 
     def _select_relu(self, instr: Instruction) -> None:
         """ReLU(x) = max(x, 0).  Use:  max rd, rs, x0"""
@@ -124,13 +126,13 @@ class InstructionSelector:
         dst = self._dst(instr)
         self._emit(MachineOp.CALL, comment="gelu")
         if dst:
-            self._emit(MachineOp.MV, dst, MachineOperand.vreg("a0"))
+            self._emit(MachineOp.MV, dst, MachineOperand.reg("a0"))
 
     def _select_softmax(self, instr: Instruction) -> None:
         dst = self._dst(instr)
         self._emit(MachineOp.CALL, comment="softmax")
         if dst:
-            self._emit(MachineOp.MV, dst, MachineOperand.vreg("a0"))
+            self._emit(MachineOp.MV, dst, MachineOperand.reg("a0"))
 
     def _select_maxpool(self, instr: Instruction) -> None:
         self._emit(MachineOp.CALL, comment="maxpool")
@@ -142,7 +144,9 @@ class InstructionSelector:
         self._emit(MachineOp.SW, self._op(instr, 0), self._op(instr, 1))
 
     def _select_alloca(self, instr: Instruction) -> None:
-        size = instr.attrs.get("size", 4)
+        raw_size = instr.attrs.get("size", 4)
+        assert isinstance(raw_size, int)
+        size = raw_size
         dst = self._dst(instr)
         # Subtract from sp to allocate
         self._emit(MachineOp.ADDI, dst, MachineOperand.vreg("sp"),
@@ -151,8 +155,12 @@ class InstructionSelector:
     def _select_for(self, instr: Instruction) -> None:
         """Begin a for loop: set up loop variable and branch to loop header."""
         iv = self._dst(instr)
-        start = instr.attrs.get("start", 0)
-        end = instr.attrs.get("end", 0)
+        raw_start = instr.attrs.get("start", 0)
+        assert isinstance(raw_start, int)
+        start = raw_start
+        raw_end = instr.attrs.get("end", 0)
+        assert isinstance(raw_end, int)
+        end = raw_end
 
         # Emit loop header label (will be patched)
         header_label = self._fresh_label("loop_header")
@@ -176,7 +184,7 @@ class InstructionSelector:
         self._emit_label(header_label)
 
         # Check condition: if iv >= end, exit
-        end_val = MachineOperand.immediate(end)
+        end_val = MachineOperand.immediate(int(end))  # type: ignore[arg-type]
         self._emit(MachineOp.BGE, iv, end_val, comment=exit_label)
         self._emit_label(body_label)
 
@@ -210,10 +218,10 @@ class InstructionSelector:
 
     def _select_return(self, instr: Instruction) -> None:
         if instr.operands:
-            self._emit(MachineOp.MV, MachineOperand.vreg("a0"),
+            self._emit(MachineOp.MV, MachineOperand.reg("a0"),
                        self._op(instr, 0), comment="return value")
-        self._emit(MachineOp.JALR, MachineOperand.vreg("zero"),
-                   MachineOperand.vreg("ra"), comment="ret")
+        self._emit(MachineOp.JALR, MachineOperand.reg("zero"),
+                   MachineOperand.reg("ra"), comment="ret")
 
     def _select_matmul(self, instr: Instruction) -> None:
         m = instr.attrs.get("m", 1)
@@ -227,7 +235,7 @@ class InstructionSelector:
         self._emit(MachineOp.CALL,
                    comment=f"matmul m={m} n={n} k={k}")
         if dst:
-            self._emit(MachineOp.MV, dst, MachineOperand.vreg("a0"))
+            self._emit(MachineOp.MV, dst, MachineOperand.reg("a0"))
 
     def _select_dot(self, instr: Instruction) -> None:
         length = instr.attrs.get("length", 1)
@@ -235,7 +243,39 @@ class InstructionSelector:
 
         self._emit(MachineOp.CALL, comment=f"dot len={length}")
         if dst:
-            self._emit(MachineOp.MV, dst, MachineOperand.vreg("a0"))
+            self._emit(MachineOp.MV, dst, MachineOperand.reg("a0"))
 
     def _select_label(self, instr: Instruction) -> None:
         self._emit_label(instr.target or "")
+
+    def _select_conv(self, instr: Instruction) -> None:
+        out_c = instr.attrs.get("out_channels", 1)
+        ksize = instr.attrs.get("kernel_size", 3)
+        stride = instr.attrs.get("stride", 1)
+        dst = self._dst(instr)
+        self._emit(MachineOp.CALL,
+                   comment=f"conv out_c={out_c} k={ksize} s={stride}")
+        if dst:
+            self._emit(MachineOp.MV, dst, MachineOperand.reg("a0"))
+
+    def _select_gemm(self, instr: Instruction) -> None:
+        ta = instr.attrs.get("trans_a", False)
+        tb = instr.attrs.get("trans_b", False)
+        dst = self._dst(instr)
+        self._emit(MachineOp.CALL,
+                   comment=f"gemm transA={ta} transB={tb}")
+        if dst:
+            self._emit(MachineOp.MV, dst, MachineOperand.reg("a0"))
+
+    def _select_sigmoid(self, instr: Instruction) -> None:
+        dst = self._dst(instr)
+        self._emit(MachineOp.CALL, comment="sigmoid")
+        if dst:
+            self._emit(MachineOp.MV, dst, MachineOperand.reg("a0"))
+
+    def _select_reshape(self, instr: Instruction) -> None:
+        # Reshape is a no-op: just copy the value
+        src = self._op(instr, 0)
+        dst = self._dst(instr)
+        if dst and src:
+            self._emit(MachineOp.MV, dst, src, comment="reshape")

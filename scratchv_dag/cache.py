@@ -173,7 +173,7 @@ class L1Cache:
         "_mask_offset", "_mask_index", "_tag_shift",
     )
 
-    def __init__(self, config: CacheConfig = None) -> None:
+    def __init__(self, config: CacheConfig | None = None) -> None:
         self.config = config if config is not None else CacheConfig()
         self.stats = CacheStats()
         self._clock = 0
@@ -256,7 +256,7 @@ class L1Cache:
 
     # ── Internals ──────────────────────────────────────────────────────────
 
-    def _addr_to_set_tag(self, addr: int) -> (int, int):
+    def _addr_to_set_tag(self, addr: int) -> tuple[int, int]:
         """Decompose a byte address into ``(set_index, tag)``."""
         set_idx = (addr >> self._mask_offset) & (self.config.num_sets - 1)
         tag = addr >> self._tag_shift

@@ -107,9 +107,11 @@ class DSLParser:
         self._vars[name] = v
         return v
 
-    def _parse_kwargs(self, args: list[str]) -> dict:
-        kwargs = {}
-        plain = []
+    def _parse_kwargs(
+            self, args: list[str],
+    ) -> tuple[list[str], dict[str, int | float | str]]:
+        kwargs: dict[str, int | float | str] = {}
+        plain: list[str] = []
         for a in args:
             if ":" in a:
                 k, v = a.split(":", 1)

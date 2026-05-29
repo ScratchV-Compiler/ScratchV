@@ -174,3 +174,32 @@ class IRBuilder:
         dest = self.make_value()
         self._emit(OpCode.SOFTMAX, dest, [val], axis=axis)
         return dest
+
+    def conv(self, x: Value, w: Value, b: Value,
+             out_channels: int,
+             kernel_size: int = 3,
+             stride: int = 1,
+             padding: int = 1) -> Value:
+        dest = self.make_value()
+        self._emit(OpCode.CONV, dest, [x, w, b],
+                   out_channels=out_channels,
+                   kernel_size=kernel_size,
+                   stride=stride, padding=padding)
+        return dest
+
+    def gemm(self, a: Value, w: Value, b: Value,
+             trans_a: bool = False, trans_b: bool = False) -> Value:
+        dest = self.make_value()
+        self._emit(OpCode.GEMM, dest, [a, w, b],
+                   trans_a=trans_a, trans_b=trans_b)
+        return dest
+
+    def sigmoid(self, val: Value) -> Value:
+        dest = self.make_value()
+        self._emit(OpCode.SIGMOID, dest, [val])
+        return dest
+
+    def reshape(self, val: Value, shape: tuple) -> Value:
+        dest = self.make_value()
+        self._emit(OpCode.RESHAPE, dest, [val], shape=shape)
+        return dest

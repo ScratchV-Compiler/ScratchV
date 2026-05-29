@@ -55,7 +55,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def parse_input(args) -> object:
+def parse_input(args):  # -> Program
     """Parse input file (ONNX or DSL) into an IR Program."""
     input_path = args.input
     use_dsl = args.dsl is not None or (

@@ -149,7 +149,7 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
         dict with keys: success, instr_count, error
     """
     try:
-        from tinyfive.machine import Machine
+        from tinyfive.machine import Machine  # type: ignore[import-untyped]
         m = Machine(mem_size=4096)
     except ImportError:
         return {
@@ -177,7 +177,7 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
             try:
                 args.append(int(a))
             except ValueError:
-                args.append(a)
+                args.append(str(a))
         try:
             m.asm(op, *args)
         except Exception as e:

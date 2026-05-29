@@ -40,6 +40,7 @@ class MulAddFusion:
             if self._matches_pattern(mul, add):
                 # Replace mul with fused instruction
                 a, b = mul.operands[0], mul.operands[1]
+                assert mul.dest is not None
                 if add.operands[1].name == mul.dest.name:
                     acc = add.operands[0]
                 else:

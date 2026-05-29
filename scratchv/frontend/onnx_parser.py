@@ -122,6 +122,8 @@ class ONNXParser:
                     outputs: list[str]) -> None:
         a, b = inputs[0], inputs[1]
         if a.is_constant and b.is_constant:
+            assert a.const_value is not None
+            assert b.const_value is not None
             result = self.builder.make_value(
                 is_constant=True,
                 const_value=a.const_value + b.const_value,
@@ -134,6 +136,8 @@ class ONNXParser:
                     outputs: list[str]) -> None:
         a, b = inputs[0], inputs[1]
         if a.is_constant and b.is_constant:
+            assert a.const_value is not None
+            assert b.const_value is not None
             result = self.builder.make_value(
                 is_constant=True,
                 const_value=a.const_value * b.const_value,
@@ -202,4 +206,50 @@ class ONNXParser:
     def _handle_exp(self, node, inputs: list[Value],
                     outputs: list[str]) -> None:
         result = self.builder.exp(inputs[0])
+        self._define_outputs(outputs, result)
+
+    def _handle_conv(self, node, inputs: list[Value],
+                     outputs: list[str]) -> None:
+        x, w, b = inputs[0], inputs[1], inputs[2]
+        out_channels = w.shape[0] if len(w.shape) > 0 else 1
+        kernel_size = w.shape[2] if len(w.shape) > 2 else 3
+        stride = 1
+        padding = 1
+        for attr in node.attribute:
+            if attr.name == "kernel_shape":
+                kernel_size = attr.ints[0]
+            elif attr.name == "strides":
+                stride = attr.ints[0]
+            elif attr.name == "pads":
+                padding = attr.ints[0]
+        result = self.builder.conv(x, w, b, out_channels,
+                                   kernel_size, stride, padding)
+        self._define_outputs(outputs, result)
+
+    def _handle_gemm(self, node, inputs: list[Value],
+                     outputs: list[str]) -> None:
+        a, w, b = inputs[0], inputs[1], inputs[2]
+        trans_a = False
+        trans_b = False
+        for attr in node.attribute:
+            if attr.name == "transA":
+                trans_a = attr.i != 0
+            elif attr.name == "transB":
+                trans_b = attr.i != 0
+        result = self.builder.gemm(a, w, b, trans_a, trans_b)
+        self._define_outputs(outputs, result)
+
+    def _handle_sigmoid(self, node, inputs: list[Value],
+                        outputs: list[str]) -> None:
+        result = self.builder.sigmoid(inputs[0])
+        self._define_outputs(outputs, result)
+
+    def _handle_reshape(self, node, inputs: list[Value],
+                        outputs: list[str]) -> None:
+        # The second input contains the target shape
+        shape = ()
+        if len(inputs) > 1 and inputs[1].is_constant:
+            # shape is a constant — extract it from attrs
+            shape = inputs[1].shape
+        result = self.builder.reshape(inputs[0], shape)
         self._define_outputs(outputs, result)

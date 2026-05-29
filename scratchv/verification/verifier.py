@@ -74,11 +74,11 @@ def numpy_reference(op_type: str, *inputs: np.ndarray, **attrs) -> np.ndarray:
         "Neg": lambda: -inputs[0],
         "Exp": lambda: np.exp(inputs[0]),
         "Relu": lambda: np.maximum(inputs[0], 0.0),
-        "Gelu": lambda: _numpy_gelu(inputs, **attrs),
-        "Softmax": lambda: _numpy_softmax(inputs, **attrs),
+        "Gelu": lambda: _numpy_gelu(list(inputs), **attrs),
+        "Softmax": lambda: _numpy_softmax(list(inputs), **attrs),
         "MatMul": lambda: inputs[0] @ inputs[1],
-        "Dot": lambda: _numpy_dot(inputs, **attrs),
-        "MaxPool": lambda: _numpy_maxpool(inputs, **attrs),
+        "Dot": lambda: _numpy_dot(list(inputs), **attrs),
+        "MaxPool": lambda: _numpy_maxpool(list(inputs), **attrs),
         "Sigmoid": lambda: 1.0 / (1.0 + np.exp(-inputs[0])),
         "Tanh": lambda: np.tanh(inputs[0]),
     }
@@ -124,10 +124,10 @@ def _numpy_maxpool(inputs: list[np.ndarray], **attrs) -> np.ndarray:
                 )
         return result
     elif x.ndim == 1:
-        result = []
+        result_list: list[np.floating] = []
         for i in range(0, len(x) - kernel + 1, stride):
-            result.append(np.max(x[i:i+kernel]))
-        return np.array(result)
+            result_list.append(np.max(x[i:i + kernel]))
+        return np.array(result_list)
     return x
 
 
@@ -208,7 +208,8 @@ class DSLInterpreter:
                 try:
                     kwargs[k.strip()] = int(v.strip())
                 except ValueError:
-                    kwargs[k.strip()] = v.strip()
+                    pass
+                kwargs[k.strip()] = v.strip()
             else:
                 plain.append(a)
 

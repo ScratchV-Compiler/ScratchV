@@ -144,7 +144,9 @@ class RegisterAllocator:
 
             # After: store dst back to stack if it's a vreg
             if instr.dst and instr.dst.kind == "vreg":
-                slot = self._get_spill_slot(instr.dst.value)
+                v = instr.dst.value
+                assert isinstance(v, str)
+                slot = self._get_spill_slot(v)
                 mem = f"{STACK_BASE}({-slot})" if slot > 0 else "0(sp)"
                 self._emit(MachineInstr(
                     MachineOp.SW,
@@ -174,9 +176,13 @@ class RegisterAllocator:
             # Allocate destination register
             if instr.dst and instr.dst.kind == "vreg" \
                     and instr.dst.value not in self._vreg_map:
-                dst = self._assign_reg(instr.dst.value)
+                v2 = instr.dst.value
+                assert isinstance(v2, str)
+                dst = self._assign_reg(v2)
             elif instr.dst and instr.dst.kind == "vreg":
-                dst = MachineOperand.reg(self._vreg_map[instr.dst.value])
+                v3 = instr.dst.value
+                assert isinstance(v3, str)
+                dst = MachineOperand.reg(self._vreg_map[v3])
 
             self._emit(MachineInstr(instr.op, dst, src1, src2, instr.comment))
 
@@ -191,9 +197,12 @@ class RegisterAllocator:
             return op
         if op.kind == "vreg":
             if op.value in self._vreg_map:
-                return MachineOperand.reg(self._vreg_map[op.value])
+                r = self._vreg_map[op.value]  # type: ignore[index]
+                return MachineOperand.reg(r)
             # Assign a register
-            reg = self._assign_reg(op.value)
+            v = op.value
+            assert isinstance(v, str)
+            reg = self._assign_reg(v)
             return MachineOperand.reg(reg)
         return op
 
@@ -204,8 +213,11 @@ class RegisterAllocator:
             return op
         if op.kind == "vreg":
             if op.value in self._vreg_map:
-                return MachineOperand.reg(self._vreg_map[op.value])
-            reg = self._assign_reg(op.value)
+                r2 = self._vreg_map[op.value]  # type: ignore[index]
+                return MachineOperand.reg(r2)
+            v = op.value
+            assert isinstance(v, str)
+            reg = self._assign_reg(v)
             return MachineOperand.reg(reg)
         return op
 
@@ -241,7 +253,8 @@ class RegisterAllocator:
         """Spill all registers at basic block boundaries."""
         for phys_reg, vreg_name in list(self._reg_pool.items()):
             if vreg_name is not None:
-                slot = self._get_spill_slot(vreg_name)
+                slot = self._get_spill_slot(
+                    vreg_name)  # type: ignore[arg-type]
                 mem = f"{STACK_BASE}({-slot})"
                 self._emit(MachineInstr(
                     MachineOp.SW, MachineOperand.reg(mem),

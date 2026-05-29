@@ -41,6 +41,9 @@ class OpCode(enum.Enum):
     SOFTMAX = "softmax"
     GELU = "gelu"
     DOT = "dot"
+    CONV = "conv"
+    GEMM = "gemm"
+    SIGMOID = "sigmoid"
     # Shape / data movement
     TRANSPOSE = "transpose"
     RESHAPE = "reshape"
@@ -58,6 +61,9 @@ class OpCode(enum.Enum):
             OpCode.GELU,
             OpCode.DOT,
             OpCode.EXP,
+            OpCode.CONV,
+            OpCode.GEMM,
+            OpCode.SIGMOID,
         )
 
     def is_control_flow(self) -> bool:

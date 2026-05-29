@@ -547,9 +547,9 @@ class DAGScheduler:
             return
 
         # Generic binary operation
-        dst = None
-        src1 = None
-        src2 = None
+        dst: MachineOperand | None = None
+        src1: MachineOperand | None = None
+        src2: MachineOperand | None = None
         if node.num_values > 0 and node._num_types > node.num_chain_results:
             dst = MachineOperand.vreg(f"t{node.node_id}")
         if len(node.operands) >= 2:

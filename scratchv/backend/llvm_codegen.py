@@ -7,7 +7,7 @@ No external dependencies beyond Python — the output is standard LLVM IR.
 from __future__ import annotations
 
 from scratchv.ir.types import (
-    OpCode, DataType, Instruction, BasicBlock, Function, Program,
+    OpCode, DataType, Value, Instruction, BasicBlock, Function, Program,
 )
 
 
@@ -492,6 +492,43 @@ class LLVMCodegen:
         self._p(f"  ; dot product len={length} - scalar approximation")
         self._p(f"  {dst} = fmul {ty} {a}, {b}")
 
+    def _emit_conv(self, instr: Instruction) -> None:
+        dst = self._dest(instr)
+        out_c = instr.attrs.get("out_channels", 1)
+        ksize = instr.attrs.get("kernel_size", 3)
+        stride = instr.attrs.get("stride", 1)
+        ty = self._infer_type(instr)
+        self._p(f"  ; conv: out_c={out_c} k={ksize} s={stride}")
+        self._p(f"  {dst} = fadd {ty} 0.0, 0.0  ; conv placeholder")
+
+    def _emit_gemm(self, instr: Instruction) -> None:
+        dst = self._dest(instr)
+        a = self._op(instr, 0)
+        b = self._op(instr, 1)
+        ty = self._infer_type(instr)
+        self._p(f"  ; gemm: {a} @ {b}")
+        self._p(f"  {dst} = fmul {ty} {a}, {b}  ; gemm placeholder")
+
+    def _emit_sigmoid(self, instr: Instruction) -> None:
+        dst = self._dest(instr)
+        src = self._op(instr, 0)
+        ty = self._infer_type(instr)
+        if ty == "double":
+            self._p(f"  {dst} = call double @exp(double {src})")
+            self._p(f"  {dst} = fadd double 1.0, {dst}")
+            self._p(f"  {dst} = fdiv double 1.0, {dst}")
+        else:
+            self._p(f"  {dst} = call float @expf(float {src})")
+            self._p(f"  {dst} = fadd float 1.0, {dst}")
+            self._p(f"  {dst} = fdiv float 1.0, {dst}")
+
+    def _emit_reshape(self, instr: Instruction) -> None:
+        dst = self._dest(instr)
+        src = self._op(instr, 0)
+        ty = self._infer_type(instr)
+        self._p("  ; reshape: passthrough")
+        self._p(f"  {dst} = fadd {ty} {src}, 0.0  ; reshape identity")
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -515,10 +552,12 @@ def _llvm_type(dtype: DataType) -> str:
     return _TYPE_MAP.get(dtype, "float")
 
 
-def _llvm_const(val) -> str:
+def _llvm_const(val: Value) -> str:
     """Format an IR Value as an LLVM constant."""
     if val.const_value is not None:
-        return _llvm_const_val(val.const_value, _llvm_type(val.dtype))
+        cv = val.const_value
+        assert isinstance(cv, (float, int))
+        return _llvm_const_val(cv, _llvm_type(val.dtype))
     return "0.0"
 
 
