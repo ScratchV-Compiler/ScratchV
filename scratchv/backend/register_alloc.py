@@ -21,9 +21,16 @@ class MachineOp(enum.Enum):
     MUL = "mul"
     DIV = "div"
     MAX = "max"     # pseudo: max rd, rs1, rs2
+    SRAI = "srai"
+    XOR = "xor"
+    AND = "and"
+    SLT = "slt"
+    REM = "rem"
     # Memory
     LW = "lw"
     SW = "sw"
+    FLD = "fld"
+    FSD = "fsd"
     # Control
     J = "j"
     JAL = "jal"
@@ -43,6 +50,22 @@ class MachineOp(enum.Enum):
     GLOBL = ".globl"
     SIZE = ".size"
     TYPE = ".type"
+    # Float (F/D extension)
+    SQRT_S = "fsqrt.s"
+    SQRT_D = "fsqrt.d"
+    FMIN_D = "fmin.d"
+    FMAX_D = "fmax.d"
+    FABS_D = "fabs.d"
+    FNEG_D = "fneg.d"
+    FADD_D = "fadd.d"
+    FSUB_D = "fsub.d"
+    FMUL_D = "fmul.d"
+    FDIV_D = "fdiv.d"
+    FLT_D = "flt.d"
+    FEQ_D = "feq.d"
+    FCVT_S_D = "fcvt.s.d"
+    FCVT_D_S = "fcvt.d.s"
+    LI_D = "li.d"
 
 
 @dataclass
