@@ -29,6 +29,23 @@ bench-cnn:
 		-o /tmp/cnn_riscv.bin --estimate --report
 	@echo "Reports: benchmark_reports/"
 
+# ── CI Benchmark (LLVM + TinyFive + 可视化仪表盘) ──────────────────────────
+
+bench-ci:
+	@mkdir -p benchmark_reports
+	python3 scratchv/ci/ci_benchmark.py \
+		--model-registry ci_models.json \
+		--output-dir benchmark_reports/ \
+		--html dashboard.html \
+		--json-out ci_data.json \
+		--md github_summary.md \
+		--embed-json \
+		--skip-cache
+	@echo ""
+	@echo "Dashboard: benchmark_reports/dashboard.html"
+	@echo "JSON data: benchmark_reports/ci_data.json"
+	@echo "GitHub summary: benchmark_reports/github_summary.md"
+
 # ── Clean ─────────────────────────────────────────────────────────────────
 
 clean:

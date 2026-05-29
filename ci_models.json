@@ -1,0 +1,23 @@
+{
+  "models": [
+    {
+      "name": "cnn.onnx",
+      "path": "models/graph/cnn.onnx",
+      "input_shape": [1, 3, 250, 250],
+      "description": "3-layer CNN (Conv+MaxPool+FC) for binary classification",
+      "code_size_scratchv": 3140,
+      "code_size_llvm": 3824,
+      "static_insns_scratchv": 785,
+      "static_insns_llvm": 956
+    }
+  ],
+  "cache_configs": {
+    "tiny": {"sets": 16, "ways": 2, "block_size": 16},
+    "embedded": {"sets": 64, "ways": 2, "block_size": 32},
+    "desktop": {"sets": 128, "ways": 4, "block_size": 64},
+    "server": {"sets": 256, "ways": 8, "block_size": 64}
+  },
+  "microarch_profiles": ["single", "fast", "basic", "slow"],
+  "max_emu_instructions": 50000000,
+  "sim_timeout_s": 120
+}
