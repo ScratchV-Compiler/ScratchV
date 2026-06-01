@@ -418,8 +418,17 @@ class BenchmarkRunner:
                 dsl_source = f.read()
 
             try:
-                from scratchv.frontend.dsl_parser import DSLParser
-                parser = DSLParser()
+                # Auto-detect extended DSL features (if/else/while)
+                has_extended = any(
+                    kw in dsl_source for kw in
+                    ("if (", "else:", "endif", "while (", "endwhile")
+                )
+                if has_extended:
+                    from scratchv.frontend.dsl_extended import ExtendedDSLParser
+                    parser = ExtendedDSLParser()
+                else:
+                    from scratchv.frontend.dsl_parser import DSLParser
+                    parser = DSLParser()
                 program = parser.parse(dsl_source)
             except ImportError:
                 # Fallback: use subprocess
@@ -453,14 +462,14 @@ print(program.dump())
                     for _ in b.instructions
                 )
 
-            # Compare output
+            # Compare output (handle numpy formatting variations)
             result.output = output.strip()
             result.expected = expected
-            result.passed = (result.output == expected)
-
-            if not result.passed and not expected:
-                # No expected file -> pass by default (just check it runs)
-                result.passed = True
+            if expected:
+                result.passed = self._compare_outputs(output, expected)
+            else:
+                # No expected file -> pass if no error
+                result.passed = (not result.error)
 
             result.total_time_s = time.perf_counter() - t_start
 
@@ -472,6 +481,26 @@ print(program.dump())
             result.passed = False
 
         return result
+
+    @staticmethod
+    def _compare_outputs(output: str, expected: str) -> bool:
+        """Compare simulation output with expected, handling numpy formatting."""
+        if output.strip() == expected.strip():
+            return True
+        try:
+            import numpy as np
+            import re
+            def _parse(s):
+                s = s.strip().strip("[]")
+                parts = [p for p in re.split(r"[,;\s]+", s) if p]
+                return np.array([float(p) for p in parts])
+            out_a = _parse(output)
+            exp_a = _parse(expected)
+            if out_a.shape == exp_a.shape:
+                return bool(np.allclose(out_a, exp_a, rtol=1e-3, atol=1e-6))
+        except (ValueError, TypeError, ImportError):
+            pass
+        return False
 
     # -------------------------------------------------------------------
     # DSL simulation
@@ -507,13 +536,22 @@ print(program.dump())
                     if arg and not arg[0].isdigit() and arg != "":
                         input_vars.add(arg)
 
-            # Filter out known function names
+            # Filter out known function names and keyword argument names
             keywords = {
                 "add", "sub", "mul", "div", "relu", "gelu", "exp", "neg",
                 "matmul", "dot", "maxpool", "softmax", "return", "for",
                 "endfor", "if", "else", "endif", "while", "endwhile",
+                # Keyword argument names (not input variables)
+                "m", "n", "k", "rows", "cols", "inner", "len",
+                "axis", "kernel", "stride", "padding",
+                "out_channels", "kernel_size",
+                "transA", "transB", "alpha", "beta",
+                # Loop variables and temporaries
+                "i", "j", "t1", "t2", "t3", "t4",
+                "acc", "sum", "tmp",
             }
-            input_vars = {v for v in input_vars if v.lower() not in keywords}
+            input_vars = {v for v in input_vars if v.lower() not in keywords
+                         and not v.startswith("_")}
 
             # Provide inputs
             inputs: dict[str, np.ndarray] = {}
