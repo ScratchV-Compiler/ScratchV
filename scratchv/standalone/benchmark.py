@@ -64,6 +64,136 @@ CAT_NAMES = {
     10: "unknown",
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Per-instruction cycle models (configurable microarchitecture profiles)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class MicroArch:
+    """Cycle-cost model for a specific RISC-V microarchitecture.
+
+    Each profile defines how many cycles each instruction category costs.
+    For branches, the cost depends on taken vs not-taken.
+    """
+
+    def __init__(self, name: str, **overrides):
+        self.name = name
+        # Default: single-cycle (CPI=1 for everything)
+        self.alu_r: int = 1
+        self.alu_i: int = 1
+        self.shift: int = 1
+        self.load: int = 1        # LW
+        self.store: int = 1       # SW
+        self.branch_taken: int = 1
+        self.branch_not: int = 1
+        self.jump: int = 1        # JAL / J
+        self.jump_r: int = 1      # JALR / RET
+        self.upper: int = 1       # LUI / AUIPC
+        self.nop: int = 1
+        self.mul: int = 1         # MUL / MULH (override alu_r)
+        self.div: int = 1         # DIV (override alu_r)
+        # Apply overrides
+        for k, v in overrides.items():
+            setattr(self, k, v)
+
+    def cost_of(self, cat: int, mnemonic: str = "",
+                branch_taken: bool = False) -> int:
+        """Return cycle cost for one instruction."""
+        if cat == CAT_ALU_R:
+            if mnemonic == "mul" or mnemonic == "mulh":
+                return self.mul
+            if mnemonic == "div":
+                return self.div
+            return self.alu_r
+        elif cat == CAT_ALU_I:
+            return self.alu_i
+        elif cat == CAT_SHIFT:
+            return self.shift
+        elif cat == CAT_LOAD:
+            return self.load
+        elif cat == CAT_STORE:
+            return self.store
+        elif cat == CAT_BRANCH:
+            return self.branch_taken if branch_taken else self.branch_not
+        elif cat == CAT_JUMP:
+            return self.jump
+        elif cat == CAT_JUMP_R:
+            return self.jump_r
+        elif cat == CAT_UPPER:
+            return self.upper
+        elif cat == CAT_NOP:
+            return self.nop
+        return 1
+
+    def label(self) -> str:
+        """Human-readable description."""
+        return (
+            f"{self.name}: ALU={self.alu_r}c MUL={self.mul}c DIV={self.div}c "
+            f"LW={self.load}c SW={self.store}c "
+            f"Br-taken={self.branch_taken}c Br-not={self.branch_not}c "
+            f"JMP={self.jump}c JALR={self.jump_r}c"
+        )
+
+
+# ── Pre-defined profiles ──────────────────────────────────────────────────
+
+PROFILE_SINGLE_CYCLE = MicroArch(
+    "single-cycle",
+)
+
+PROFILE_RV32IM_BASIC = MicroArch(
+    "rv32im-basic",
+    alu_r=1, alu_i=1, shift=1,
+    mul=4, div=34,          # RV32IM: serial mul=4, div=34 cycles
+    load=2, store=1,         # load-use delay, write buffer
+    branch_taken=3, branch_not=1,  # pipeline flush on taken
+    jump=3, jump_r=3,       # unconditional jump flush
+    upper=1, nop=1,
+)
+
+PROFILE_RV32IM_FAST = MicroArch(
+    "rv32im-fast",
+    alu_r=1, alu_i=1, shift=1,
+    mul=1, div=4,            # fast multiplier / divider
+    load=1, store=1,         # perfect cache / single-cycle memory
+    branch_taken=2, branch_not=1,
+    jump=2, jump_r=2,
+    upper=1, nop=1,
+)
+
+PROFILE_RV32IM_SLOW = MicroArch(
+    "rv32im-slow",
+    alu_r=1, alu_i=1, shift=1,
+    mul=32, div=34,           # bit-serial multiplier
+    load=5, store=2,          # slow memory (no cache)
+    branch_taken=3, branch_not=1,
+    jump=3, jump_r=3,
+    upper=1, nop=1,
+)
+
+PROFILES = {
+    "single": PROFILE_SINGLE_CYCLE,
+    "basic": PROFILE_RV32IM_BASIC,
+    "fast": PROFILE_RV32IM_FAST,
+    "slow": PROFILE_RV32IM_SLOW,
+}
+
+
+# ── Instruction-to-mnemonic mapping (lightweight, opcode-only) ────────────
+
+def _mnemonic_from_opcode(instr: int, opcode: int) -> str:
+    """Extract mnemonic from instruction word for cycle-cost lookup."""
+    f3 = (instr >> 12) & 0x7
+    f7 = (instr >> 25) & 0x7F
+    if opcode == 0b0110011:  # R-type
+        if f3 == 0b000 and f7 == 0b0000001:
+            return "mul"
+        if f3 == 0b001 and f7 == 0b0000001:
+            return "mulh"
+        if f3 == 0b100 and f7 == 0b0000001:
+            return "div"
+    return ""
+
 
 class PerfCounters:
     """Fast performance counters updated inline during emulation."""
@@ -72,11 +202,13 @@ class PerfCounters:
         "total", "cat_counts", "compute_ops", "memory_ops",
         "load_count", "store_count", "branch_total", "branch_taken",
         "branch_not_taken", "jump_count", "jump_r_count", "ret_count",
+        "total_cycles", "cat_cycles",
         "pc_samples", "label_counts", "label_addrs",
-        "t_start", "t_end",
+        "t_start", "t_end", "uarch",
     )
 
-    def __init__(self, label_addrs: dict[int, str] | None = None):
+    def __init__(self, label_addrs: dict[int, str] | None = None,
+                 uarch: MicroArch | None = None):
         self.total: int = 0
         self.cat_counts: list[int] = [0] * 12
         self.compute_ops: int = 0
@@ -89,11 +221,18 @@ class PerfCounters:
         self.jump_count: int = 0
         self.jump_r_count: int = 0
         self.ret_count: int = 0
+        self.total_cycles: int = 0
+        self.cat_cycles: list[int] = [0] * 12  # cycles per category
         self.pc_samples: dict[int, int] = {}
         self.label_counts: dict[str, int] = defaultdict(int)
         self.label_addrs: dict[int, str] = label_addrs or {}
         self.t_start: float = 0.0
         self.t_end: float = 0.0
+        self.uarch: MicroArch | None = uarch
+
+    @property
+    def cpi(self) -> float:
+        return self.total_cycles / self.total if self.total > 0 else 0.0
 
     @property
     def elapsed(self) -> float:
@@ -144,7 +283,8 @@ class RV32EmulatorFast:
 
     def run(self, max_instr: int = 2_000_000_000,
             label_addrs: dict[int, str] | None = None,
-            progress_interval: int = 10_000_000) -> PerfCounters:
+            progress_interval: int = 10_000_000,
+            uarch: MicroArch | None = None) -> PerfCounters:
         """Execute until RET or max_instr. Collects all performance metrics.
 
         Optimizations for speed:
@@ -153,16 +293,23 @@ class RV32EmulatorFast:
           - Avoid function calls in the hot loop
           - Only sample PC every 1000 instructions for histogram
         """
-        p = PerfCounters(label_addrs)
+        # Use default uarch if none provided
+        if uarch is None:
+            uarch = PROFILE_RV32IM_BASIC
+
+        p = PerfCounters(label_addrs, uarch)
         p.t_start = time.perf_counter()
 
         regs = self.regs
         mem = self.mem
         pc = self.pc
         total = 0
+        total_cycles = 0
         cat_counts = p.cat_counts
+        cat_cycles = p.cat_cycles
         running = True
         mem_len = len(mem)
+        cost_fn = uarch.cost_of  # local binding for speed
 
         # Local bindings for speed
         cat_alu_r = CAT_ALU_R
@@ -197,6 +344,7 @@ class RV32EmulatorFast:
             next_pc = pc + 4
             opcode = instr & 0x7F
             cat = cat_nop  # default
+            is_taken = False  # for branch cycle costing
 
             # ── R-type (OP) ──────────────────────────────────────────
             if opcode == 0b0110011:
@@ -318,6 +466,7 @@ class RV32EmulatorFast:
                 elif f3 == 0b111: take = (a & 0xFFFFFFFF) >= (b & 0xFFFFFFFF)   # BGEU
                 if take:
                     next_pc = pc + imm
+                    is_taken = True
                 cat = cat_branch
                 p.branch_total += 1
                 if take:
@@ -367,9 +516,27 @@ class RV32EmulatorFast:
             # x0 always zero
             regs[0] = 0
 
+            # ── Cycle cost (per-instruction, microarchitecture-aware) ─
+            # Get mnemonic for MUL/DIV distinction
+            mnem = ""
+            if opcode == 0b0110011:
+                f3_check = (instr >> 12) & 0x7
+                f7_check = (instr >> 25) & 0x7F
+                if f3_check == 0b000 and f7_check == 0b0000001:
+                    mnem = "mul"
+                elif f3_check == 0b001 and f7_check == 0b0000001:
+                    mnem = "mulh"
+                elif f3_check == 0b100 and f7_check == 0b0000001:
+                    mnem = "div"
+            # Determine branch taken status for cycle costing
+            br_taken = (cat == CAT_BRANCH and is_taken)
+
             # ── Update counters ──────────────────────────────────────
             total += 1
             cat_counts[cat] += 1
+            cycle_cost = cost_fn(cat, mnem, br_taken)
+            total_cycles += cycle_cost
+            cat_cycles[cat] += cycle_cost
 
             if cat in (CAT_ALU_R, CAT_ALU_I, CAT_SHIFT):
                 p.compute_ops += 1
@@ -404,6 +571,7 @@ class RV32EmulatorFast:
         self.regs[0] = 0
         self.pc = pc
         p.total = total
+        p.total_cycles = total_cycles
         p.t_end = time.perf_counter()
         return p
 
@@ -424,6 +592,7 @@ def run_benchmark(binary_path: str, code_size: int,
                   load_addr: int = 0,
                   max_instr: int = 2_000_000_000,
                   label_addrs: dict[int, str] | None = None,
+                  uarch: MicroArch | None = None,
                   verbose: bool = True) -> PerfCounters:
     """Run a ScratchV-generated RISC-V binary through the emulator.
 
@@ -461,7 +630,7 @@ def run_benchmark(binary_path: str, code_size: int,
         print(f"  Running (max {max_instr:,} instructions)...",
               flush=True)
 
-    perf = emu.run(max_instr=max_instr, label_addrs=label_addrs)
+    perf = emu.run(max_instr=max_instr, label_addrs=label_addrs, uarch=uarch)
 
     if verbose:
         result_addr = emu.regs[11]  # a1
@@ -501,8 +670,29 @@ def format_benchmark_report(perf: PerfCounters,
     lines.append("  ── Host Execution Timing ──")
     lines.append(f"  Wall time:     {perf.elapsed:.2f} s")
     lines.append(f"  Simulated MIPS: {perf.mips:.1f}")
-    est_hw_50mhz = total / 50_000_000
-    lines.append(f"  Est. HW time:  {est_hw_50mhz:.2f} s (@ 50 MHz, CPI=1)")
+    lines.append("")
+    lines.append("  ── Cycle-Accurate Model ──")
+    if perf.total_cycles > 0 and perf.uarch:
+        lines.append(f"  Profile:       {perf.uarch.label()}")
+        lines.append(f"  Total cycles:  {perf.total_cycles:,}")
+        lines.append(f"  CPI:           {perf.cpi:.2f}")
+        est_50 = perf.total_cycles / 50_000_000
+        est_100 = perf.total_cycles / 100_000_000
+        lines.append(f"  Est. HW @50MHz:  {est_50:.2f} s")
+        lines.append(f"  Est. HW @100MHz: {est_100:.2f} s")
+        # Cycle breakdown by category
+        if perf.total_cycles > 0:
+            lines.append("")
+            lines.append("  ── Cycle Distribution by Instruction Category ──")
+            for cat_id, cat_name in sorted(CAT_NAMES.items()):
+                cc = perf.cat_cycles[cat_id]
+                if cc > 0:
+                    pct = cc / perf.total_cycles * 100
+                    bar = "#" * int(pct / 2)
+                    lines.append(f"  {cat_name:<10s} {cc:>12,} cycles ({pct:5.1f}%) {bar}")
+    else:
+        est_hw_50mhz = total / 50_000_000
+        lines.append(f"  Est. HW time:  {est_hw_50mhz:.2f} s (@ 50 MHz, CPI=1)")
     lines.append("")
 
     # Instruction Mix
@@ -784,6 +974,36 @@ def estimate_cnn_instructions(
     # Input/output copy overhead
     total_insns += flat_el * 6  # input copy
 
+    # Cycle estimates for each microarchitecture profile
+    cycle_estimates = {}
+    for profile_name, uarch in PROFILES.items():
+        # Approximate: compute_ratio% are ALU+MUL, memory% are LW+SW, branch% are branches
+        alu_ratio = total_compute / max(total_insns, 1)
+        # Within ALU, ~15% are MUL (for CNN inner loops), rest are ADD/ADDI/SHIFT
+        mul_ratio = 0.15 * alu_ratio
+        alu_non_mul_ratio = 0.85 * alu_ratio
+        mem_ratio = total_memory / max(total_insns, 1)
+        br_ratio = total_branch / max(total_insns, 1)
+        other_ratio = 1.0 - alu_ratio - mem_ratio - br_ratio
+
+        cycles = (
+            total_insns * mul_ratio * uarch.mul +
+            total_insns * alu_non_mul_ratio * uarch.alu_r +
+            total_insns * mem_ratio * 0.5 * uarch.load +
+            total_insns * mem_ratio * 0.5 * uarch.store +
+            total_insns * br_ratio * 0.9 * uarch.branch_taken +
+            total_insns * br_ratio * 0.1 * uarch.branch_not +
+            total_insns * other_ratio * 1
+        )
+        cpi = cycles / max(total_insns, 1)
+        cycle_estimates[profile_name] = {
+            "total_cycles": int(cycles),
+            "cpi": round(cpi, 2),
+            "est_hw_50mhz_s": round(cycles / 50_000_000, 1),
+            "est_hw_100mhz_s": round(cycles / 100_000_000, 1),
+            "uarch_label": uarch.label(),
+        }
+
     return {
         "total_estimated": total_insns,
         "total_compute": total_compute,
@@ -796,6 +1016,7 @@ def estimate_cnn_instructions(
         "per_layer": layer_insns,
         "est_hw_time_50mhz": total_insns / 50_000_000,
         "est_hw_time_100mhz": total_insns / 100_000_000,
+        "cycle_estimates": cycle_estimates,
     }
 
 
@@ -829,8 +1050,25 @@ def print_estimate(est: dict) -> None:
           f"Memory: {est['memory_ratio']:.1f}%  "
           f"Branch: {est['branch_ratio']:.1f}%")
     print(f"  C/M ratio: {est['cm_ratio']:.1f}")
-    print(f"  Est. HW time @ 50 MHz (CPI=1): {est['est_hw_time_50mhz']:.2f} s")
-    print(f"  Est. HW time @ 100 MHz (CPI=1): {est['est_hw_time_100mhz']:.2f} s")
+    print()
+    print(f"  ── Cycle Estimates by Microarchitecture Profile ──")
+    print(f"  {'Profile':<20s} {'CPI':>6s} {'Cycles':>15s} {'@50MHz':>10s} {'@100MHz':>10s}")
+    print(f"  {'─'*20} {'─'*6} {'─'*15} {'─'*10} {'─'*10}")
+    # Single-cycle baseline
+    print(f"  {'single-cycle':<20s} {'1.00':>6s} {est['total_estimated']:>15,.0f} "
+          f"{est['est_hw_time_50mhz']:>9.1f}s {est['est_hw_time_100mhz']:>9.1f}s")
+    # Per-profile cycle estimates
+    for profile_name in ["fast", "basic", "slow"]:
+        if profile_name in est.get("cycle_estimates", {}):
+            ce = est["cycle_estimates"][profile_name]
+            print(f"  {profile_name:<20s} {ce['cpi']:>5.2f}  {ce['total_cycles']:>14,} "
+                  f"{ce['est_hw_50mhz_s']:>9.1f}s {ce['est_hw_100mhz_s']:>9.1f}s")
+    print()
+    print(f"  Profile details:")
+    for profile_name in ["single", "fast", "basic", "slow"]:
+        u = PROFILES.get(profile_name)
+        if u:
+            print(f"    {u.label()}")
     print()
     print(f"  {'Layer':<30s} {'Instructions':>15s} {'%':>8s}")
     print(f"  {'─'*30} {'─'*15} {'─'*8}")

@@ -2258,6 +2258,7 @@ def convert_onnx_to_riscv(
     onnx_path: str, output_bin: str, output_asm: str = "",
     benchmark: bool = False, max_instr: int = 2_000_000_000,
     estimate: bool = False, report: bool = False,
+    uarch: str = "basic",
 ) -> int:
     """Full pipeline: ONNX model → RISC-V RV32IM binary.
 
@@ -2476,13 +2477,17 @@ def convert_onnx_to_riscv(
         input_bytes = struct.pack(f"<{input_el}i", *input_q16)
 
         try:
-            from scratchv.standalone.benchmark import run_benchmark, format_benchmark_report
+            from scratchv.standalone.benchmark import (
+                run_benchmark, format_benchmark_report, PROFILES,
+            )
+            uarch_obj = PROFILES.get(uarch, PROFILES["basic"])
             perf = run_benchmark(
                 binary_path=output_bin,
                 code_size=code_size,
                 input_data=input_bytes,
                 max_instr=max_instr,
                 label_addrs=label_addrs,
+                uarch=uarch_obj,
                 verbose=True,
             )
             report = format_benchmark_report(perf, output_bin, code_size)
@@ -2527,6 +2532,12 @@ def main() -> int:
              "in benchmark_reports/ directory"
     )
     parser.add_argument(
+        "--uarch", default="basic", choices=["single", "fast", "basic", "slow"],
+        help="Microarchitecture profile for cycle-accurate emulation: "
+             "single (CPI=1), fast (mul=1 div=4), basic (mul=4 div=34), "
+             "slow (mul=32 div=34 lw=5) (default: basic)"
+    )
+    parser.add_argument(
         "--max-instr", type=int, default=2_000_000_000,
         help="Max instructions for benchmark emulation (default: 2 billion)"
     )
@@ -2546,6 +2557,7 @@ def main() -> int:
         max_instr=args.max_instr,
         estimate=args.estimate,
         report=args.report,
+        uarch=args.uarch,
     )
 
 
