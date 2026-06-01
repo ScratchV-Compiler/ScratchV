@@ -84,3 +84,33 @@ jobs:
 
       - name: Run benchmark tests
         run: python3.12 -m pytest benchmarks/test_benchmark.py -v --tb=short
+
+  cnn-benchmark:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install
+        run: |
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install -e ".[all]"
+
+      - name: Generate RISC-V binary + analytical estimation
+        run: |
+          python3.12 scratchv/standalone/onnx_to_riscv_standalone.py \
+            models/graph/cnn.onnx \
+            -o /tmp/cnn_riscv.bin \
+            --estimate \
+            --report
+
+      - name: Upload HTML benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: cnn-benchmark-report
+          path: benchmark_reports/
+          retention-days: 30
+
+      - name: Write GitHub job summary
+        run: |
+          cat benchmark_reports/github_summary.md >> $GITHUB_STEP_SUMMARY

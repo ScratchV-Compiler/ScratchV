@@ -11,3 +11,4 @@ venv/
 .venv/
 .claude/
 scratchv.egg-info/
+benchmark_reports/

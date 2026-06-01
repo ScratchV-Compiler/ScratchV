@@ -50,3 +50,16 @@ examples:
 docs:
 	@echo "Documentation is markdown — no build required."
 	@ls docs/*.md
+
+# ── CNN RISC-V benchmark ───────────────────────────────────────────────────────
+
+bench-cnn:
+	python3 scratchv/standalone/onnx_to_riscv_standalone.py models/graph/cnn.onnx \
+		-o /tmp/cnn_riscv.bin --estimate --report
+	@echo ""
+	@echo "Reports generated in benchmark_reports/"
+	@ls -la benchmark_reports/
+
+bench-cnn-emu:
+	python3 scratchv/standalone/onnx_to_riscv_standalone.py models/graph/cnn.onnx \
+		-o /tmp/cnn_riscv.bin --benchmark --max-instr 10000000 --report

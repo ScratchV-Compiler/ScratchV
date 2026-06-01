@@ -2257,7 +2257,7 @@ class CNNRISCVGenerator:
 def convert_onnx_to_riscv(
     onnx_path: str, output_bin: str, output_asm: str = "",
     benchmark: bool = False, max_instr: int = 2_000_000_000,
-    estimate: bool = False,
+    estimate: bool = False, report: bool = False,
 ) -> int:
     """Full pipeline: ONNX model → RISC-V RV32IM binary.
 
@@ -2397,7 +2397,7 @@ def convert_onnx_to_riscv(
     print(f"{'='*60}")
 
     # ── Optional: Analytical estimation ──────────────────────────────────
-    if estimate:
+    if estimate or report:
         print(f"\n[estimate] Analytical instruction count estimation...")
         try:
             from scratchv.standalone.benchmark import estimate_cnn_model, print_estimate
@@ -2405,6 +2405,51 @@ def convert_onnx_to_riscv(
             print_estimate(est)
         except ImportError:
             print("  ERROR: benchmark module not found", file=sys.stderr)
+
+    # ── Optional: Generate CI reports (HTML, JSON, GitHub summary) ───────
+    if report:
+        print(f"\n[report] Generating CI benchmark reports...")
+        try:
+            from scratchv.standalone.benchmark import estimate_cnn_model
+            from scratchv.standalone.bench_report import (
+                generate_html_report, generate_json_report, generate_github_summary,
+            )
+            est_data = estimate_cnn_model()
+            code_len = len(code_bytes)
+
+            os.makedirs("benchmark_reports", exist_ok=True)
+            model_name = os.path.basename(onnx_path)
+
+            # HTML report
+            with open("benchmark_reports/benchmark.html", "w") as f:
+                f.write(generate_html_report(
+                    code_size=code_len,
+                    static_insns=code_len // 4,
+                    est_data=est_data,
+                    model_name=model_name,
+                ))
+            print(f"  HTML: benchmark_reports/benchmark.html")
+
+            # JSON report
+            with open("benchmark_reports/benchmark.json", "w") as f:
+                f.write(generate_json_report(
+                    code_size=code_len,
+                    static_insns=code_len // 4,
+                    est_data=est_data,
+                    model_name=model_name,
+                ))
+            print(f"  JSON: benchmark_reports/benchmark.json")
+
+            # GitHub Actions job summary
+            with open("benchmark_reports/github_summary.md", "w") as f:
+                f.write(generate_github_summary(
+                    code_size=code_len,
+                    static_insns=code_len // 4,
+                    est_data=est_data,
+                ))
+            print(f"  Summary: benchmark_reports/github_summary.md")
+        except ImportError as e:
+            print(f"  ERROR: {e}", file=sys.stderr)
 
     # ── Optional: Benchmark ───────────────────────────────────────────────
     if benchmark:
@@ -2477,6 +2522,11 @@ def main() -> int:
              "no emulation needed)"
     )
     parser.add_argument(
+        "--report", action="store_true",
+        help="Generate CI benchmark reports (HTML, JSON, GitHub summary) "
+             "in benchmark_reports/ directory"
+    )
+    parser.add_argument(
         "--max-instr", type=int, default=2_000_000_000,
         help="Max instructions for benchmark emulation (default: 2 billion)"
     )
@@ -2495,6 +2545,7 @@ def main() -> int:
         benchmark=args.benchmark,
         max_instr=args.max_instr,
         estimate=args.estimate,
+        report=args.report,
     )
 
 
