@@ -2255,9 +2255,20 @@ class CNNRISCVGenerator:
 
 
 def convert_onnx_to_riscv(
-    onnx_path: str, output_bin: str, output_asm: str = ""
+    onnx_path: str, output_bin: str, output_asm: str = "",
+    benchmark: bool = False, max_instr: int = 2_000_000_000,
+    estimate: bool = False,
 ) -> int:
     """Full pipeline: ONNX model → RISC-V RV32IM binary.
+
+    Args:
+        onnx_path: Path to .onnx model file.
+        output_bin: Path for output RISC-V binary.
+        output_asm: Path for output assembly listing.
+        benchmark: If True, run the generated binary through the RV32IM
+            emulator and print detailed performance metrics.
+        max_instr: Max instructions for benchmark emulation (avoids
+            infinite loops).
 
     Returns: 0 on success, non-zero on error.
     """
@@ -2385,6 +2396,59 @@ def convert_onnx_to_riscv(
     print(f"    returns via jalr zero, ra, 0")
     print(f"{'='*60}")
 
+    # ── Optional: Analytical estimation ──────────────────────────────────
+    if estimate:
+        print(f"\n[estimate] Analytical instruction count estimation...")
+        try:
+            from scratchv.standalone.benchmark import estimate_cnn_model, print_estimate
+            est = estimate_cnn_model()
+            print_estimate(est)
+        except ImportError:
+            print("  ERROR: benchmark module not found", file=sys.stderr)
+
+    # ── Optional: Benchmark ───────────────────────────────────────────────
+    if benchmark:
+        print(f"\n[benchmark] Running RISC-V emulation with performance counters...")
+        code_size = len(code_bytes)
+
+        # Build label address map from emitter (for per-operator stats)
+        label_addrs = {}
+        for name, idx in generator.emit.labels.items():
+            label_addrs[idx * 4] = name  # PC = instruction_index * 4
+
+        # Generate random Q16.16 input data matching input shape
+        input_shape = model.get_shape(model.inputs[0].name) if model.inputs else ()
+        input_el = 1
+        for d in input_shape:
+            input_el *= d
+        # Generate random input in Q16.16 (small values, ±0.1 range)
+        import random
+        random.seed(42)
+        input_q16 = []
+        for _ in range(input_el):
+            val = int((random.random() - 0.5) * 0.2 * 65536)  # ±0.1 in Q16.16
+            input_q16.append(val)
+        input_bytes = struct.pack(f"<{input_el}i", *input_q16)
+
+        try:
+            from scratchv.standalone.benchmark import run_benchmark, format_benchmark_report
+            perf = run_benchmark(
+                binary_path=output_bin,
+                code_size=code_size,
+                input_data=input_bytes,
+                max_instr=max_instr,
+                label_addrs=label_addrs,
+                verbose=True,
+            )
+            report = format_benchmark_report(perf, output_bin, code_size)
+            print(report)
+        except ImportError:
+            print("  ERROR: benchmark module not found", file=sys.stderr)
+        except Exception as e:
+            print(f"  Benchmark failed: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+
     return 0
 
 
@@ -2401,6 +2465,21 @@ def main() -> int:
         "--asm", default="",
         help="Output assembly file path (default: <output>.s)"
     )
+    parser.add_argument(
+        "--benchmark", action="store_true",
+        help="Run generated binary through RV32IM emulator and print "
+             "detailed performance metrics (instruction mix, C/M ratio, "
+             "branch stats, per-layer breakdown, MIPS)"
+    )
+    parser.add_argument(
+        "--estimate", action="store_true",
+        help="Print analytical instruction count estimation (instant, "
+             "no emulation needed)"
+    )
+    parser.add_argument(
+        "--max-instr", type=int, default=2_000_000_000,
+        help="Max instructions for benchmark emulation (default: 2 billion)"
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.model):
@@ -2411,7 +2490,12 @@ def main() -> int:
     if output_asm == args.output:
         output_asm = args.output + ".s"
 
-    return convert_onnx_to_riscv(args.model, args.output, output_asm)
+    return convert_onnx_to_riscv(
+        args.model, args.output, output_asm,
+        benchmark=args.benchmark,
+        max_instr=args.max_instr,
+        estimate=args.estimate,
+    )
 
 
 if __name__ == "__main__":
