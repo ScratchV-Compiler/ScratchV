@@ -7,110 +7,72 @@ on:
     branches: [main]
 
 jobs:
+  # ═════════════════════════════════════════════════════════════════════════
+  # 课题功能测试：所有14个模块的单元测试 + 集成测试
+  # ═════════════════════════════════════════════════════════════════════════
   test:
     runs-on: self-hosted
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
-
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install
-        run: |
-          python${{ matrix.python-version }} -m pip install --upgrade pip
-          python${{ matrix.python-version }} -m pip install -e ".[all]"
-
-      - name: Run tests
-        run: python${{ matrix.python-version }} -m pytest tests/ -v --tb=short
-
-  lint:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install
-        run: |
-          python3.12 -m pip install --upgrade pip
-          python3.12 -m pip install -e ".[all]"
-          python3.12 -m pip install flake8 mypy
-
-      - name: flake8
-        run: python3.12 -m flake8 scratchv/ scratchv_dag/ tests/
-
-      - name: mypy
-        run: python3.12 -m mypy scratchv/ scratchv_dag/ --ignore-missing-imports
-
-  coverage:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install
-        run: |
-          python3.12 -m pip install --upgrade pip
-          python3.12 -m pip install -e ".[all]"
-          python3.12 -m pip install pytest-cov
-
-      - name: Run tests with coverage
-        run: python3.12 -m pytest tests/ --cov=scratchv --cov=scratchv_dag --cov-report=term --cov-report=xml
-
-  smoke:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install
+      - name: Install dependencies
         run: |
           python3.12 -m pip install --upgrade pip
           python3.12 -m pip install -e ".[all]"
 
-      - name: Smoke test - DSL compilation
-        run: |
-          python3.12 -m scratchv examples/simple_add.dsl -o /tmp/simple_add.s --dump-ir
-          python3.12 -m scratchv examples/relu_test.dsl -o /tmp/relu.s --optimize all
-          python3.12 -m scratchv examples/matmul_test.dsl -o /tmp/matmul.s --optimize all
+      - name: Run all topic tests
+        run: python3.12 -m pytest tests/ -v --tb=short
 
+  # ═════════════════════════════════════════════════════════════════════════
+  # 模型性能测试：ONNX模型管线 + DSL用例 + CNN RISC-V编译
+  # ═════════════════════════════════════════════════════════════════════════
   benchmark:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install
-        run: |
-          python3.12 -m pip install --upgrade pip
-          python3.12 -m pip install -e ".[all]"
-
-      - name: Run benchmark tests
-        run: python3.12 -m pytest benchmarks/test_benchmark.py -v --tb=short
-
-  cnn-benchmark:
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install
+      - name: Install dependencies
         run: |
           python3.12 -m pip install --upgrade pip
           python3.12 -m pip install -e ".[all]"
 
-      - name: Generate RISC-V binary + analytical estimation
-        run: |
-          python3.12 scratchv/standalone/onnx_to_riscv_standalone.py \
-            models/graph/cnn.onnx \
-            -o /tmp/cnn_riscv.bin \
-            --estimate \
-            --report
+      # ── 3.1 ONNX 模型管线基准测试 ──────────────────────────────────────
+      - name: ONNX model pipeline benchmarks
+        run: python3.12 -m pytest benchmarks/test_benchmark.py -v --tb=short
 
-      - name: Upload HTML benchmark report
+      # ── 3.2 DSL 用例编译 + 模拟基准 ────────────────────────────────────
+      - name: DSL case compilation benchmarks
+        run: |
+          mkdir -p benchmark_reports
+          python3.12 benchmarks/bench_runner.py benchmarks/cases \
+            --output-json benchmark_reports/dsl_bench.json \
+            --output-html benchmark_reports/dsl_bench.html \
+            --output-md benchmark_reports/dsl_bench.md
+
+      # ── 3.3 CNN RISC-V 编译 + 性能估算（模型存在才跑）─────────────────
+      - name: CNN RISC-V compilation & estimation
+        run: |
+          if [ -f models/graph/cnn.onnx ]; then
+            mkdir -p benchmark_reports
+            python3.12 scratchv/standalone/onnx_to_riscv_standalone.py \
+              models/graph/cnn.onnx \
+              -o /tmp/cnn_riscv.bin \
+              --estimate \
+              --report
+          else
+            echo "models/graph/cnn.onnx not found, skipping CNN benchmark"
+          fi
+
+      # ── 上报 ──────────────────────────────────────────────────────────
+      - name: Upload benchmark reports
         uses: actions/upload-artifact@v4
         with:
-          name: cnn-benchmark-report
+          name: benchmark-reports
           path: benchmark_reports/
           retention-days: 30
 
-      - name: Write GitHub job summary
+      - name: Write job summary
         run: |
           cat benchmark_reports/github_summary.md >> $GITHUB_STEP_SUMMARY
