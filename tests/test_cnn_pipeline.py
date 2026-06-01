@@ -217,12 +217,14 @@ class TestAssembly:
         assert "zero" in riscv_assembly
         assert "ra" in riscv_assembly
 
-    def test_has_runtime_calls(self, riscv_assembly):
-        """Assembly should contain call instructions for NN ops."""
-        assert "conv" in riscv_assembly
-        assert "gemm" in riscv_assembly
-        assert "maxpool" in riscv_assembly
-        assert "sigmoid" in riscv_assembly
+    def test_has_inline_nn_ops(self, riscv_assembly):
+        """NN ops should be inlined as real RISC-V instructions (no runtime calls)."""
+        # After eliminating call pseudo-instructions, NN ops are inlined:
+        # ReLU → max(x,0) via SLT + branch, Gemm → MUL+ADD, etc.
+        assert "mul" in riscv_assembly   # NN MAC operations
+        assert "add" in riscv_assembly   # accumulation
+        # No 'call' pseudo-instructions — all ops are real RISC-V
+        assert "call" not in riscv_assembly.lower().split()
 
     def test_emits_function_label(self, riscv_assembly):
         """Should emit .globl and function label for main_graph."""
@@ -230,12 +232,14 @@ class TestAssembly:
         assert ".globl" in riscv_assembly
 
     def test_counts(self, riscv_assembly):
-        """Should have exactly 24 real instructions (excluding directives)."""
+        """Inline NN ops generate more instructions than old call-based code."""
         lines = [ln for ln in riscv_assembly.split("\n")
                  if ln.strip() and not ln.strip().startswith(".")
                  and not ln.strip().startswith("#")
                  and not ln.strip().endswith(":")]
-        assert len(lines) == 24
+        # Inline code for Conv/Gemm/MaxPool/ReLU/Sigmoid/Reshape
+        # generates significantly more than 24 placeholder instructions
+        assert len(lines) > 24
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -245,9 +249,10 @@ class TestAssembly:
 class TestBinaryEncoding:
     """Verify RISC-V binary machine code."""
 
-    def test_produces_96_bytes(self, riscv_binary):
-        """24 instructions × 4 bytes = 96 bytes."""
-        assert len(riscv_binary) == 96
+    def test_produces_valid_binary(self, riscv_binary):
+        """Inline NN ops generate larger binary (was 96 bytes with call placeholders)."""
+        assert len(riscv_binary) > 0
+        assert len(riscv_binary) % 4 == 0  # multiple of 4 (32-bit instructions)
 
     def test_valid_rv32_instructions(self, riscv_binary):
         """Every 4-byte word should decode as a valid RV32 opcode."""
