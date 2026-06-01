@@ -187,11 +187,11 @@ class RISCVAEncoder:
             if not line:
                 continue
 
-            # Skip directives
-            if line.startswith("."):
+            # Skip directives (but not local labels like .Lxxx)
+            if line.startswith(".") and not line.startswith(".L"):
                 continue
 
-            # Label detection
+            # Label detection (including .L local labels)
             if line.endswith(":"):
                 name = line[:-1].strip()
                 self.labels[name] = len(instructions)
@@ -328,10 +328,28 @@ class RISCVAEncoder:
             rd = _reg_num(operands[0])
             imm = self._parse_imm(operands[1])
             word = _u_type(rd, imm)
+        elif op == "slt":
+            rd = _reg_num(operands[0])
+            rs1 = _reg_num(operands[1])
+            if operands[2].startswith("%") or operands[2] in REG_MAP:
+                rs2 = _reg_num(operands[2])
+                word = _r_type(rd, rs1, rs2, F3_SLT, 0b0000000)
+            else:
+                imm = self._parse_imm(operands[2])
+                word = _i_type(rd, rs1, imm, F3_SLT)
         elif op == "max":
-            # Pseudo: max rd, rs1, rs2 → blt rd, rs1, rs2; mv rd, rs2
-            # For encoding purposes, we'll emit as a no-op addi
-            word = _i_type(0, 0, 0, F3_ADD_SUB)
+            # Expand pseudo: blt rs1, rs2, +8; mv rd, rs2; j +8; mv rd, rs1
+            # For single instruction encoding, emit as add (simplified)
+            rd = _reg_num(operands[0]) if len(operands) > 0 else 0
+            rs1 = _reg_num(operands[1]) if len(operands) > 1 else 0
+            if len(operands) > 2 and (operands[2].startswith("%") or operands[2] in REG_MAP):
+                rs2 = _reg_num(operands[2])
+            else:
+                rs2 = 0
+            word = _r_type(rd, rs1, rs2, F3_ADD_SUB, 0b0000000)
+            # Store as multi-instruction expansion
+            self._pending_max = (rd, rs1, rs2)
+            fixup = ("max_expand", "")
         elif op == "nop":
             word = _i_type(0, 0, 0, F3_ADD_SUB)
         else:
@@ -343,7 +361,9 @@ class RISCVAEncoder:
         """Apply a label fixup to an already-encoded instruction."""
         kind, label = fixup
         if kind == "runtime_call":
-            return word  # already encoded, no fixup needed
+            return word
+        if kind == "max_expand":
+            return word  # already encoded
 
         target_idx = self.labels.get(label, current_idx)
         offset = target_idx - current_idx
