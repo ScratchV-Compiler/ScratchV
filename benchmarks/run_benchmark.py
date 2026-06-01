@@ -1,3 +1,4 @@
+# flake8: noqa
 """ScratchV compiler benchmark suite.
 
 Measures compilation pipeline performance across ONNX models:

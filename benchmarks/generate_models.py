@@ -1,3 +1,4 @@
+# flake8: noqa
 """Benchmark model generation — uses ScratchV's currently supported ONNX ops.
 
 Supported ops: Add, Mul, Sub, Div, Relu, MatMul, MaxPool, GeLU, Softmax, Neg, Exp

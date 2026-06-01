@@ -29,9 +29,13 @@ class IRBuilder:
     def _emit(self, opcode: OpCode, dest: Value | None = None,
               operands: list[Value] | None = None,
               **attrs) -> Instruction:
+        # Extract target from attrs to set it as a proper field
+        target = attrs.pop("target", None)
         instr = Instruction(
             opcode=opcode, dest=dest,
-            operands=operands or [], attrs=attrs)
+            operands=operands or [], attrs=attrs,
+            target=target,
+        )
         if self.current_block is not None:
             self.current_block.add(instr)
         return instr

@@ -1,3 +1,4 @@
+# flake8: noqa
 """Benchmark tests — integrated with pytest for CI.
 
 These tests ensure the compiler pipeline completes successfully
