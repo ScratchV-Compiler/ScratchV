@@ -12,7 +12,7 @@ from __future__ import annotations
 from scratchv.ir.types import OpCode, Instruction, BasicBlock, Program
 
 
-class PeepholeOptimizer:
+class IRPeepholeOptimizer:
     """Eliminate redundant instruction patterns in IR."""
 
     def __init__(self, program: Program):

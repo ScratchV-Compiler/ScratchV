@@ -492,3 +492,62 @@ def block_from_machine_instrs(
             ))
 
     return result
+
+
+def machine_instrs_from_block(
+        block: list[LsInstruction],
+) -> list:  # list of MachineInstr
+    """Convert LsInstruction list back to MachineInstr list.
+
+    This is the reverse of ``block_from_machine_instrs`` and enables the
+    linear-scan allocator's output to be consumed by ``AsmEmitter``.
+
+    Parameters
+    ----------
+    block:
+        List of LsInstruction objects (possibly after register renaming).
+
+    Returns
+    -------
+    List of MachineInstr objects.
+    """
+    from scratchv.backend.machine_types import MachineInstr, MachineOp, MachineOperand
+
+    result = []
+    for inst in block:
+        if inst.opcode == ".label":
+            result.append(MachineInstr(
+                MachineOp.LABEL, comment=inst.comment,
+            ))
+            continue
+
+        # Resolve opcode
+        try:
+            mop = MachineOp(inst.opcode)
+        except ValueError:
+            mop = MachineOp.MV  # fallback
+
+        # Build operands
+        def _to_mop(s: str) -> MachineOperand:
+            if s.startswith("x") or s.startswith("a") or s.startswith("t") or \
+               s.startswith("s") or s.startswith("f") or s in ("zero", "ra", "sp", "gp", "tp", "fp"):
+                return MachineOperand.reg(s)
+            try:
+                return MachineOperand.immediate(int(s))
+            except ValueError:
+                return MachineOperand.vreg(s)
+
+        dst = None
+        src1 = None
+        src2 = None
+        ops = [_to_mop(o) for o in inst.operands]
+        if len(ops) >= 1:
+            dst = ops[0]
+        if len(ops) >= 2:
+            src1 = ops[1]
+        if len(ops) >= 3:
+            src2 = ops[2]
+
+        result.append(MachineInstr(mop, dst, src1, src2, inst.comment))
+
+    return result

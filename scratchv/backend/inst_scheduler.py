@@ -448,6 +448,58 @@ def parse_instructions(asm_text: str) -> list[SchedInst]:
     return result
 
 
+def machine_instrs_from_scheduled(
+        scheduled: list[SchedInst],
+) -> list:  # list of MachineInstr
+    """Convert scheduled SchedInst list back to MachineInstr list.
+
+    This enables the instruction scheduler's output to be consumed by
+    ``RegisterAllocator`` and ``AsmEmitter``.
+
+    Parameters
+    ----------
+    scheduled:
+        List of SchedInst objects in scheduled order.
+
+    Returns
+    -------
+    List of MachineInstr objects.
+    """
+    from scratchv.backend.machine_types import MachineInstr, MachineOp, MachineOperand
+
+    result = []
+    for inst in scheduled:
+        if inst.opcode == ".label":
+            result.append(MachineInstr(
+                MachineOp.LABEL, comment="",
+            ))
+            continue
+
+        try:
+            mop = MachineOp(inst.opcode)
+        except ValueError:
+            mop = MachineOp.MV
+
+        def _to_mop(s: str) -> MachineOperand:
+            if s.startswith("x") or s.startswith("a") or s.startswith("t") or \
+               s.startswith("s") or s.startswith("f") or \
+               s in ("zero", "ra", "sp", "gp", "tp", "fp"):
+                return MachineOperand.reg(s)
+            try:
+                return MachineOperand.immediate(int(s))
+            except ValueError:
+                return MachineOperand.vreg(s)
+
+        ops = [_to_mop(o) for o in inst.operands]
+        dst = ops[0] if len(ops) >= 1 else None
+        src1 = ops[1] if len(ops) >= 2 else None
+        src2 = ops[2] if len(ops) >= 3 else None
+
+        result.append(MachineInstr(mop, dst, src1, src2, inst.raw_line))
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------

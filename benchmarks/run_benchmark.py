@@ -89,10 +89,10 @@ def _optimize(program: Program, level: str) -> float:
     DeadCodeEliminator(program).run()
 
     if level == "all":
-        from scratchv.optimizer.peephole import PeepholeOptimizer
+        from scratchv.optimizer.peephole import IRPeepholeOptimizer
         from scratchv.optimizer.muladd_fusion import MulAddFusion
         from scratchv.optimizer.licm import LICM
-        PeepholeOptimizer(program).run()
+        IRPeepholeOptimizer(program).run()
         MulAddFusion(program).run()
         LICM(program).run()
 

@@ -3,140 +3,42 @@
 Implements two strategies:
 1. Naive: map every virtual register to a stack slot (load/store).
 2. Greedy: simple local greedy allocator using callee-saved regs first.
+
+Machine instruction types (MachineOp, MachineOperand, MachineInstr) are
+defined in ``scratchv.backend.machine_types`` and re-exported here for
+backward compatibility.
 """
 
 from __future__ import annotations
 
-import enum
-from dataclasses import dataclass
 from typing import Optional
 
+from scratchv.backend.machine_types import (  # noqa: F401 — re-export
+    ALL_REGS,
+    ARG_REGS,
+    CALLEE_SAVED,
+    MachineInstr,
+    MachineOp,
+    MachineOperand,
+    STACK_BASE,
+    TEMP_REGS,
+    ZERO_REG,
+)
 
-class MachineOp(enum.Enum):
-    """RISC-V machine instruction opcodes used by the compiler."""
-    # ALU
-    ADD = "add"
-    ADDI = "addi"
-    SUB = "sub"
-    MUL = "mul"
-    DIV = "div"
-    MAX = "max"     # pseudo: max rd, rs1, rs2
-    SRAI = "srai"
-    XOR = "xor"
-    AND = "and"
-    SLT = "slt"
-    REM = "rem"
-    # Memory
-    LW = "lw"
-    SW = "sw"
-    FLD = "fld"
-    FSD = "fsd"
-    # Control
-    J = "j"
-    JAL = "jal"
-    JALR = "jalr"
-    BEQ = "beq"
-    BNE = "bne"
-    BLT = "blt"
-    BGE = "bge"
-    BNEZ = "bnez"   # pseudo
-    # Pseudo
-    LI = "li"
-    MV = "mv"
-    CALL = "call"
-    LABEL = ".label"
-    # Directive
-    SECTION = ".section"
-    GLOBL = ".globl"
-    SIZE = ".size"
-    TYPE = ".type"
-    # Float (F/D extension)
-    SQRT_S = "fsqrt.s"
-    SQRT_D = "fsqrt.d"
-    FMIN_D = "fmin.d"
-    FMAX_D = "fmax.d"
-    FABS_D = "fabs.d"
-    FNEG_D = "fneg.d"
-    FADD_D = "fadd.d"
-    FSUB_D = "fsub.d"
-    FMUL_D = "fmul.d"
-    FDIV_D = "fdiv.d"
-    FLT_D = "flt.d"
-    FEQ_D = "feq.d"
-    FCVT_S_D = "fcvt.s.d"
-    FCVT_D_S = "fcvt.d.s"
-    LI_D = "li.d"
-    # Float single-precision
-    FADD_S = "fadd.s"
-    FSUB_S = "fsub.s"
-    FMUL_S = "fmul.s"
-    FDIV_S = "fdiv.s"
-    FMAX_S = "fmax.s"
-    FMIN_S = "fmin.s"
-    FLE_S = "fle.s"
-    FLT_S = "flt.s"
-    FEQ_S = "feq.s"
-    FSQRT_S = "fsqrt.s"
-    FLW = "flw"
-    FSW = "fsw"
-    FMV_S = "fmv.s"
-    FMV_S_X = "fmv.s.x"
-
-
-@dataclass
-class MachineOperand:
-    """A register or immediate operand."""
-    kind: str  # "reg", "imm", "vreg"
-    value: str | int
-
-    @staticmethod
-    def vreg(name: str) -> "MachineOperand":
-        return MachineOperand("vreg", name)
-
-    @staticmethod
-    def immediate(val: int) -> "MachineOperand":
-        return MachineOperand("imm", val)
-
-    @staticmethod
-    def reg(name: str) -> "MachineOperand":
-        return MachineOperand("reg", name)
-
-    def __repr__(self) -> str:
-        if self.kind == "imm":
-            return str(self.value)
-        return f"%{self.value}"
-
-
-@dataclass
-class MachineInstr:
-    """A machine-level instruction using virtual or physical registers."""
-    op: MachineOp
-    dst: Optional[MachineOperand] = None
-    src1: Optional[MachineOperand] = None
-    src2: Optional[MachineOperand] = None
-    comment: str = ""
-
-    def __repr__(self) -> str:
-        parts = [self.op.value]
-        for op in (self.dst, self.src1, self.src2):
-            if op is not None:
-                parts.append(str(op))
-        s = " ".join(parts)
-        if self.comment:
-            s += f"  # {self.comment}"
-        return s
-
-
-# RISC-V register sets
-CALLEE_SAVED = [
-    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
-    "s8", "s9", "s10", "s11",
+# Re-export for backward compatibility — new code should import directly
+# from scratchv.backend.machine_types.
+__all__ = [
+    "MachineOp",
+    "MachineOperand",
+    "MachineInstr",
+    "CALLEE_SAVED",
+    "TEMP_REGS",
+    "ARG_REGS",
+    "ALL_REGS",
+    "STACK_BASE",
+    "ZERO_REG",
+    "RegisterAllocator",
 ]
-TEMP_REGS = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"]
-ARG_REGS = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"]
-ALL_REGS = TEMP_REGS + CALLEE_SAVED  # 19 allocatable registers
-STACK_BASE = "sp"
-ZERO_REG = "x0"
 
 
 class RegisterAllocator:
@@ -292,8 +194,7 @@ class RegisterAllocator:
         """Spill all registers at basic block boundaries."""
         for phys_reg, vreg_name in list(self._reg_pool.items()):
             if vreg_name is not None:
-                slot = self._get_spill_slot(
-                    vreg_name)  # type: ignore[arg-type]
+                slot = self._get_spill_slot(vreg_name)  # type: ignore[arg-type]
                 mem = f"{STACK_BASE}({-slot})"
                 self._emit(MachineInstr(
                     MachineOp.SW, MachineOperand.reg(mem),

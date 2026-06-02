@@ -16,7 +16,7 @@ import statistics
 import time
 from typing import Optional
 
-from scratchv.backend.asm_peephole import PeepholeOptimizer
+from scratchv.backend.asm_peephole import AsmPeepholeOptimizer
 
 
 def _gen_synthetic_asm(num_instrs: int, seed: int = 42,
@@ -76,7 +76,7 @@ def bench_optimize(asm_text: str, repeats: int = 20) -> dict:
     results = []
 
     for _ in range(repeats):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         t0 = time.perf_counter()
         result, changes = optimizer.optimize(asm_text)
         t1 = time.perf_counter()

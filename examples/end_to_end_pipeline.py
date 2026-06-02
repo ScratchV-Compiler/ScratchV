@@ -165,12 +165,12 @@ return z
     program2 = parser2.parse(dsl_source)
     from scratchv.optimizer.constant_folding import ConstantFolder
     from scratchv.optimizer.dead_code import DeadCodeEliminator
-    from scratchv.optimizer.peephole import PeepholeOptimizer
+    from scratchv.optimizer.peephole import IRPeepholeOptimizer
     folder = ConstantFolder(program2)
     folder.run()
     elim = DeadCodeEliminator(program2)
     elim.run()
-    peep = PeepholeOptimizer(program2)
+    peep = IRPeepholeOptimizer(program2)
     peep.run()
     codegen2 = LLVMCodegen(program2)
     print("After optimization (fold + dce + peephole):")

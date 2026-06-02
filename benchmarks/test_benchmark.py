@@ -68,7 +68,7 @@ def test_optimize(model_name: str, benchmark_models: dict[str, str]):
     from scratchv.frontend.onnx_parser import ONNXParser
     from scratchv.optimizer.constant_folding import ConstantFolder
     from scratchv.optimizer.dead_code import DeadCodeEliminator
-    from scratchv.optimizer.peephole import PeepholeOptimizer
+    from scratchv.optimizer.peephole import IRPeepholeOptimizer
 
     path = benchmark_models[model_name]
     program = ONNXParser().parse(path)
@@ -77,7 +77,7 @@ def test_optimize(model_name: str, benchmark_models: dict[str, str]):
 
     ConstantFolder(program).run()
     DeadCodeEliminator(program).run()
-    PeepholeOptimizer(program).run()
+    IRPeepholeOptimizer(program).run()
 
     inst_after = sum(1 for f in program.functions for bb in f.blocks for _ in bb.instructions)
     assert inst_after >= 0, f"Optimization failed for {model_name}"
