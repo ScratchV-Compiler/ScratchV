@@ -2,7 +2,7 @@
 
 import pytest
 from scratchv.backend.asm_peephole import (
-    PeepholeOptimizer, PeepholeRule, _parse_line, _parse_asm, _lines_to_asm,
+    AsmPeepholeOptimizer, PeepholeRule, _parse_line, _parse_asm, _lines_to_asm,
 )
 
 
@@ -38,7 +38,7 @@ class TestDefaultRules:
     """Tests for the five default peephole rules."""
 
     def test_addi_addi_fusion(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = "  addi t0, t0, 3\n  addi t0, t0, 5\n"
         result, changes = optimizer.optimize(asm)
         assert changes >= 1
@@ -46,34 +46,34 @@ class TestDefaultRules:
         assert "8" in result or "3+5" in result
 
     def test_li_addi_fusion(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = "  li t0, 10\n  addi t0, t0, 5\n"
         result, changes = optimizer.optimize(asm)
         assert changes >= 1
         assert "15" in result or "10+5" in result
 
     def test_beq_zero_jump(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = "  beq x0, x0, loop_start\n"
         result, changes = optimizer.optimize(asm)
         assert changes >= 1
         assert "j" in result
 
     def test_mv_mv_swap_elimination(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = "  mv t0, t1\n  mv t1, t0\n"
         result, changes = optimizer.optimize(asm)
         assert changes >= 0  # May or may not match depending on operands
 
     def test_redundant_mv_elimination(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = "  mv t0, t1\n  mv t2, t0\n"
         result, changes = optimizer.optimize(asm)
         # Should produce: mv t2, t1
         assert changes >= 0
 
 
-class TestPeepholeOptimizer:
+class TestAsmPeepholeOptimizer:
     """Tests for the optimizer class."""
 
     def test_custom_rules(self):
@@ -84,14 +84,14 @@ class TestPeepholeOptimizer:
                 replacement=[],
             ),
         ]
-        opt = PeepholeOptimizer(rules=custom)
+        opt = AsmPeepholeOptimizer(rules=custom)
         asm = "  nop\n  add t0, t1, t2\n"
         result, changes = opt.optimize(asm)
         assert "nop" not in result
         assert changes >= 1
 
     def test_no_changes_on_clean_asm(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = "  add t0, t1, t2\n  sub t3, t4, t5\n  ret\n"
         result, changes = optimizer.optimize(asm)
         assert "add" in result
@@ -99,7 +99,7 @@ class TestPeepholeOptimizer:
         assert "ret" in result
 
     def test_report(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = "  addi t0, t0, 1\n  addi t0, t0, 2\n"
         optimizer.optimize(asm)
         report = optimizer.report()
@@ -107,34 +107,34 @@ class TestPeepholeOptimizer:
         assert "Total" in report
 
     def test_total_matches_property(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = "  addi t0, t0, 1\n  addi t0, t0, 2\n"
         optimizer.optimize(asm)
         matches = optimizer.total_matches
         assert isinstance(matches, dict)
 
     def test_empty_asm(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         result, changes = optimizer.optimize("")
         assert result == ""
         assert changes == 0
 
     def test_preserves_labels(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = "main:\n  add t0, t1, t2\n  ret\n"
         result, changes = optimizer.optimize(asm)
         assert "main:" in result
         assert "ret" in result
 
     def test_no_infinite_loop_on_no_match(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         # Just branches - no addi/addi or other fusible patterns
         asm = "  beq t0, t1, label\nlabel:\n  j label\n"
         result, changes = optimizer.optimize(asm)
         assert changes == 0
 
     def test_multiple_matches_in_sequence(self):
-        optimizer = PeepholeOptimizer()
+        optimizer = AsmPeepholeOptimizer()
         asm = (
             "  addi t0, t0, 1\n  addi t0, t0, 2\n"
             "  addi t1, t1, 3\n  addi t1, t1, 4\n"

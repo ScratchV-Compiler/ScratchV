@@ -68,8 +68,8 @@ return result
     folder3.run()
     elim3 = DeadCodeEliminator(program3)
     elim3.run()
-    from scratchv.optimizer.peephole import PeepholeOptimizer
-    peep = PeepholeOptimizer(program3)
+    from scratchv.optimizer.peephole import IRPeepholeOptimizer
+    peep = IRPeepholeOptimizer(program3)
     peeped = peep.run()
     print(f"  Folded+DCE+Peephole: {peeped} optimizations")
 

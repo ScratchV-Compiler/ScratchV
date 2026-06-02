@@ -6,7 +6,7 @@ or ``riscv64-linux-gnu-gcc``.
 
 from __future__ import annotations
 
-from scratchv.backend.register_alloc import (
+from scratchv.backend.machine_types import (
     MachineInstr, MachineOp, MachineOperand,
 )
 

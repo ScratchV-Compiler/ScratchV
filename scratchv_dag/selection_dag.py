@@ -27,7 +27,7 @@ from scratchv_dag.sdnode import (
 # We re-use the existing backend's MachineInstr types for scheduling
 # output so the DAG scheduler integrates directly into the ScratchV
 # backend pipeline.
-from scratchv.backend.register_alloc import (
+from scratchv.backend.machine_types import (
     MachineInstr, MachineOp, MachineOperand,
 )
 

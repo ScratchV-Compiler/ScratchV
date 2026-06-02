@@ -2,12 +2,12 @@
 
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import OpCode
-from scratchv.optimizer.peephole import PeepholeOptimizer
+from scratchv.optimizer.peephole import IRPeepholeOptimizer
 from scratchv.optimizer.muladd_fusion import MulAddFusion
 from scratchv.optimizer.licm import LICM
 
 
-class TestPeepholeOptimizer:
+class TestIRPeepholeOptimizer:
     def test_eliminate_addi_zero(self):
         builder = IRBuilder()
         builder.new_function("test")
@@ -19,7 +19,7 @@ class TestPeepholeOptimizer:
         builder._emit(OpCode.ADD, c, [a, zero])
         builder.ret(c)
 
-        opt = PeepholeOptimizer(builder.program)
+        opt = IRPeepholeOptimizer(builder.program)
         opt.run()
         # The addi 0 should have been removed
         block = builder.program.functions[0].blocks[0]
@@ -35,7 +35,7 @@ class TestPeepholeOptimizer:
         builder._emit(OpCode.MUL, c, [a, one])
         builder.ret(c)
 
-        opt = PeepholeOptimizer(builder.program)
+        opt = IRPeepholeOptimizer(builder.program)
         count = opt.run()
         assert count >= 1
         # MUL with 1 should be replaced
@@ -53,7 +53,7 @@ class TestPeepholeOptimizer:
         builder._emit(OpCode.MUL, c, [a, zero])
         builder.ret(c)
 
-        opt = PeepholeOptimizer(builder.program)
+        opt = IRPeepholeOptimizer(builder.program)
         opt.run()
         block = builder.program.functions[0].blocks[0]
         mul_instrs = [i for i in block.instructions if i.opcode == OpCode.MUL]

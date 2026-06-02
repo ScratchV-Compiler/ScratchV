@@ -8,7 +8,7 @@ virtual registers.
 from __future__ import annotations
 
 from scratchv.ir.types import Instruction, Function, Program
-from scratchv.backend.register_alloc import (
+from scratchv.backend.machine_types import (
     MachineInstr, MachineOp, MachineOperand,
 )
 

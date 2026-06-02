@@ -6,6 +6,7 @@ Usage:
     scratchv model.onnx --backend llvm -o out.ll # LLVM IR
     scratchv model.onnx --verify                 # verify against ONNX Runtime
     scratchv --dsl source.dsl -o output.s
+    scratchv model.onnx --optimize all --beautify --peephole-asm --count-instr
 """
 
 from __future__ import annotations
@@ -13,125 +14,153 @@ from __future__ import annotations
 import argparse
 import sys
 
+from scratchv.compiler import CompilerConfig, CompilerDriver, CompileResult
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLI argument parser
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="ScratchV: ONNX model -> RISC-V assembly / LLVM IR",
     )
+    # ── Input / output ──────────────────────────────────────────────────
     parser.add_argument("input", nargs="?", help="Input file (.onnx or .dsl)")
     parser.add_argument("-o", "--output", default=None, help="Output file")
-    parser.add_argument(
-        "--dsl",
-        help="Use DSL parser instead of ONNX",
-    )
+    parser.add_argument("--dsl", help="Use DSL parser instead of ONNX")
+
+    # ── Backend ─────────────────────────────────────────────────────────
     parser.add_argument(
         "--backend", choices=["riscv", "llvm"], default="riscv",
         help="Target backend (default: riscv)",
     )
-    parser.add_argument(
-        "--dump-ir", action="store_true",
-        help="Dump IR before codegen",
-    )
+
+    # ── Optimizations ───────────────────────────────────────────────────
     parser.add_argument(
         "--optimize", choices=["none", "basic", "all"],
         default="none",
         help="Optimization level (none, basic, all)",
     )
+
+    # ── Register allocation ─────────────────────────────────────────────
     parser.add_argument(
-        "--reg-alloc", choices=["naive", "greedy"],
+        "--reg-alloc", choices=["naive", "greedy", "linear"],
         default="greedy",
         help="Register allocation strategy (default: greedy)",
     )
-    parser.add_argument("--verify", action="store_true",
-                        help="Verify output against ONNX Runtime reference")
+
+    # ── Debug ───────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--dump-ir", action="store_true",
+        help="Dump IR before and after optimization",
+    )
+
+    # ── Verification ────────────────────────────────────────────────────
+    parser.add_argument(
+        "--verify", action="store_true",
+        help="Verify output against ONNX Runtime / numpy reference",
+    )
     parser.add_argument("--rtol", type=float, default=1e-5,
                         help="Relative tolerance for verification")
     parser.add_argument("--atol", type=float, default=1e-8,
                         help="Absolute tolerance for verification")
+
+    # ── Topic module flags ──────────────────────────────────────────────
+    parser.add_argument(
+        "--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=None,
+        help="Enable structured logging at given level",
+    )
+    parser.add_argument(
+        "--verify-ir", action="store_true",
+        help="Run IR verifier before and after optimization (Topic 21)",
+    )
+    parser.add_argument(
+        "--beautify", action="store_true",
+        help="Run assembly beautifier on output (Topic 5)",
+    )
+    parser.add_argument(
+        "--peephole-asm", action="store_true",
+        help="Run assembly-level peephole optimizer (Topic 13)",
+    )
+    parser.add_argument(
+        "--const-merge", action="store_true",
+        help="Run constant-load merge pass (Topic 14)",
+    )
+    parser.add_argument(
+        "--schedule", action="store_true",
+        help="Run instruction scheduler (Topic 18)",
+    )
+    parser.add_argument(
+        "--count-instr", action="store_true",
+        help="Print instruction count statistics (Topic 12)",
+    )
+    parser.add_argument(
+        "--dag-isel", action="store_true",
+        help="Use DAG-based instruction selection (scratchv_dag)",
+    )
+    parser.add_argument(
+        "--extended-isel", action="store_true",
+        help="Use extended instruction selector with fp64/sqrt/min/max/abs support (Topic 28)",
+    )
+
+    # ── Cycle estimation ──────────────────────────────────────────────
+    parser.add_argument(
+        "--cycle-stats", action="store_true",
+        help="Run 5-stage pipeline cycle estimator with detailed breakdown",
+    )
+    parser.add_argument(
+        "--no-forwarding", action="store_true",
+        help="Disable forwarding in cycle estimator (default: forwarding on)",
+    )
+    parser.add_argument(
+        "--branch-predictor", choices=["always_taken", "always_not_taken", "btb"],
+        default="always_not_taken",
+        help="Branch predictor mode for cycle estimator (default: always_not_taken)",
+    )
+
+    # ── Meta ────────────────────────────────────────────────────────────
     parser.add_argument(
         "--version", action="version",
-        version="ScratchV 0.1.0",
+        version="ScratchV 0.3.0",
     )
     return parser
 
 
-def parse_input(args):  # -> Program
-    """Parse input file (ONNX or DSL) into an IR Program."""
-    input_path = args.input
-    use_dsl = args.dsl is not None or (
-        input_path and input_path.endswith(".dsl"))
+# ═══════════════════════════════════════════════════════════════════════════════
+# Config builder
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    if use_dsl:
-        from scratchv.frontend.dsl_parser import DSLParser
-        with open(input_path or args.dsl) as f:
-            source = f.read()
-        dsl_parser = DSLParser()
-        return dsl_parser.parse(source)
-    else:
-        from scratchv.frontend.onnx_parser import ONNXParser
-        onnx_parser = ONNXParser()
-        return onnx_parser.parse(input_path)
-
-
-def run_optimizer(program, level: str, dump_ir: bool):
-    """Run optimizations on the IR program. Returns stats string."""
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
-
-    folder = ConstantFolder(program)
-    folded = folder.run()
-    elim = DeadCodeEliminator(program)
-    eliminated = elim.run()
-
-    stats_str = f"{folded} folded, {eliminated} eliminated"
-
-    if level == "all":
-        from scratchv.optimizer.peephole import PeepholeOptimizer
-        from scratchv.optimizer.muladd_fusion import MulAddFusion
-        from scratchv.optimizer.licm import LICM
-
-        peep = PeepholeOptimizer(program)
-        peeped = peep.run()
-        fuse = MulAddFusion(program)
-        fused = fuse.run()
-        licm = LICM(program)
-        hoisted = licm.run()
-        stats_str += f", {peeped} peep-hole, {fused} fused, {hoisted} hoisted"
-
-    if dump_ir:
-        from scratchv.ir.printer import IRPrinter
-        print(f"; --- After optimization: {stats_str} ---", file=sys.stderr)
-        printer = IRPrinter(program)
-        print(printer.dump(), file=sys.stderr)
-
-    return stats_str
+def args_to_config(args: argparse.Namespace) -> CompilerConfig:
+    """Translate parsed CLI arguments to a CompilerConfig."""
+    return CompilerConfig(
+        backend=args.backend,
+        optimize_level=args.optimize,
+        reg_alloc=args.reg_alloc,
+        dump_ir=args.dump_ir,
+        verify=args.verify,
+        rtol=args.rtol,
+        atol=args.atol,
+        use_logger=args.log_level is not None,
+        log_level=args.log_level or "INFO",
+        use_dag_isel=args.dag_isel,
+        beautify_asm=args.beautify,
+        peephole_asm=args.peephole_asm,
+        const_merge=args.const_merge,
+        schedule=args.schedule,
+        count_instr=args.count_instr,
+        cycle_stats=args.cycle_stats,
+        enable_forwarding=not args.no_forwarding,
+        branch_predictor=args.branch_predictor,
+    )
 
 
-def generate_riscv_backend(program, reg_alloc: str) -> str:
-    """Generate RISC-V assembly from IR program."""
-    from scratchv.backend.instruction_select import InstructionSelector
-    from scratchv.backend.register_alloc import RegisterAllocator
-    from scratchv.backend.asm_emit import AsmEmitter
+# ═══════════════════════════════════════════════════════════════════════════════
+# Verification
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    selector = InstructionSelector(program)
-    machine_instrs = selector.run()
-
-    alloc = RegisterAllocator(machine_instrs, mode=reg_alloc)
-    allocated = alloc.run()
-
-    emitter = AsmEmitter(allocated)
-    return emitter.emit()
-
-
-def generate_llvm_backend(program) -> str:
-    """Generate LLVM IR from ScratchV IR program."""
-    from scratchv.backend.llvm_codegen import LLVMCodegen
-
-    codegen = LLVMCodegen(program)
-    return codegen.emit()
-
-
-def run_verification(args, program) -> None:
+def run_verification(args: argparse.Namespace, program) -> None:
     """Run verification if requested."""
     from scratchv.verification.verifier import verify_dsl
 
@@ -143,11 +172,9 @@ def run_verification(args, program) -> None:
         with open(input_path or args.dsl) as f:
             source = f.read()
 
-        # Generate some random test inputs
         import numpy as np
-        # Extract variable names from DSL
         import re
-        input_vars = set()
+        input_vars: set[str] = set()
         op_pat = (
             r'\b(add|sub|mul|div|relu|gelu|exp|neg|'
             r'matmul|dot|maxpool|softmax)\(([^)]+)'
@@ -158,7 +185,6 @@ def run_verification(args, program) -> None:
                 arg = arg.strip().split(":")[0].strip()
                 if arg and not arg[0].isdigit():
                     input_vars.add(arg)
-        # Remove return/loop variable names
         skip = (
             "add", "sub", "mul", "div", "relu", "gelu", "exp", "neg",
             "matmul", "dot", "maxpool", "softmax",
@@ -178,30 +204,24 @@ def run_verification(args, program) -> None:
         msg = f"  Verification: {status}  (max error: {err:.6e})"
         print(msg, file=sys.stderr)
     else:
-        # ONNX model verification
         from scratchv.verification.verifier import verify_onnx_model
 
         def compiler_fn(inputs):
-            """Run the full compiler pipeline on given inputs."""
-            # Re-parse with concrete inputs
             from scratchv.frontend.onnx_parser import ONNXParser
             parser = ONNXParser()
-            prog = parser.parse(args.input)
+            return parser.parse(args.input)
 
-            if args.optimize != "none":
-                run_optimizer(prog, args.optimize, False)
-
-            # Compile and return a placeholder
-            # Full JIT needs runtime linking
-            return {}
-
-        result = verify_onnx_model(
+        verify_onnx_model(
             args.input,
             compiler_output_fn=compiler_fn,
             rtol=args.rtol,
             atol=args.atol,
         )
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main entry point
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
@@ -211,52 +231,40 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
 
-    # --- Resolve output path ---
-    if args.output is None:
-        if args.backend == "llvm":
-            args.output = "output.ll"
-        else:
-            args.output = "output.s"
+    # Build config and driver
+    config = args_to_config(args)
+    driver = CompilerDriver(config)
 
-    # --- Parse input ---
-    try:
-        program = parse_input(args)
-    except Exception as e:
-        print(f"Error parsing input: {e}", file=sys.stderr)
+    # Compile
+    result: CompileResult = driver.compile(
+        input_path=args.input or "",
+        output_path=args.output,
+        dsl_source=args.dsl if hasattr(args, 'dsl') else None,
+    )
+
+    # Report
+    if result.ir_dump:
+        print(result.ir_dump, file=sys.stderr)
+
+    if result.success:
+        print(f"OK {args.backend.upper()} output written to {result.output_path}",
+              file=sys.stderr)
+        for w in result.warnings:
+            print(f"  note: {w}", file=sys.stderr)
+        if result.stats.get("opt_message"):
+            print(f"  optimizer: {result.stats['opt_message']}", file=sys.stderr)
+        if result.stats.get("cycle_report"):
+            print(result.stats["cycle_report"], file=sys.stderr)
+
+        # Verification
+        if args.verify:
+            run_verification(args, None)
+
+        return 0
+    else:
+        for err in result.errors:
+            print(f"Error: {err}", file=sys.stderr)
         return 1
-
-    # --- Dump IR if requested (before optimization) ---
-    if args.dump_ir:
-        from scratchv.ir.printer import IRPrinter
-        printer = IRPrinter(program)
-        print("; --- IR Dump (before optimization) ---", file=sys.stderr)
-        print(printer.dump(), file=sys.stderr)
-
-    # --- Optimize ---
-    if args.optimize != "none":
-        run_optimizer(program, args.optimize, args.dump_ir)
-
-    # --- Code generation ---
-    try:
-        if args.backend == "llvm":
-            asm_text = generate_llvm_backend(program)
-        else:
-            asm_text = generate_riscv_backend(program, args.reg_alloc)
-    except Exception as e:
-        print(f"Error during code generation: {e}", file=sys.stderr)
-        return 1
-
-    with open(args.output, "w") as f:
-        f.write(asm_text)
-
-    msg = f"OK {args.backend.upper()} output written to {args.output}"
-    print(msg, file=sys.stderr)
-
-    # --- Verify ---
-    if args.verify:
-        run_verification(args, program)
-
-    return 0
 
 
 if __name__ == "__main__":

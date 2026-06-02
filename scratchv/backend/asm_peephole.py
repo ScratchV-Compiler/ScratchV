@@ -5,8 +5,8 @@ sliding-window pattern matching with register wildcards.
 
 Usage::
 
-    from scratchv.backend.asm_peephole import PeepholeOptimizer
-    opt = PeepholeOptimizer()
+    from scratchv.backend.asm_peephole import AsmPeepholeOptimizer
+    opt = AsmPeepholeOptimizer()
     optimized_text, changes = opt.optimize(asm_text)
 """
 
@@ -333,7 +333,7 @@ def _match_rule(
 # Peephole optimizer
 # ---------------------------------------------------------------------------
 
-class PeepholeOptimizer:
+class AsmPeepholeOptimizer:
     """Sliding-window peephole optimizer for RISC-V assembly.
 
     Parameters
@@ -343,7 +343,7 @@ class PeepholeOptimizer:
 
     Usage::
 
-        opt = PeepholeOptimizer()
+        opt = AsmPeepholeOptimizer()
         optimized_asm, num_changes = opt.optimize(asm_text)
     """
 
@@ -564,7 +564,7 @@ def main() -> None:
     with open(args.input, "r") as f:
         asm_text = f.read()
 
-    opt = PeepholeOptimizer()
+    opt = AsmPeepholeOptimizer()
     result, changes = opt.optimize(asm_text)
 
     if args.report:

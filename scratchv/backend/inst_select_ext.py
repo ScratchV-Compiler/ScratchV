@@ -20,7 +20,7 @@ from typing import Optional
 
 # moved import above
 from scratchv.backend.instruction_select import InstructionSelector
-from scratchv.backend.register_alloc import (
+from scratchv.backend.machine_types import (
     MachineOp, MachineOperand,
 )
 from scratchv.ir.types import DataType, Instruction, Program
