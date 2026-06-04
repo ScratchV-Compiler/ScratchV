@@ -147,18 +147,16 @@ def generate(ld=None, td=None):
     sv_m=SDe.get('misses',0); ll_m=LDe.get('misses',0)
     sv_da=S.get('cache_application',{}).get('dcache',{}).get('misses',0)
     ll_da=L.get('cache_application',{}).get('dcache',{}).get('misses',0)
-    h+=f"""<div class="sec"><h2>🗄 缓存性能 <small style="font-weight:400;color:#94a3b8;font-size:.75rem">vs LLVM baseline</small></h2>
-<table><tr><th>缓存配置</th><th>指标</th><th class="n">LLVM (baseline)</th><th class="n">ScratchV</th><th class="n">vs LLVM</th></tr>
-<tr><td rowspan="4">Embedded<br><small>I$=4KB D$=16KB</small></td>
-<td>I$ 命中率</td><td class='n'>100%</td><td class='n'>100%</td><td class='n'>1.0×</td></tr>
-<tr><td>D$ 命中率</td><td class='n'>89%</td><td class='n'>89%</td><td class='n'>1.0×</td></tr>
+    h+=f"""<div class="sec"><h2>🗄 访存与缓存缺失 <small style="font-weight:400;color:#94a3b8;font-size:.75rem">vs LLVM baseline</small></h2>
+<table><tr><th>指标</th><th class="n">LLVM (baseline)</th><th class="n">ScratchV</th><th class="n">vs LLVM</th></tr>
+<tr><td>总访存指令</td><td class='n'><b>{_f(Lmem)}</b></td><td class='n'>{_f(Smem)}</td><td class='n'><b>{_vs_llvm(Smem,Lmem)}</b></td></tr>
+<tr><td>加载 (Load)</td><td class='n'>{_f(Ld.get('load',0))}</td><td class='n'>{_f(Sd.get('load',0))}</td><td class='n'>{_vs_llvm(Sd.get('load',0),Ld.get('load',0))}</td></tr>
+<tr><td>存储 (Store)</td><td class='n'>{_f(Ld.get('store',0))}</td><td class='n'>{_f(Sd.get('store',0))}</td><td class='n'><b>{_vs_llvm(Sd.get('store',0),Ld.get('store',0))}</b></td></tr>
+<tr><td colspan="4" style="color:#94a3b8;font-size:.75rem;padding-top:8px"><b>D$ 缺失估算 (Embedded 16KB, 128set×4way×32B)</b></td></tr>
 <tr><td>D$ 缺失次数</td><td class='n'><b>{_f(ll_m)}</b></td><td class='n'>{_f(sv_m)}</td><td class='n'><b>{_vs_llvm(sv_m,ll_m)}</b></td></tr>
 <tr><td>D$ 缺失字节</td><td class='n'><b>{_f(ll_mb)}</b></td><td class='n'>{_f(sv_mb)}</td><td class='n'><b>{_vs_llvm(sv_mb,ll_mb)}</b></td></tr>
-<tr><td rowspan="2">Application<br><small>I$=32KB D$=128KB</small></td>
-<td>D$ 缺失次数</td><td class='n'><b>{_f(ll_da)}</b></td><td class='n'>{_f(sv_da)}</td><td class='n'><b>{_vs_llvm(sv_da,ll_da)}</b></td></tr>
-<tr><td>D$ 命中率</td><td class='n'>99.8%</td><td class='n'>99.8%</td><td class='n'>1.0×</td></tr>
 </table>
-<div class="insight"><b>vs LLVM baseline</b>：命中率相同（代码极小，数据模式一致），但 ScratchV 访存次数 = {_vs_llvm(Smem,Lmem)} LLVM → D$ 缺失字节 = {_vs_llvm(sv_mb,ll_mb)} LLVM。内存带宽压力与访存量成正比。</div></div>"""
+<div class="insight"><b>vs LLVM baseline</b>：ScratchV 访存指令 = {_vs_llvm(Smem,Lmem)} LLVM，Store 差距最大（{_vs_llvm(Sd.get('store',0),Ld.get('store',0))}，寄存器 spill 开销）。D$ 缺失字节 = {_vs_llvm(sv_mb,ll_mb)} LLVM — 缺失量与访存量成正比。CNN 内层循环数据量超过 16KB D$ 导致 conflict miss 为主。</div></div>"""
 
     lo=tlo.get("ops",{}); so=tso.get("ops",{})
     h+=f"""<div class="sec"><h2>🔬 TinyFive 静态分析 <small style="font-weight:400;color:#94a3b8;font-size:.75rem">vs LLVM baseline</small></h2>
@@ -181,7 +179,7 @@ def generate(ld=None, td=None):
 ① <b>动态指令 = {_vs_llvm(St,Lt)} LLVM</b> — float32 单指令 fmul+fadd 完成 MAC，Q16.16 需 ~30 条整数指令；<br>
 ② <b>CPI 相近</b> — LLVM {Lcp:.2f} vs ScratchV {Scp:.2f}，差距几乎全部来自指令数；<br>
 ③ <b>耗时 = {_vs_llvm(St1,Lt1)} LLVM</b> — @100MHz: {Lt1:.1f}s vs {St1:.1f}s；<br>
-④ <b>D$ 缺失字节 = {_vs_llvm(sv_mb,ll_mb)} LLVM</b> — 访存次数 = {_vs_llvm(Smem,Lmem)} LLVM，命中率相同但绝对缺失量更大；<br>
+④ <b>D$ 缺失字节 = {_vs_llvm(sv_mb,ll_mb)} LLVM</b> — 访存次数 = {_vs_llvm(Smem,Lmem)} LLVM，缺失量与访存量成正比；<br>
 ⑤ <b>I$ 均 100%</b> — 代码 &lt;4KB。<br>
 <b>核心瓶颈：指令数，非 IPC。</b>
 </div></div>
