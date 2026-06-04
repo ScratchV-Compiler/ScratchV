@@ -1,0 +1,67 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make *)",
+      "Bash(git *)",
+      "Bash(python3 *)",
+      "Bash(python3.12 *)",
+      "Bash(python *)",
+      "Bash(pip install *)",
+      "Bash(pip3.12 install *)",
+      "Bash(pip install -e *)",
+      "Bash(pytest *)",
+      "Bash(python3.12 -m pytest *)",
+      "Bash(python3.12 -m flake8 *)",
+      "Bash(python3.12 -m mypy *)",
+      "Bash(scratchv --help)",
+      "Bash(scratchv *)",
+      "Bash(which *)",
+      "Bash(ls *)",
+      "Bash(wc *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(file *)",
+      "Bash(mkdir *)",
+      "Bash(rm *)",
+      "Bash(cd *)",
+      "Bash(echo *)",
+      "Bash(xxd *)",
+      "Bash(readelf *)",
+      "Bash(timeout *)",
+      "Bash(curl *)",
+      "Bash(dpkg *)",
+      "Bash(apt *)",
+      "Bash(ldconfig *)",
+      "Bash(nm *)",
+      "Bash(/home/kinsomwang/workspace/coralnpu-spike-rv32/bin/spike *)",
+      "Bash(/home/kinsomwang/workspace/ScratchV/.venv/bin/pip *)",
+      "Bash(/home/kinsomwang/workspace/ScratchV/.venv/bin/python3.12 *)",
+      "Bash(env)",
+      "Write(/home/kinsomwang/workspace/ScratchV/**)",
+      "Edit(/home/kinsomwang/workspace/ScratchV/**)",
+      "Read(/home/kinsomwang/workspace/ScratchV/**)",
+      "Read(//tmp/**)"
+    ],
+    "deny": [
+      "Bash(rm -rf / )",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf /home)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"${CLAUDE_TOOL_USE_FILE_PATH}\" | grep -qE '\\.py$'; then python3.12 -m py_compile \"${CLAUDE_TOOL_USE_FILE_PATH}\" 2>&1 && echo '  ✓ syntax OK' || echo '  ✗ syntax ERROR'; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

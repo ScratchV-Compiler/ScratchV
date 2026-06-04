@@ -1020,22 +1020,29 @@ def estimate_cnn_instructions(
     }
 
 
-def estimate_cnn_model() -> dict:
-    """Estimate instruction counts for the specific cnn.onnx model."""
+_DEFAULT_CNN_MODEL = {
+    "input_shape": (1, 3, 250, 250),
+    "conv_layers": [
+        {"out_c": 32, "kernel": 3, "stride": 1, "pad": 0,
+         "has_relu": True, "has_maxpool": True, "pool_kernel": 2, "pool_stride": 2},
+        {"out_c": 32, "kernel": 3, "stride": 1, "pad": 0,
+         "has_relu": True, "has_maxpool": True, "pool_kernel": 2, "pool_stride": 2},
+        {"out_c": 64, "kernel": 3, "stride": 1, "pad": 0,
+         "has_relu": True, "has_maxpool": True, "pool_kernel": 2, "pool_stride": 2},
+    ],
+    "fc_layers": [
+        {"in_dim": 53824, "out_dim": 128, "has_relu": True},
+        {"in_dim": 128, "out_dim": 1, "has_sigmoid": True},
+    ],
+}
+
+def estimate_cnn_model(model_spec: dict | None = None) -> dict:
+    """Estimate instruction counts. Uses default cnn.onnx model if no spec provided."""
+    spec = model_spec or _DEFAULT_CNN_MODEL
     return estimate_cnn_instructions(
-        input_shape=(1, 3, 250, 250),
-        conv_layers=[
-            {"out_c": 32, "kernel": 3, "stride": 1, "pad": 0,
-             "has_relu": True, "has_maxpool": True, "pool_kernel": 2, "pool_stride": 2},
-            {"out_c": 32, "kernel": 3, "stride": 1, "pad": 0,
-             "has_relu": True, "has_maxpool": True, "pool_kernel": 2, "pool_stride": 2},
-            {"out_c": 64, "kernel": 3, "stride": 1, "pad": 0,
-             "has_relu": True, "has_maxpool": True, "pool_kernel": 2, "pool_stride": 2},
-        ],
-        fc_layers=[
-            {"in_dim": 53824, "out_dim": 128, "has_relu": True},
-            {"in_dim": 128, "out_dim": 1, "has_sigmoid": True},
-        ],
+        input_shape=spec["input_shape"],
+        conv_layers=spec["conv_layers"],
+        fc_layers=spec["fc_layers"],
     )
 
 

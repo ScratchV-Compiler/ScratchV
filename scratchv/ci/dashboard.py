@@ -1,327 +1,255 @@
-"""Static HTML dashboard — LLVM vs ScratchV complete comparison.
-
-Generates a clean, self-contained HTML page with ALL data:
-  - Dynamic instruction distribution (full breakdown)
-  - Cycle estimates across 5 microarchitecture profiles
-  - Cache performance (embedded + application)
-  - TinyFive static analysis + inner loop kernel
-  - Summary cards + key insights
-
-Pure HTML+CSS, zero JavaScript dependencies.
-"""
+"""Performance comparison — LLVM baseline vs ScratchV."""
 
 from __future__ import annotations
-
-import json
-import os
-import subprocess
-import sys
-import tempfile
+import json, os, subprocess, sys
 from pathlib import Path
+from datetime import datetime, timezone
 
 PROJ = Path(__file__).resolve().parent.parent.parent
 
-# ═══════════════════════════════════════════════════════════════
-# Data collection
-# ═══════════════════════════════════════════════════════════════
-
-def _run_tool(script: str, args: list[str]) -> dict:
-    """Run a standalone script that writes JSON to a file, return parsed dict."""
-    tmp = tempfile.mktemp(suffix=".json")
-    cmd = [sys.executable, str(PROJ / script)] + args
-    subprocess.run(cmd, capture_output=True, cwd=str(PROJ), timeout=60)
+def _run(script, args):
+    """Run tool, return parsed JSON. Reads from the --json-output path in args."""
+    tmp = None
+    for i, a in enumerate(args):
+        if a == "--json-output" and i+1 < len(args):
+            tmp = args[i+1]
+            break
+        if a == "--json" and i+1 < len(args) and not args[i+1].startswith("--"):
+            tmp = args[i+1]
+            break
+    if not tmp:
+        tmp = "/tmp/_bench_tmp.json"
+        args = args + ["--json-output", tmp]
+    subprocess.run([sys.executable, str(PROJ/script)] + args,
+                   capture_output=True, cwd=str(PROJ), timeout=60)
     if os.path.exists(tmp):
-        with open(tmp) as f:
-            return json.load(f)
-    # Try stdout if file not written
-    r = subprocess.run(cmd + ["--json"], capture_output=True, text=True, cwd=str(PROJ), timeout=60)
-    if r.stdout.strip():
-        return json.loads(r.stdout)
+        with open(tmp) as f: return json.load(f)
     return {}
 
 
-def collect_all() -> tuple[dict, dict]:
-    """Collect llvm_cache_compare + tinyfive_compare data."""
-    llvm = _run_tool("scratchv/standalone/llvm_cache_compare.py", ["--json-output", "/tmp/_llvm_sv.json"])
-    tf = _run_tool("scratchv/standalone/tinyfive_compare.py", ["--json", "/tmp/_tinyfive.json"])
-    return llvm, tf
+def collect():
+    llvm_path = "/tmp/_llvm_bench.json"
+    tf_path   = "/tmp/_tf_bench.json"
+    return (
+        _run("scratchv/standalone/llvm_cache_compare.py", ["--json-output", llvm_path]),
+        _run("scratchv/standalone/tinyfive_compare.py", ["--json", tf_path]),
+    )
 
+def _f(n):
+    if not n: return "—"
+    if isinstance(n, float): n = int(n)
+    return f"{n:,}"
 
-# ═══════════════════════════════════════════════════════════════
-# Helpers
-# ═══════════════════════════════════════════════════════════════
+def _ratio(sv, ll):
+    """ScratchV / LLVM. Always appends × suffix."""
+    if not ll: return "—"
+    v = sv / ll
+    return f"{v:.1f}×" if v >= 10 else f"{v:.2f}×"
 
-def _f(n, d=0):
-    if n is None or n == 0:
-        return "—"
-    return f"{n:,.{d}f}" if isinstance(n, float) and d else f"{n:,}"
-
-def _p(part, total):
-    if not total: return "—"
-    return f"{part/total*100:.1f}%"
-
-def _r(a, b):
-    if not b: return "—"
-    return f"{a/b:.1f}x"
-
-
-# ═══════════════════════════════════════════════════════════════
-# CSS
-# ═══════════════════════════════════════════════════════════════
-
-CSS = """
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f7fafc;color:#2d3748;line-height:1.6}
-.container{max-width:1100px;margin:0 auto;padding:20px}
-.header{background:linear-gradient(135deg,#1a202c,#2d3748);color:#f7fafc;padding:28px 36px;margin-bottom:20px;border-radius:10px}
-.header h1{font-size:1.5rem;margin-bottom:4px}
-.header .sub{color:#a0aec0;font-size:.82rem}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:20px}
-.card{background:#fff;border-radius:8px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,.07);border-left:4px solid #4299e1}
-.card.ll{border-left-color:#48bb78}
-.card.ratio{border-left-color:#ed8936}
-.card .label{font-size:.7rem;text-transform:uppercase;letter-spacing:.5px;color:#718096;margin-bottom:2px}
-.card .value{font-size:1.4rem;font-weight:700}
-.card .detail{font-size:.75rem;color:#a0aec0;margin-top:2px}
-.section{background:#fff;border-radius:8px;padding:22px;margin-bottom:18px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
-.section h2{font-size:1.05rem;font-weight:700;margin-bottom:14px;padding-bottom:8px;border-bottom:2px solid #e2e8f0}
-.section h3{font-size:.85rem;color:#718096;margin:14px 0 8px}
-table{width:100%;border-collapse:collapse;font-size:.85rem}
-th{background:#edf2f7;padding:8px 10px;text-align:left;font-weight:600;color:#4a5568;font-size:.75rem;text-transform:uppercase;letter-spacing:.3px}
-td{padding:7px 10px;border-bottom:1px solid #edf2f7}
-tr:hover td{background:#f7fafc}
+CSS = """*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f8fafc;color:#1e293b;line-height:1.5}
+.wrap{max-width:920px;margin:0 auto;padding:20px}
+.hdr{background:linear-gradient(135deg,#0f172a,#1e293b);color:#f1f5f9;padding:20px 28px;border-radius:10px;margin-bottom:18px}
+.hdr h1{font-size:1.15rem}
+.hdr .sub{font-size:.75rem;color:#94a3b8;margin-top:3px}
+.hdr .sub b{color:#e2e8f0}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+@media(max-width:700px){.grid4{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:#fff;border-radius:8px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04);text-align:center}
+.kpi .v{font-size:1.8rem;font-weight:800;color:#dc2626}
+.kpi .v.g{color:#16a34a}
+.kpi .v.y{color:#ea580c}
+.kpi .l{font-size:.68rem;color:#64748b;text-transform:uppercase;letter-spacing:.4px;margin-top:3px}
+.kpi .d{font-size:.65rem;color:#94a3b8;margin-top:2px}
+.sec{background:#fff;border-radius:8px;padding:16px;margin-bottom:14px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.sec h2{font-size:.88rem;font-weight:700;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+th{background:#f1f5f9;padding:5px 10px;text-align:left;font-weight:600;color:#475569;font-size:.65rem;text-transform:uppercase;letter-spacing:.3px}
+td{padding:4px 10px;border-bottom:1px solid #f1f5f9}
+tr:hover td{background:#f8fafc}
 .n{text-align:right;font-variant-numeric:tabular-nums}
-.hl{font-weight:700;background:#fffff0}
-.svc{color:#4299e1;font-weight:600}
-.llc{color:#48bb78;font-weight:600}
-.insight{background:#ebf8ff;border-radius:6px;padding:14px 18px;margin-top:14px}
-.insight h4{font-size:.85rem;color:#2b6cb0;margin-bottom:5px}
-.insight ul{margin-left:18px;font-size:.82rem}
-.insight li{margin-bottom:2px}
-.footer{text-align:center;color:#a0aec0;font-size:.75rem;padding:18px}
+.hl td{font-weight:700;background:#fef2f2}
+.hl td:first-child{color:#dc2626}
+.ll{color:#16a34a;font-weight:600}
+.badge{display:inline-block;padding:1px 7px;border-radius:6px;font-size:.65rem;font-weight:700}
+.badge.r{background:#fee2e2;color:#dc2626}
+.badge.y{background:#ffedd5;color:#ea580c}
+.badge.g{background:#dcfce7;color:#16a34a}
+.note{font-size:.68rem;color:#64748b;margin-top:8px;padding:10px 14px;background:#f8fafc;border-radius:4px}
+.hist{font-size:.68rem;color:#94a3b8;margin-top:6px;text-align:center}
+.ft{text-align:center;color:#94a3b8;font-size:.65rem;padding:12px}
 @media(prefers-color-scheme:dark){
-body{background:#1a202c;color:#e2e8f0}
-.card,.section{background:#2d3748;box-shadow:0 1px 3px rgba(0,0,0,.3)}
-th{background:#4a5568;color:#cbd5e0}
-td{border-color:#4a5568}
-tr:hover td{background:#3a4556}
-.hl{background:#744210}
-.insight{background:#2a4365}
-.insight h4{color:#90cdf4}
-.section h2{border-color:#4a5568}
-}
-"""
+body{background:#0f172a;color:#e2e8f0}
+.kpi,.sec{background:#1e293b}
+th{background:#334155;color:#94a3b8}
+td{border-color:#334155}
+tr:hover td{background:#1e293b}
+.hl td{background:#450a0a}
+.note{background:#1e293b}
+}"""
 
+def _badge(v):
+    try: fv = float(v.replace("×",""))
+    except: return v
+    if fv <= 1.5: return f'<span class="badge g">{v}</span>'
+    if fv <= 4: return f'<span class="badge y">{v}</span>'
+    return f'<span class="badge r">{v}</span>'
 
-# ═══════════════════════════════════════════════════════════════
-# HTML generator
-# ═══════════════════════════════════════════════════════════════
+# ── History ────────────────────────────────────────────────────────────
+HISTORY_FILE = PROJ / "benchmark_reports" / "history.json"
 
-def generate(ld: dict | None = None, td: dict | None = None) -> str:
-    if ld is None or td is None:
-        ld, td = collect_all()
-    if ld is None: ld = {}
-    if td is None: td = {}
+def _update_history(costs: dict):
+    try:
+        hist = json.loads(HISTORY_FILE.read_text()) if HISTORY_FILE.exists() else {"runs": []}
+    except: hist = {"runs": []}
+    hist["runs"].append({"ts": datetime.now(timezone.utc).isoformat(), "costs": costs})
+    hist["runs"] = hist["runs"][-50:]
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    HISTORY_FILE.write_text(json.dumps(hist, indent=2))
 
-    L = ld.get("llvm", {}); S = ld.get("scratchv", {})
-    Ld = L.get("dynamic_instructions", {})
-    Sd = S.get("dynamic_instructions", {})
-    Lc = L.get("cycles", {})
-    Sc = S.get("cycles", {})
-    LIe = L.get("cache_embedded",{}).get("icache",{})
-    LDe = L.get("cache_embedded",{}).get("dcache",{})
-    SIe = S.get("cache_embedded",{}).get("icache",{})
-    SDe = S.get("cache_embedded",{}).get("dcache",{})
-    LIa = L.get("cache_application",{}).get("icache",{})
-    LDa = L.get("cache_application",{}).get("dcache",{})
-    SIa = S.get("cache_application",{}).get("icache",{})
-    SDa = S.get("cache_application",{}).get("dcache",{})
+def _history_html() -> str:
+    try:
+        if not HISTORY_FILE.exists(): return ""
+        hist = json.loads(HISTORY_FILE.read_text())
+        runs = hist.get("runs", [])
+        if len(runs) < 2:
+            return f"""<div class="hist">{len(runs)} run recorded · <a href="history.json" style="color:#94a3b8">history.json</a></div>"""
+        cur = runs[-1]["costs"]; prev = runs[-2]["costs"]
+        def delta(k):
+            try:
+                cv = float(cur[k].replace("×","")); pv = float(prev[k].replace("×",""))
+                d = cv - pv
+                if abs(d) < 0.01: return "—"
+                return f"{'+' if d>0 else ''}{d:.2f}"
+            except: return "?"
+        return f"""<div class="hist">
+        Δ prev → curr: insn {delta('insn')} | time {delta('time')} | mem {delta('mem')} | store {delta('store')}
+        &nbsp;·&nbsp;{len(runs)} runs &nbsp;·&nbsp;<a href="history.json" style="color:#94a3b8">history.json</a>
+        </div>"""
+    except: return ""
 
-    tls = td.get("llvm_static",{}); tss = td.get("scratchv_static",{})
-    tlo = td.get("llvm_tinyfive",{}); tso = td.get("scratchv_tinyfive",{})
+# ══════════════════════════════════════════════════════════════════════
+def generate(ld=None, td=None):
+    if ld is None or td is None: ld, td = collect()
+    ld = ld or {}; td = td or {}
 
-    L_total = Ld.get("total",0); S_total = Sd.get("total",0)
-    L_cpi = Lc.get("rv64fd-basic",{}).get("cpi",0)
-    S_cpi = Sc.get("rv32im-basic",{}).get("cpi",0)
-    L_t100 = Lc.get("rv64fd-basic",{}).get("est_hw_100mhz_s",0)
-    S_t100 = Sc.get("rv32im-basic",{}).get("est_hw_100mhz_s",0)
-    sp = S_t100/max(L_t100,.001)
+    L = ld.get("llvm", {});            S = ld.get("scratchv", {})
+    Ld = L.get("dynamic_instructions", {}); Sd = S.get("dynamic_instructions", {})
+    Lc = L.get("cycles", {});           Sc = S.get("cycles", {})
+    LDe = L.get("cache_embedded", {}).get("dcache", {})
+    SDe = S.get("cache_embedded", {}).get("dcache", {})
+    tls = td.get("llvm_static", {});     tss = td.get("scratchv_static", {})
+    tlo = td.get("llvm_tinyfive", {});   tso = td.get("scratchv_tinyfive", {})
 
-    L_mem = Ld.get("load",0)+Ld.get("store",0); S_mem = Sd.get("load",0)+Sd.get("store",0)
+    Lt = Ld.get("total", 0);  St = Sd.get("total", 0)
+    L_cpi = Lc.get("rv64fd-basic", {}).get("cpi", 0)
+    S_cpi = Sc.get("rv32im-basic", {}).get("cpi", 0)
+    L_t100 = Lc.get("rv64fd-basic", {}).get("est_hw_100mhz_s", 0)
+    S_t100 = Sc.get("rv32im-basic", {}).get("est_hw_100mhz_s", 0)
+    L_mem = Ld.get("load", 0) + Ld.get("store", 0)
+    S_mem = Sd.get("load", 0) + Sd.get("store", 0)
+
+    R_insn = _ratio(St, Lt)
+    R_time = _ratio(S_t100, L_t100)
+    R_mem  = _ratio(S_mem, L_mem)
+    R_store = _ratio(Sd.get("store", 0), Ld.get("store", 0))
+
+    _update_history({"insn": R_insn, "time": R_time, "mem": R_mem, "store": R_store})
+
+    lo = tlo.get("ops", {}); so = tso.get("ops", {})
 
     h = f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ScratchV Performance Dashboard</title><style>{CSS}</style></head><body><div class="container">
-<div class="header"><h1>📊 LLVM vs ScratchV Performance Dashboard</h1>
-<div class="sub">cnn.onnx · 3×Conv+3×MaxPool+2×FC · LLVM RV64FD float32 vs ScratchV RV32IM Q16.16</div></div>
+<title>ScratchV · LLVM Baseline</title><style>{CSS}</style></head><body><div class="wrap">
+<div class="hdr"><h1>ScratchV vs LLVM &nbsp;·&nbsp; cnn.onnx &nbsp;·&nbsp; 3×Conv + 3×MaxPool + 2×FC</h1>
+<div class="sub"><b>LLVM RV64FD (float32)</b> — baseline &nbsp;|&nbsp; <b>ScratchV RV32IM (Q16.16)</b> — target</div></div>
 
-<div class="cards">
-<div class="card"><div class="label">ScratchV Static</div><div class="value">785 <small style="font-size:.55em">insns</small></div><div class="detail">3,140 B · Q16.16 RV32IM</div></div>
-<div class="card ll"><div class="label">LLVM Static</div><div class="value">956 <small style="font-size:.55em">insns</small></div><div class="detail">3,824 B · float32 RV64FD</div></div>
-<div class="card" style="border-left-color:#9f7aea"><div class="label">Dynamic Ratio</div><div class="value">{_r(S_total,L_total)}</div><div class="detail">ScratchV {S_total/1e9:.2f}B vs LLVM {L_total/1e9:.2f}B</div></div>
-<div class="card ratio"><div class="label">Speedup @100MHz</div><div class="value">{sp:.1f}×</div><div class="detail">LLVM {L_t100:.1f}s · ScratchV {S_t100:.1f}s</div></div>
+<div class="grid4">
+<div class="kpi"><div class="v">{R_insn}</div><div class="l">Dynamic Instructions</div><div class="d">LLVM {_f(Lt)} · ScratchV {_f(St)}</div></div>
+<div class="kpi"><div class="v">{R_time}</div><div class="l">Time @100MHz (rvXX-basic)</div><div class="d">LLVM {L_t100:.1f}s · ScratchV {S_t100:.1f}s</div></div>
+<div class="kpi"><div class="v">{R_mem}</div><div class="l">Memory Operations</div><div class="d">LLVM {_f(L_mem)} · ScratchV {_f(S_mem)}</div></div>
+<div class="kpi"><div class="v">{R_store}</div><div class="l">Store Instructions</div><div class="d">LLVM {_f(Ld.get('store',0))} · ScratchV {_f(Sd.get('store',0))}</div></div>
 </div>
+{_history_html()}
 
-<div class="section"><h2>1. Dynamic Instruction Distribution</h2><table>
-<tr><th>Category</th><th class="n">LLVM RV64FD</th><th class="n">%</th><th class="n">ScratchV RV32IM</th><th class="n">%</th><th class="n">Ratio</th></tr>"""
+<div class="sec"><h2>1. Dynamic Instruction Distribution</h2><table>
+<tr><th>Category</th><th class="n">LLVM (baseline)</th><th class="n">ScratchV</th><th class="n">ScratchV / LLVM</th></tr>"""
+    rows = [("ALU R-type", "alu_r", "alu_r"), ("ALU I-type", "alu_i", "alu_i"),
+            ("FP", "fp", "fp"), ("Shift", "shift", "shift"),
+            ("Load", "load", "load"), ("Store", "store", "store"),
+            ("Branch", "branch", "branch"), ("Jump", "jump", "jump"),
+            ("Upper immediate", "upper", "upper")]
+    for name, lk, sk in rows:
+        lv = Ld.get(lk, 0); sv = Sd.get(sk, 0)
+        if lv or sv:
+            r = _ratio(sv, lv) if lv else "—"
+            h += f"<tr><td>{name}</td><td class='n'><span class='ll'>{_f(lv)}</span></td><td class='n'>{_f(sv)}</td><td class='n'>{_badge(r)}</td></tr>"
+    h += f"""<tr class="hl"><td><b>Total</b></td><td class='n'><b class='ll'>{_f(Lt)}</b></td><td class='n'><b>{_f(St)}</b></td><td class='n'><b>{_badge(R_insn)}</b></td></tr></table>
+<div class="note">Store ratio {_ratio(Sd.get('store',0), Ld.get('store',0))}: LLVM keeps accumulators in FP registers (few stores). ScratchV spills to stack every MAC due to limited registers (7 vs 15).</div></div>
 
-    for name,lk,sk in [("ALU R-type","alu_r","alu_r"),("ALU I-type","alu_i","alu_i"),
-        ("Shift","shift","shift"),("Load","load","load"),("Store","store","store"),
-        ("Branch","branch","branch"),("Jump","jump","jump"),("Upper imm","upper","upper"),
-        ("Float ops","fp","fp")]:
-        lv=Ld.get(lk,0); sv=Sd.get(sk,0)
-        if lv or sk in Sd:
-            h+=f"<tr><td>{name}</td><td class='n'>{_f(lv)}</td><td class='n'>{_p(lv,L_total)}</td><td class='n'>{_f(sv)}</td><td class='n'>{_p(sv,S_total)}</td><td class='n'>{_r(sv,lv) if lv else '—'}</td></tr>"
+<div class="sec"><h2>2. Cycle Estimates &mdash; rvXX-basic profile</h2><table>
+<tr><th>Frequency</th><th class="n">LLVM RV64FD</th><th class="n">ScratchV RV32IM</th><th class="n">ScratchV / LLVM</th></tr>"""
+    for freq, key in [(50, "est_hw_50mhz_s"), (100, "est_hw_100mhz_s"), (500, "est_hw_500mhz_s"), (1000, "est_hw_1000mhz_s")]:
+        lt = Lc.get("rv64fd-basic", {}).get(key, 0); st = Sc.get("rv32im-basic", {}).get(key, 0)
+        h += f"<tr><td>@{freq} MHz</td><td class='n'><span class='ll'>{lt:.1f}s</span></td><td class='n'>{st:.1f}s</td><td class='n'>{_badge(_ratio(st, lt))}</td></tr>"
+    h += """</table></div>
 
-    h+=f"""<tr class="hl"><td><b>TOTAL</b></td><td class='n'><b>{_f(L_total)}</b></td><td class='n'><b>100%</b></td><td class='n'><b>{_f(S_total)}</b></td><td class='n'><b>100%</b></td><td class='n'><b>{_r(S_total,L_total)}</b></td></tr></table>
-<div class="insight"><h4>Memory Access</h4><table style="margin-top:6px"><tr><th></th><th class="n">LLVM</th><th class="n">ScratchV</th><th class="n">Ratio</th></tr>
-<tr><td>Loads</td><td class='n'>{_f(Ld.get("load",0))}</td><td class='n'>{_f(Sd.get("load",0))}</td><td class='n'>{_r(Sd.get("load",0),Ld.get("load",0))}</td></tr>
-<tr><td>Stores</td><td class='n'>{_f(Ld.get("store",0))}</td><td class='n'>{_f(Sd.get("store",0))}</td><td class='n'>{_r(Sd.get("store",0),Ld.get("store",0))}</td></tr>
-<tr><td>Total Memory Ops</td><td class='n'><b>{_f(L_mem)}</b></td><td class='n'><b>{_f(S_mem)}</b></td><td class='n'><b>{_r(S_mem,L_mem)}</b></td></tr>
-</table></div></div>
-
-<div class="section"><h2>2. Cycle Estimates by Microarchitecture Profile</h2>
-<p style="font-size:.8rem;color:#718096;margin-bottom:10px">基于指令分布估算总 cycle 数。不同 profile 代表不同 CPU 核的指令延迟模型。</p><table>
-<tr><th>Profile</th><th class="n">LLVM CPI</th><th class="n">LLVM Cycles</th><th class="n">@100MHz</th><th class="n">ScratchV CPI</th><th class="n">ScratchV Cycles</th><th class="n">@100MHz</th><th class="n">Speedup</th></tr>"""
-
+<div class="sec"><h2>3. CPI by Microarchitecture Profile</h2><table>
+<tr><th>Profile</th><th class="n">LLVM CPI</th><th class="n">LLVM Cycles</th><th class="n">ScratchV CPI</th><th class="n">ScratchV Cycles</th><th class="n">ScratchV / LLVM</th></tr>"""
     for p in sorted(Lc.keys()):
-        lc=Lc[p]; sc=Sc.get(p,{})
-        lt=lc.get("est_hw_100mhz_s",0); st=sc.get("est_hw_100mhz_s",0) if sc else 0
-        su=st/max(lt,.001)
-        h+=f"<tr><td>{p}</td><td class='n'>{lc['cpi']:.2f}</td><td class='n'>{_f(lc['total_cycles'])}</td><td class='n'>{lt:.1f}s</td><td class='n'>{sc.get('cpi','—') if sc else '—'}</td><td class='n'>{_f(sc.get('total_cycles',0)) if sc else '—'}</td><td class='n'>{st:.1f}s</td><td class='n'>{su:.1f}x</td></tr>"
+        lc = Lc[p]; sc = Sc.get(p, {})
+        sc_c = sc.get('total_cycles', 0) if sc else 0; lc_c = lc['total_cycles']
+        h += f"<tr><td>{p}</td><td class='n'><span class='ll'>{lc['cpi']:.2f}</span></td><td class='n'>{_f(lc_c)}</td><td class='n'>{sc.get('cpi','—') if sc else '—'}</td><td class='n'>{_f(sc_c) if sc else '—'}</td><td class='n'>{_badge(_ratio(sc_c, lc_c)) if sc else '—'}</td></tr>"
+    h += """</table></div>
 
-    h+="""</table>
-<div class="insight"><h4>Profile 说明</h4><ul>
-<li><b>single-cycle</b>: 每条指令 1 cycle（纯理想模型）</li>
-<li><b>rv32im-basic</b>: mul=4cyc, load=2cyc, branch=2+1cyc — 典型嵌入式 RV32IM</li>
-<li><b>rv64fd-basic</b>: mul=3cyc, fp=1cyc(流水线), load=2cyc — 带 FPU 的 RV64FD</li>
-<li><b>rv64fd-fast</b>: 全部 1cyc — 近似高性能乱序核</li>
-<li><b>rv64fd-slow</b>: mul=5cyc, fp=2cyc, load=3cyc — 保守估算</li>
-</ul></div></div>
+<div class="sec"><h2>4. Memory Operations</h2><table>
+<tr><th>Metric</th><th class="n">LLVM (baseline)</th><th class="n">ScratchV</th><th class="n">ScratchV / LLVM</th></tr>"""
+    for name, sk in [("Load", "load"), ("Store", "store")]:
+        lv = Ld.get(sk, 0); sv = Sd.get(sk, 0)
+        h += f"<tr><td>{name}</td><td class='n'><span class='ll'>{_f(lv)}</span></td><td class='n'>{_f(sv)}</td><td class='n'>{_badge(_ratio(sv, lv))}</td></tr>"
+    h += f"""<tr class="hl"><td><b>Total</b></td><td class='n'><b class='ll'>{_f(L_mem)}</b></td><td class='n'><b>{_f(S_mem)}</b></td><td class='n'><b>{_badge(R_mem)}</b></td></tr></table>
+<div class="note">Memory ops ratio = {R_mem}. ScratchV register pressure (7 vs 15 x-regs) drives spill-heavy code. LLVM float32 accumulators stay in FP registers, requiring almost no stores.</div></div>
 
-<div class="section"><h2>3. Cache Performance</h2>
-<h3>Embedded — I$=4KB (64×2×32B), D$=16KB (128×4×32B)</h3><table>
-<tr><th></th><th class="n">LLVM</th><th class="n">ScratchV</th><th class="n">Ratio</th></tr>
-<tr><td>I$ Hit Rate</td><td class='n'><span class="llc">{LIe.get('hit_rate_pct','—')}%</span></td><td class='n'><span class="svc">{SIe.get('hit_rate_pct','—')}%</span></td><td class='n'>~1x</td></tr>
-<tr><td>D$ Hit Rate</td><td class='n'><span class="llc">{LDe.get('hit_rate_pct','—')}%</span></td><td class='n'><span class="svc">{SDe.get('hit_rate_pct','—')}%</span></td><td class='n'>~1x</td></tr>
-<tr><td>D$ Misses</td><td class='n'>{_f(LDe.get('misses',0))}</td><td class='n'><b>{_f(SDe.get('misses',0))}</b></td><td class='n'><b>{_r(SDe.get('misses',0),LDe.get('misses',0))}</b></td></tr>
-<tr><td>D$ Miss Bytes</td><td class='n'>{_f(LDe.get('total_miss_bytes',0))}</td><td class='n'><b>{_f(SDe.get('total_miss_bytes',0))}</b></td><td class='n'><b>{_r(SDe.get('total_miss_bytes',0),LDe.get('total_miss_bytes',0))}</b></td></tr>
-</table>
-<h3>Application — I$=32KB (128×4×64B), D$=128KB (256×8×64B)</h3><table>
-<tr><th></th><th class="n">LLVM</th><th class="n">ScratchV</th><th class="n">Ratio</th></tr>
-<tr><td>D$ Hit Rate</td><td class='n'><span class="llc">{LDa.get('hit_rate_pct','—')}%</span></td><td class='n'><span class="svc">{SDa.get('hit_rate_pct','—')}%</span></td><td class='n'>~1x</td></tr>
-<tr><td>D$ Misses</td><td class='n'>{_f(LDa.get('misses',0))}</td><td class='n'><b>{_f(SDa.get('misses',0))}</b></td><td class='n'><b>{_r(SDa.get('misses',0),LDa.get('misses',0))}</b></td></tr>
-</table>
-<div class="insight"><h4>Cache 分析</h4><ul>
-<li>I$ 两者 ~100% — 代码 &lt;4KB，完全适合最小 I$</li>
-<li>D$ 命中率相近但 ScratchV 访存多 3.9x → 缺失体积 3.9x</li>
-<li>128KB D$ 可将缺失率从 ~11% 降至 ~0.6%</li>
-<li>ScratchV 内存带宽压力约为 LLVM 的 4x</li>
-</ul></div></div>
+<div class="sec"><h2>5. TinyFive Inner-Loop Kernel</h2><table>
+<tr><th>Metric</th><th class="n">LLVM kernel</th><th class="n">ScratchV kernel</th><th class="n">ScratchV / LLVM</th></tr>"""
+    if tls.get('total_static', 0) > 0:
+        h += f"<tr><td>Static instructions (asm)</td><td class='n'><span class='ll'>{tls['total_static']}</span></td><td class='n'>{tss.get('total_static','—')}</td><td class='n'>{_badge(_ratio(tss.get('total_static',0), tls['total_static']))}</td></tr>"
+        h += f"<tr><td>x registers used</td><td class='n'><span class='ll'>{tls.get('x_reg_count','—')}</span></td><td class='n'>{tss.get('x_reg_count','—')}</td><td class='n'>{_badge(_ratio(tss.get('x_reg_count',0), tls.get('x_reg_count',0)))}</td></tr>"
+    h += f"<tr><td>Instructions per MAC (kernel body)</td><td class='n'><span class='ll'>{lo.get('total',0)}</span></td><td class='n'>{so.get('total',0)}</td><td class='n'>{_badge(_ratio(so.get('total',0), lo.get('total',0)))}</td></tr>"
+    h += f"<tr><td>Instructions per MAC (full model, conv)</td><td class='n'><span class='ll'>~7</span></td><td class='n'>~30</td><td class='n'><span class='badge r'>4.29×</span></td></tr>"
+    h += f"<tr><td>Instructions per MAC (full model, FC)</td><td class='n'><span class='ll'>~5</span></td><td class='n'>~15</td><td class='n'><span class='badge y'>3.00×</span></td></tr></table>"
+    h += f"""<div class="note">Kernel body: {lo.get('total',0)} vs {so.get('total',0)} instructions per MAC iteration. Full model amplification ({_ratio(so.get('total',0), lo.get('total',0))} → ~4.3×) comes from address calculation (no GEP in RV32IM → 3–5 ALU per address), Q16.16 srai shifts, and spill code.</div></div>
 
-<div class="section"><h2>4. TinyFive Static Code Analysis</h2><table>
-<tr><th>Metric</th><th class="n">LLVM RV64FD</th><th class="n">ScratchV RV32IM</th><th class="n">Ratio</th></tr>
-<tr><td>Static Instructions</td><td class='n'>{tls.get('total_static','—')}</td><td class='n'>{tss.get('total_static','—')}</td><td class='n'>{_r(tls.get('total_static',0),tss.get('total_static',0))}</td></tr>
-<tr><td>Code Bytes</td><td class='n'>{_f(tls.get('code_bytes',0))}</td><td class='n'>{_f(tss.get('code_bytes',0))}</td><td class='n'>{_r(tls.get('code_bytes',0),tss.get('code_bytes',0))}</td></tr>
-<tr><td>x Registers Used</td><td class='n'>{tls.get('x_reg_count','—')}</td><td class='n'>{tss.get('x_reg_count','—')}</td><td class='n'>{_r(tls.get('x_reg_count',0),tss.get('x_reg_count',0))}</td></tr>
-<tr><td>f Registers Used</td><td class='n'>{tls.get('f_reg_count','—')}</td><td class='n'>{tss.get('f_reg_count','—')}</td><td class='n'>—</td></tr>
-</table>
-<h3>Static Op Distribution</h3><table>
-<tr><th>Op Type</th><th class="n">LLVM</th><th class="n">%</th><th class="n">ScratchV</th><th class="n">%</th></tr>"""
-
-    for k,n in [("load","Load"),("store","Store"),("mul","Mul"),("add","Add/ALU"),
-                 ("madd","Mul-Add(FP)"),("branch","Branch")]:
-        lv=tls.get(k,0); sv=tss.get(k,0)
-        h+=f"<tr><td>{n}</td><td class='n'>{_f(lv)}</td><td class='n'>{_p(lv,tls.get('total_static',1))}</td><td class='n'>{_f(sv)}</td><td class='n'>{_p(sv,tss.get('total_static',1))}</td></tr>"
-    h+="</table></div>"
-
-    # ── 5. TinyFive Inner Loop ──
-    lo=tlo.get("ops",{}); so=tso.get("ops",{})
-    h+="""<div class="section"><h2>5. TinyFive Inner Loop Kernel (per-MAC)</h2>
-<p style="font-size:.8rem;color:#718096;margin-bottom:10px">100 MAC 迭代，RV32IM 等价内核。TinyFive ops counters 输出。</p><table>
-<tr><th>Op Counter</th><th class="n">LLVM Kernel</th><th class="n">ScratchV Kernel</th><th class="n">Ratio</th></tr>"""
-    for o in ["load","store","mul","add","madd","branch","total"]:
-        lv=lo.get(o,0); sv=so.get(o,0)
-        h+=f"<tr><td>{o}</td><td class='n'>{lv}</td><td class='n'>{sv}</td><td class='n'>{_r(sv,lv) if lv else '—'}</td></tr>"
-    h+=f"""</table><table style="margin-top:12px"><tr><th></th><th class="n">LLVM</th><th class="n">ScratchV</th></tr>
-<tr><td>Insns/MAC (kernel)</td><td class='n'>{lo.get('total',0)/100:.1f}</td><td class='n'>{so.get('total',0)/100:.1f}</td></tr>
-<tr><td>Insns/MAC (conv, full)</td><td class='n'>~7</td><td class='n'>~30</td></tr>
-<tr><td>Insns/MAC (FC, full)</td><td class='n'>~5</td><td class='n'>~15</td></tr>
-<tr><td>x Regs Used</td><td class='n'>{tlo.get('x_regs_used_count','—')}</td><td class='n'>{tso.get('x_regs_used_count','—')}</td></tr>
-</table></div>"""
-
-    # ── 6. Summary ──
-    h+=f"""<div class="section"><h2>6. Full Summary</h2><table>
-<tr><th>Metric</th><th class="n">LLVM RV64FD</th><th class="n">ScratchV RV32IM</th><th class="n">Ratio</th></tr>
-<tr><td>Static Insns</td><td class='n'>956</td><td class='n'>785</td><td class='n'>1.2x</td></tr>
-<tr><td>Dynamic Insns</td><td class='n'>{_f(L_total)}</td><td class='n'>{_f(S_total)}</td><td class='n'><b>{_r(S_total,L_total)}</b></td></tr>
-<tr><td>CPI (basic)</td><td class='n'>{L_cpi:.2f}</td><td class='n'>{S_cpi:.2f}</td><td class='n'>~1x</td></tr>
-<tr><td>Cycles (basic)</td><td class='n'>{_f(Lc.get('rv64fd-basic',{}).get('total_cycles',0))}</td><td class='n'>{_f(Sc.get('rv32im-basic',{}).get('total_cycles',0))}</td><td class='n'><b>{_r(Sc.get('rv32im-basic',{}).get('total_cycles',0),Lc.get('rv64fd-basic',{}).get('total_cycles',0))}</b></td></tr>
-<tr><td>Time @50MHz</td><td class='n'>{Lc.get('rv64fd-basic',{}).get('est_hw_50mhz_s',0):.1f}s</td><td class='n'>{Sc.get('rv32im-basic',{}).get('est_hw_50mhz_s',0):.1f}s</td><td class='n'>{sp:.1f}x</td></tr>
-<tr><td>Time @100MHz</td><td class='n'><b>{L_t100:.1f}s</b></td><td class='n'><b>{S_t100:.1f}s</b></td><td class='n'><b>{sp:.1f}x</b></td></tr>
-<tr><td>Time @500MHz</td><td class='n'>{Lc.get('rv64fd-basic',{}).get('est_hw_500mhz_s',0):.1f}s</td><td class='n'>{Sc.get('rv32im-basic',{}).get('est_hw_500mhz_s',0):.1f}s</td><td class='n'>{sp:.1f}x</td></tr>
-<tr><td>D$ Misses (16KB)</td><td class='n'>{_f(LDe.get('misses',0))}</td><td class='n'>{_f(SDe.get('misses',0))}</td><td class='n'><b>{_r(SDe.get('misses',0),LDe.get('misses',0))}</b></td></tr>
-<tr><td>D$ Miss Bytes</td><td class='n'>{_f(LDe.get('total_miss_bytes',0))}</td><td class='n'>{_f(SDe.get('total_miss_bytes',0))}</td><td class='n'><b>{_r(SDe.get('total_miss_bytes',0),LDe.get('total_miss_bytes',0))}</b></td></tr>
-<tr><td>Mem Ops</td><td class='n'>{_f(L_mem)}</td><td class='n'>{_f(S_mem)}</td><td class='n'><b>{_r(S_mem,L_mem)}</b></td></tr>
-</table>
-<div class="insight"><h4>关键结论</h4><ul>
-<li><b>动态指令 4.2x</b> 是性能差距主因 — float32 单指令 MAC vs Q16.16 ~30 条整数指令</li>
-<li><b>CPI 相近 (~1.3)</b> — 单指令效率差异小，差距在指令数</li>
-<li><b>LLVM 快 {sp:.1f}x @100MHz</b> — {L_t100:.1f}s vs {S_t100:.1f}s</li>
-<li><b>D$ 缺失体积 {_r(SDe.get('total_miss_bytes',0),LDe.get('total_miss_bytes',0))}</b> — 访存多 → 带宽压力大</li>
-<li><b>I$ 两者 100%</b> — 代码极小(&lt;4KB)，适合任何缓存</li>
-</ul></div></div>
-
-<div class="footer">ScratchV CI Benchmark · Generated by scratchv.ci.dashboard · <a href="https://github.com/ScratchV-Compiler/ScratchV" style="color:#a0aec0">GitHub</a></div>
+<div class="ft">ScratchV CI &nbsp;·&nbsp; LLVM RV64FD baseline &nbsp;·&nbsp; <a href="https://github.com/ScratchV-Compiler/ScratchV" style="color:#94a3b8">GitHub</a></div>
 </div></body></html>"""
     return h
 
-
-def generate_dashboard_html(
-    json_path: str = "",
-    json_data: dict | None = None,
-    embed_json: bool = False,
-    title: str = "ScratchV Performance Dashboard",
-) -> str:
-    """Backward-compatible wrapper called by ci_benchmark.py."""
-    ld = None
-    td = None
-    if json_data:
-        ld = json_data
+def generate_dashboard_html(json_path="", json_data=None, embed_json=False, title="ScratchV"):
+    """Backward-compatible entry point called by ci_benchmark.py."""
+    ld = td = None
+    if json_data and isinstance(json_data, dict):
+        data = json_data
+        ld = {"llvm": data} if "llvm" in data or "dynamic_instructions" in data else data
     elif json_path and os.path.exists(json_path):
-        with open(json_path) as f:
-            ld = json.load(f)
+        with open(json_path) as f: ld = json.load(f)
     return generate(ld, td)
 
-
-def main() -> int:
+def main():
     import argparse
     p = argparse.ArgumentParser()
-    p.add_argument("--llvm-json", help="Pre-computed llvm_cache_compare JSON")
-    p.add_argument("--tinyfive-json", help="Pre-computed tinyfive_compare JSON")
-    p.add_argument("-o","--output", default="benchmark_reports/dashboard.html")
-    p.add_argument("--run", action="store_true", help="Collect fresh data by running tools")
+    p.add_argument("--llvm-json"); p.add_argument("--tinyfive-json")
+    p.add_argument("-o", "--output", default="benchmark_reports/dashboard.html")
+    p.add_argument("--run", action="store_true")
     a = p.parse_args()
-
-    ld = None; td = None
+    ld = td = None
     if a.llvm_json and os.path.exists(a.llvm_json):
         with open(a.llvm_json) as f: ld = json.load(f)
     if a.tinyfive_json and os.path.exists(a.tinyfive_json):
         with open(a.tinyfive_json) as f: td = json.load(f)
-
     if a.run or (ld is None and td is None):
-        print("Collecting fresh data...", file=sys.stderr)
-        ld, td = collect_all()
-
-    if ld is None:
-        ld = {}
-    if td is None:
-        td = {}
-
-    html = generate(ld, td)
+        print("collecting data...", file=sys.stderr); ld, td = collect()
+    html = generate(ld or {}, td or {})
     os.makedirs(os.path.dirname(a.output) or ".", exist_ok=True)
     with open(a.output, "w") as f: f.write(html)
-    print(f"Dashboard: {a.output} ({len(html):,} bytes)", file=sys.stderr)
-    return 0
+    print(f"→ {a.output} ({len(html):,}B)", file=sys.stderr)
 
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == "__main__": sys.exit(main())

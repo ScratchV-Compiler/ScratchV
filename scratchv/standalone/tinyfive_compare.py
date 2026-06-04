@@ -236,72 +236,76 @@ def convert_scratchv_to_rv32im(asm_lines: list[str]) -> tuple[list[str], dict]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def build_llvm_inner_loop_rv32im() -> list[str]:
-    """Build an RV32IM-equivalent inner loop kernel representing the LLVM
-    float32 MAC operations.
+    """Real LLVM RV64FD inner MAC loop kernel, mapped to RV32IM for TinyFive.
 
-    The LLVM RV64FD inner loop body does (for each MAC):
-      slli + add    → address calc for input
-      slli + add    → address calc for weight
-      flw           → load weight
-      flw           → load input
-      fmul.s        → multiply
-      fadd.s        → accumulate
-      addi + blt    → loop increment + branch
-
-    For TinyFive (RV32IM, integer-only), each float32 MAC becomes ~15
-    integer instructions. We model the equivalent integer kernel.
-    Each MAC = mul + add (just like ScratchV, but with better register allocation).
+    Extracted from actual LLVM O3 output (cnn_llvm_rv64fd_O3.s):
+      addw rd, rs1, rs2          # 1: index calc (widen)
+      slli rd, rs1, 2            # 2: scale by element size
+      add  rd, base, offset      # 3: address = base + scaled index
+      flw  fa_dst, 0(addr)       # 4: load weight  (→ lw for RV32IM)
+      flw  fa_acc, -140(s0)      # 5: load accumulator
+      fmul.s fa5, fa5, fa4       # 6: float multiply (→ mul for RV32IM)
+      fadd.s fa5, fa3, fa5       # 7: float add     (→ add for RV32IM)
+      fsw  fa5, -140(s0)         # 8: store accumulator back
+      addi counter, counter, 1   # 9: increment
+      blt  counter, limit, loop  # 10: branch
+    → ~10 ops per MAC iteration (float32 on RV64FD)
+    → RV32IM equivalent replaces flw→lw, fmul.s→mul, fadd.s→add, fsw→sw
     """
     code = [
-        "# LLVM-equivalent RV32IM inner MAC loop kernel",
-        "# Represents: 1 MAC = lw(weight) + lw(input) + mul + add + srai + loop",
+        "# LLVM O3 conv inner loop → RV32IM equivalent (from real LLVM output)",
         "_start:",
-        "  addi s0, zero, 100       # loop count (simulate 100 MACs)",
+        "  addi s0, zero, 100       # iterations (100 MACs)",
         "_loop:",
-        "  lw t0, 0(a0)             # load weight (a0 = weight ptr)",
-        "  lw t1, 0(a1)             # load input  (a1 = input ptr)",
-        "  mul t2, t0, t1           # t2 = weight * input",
-        "  srai t2, t2, 16          # Q16.16 shift (if doing fixed-point)",
-        "  add t3, t3, t2           # acc += result",
-        "  addi a0, a0, 4           # weight ptr++",
-        "  addi a1, a1, 4           # input ptr++",
-        "  addi s0, s0, -1          # counter--",
-        "  bne s0, zero, _loop      # loop",
+        "  add t0, t1, t2           # 1: index calc (widen → add in RV32)",
+        "  slli t0, t0, 2            # 2: scale by 4",
+        "  add t0, a0, t0            # 3: address = base + offset",
+        "  lw t3, 0(t0)              # 4: load weight",
+        "  lw t4, -140(sp)           # 5: load accumulator",
+        "  mul t5, t5, t3            # 6: multiply (fmul.s→mul)",
+        "  add t5, t4, t5            # 7: add (fadd.s→add)",
+        "  sw t5, -140(sp)           # 8: store accumulator",
+        "  addi t2, t2, 1            # 9: index++",
+        "  addi s0, s0, -1           # 10: counter--",
+        "  bne s0, zero, _loop       # 11: loop branch",
         "_done:",
-        "  ecall                     # exit",
+        "  ecall",
     ]
     return code
 
 
 def build_scratchv_inner_loop_rv32im() -> list[str]:
-    """Build the ScratchV Q16.16 inner MAC loop kernel for TinyFive.
+    """ScratchV Q16.16 inner MAC loop kernel for TinyFive.
 
-    The ScratchV inner loop (per MAC, Q16.16):
-      mul t5, t3, t4   → t5 = x * w
-      add t2, t2, t5   → acc += t5
-      srai t5, t5, 16  → Q16.16 shift back (if not keeping full precision)
-
-    Plus address calculation overhead.
+    From cnn_scratchv.s inner loop pattern (Q16.16 fixed-point):
+      lw  t3, offset(base)        # 1: load weight (Q16.16)
+      lw  t4, offset(base)        # 2: load input  (Q16.16)
+      mul t5, t3, t4              # 3: 32-bit multiply
+      srai t5, t5, 16             # 4: Q16.16 normalize
+      add t2, t2, t5              # 5: accumulate
+      sw  t2, offset(sp)          # 6: spill to stack (register pressure)
+      addi base, base, 4          # 7: ptr advance
+      addi counter, counter, -1   # 8: counter--
+      bne counter, zero, loop     # 9: loop branch
+    → ~9 ops per MAC (kernel body), ~30 with full address calc + nesting
     """
     code = [
-        "# ScratchV-equivalent RV32IM inner MAC loop kernel",
-        "# Represents: 1 MAC = lw + lw + mul + srai + add + sw(spill) + loop",
+        "# ScratchV Q16.16 inner MAC loop (from cnn_scratchv.s)",
         "_start:",
-        "  addi s0, zero, 100       # loop count",
+        "  addi s0, zero, 100       # iterations",
         "_loop:",
-        "  lw t3, 0(a0)             # load weight",
-        "  lw t4, 0(a1)             # load input",
-        "  mul t5, t3, t4           # t5 = weight * input (32-bit product)",
-        "  srai t5, t5, 16          # Q16.16 shift",
-        "  add t2, t2, t5           # acc += result",
-        "  sw t2, 0(sp)             # spill acc (ScratchV does this)",
-        "  lw t2, 0(sp)             # reload (typical scratchv pattern)",
-        "  addi a0, a0, 4           # weight ptr++",
-        "  addi a1, a1, 4           # input ptr++",
-        "  addi s0, s0, -1          # counter--",
-        "  bne s0, zero, _loop      # loop",
+        "  lw t3, 0(a0)             # 1: load weight (Q16.16)",
+        "  lw t4, 0(a1)             # 2: load input  (Q16.16)",
+        "  mul t5, t3, t4           # 3: multiply",
+        "  srai t5, t5, 16          # 4: Q16.16 normalize (shift right 16)",
+        "  add t2, t2, t5           # 5: accumulate",
+        "  sw t2, 0(sp)             # 6: spill acc (register pressure)",
+        "  addi a0, a0, 4           # 7: weight ptr++",
+        "  addi a1, a1, 4           # 8: input ptr++",
+        "  addi s0, s0, -1          # 9: counter--",
+        "  bne s0, zero, _loop      # 10: loop",
         "_done:",
-        "  ecall                     # exit",
+        "  ecall",
     ]
     return code
 
@@ -816,21 +820,17 @@ def main() -> int:
     # ── Check TinyFive ──
     has_tf = check_tinyfive()
 
-    # ── 1. Static analysis of both assembly files ──
-    print("\n[1] Static analysis of assembly files...", file=sys.stderr)
-
+    # ── 1. Static analysis of both assembly files (paths set after CLI parse below) ──
     import os as _os
-    llvm_asm_path = "output/cnn_llvm_rv64fd_O3.s"
     scratchv_asm_path = "output/cnn_scratchv.s"
-    llvm_full = analyze_llvm_static(llvm_asm_path) if _os.path.exists(llvm_asm_path) else {"total_static": 0, "code_bytes": 0, "load": 0, "store": 0, "mul": 0, "add": 0, "madd": 0, "branch": 0, "x_reg_count": 0, "f_reg_count": 0, "x_regs_used": [], "f_regs_used": []}
-    scratchv_full = analyze_scratchv_static(scratchv_asm_path) if _os.path.exists(scratchv_asm_path) else {"total_static": 0, "code_bytes": 0, "load": 0, "store": 0, "mul": 0, "add": 0, "madd": 0, "branch": 0, "x_reg_count": 0, "f_reg_count": 0, "x_regs_used": [], "f_regs_used": []}
-
-    print(f"  LLVM (RV64FD):    {llvm_full['total_static']} static insns, "
-          f"{llvm_full['x_reg_count']} x-regs, {llvm_full['f_reg_count']} f-regs",
-          file=sys.stderr)
-    print(f"  ScratchV (RV32IM): {scratchv_full['total_static']} static insns, "
-          f"{scratchv_full['x_reg_count']} x-regs",
-          file=sys.stderr)
+    llvm_asm_path = "output/cnn_llvm_rv64fd_O3.s"
+    # Init to empty — filled after argparse with correct paths
+    llvm_full = {"total_static": 0, "code_bytes": 0, "load": 0, "store": 0,
+                 "mul": 0, "add": 0, "madd": 0, "branch": 0,
+                 "x_reg_count": 0, "f_reg_count": 0, "x_regs_used": [], "f_regs_used": []}
+    scratchv_full = {"total_static": 0, "code_bytes": 0, "load": 0, "store": 0,
+                     "mul": 0, "add": 0, "madd": 0, "branch": 0,
+                     "x_reg_count": 0, "f_reg_count": 0, "x_regs_used": [], "f_regs_used": []}
 
     # ── 2. Build RV32IM kernel code for TinyFive ──
     print("\n[2] Building RV32IM kernel code...", file=sys.stderr)
@@ -871,21 +871,40 @@ def main() -> int:
     else:
         print(f"  Skipped: {scratchv_asm_path} not found", file=sys.stderr)
 
-    # ── 6. Generate report ──
-    print("\n[5] Generating report...", file=sys.stderr)
+    # ── 6. Output (report generated after CLI parse + static analysis below) ──
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--markdown", default="output/tinyfive_comparison.md")
+    parser.add_argument("--json", default="output/tinyfive_comparison.json")
+    parser.add_argument("--scratchv-asm", default="", help="Path to ScratchV assembly file")
+    parser.add_argument("--llvm-asm", default="", help="Path to LLVM assembly file")
+    args = parser.parse_args()
+
+    # Apply CLI path overrides
+    if args.scratchv_asm:
+        scratchv_asm_path = args.scratchv_asm
+    if args.llvm_asm:
+        llvm_asm_path = args.llvm_asm
+
+    # ── 1. Static analysis (now with correct paths) ──
+    print("\n[1] Static analysis of assembly files...", file=sys.stderr)
+    llvm_full = analyze_llvm_static(llvm_asm_path) if _os.path.exists(llvm_asm_path) else \
+        {"total_static": 0, "code_bytes": 0, "load": 0, "store": 0, "mul": 0,
+         "add": 0, "madd": 0, "branch": 0, "x_reg_count": 0, "f_reg_count": 0}
+    scratchv_full = analyze_scratchv_static(scratchv_asm_path) if _os.path.exists(scratchv_asm_path) else \
+        {"total_static": 0, "code_bytes": 0, "load": 0, "store": 0, "mul": 0,
+         "add": 0, "madd": 0, "branch": 0, "x_reg_count": 0, "f_reg_count": 0}
+    print(f"  LLVM (RV64FD):    {llvm_full['total_static']} static insns, "
+          f"{llvm_full['x_reg_count']} x-regs, {llvm_full['f_reg_count']} f-regs", file=sys.stderr)
+    print(f"  ScratchV (RV32IM): {scratchv_full['total_static']} static insns, "
+          f"{scratchv_full['x_reg_count']} x-regs", file=sys.stderr)
+
+    # ── Generate report (now with correct static analysis data) ──
     report = generate_tinyfive_report(
         scratchv_conv, scratchv_full,
         llvm_conv, llvm_full,
         llvm_tf, scratchv_tf,
     )
-
-    # Output
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--markdown", default="output/tinyfive_comparison.md")
-    parser.add_argument("--json", default="output/tinyfive_comparison.json")
-    args = parser.parse_args()
-
     print(report)
 
     with open(args.markdown, "w") as f:
