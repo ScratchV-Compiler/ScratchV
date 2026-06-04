@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   # ═════════════════════════════════════════════════════════════════════════
   # 课题功能测试：所有14个模块的单元测试 + 集成测试
@@ -84,6 +89,26 @@ jobs:
           path: benchmark_reports/
           retention-days: 30
 
+      # ── 生成仪表盘 HTML + 上传 Pages 产物 ─────────────────────────────
+      - name: Generate dashboard for Pages
+        if: github.ref == 'refs/heads/main'
+        run: |
+          python3.12 scratchv/ci/ci_benchmark.py \
+            --model-registry ci_models.json \
+            --output-dir benchmark_reports/ \
+            --html dashboard.html \
+            --json-out ci_data.json \
+            --md github_summary.md \
+            --embed-json \
+            --skip-cache \
+            --skip-llvm 2>&1 | tail -5
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: benchmark_reports/
+
       - name: Write job summary
         run: |
           if [ -f benchmark_reports/github_summary.md ]; then
@@ -94,3 +119,21 @@ jobs:
           if [ -f benchmark_reports/llvm_vs_scratchv.md ]; then
             tail -20 benchmark_reports/llvm_vs_scratchv.md >> $GITHUB_STEP_SUMMARY
           fi
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # GitHub Pages 部署 (仅 main 分支)
+  # ═════════════════════════════════════════════════════════════════════════
+  deploy-pages:
+    needs: benchmark
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
