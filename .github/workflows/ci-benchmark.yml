@@ -1,0 +1,120 @@
+name: CI Benchmark Dashboard
+
+on:
+  push:
+    branches: [main, wjy_dev, jzj_dev]
+    paths:
+      - 'scratchv/standalone/**.py'
+      - 'scratchv/ci/**.py'
+      - 'scratchv/backend/**.py'
+      - 'models/graph/*.onnx'
+      - 'ci_models.json'
+      - '.github/workflows/ci-benchmark.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scratchv/standalone/**.py'
+      - 'scratchv/ci/**.py'
+      - 'scratchv/backend/**.py'
+      - 'models/graph/*.onnx'
+      - 'ci_models.json'
+      - '.github/workflows/ci-benchmark.yml'
+  workflow_dispatch:
+    inputs:
+      models:
+        description: 'ONNX models to benchmark (comma-separated names from ci_models.json, or "all")'
+        default: 'all'
+        type: string
+      skip_llvm:
+        description: 'Skip LLVM compilation'
+        default: false
+        type: boolean
+      max_emu_instr:
+        description: 'Max emulation instructions per model'
+        default: 10000000
+        type: number
+
+concurrency:
+  group: ci-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Benchmark Models
+    runs-on: self-hosted
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy onnx protobuf
+          # Optional dependencies — gracefully handled if missing
+          pip install tinyfive 2>/dev/null || echo "TinyFive not available"
+          pip install llvmlite 2>/dev/null || echo "llvmlite not available"
+          pip install onnxruntime 2>/dev/null || echo "onnxruntime not available"
+
+      - name: Run comprehensive benchmarks
+        id: benchmark
+        run: |
+          mkdir -p benchmark_reports
+          python scratchv/ci/ci_benchmark.py \
+            --model-registry ci_models.json \
+            --output-dir benchmark_reports/ \
+            --html dashboard.html \
+            --json-out ci_data.json \
+            --md github_summary.md \
+            --max-emu-instr ${{ github.event.inputs.max_emu_instr || 5000000 }} \
+            ${{ github.event.inputs.skip_llvm == 'true' && '--skip-llvm' || '' }} \
+            --embed-json
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-dashboard
+          path: |
+            benchmark_reports/dashboard.html
+            benchmark_reports/ci_data.json
+            benchmark_reports/*.s
+            benchmark_reports/*.bin
+            benchmark_reports/*.ll
+          retention-days: 90
+
+      - name: Upload GitHub Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: benchmark_reports/
+
+      - name: Write job summary
+        if: always()
+        run: |
+          if [ -f benchmark_reports/github_summary.md ]; then
+            cat benchmark_reports/github_summary.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    needs: benchmark
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
