@@ -93,15 +93,10 @@ jobs:
       - name: Generate dashboard for Pages
         if: github.ref == 'refs/heads/main'
         run: |
-          python3.12 scratchv/ci/ci_benchmark.py \
-            --model-registry ci_models.json \
-            --output-dir benchmark_reports/ \
-            --html dashboard.html \
-            --json-out ci_data.json \
-            --md github_summary.md \
-            --embed-json \
-            --skip-cache \
-            --skip-llvm 2>&1 | tail -5
+          python3.12 scratchv/ci/dashboard.py \
+            --llvm-json benchmark_reports/llvm_vs_scratchv.json \
+            --tinyfive-json benchmark_reports/tinyfive_compare.json \
+            -o benchmark_reports/dashboard.html 2>&1
 
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main'

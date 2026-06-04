@@ -272,6 +272,23 @@ def generate(ld: dict | None = None, td: dict | None = None) -> str:
     return h
 
 
+def generate_dashboard_html(
+    json_path: str = "",
+    json_data: dict | None = None,
+    embed_json: bool = False,
+    title: str = "ScratchV Performance Dashboard",
+) -> str:
+    """Backward-compatible wrapper called by ci_benchmark.py."""
+    ld = None
+    td = None
+    if json_data:
+        ld = json_data
+    elif json_path and os.path.exists(json_path):
+        with open(json_path) as f:
+            ld = json.load(f)
+    return generate(ld, td)
+
+
 def main() -> int:
     import argparse
     p = argparse.ArgumentParser()
