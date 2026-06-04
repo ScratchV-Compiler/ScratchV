@@ -65,6 +65,17 @@ jobs:
             echo "models/graph/cnn.onnx not found, skipping CNN benchmark"
           fi
 
+      # ── 3.4 LLVM vs ScratchV + TinyFive 对比（纯分析，无需编译）──────
+      - name: LLVM vs ScratchV comparison (analytical)
+        run: |
+          mkdir -p benchmark_reports
+          python3.12 scratchv/standalone/llvm_cache_compare.py \
+            --json-output benchmark_reports/llvm_vs_scratchv.json \
+            --markdown benchmark_reports/llvm_vs_scratchv.md 2>&1 | tail -20
+          python3.12 scratchv/standalone/tinyfive_compare.py \
+            --json benchmark_reports/tinyfive_compare.json \
+            --markdown benchmark_reports/tinyfive_compare.md 2>&1 | tail -15
+
       # ── 上报 ──────────────────────────────────────────────────────────
       - name: Upload benchmark reports
         uses: actions/upload-artifact@v4
@@ -75,4 +86,11 @@ jobs:
 
       - name: Write job summary
         run: |
-          cat benchmark_reports/github_summary.md >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/github_summary.md ]; then
+            cat benchmark_reports/github_summary.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### LLVM vs ScratchV" >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/llvm_vs_scratchv.md ]; then
+            tail -20 benchmark_reports/llvm_vs_scratchv.md >> $GITHUB_STEP_SUMMARY
+          fi
