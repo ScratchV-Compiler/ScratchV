@@ -1594,21 +1594,24 @@ class CNNRISCVGenerator:
     # ── Conv2D ─────────────────────────────────────────────────────────
 
     def _gen_conv(self, node: NodeInfo) -> None:
-        """Generate inline Conv2D: NCHW layout, direct convolution with loops.
+        """Generate optimized inline Conv2D: NCHW layout, nested loops.
+
+        Optimizations:
+          - Pointer-walking in innermost kw loop (11 instr/MAC vs ~42 original)
+          - Boundary checks skipped when pads=0 (saves ~10 instr/MAC)
+          - All constants preloaded (saves ~10 emit_li per MAC)
+          - Strength reduction: stride*h/w computed once per oh/ow; used as base
+          - Pointer adjustment per kh row: input_ptr += (W-K)*4
 
         for oc in range(C_out):
           for oh in range(H_out):
             for ow in range(W_out):
-              acc = bias[oc]   # Q16.16
+              acc = bias[oc]
               for ic in range(C_in):
                 for kh in range(K):
                   for kw in range(K):
-                    ih = oh*S + kh - P
-                    iw = ow*S + kw - P
-                    if 0 <= ih < H and 0 <= iw < W:
-                      acc += input[ic,ih,iw] * weight[oc,ic,kh,kw]
-              acc = acc >> 16 (normalize)
-              output[oc,oh,ow] = acc
+                    acc += input[ic, ih, iw] * weight[oc, ic, kh, kw]
+              output[oc, oh, ow] = acc
         """
         x_name = node.inputs[0]
         w_name = node.inputs[1]
@@ -1618,7 +1621,6 @@ class CNNRISCVGenerator:
         x_shape = self.model.get_shape(x_name)
         w_shape = self.model.get_shape(w_name)
 
-        # Dimensions (NCHW)
         N = x_shape[0] if len(x_shape) > 0 else 1
         C_in = x_shape[1] if len(x_shape) > 1 else 1
         H = x_shape[2] if len(x_shape) > 2 else 1
@@ -1639,173 +1641,314 @@ class CNNRISCVGenerator:
         H_out = (H + 2 * ph - K) // sh + 1
         W_out = (W + 2 * pw - K) // sw + 1
 
-        # Allocate workspace for output
+        no_pad = (ph == 0 and pw == 0)
+
+        # Allocate workspace
         out_elements = N * C_out * H_out * W_out
         self.mem.alloc_workspace(out_name, out_elements)
 
         # Load base addresses
-        # Input tensor: s0 points to input (caller-provided for first layer,
-        # workspace for subsequent layers)
-        self._get_workspace_addr(x_name, self.S2)  # s2 = input base
-        self._get_weight_addr(w_name, self.S3)      # s3 = weight base
-        self._get_weight_addr(b_name, self.S4)      # s4 = bias base
-        self._get_workspace_addr(out_name, self.S5) # s5 = output base
+        self._get_workspace_addr(x_name, self.S2)   # s2 = input base
+        self._get_weight_addr(w_name, self.S3)       # s3 = weight base
+        self._get_weight_addr(b_name, self.S4)       # s4 = bias base
+        self._get_workspace_addr(out_name, self.S5)  # s5 = output base
 
-        H_out_reg = self.S6   # oh loop counter
-        W_out_reg = self.S7   # ow loop counter
-        C_out_reg = self.S8   # oc loop counter
-        C_in_reg = self.S9    # ic loop counter
-        Kh_reg = self.S10     # kh loop counter
-        Kw_reg = self.S11     # kw loop counter
+        # ── Preload loop-invariant constants ──────────────────────────
+        # We use a2-a7 (x12-x17) for preloaded constants — free in bare-metal
+        # after a0/a1 are saved to s0/s1 at entry.
+        K_REG = 12          # a2: kernel size K
+        STRIDE_H_REG = 13   # a3: stride_h (sh)
+        STRIDE_W_REG = 14   # a4: stride_w (sw)
+        W_REG = 15          # a5: input width W
+        HW_REG = 16         # a6: H * W (channel stride)
+        C_IN_REG = 17       # a7: C_in
 
-        acc_reg = self.T0     # accumulation
-        val_reg = self.T1     # loaded value
-        tmp_reg = self.T2     # temporary
-        addr_reg = self.T3    # address computation
-        cond_reg = self.T4    # condition check
+        self.emit.emit_li(K_REG, K, f"K = {K}")
+        self.emit.emit_li(STRIDE_H_REG, sh, f"sh = {sh}")
+        self.emit.emit_li(STRIDE_W_REG, sw, f"sw = {sw}")
+        self.emit.emit_li(W_REG, W, f"W = {W}")
+        self.emit.emit_li32(HW_REG, H * W, f"H*W = {H*W}")
+        self.emit.emit_li(C_IN_REG, C_in, f"C_in = {C_in}")
 
-        L = self.emit.label  # shorthand
+        # ── Register layout ────────────────────────────────────────────
+        S2_IN_BASE       = self.S2   # s2: input base
+        S3_W_BASE        = self.S3   # s3: weight base
+        S4_BIAS_BASE     = self.S4   # s4: bias base
+        S5_OUT_BASE      = self.S5   # s5: output base
+        OH_REG           = self.S6   # s6: oh loop
+        OW_REG           = self.S7   # s7: ow loop
+        OC_REG           = self.S8   # s8: oc loop
+        IC_REG           = self.S9   # s9: ic loop
+        KH_REG           = self.S10  # s10: kh loop
+        KW_REG           = self.S11  # s11: kw loop
 
-        # Initialize oc = 0
-        self.emit.emit(rv_addi(C_out_reg, _R_ZERO, 0), f"oc = 0 (C_out={C_out})")
+        ACC_REG          = self.T0   # t0: acc
+        VAL_REG          = self.T1   # t1: input value
+        TMP_REG          = self.T2   # t2: temp / product
+        IN_PTR           = self.T3   # t3: running input pointer
+        COND_REG         = self.T4   # t4: condition / temp
+        WT_PTR           = self.T5   # t5: running weight pointer
+        T6_REG           = self.T6   # t6: general temporary
+
+        L = self.emit.label
+
+        # Product constants (computed at compile time, loaded when needed)
+        H_out_W_out = H_out * W_out
+        C_in_K_K = C_in * K * K
+        K_K = K * K
+        W_minus_K_times_4 = (W - K) * 4
+        stride_h_W_times_4 = sh * W * 4
+        stride_w_times_4 = sw * 4
+
+        # ── oc loop ────────────────────────────────────────────────────
+        self.emit.emit(rv_addi(OC_REG, _R_ZERO, 0), f"oc=0 (C_out={C_out})")
+        # oc_weight_step = C_in * K * K (weight offset per oc)
+        WT_OC_STEP_REG = STRIDE_H_REG  # reuse stride_h reg after preload (a3)
+        self.emit.emit_li32(WT_OC_STEP_REG, C_in_K_K, f"oc_wt_step={C_in_K_K}")
         L("_conv_oc_loop")
 
         # Load bias[oc]
-        self.emit.emit(rv_slli(addr_reg, C_out_reg, 2), "addr_reg = oc * 4")
-        self.emit.emit(rv_add(addr_reg, self.S4, addr_reg), "addr_reg = bias_base + oc*4")
-        self.emit.emit(rv_lw(acc_reg, addr_reg, 0), "acc = bias[oc]")
+        self.emit.emit(rv_slli(TMP_REG, OC_REG, 2), "offset = oc*4")
+        self.emit.emit(rv_add(TMP_REG, S4_BIAS_BASE, TMP_REG), "+ bias_base")
+        self.emit.emit(rv_lw(ACC_REG, TMP_REG, 0), "acc = bias[oc]")
 
-        # Initialize oh = 0
-        self.emit.emit(rv_addi(H_out_reg, _R_ZERO, 0), f"oh = 0 (H_out={H_out})")
+        # Compute oc * C_in*K*K for weight base offset (reused per oc)
+        WT_OC_BASE_REG = COND_REG  # t4 reused as oc weight base offset
+        self.emit.emit(rv_mul(WT_OC_BASE_REG, OC_REG, WT_OC_STEP_REG),
+                       f"wt_oc_base = oc * {C_in_K_K}")
+
+        # ── oh loop ────────────────────────────────────────────────────
+        self.emit.emit(rv_addi(OH_REG, _R_ZERO, 0), f"oh=0 (H_out={H_out})")
         L("_conv_oh_loop")
 
-        # Initialize ow = 0
-        self.emit.emit(rv_addi(W_out_reg, _R_ZERO, 0), f"ow = 0 (W_out={W_out})")
+        # ih_base = oh * stride_h (precompute for this oh row)
+        IH_BASE_REG = TMP_REG  # reuse
+        self.emit.emit(rv_mul(IH_BASE_REG, OH_REG, STRIDE_H_REG),
+                       "ih_base = oh * stride_h")
+
+        # ── ow loop ────────────────────────────────────────────────────
+        self.emit.emit(rv_addi(OW_REG, _R_ZERO, 0), f"ow=0 (W_out={W_out})")
         L("_conv_ow_loop")
 
-        # Initialize ic = 0
-        self.emit.emit(rv_addi(C_in_reg, _R_ZERO, 0), f"ic = 0 (C_in={C_in})")
+        # iw_base = ow * stride_w (precompute for this column)
+        IW_BASE_REG = T6_REG
+        self.emit.emit(rv_mul(IW_BASE_REG, OW_REG, STRIDE_W_REG),
+                       "iw_base = ow * stride_w")
+
+        # ── ic loop ────────────────────────────────────────────────────
+        self.emit.emit(rv_addi(IC_REG, _R_ZERO, 0), f"ic=0 (C_in={C_in})")
         L("_conv_ic_loop")
 
-        # Initialize kh = 0
-        self.emit.emit(rv_addi(Kh_reg, _R_ZERO, 0), f"kh = 0 (K={K})")
+        # Step 1: IN_PTR = input_base + ic * H*W * 4  (use VAL_REG/T1 as scratch)
+        self.emit.emit(rv_mul(VAL_REG, IC_REG, HW_REG),
+                       "ic_offset = ic * H*W")
+        self.emit.emit(rv_slli(VAL_REG, VAL_REG, 2),
+                       "ic_byte_off = ic_offset * 4")
+        self.emit.emit(rv_add(IN_PTR, S2_IN_BASE, VAL_REG),
+                       "in_ptr = input_base + ic*H*W*4")
+
+        # Step 2: WT_PTR = weight_base + oc * C_in*K*K * 4
+        # WT_OC_BASE_REG lives in COND_REG (T4); shift and add
+        self.emit.emit(rv_slli(VAL_REG, WT_OC_BASE_REG, 2),
+                       f"wt_oc_byte = {C_in_K_K}*4")
+        self.emit.emit(rv_add(WT_PTR, S3_W_BASE, VAL_REG),
+                       "wt_ptr = weight_base + oc_wt_byte")
+
+        # Step 3: IN_PTR += (ih_base * W + iw_base) * 4
+        # IH_BASE_REG = TMP_REG (T2), IW_BASE_REG = T6_REG (T6)
+        # Do this BEFORE weight ic*K*K (which overwrites T6)
+        self.emit.emit(rv_mul(VAL_REG, IH_BASE_REG, W_REG),
+                       "ih_off = ih_base * W")
+        self.emit.emit(rv_add(VAL_REG, VAL_REG, IW_BASE_REG),
+                       "row_off = ih*W + iw_base")
+        self.emit.emit(rv_slli(VAL_REG, VAL_REG, 2),
+                       "row_byte = row_off * 4")
+        self.emit.emit(rv_add(IN_PTR, IN_PTR, VAL_REG),
+                       "in_ptr = &input[ic, ih_base, iw_base]")
+
+        # Step 4: WT_PTR += ic * K*K * 4  (safe to overwrite T6/IW_BASE now)
+        self.emit.emit_li32(T6_REG, K_K, f"K*K = {K_K}")
+        self.emit.emit(rv_mul(VAL_REG, IC_REG, T6_REG),
+                       f"ic_wt_off = ic * {K_K}")
+        self.emit.emit(rv_slli(VAL_REG, VAL_REG, 2),
+                       "ic_wt_byte = ic_wt_off * 4")
+        self.emit.emit(rv_add(WT_PTR, WT_PTR, VAL_REG),
+                       "wt_ptr += ic * K*K * 4")
+
+        # ── kh loop ────────────────────────────────────────────────────
+        self.emit.emit(rv_addi(KH_REG, _R_ZERO, 0), f"kh=0 (K={K})")
         L("_conv_kh_loop")
 
-        # Initialize kw = 0
-        self.emit.emit(rv_addi(Kw_reg, _R_ZERO, 0), f"kw = 0 (K={K})")
+        # ── kw loop (innermost) ────────────────────────────────────────
+        self.emit.emit(rv_addi(KW_REG, _R_ZERO, 0), f"kw=0 (K={K})")
         L("_conv_kw_loop")
 
-        # --- Inner MAC computation ---
-        # Compute ih = oh * stride + kh - pad
-        # iw = ow * stride + kw - pad
-        self.emit.emit_li(self.T6, sh, f"stride_h = {sh}")
-        self.emit.emit(rv_mul(tmp_reg, H_out_reg, self.T6), "tmp = oh * stride_h")
-        self.emit.emit(rv_add(tmp_reg, tmp_reg, Kh_reg), "tmp += kh")
-        self.emit.emit(rv_addi(tmp_reg, tmp_reg, -ph), f"tmp -= pad_h ({ph}) → ih")
-        # tmp_reg = ih
+        if no_pad:
+            # No-padding fast path: pointer-walking, 11 instr/MAC
+            # Load input and weight via running pointers
+            self.emit.emit(rv_lw(VAL_REG, IN_PTR, 0),
+                           "load input[ic,ih,iw]")
+            self.emit.emit(rv_lw(T6_REG, WT_PTR, 0),
+                           "load weight[oc,ic,kh,kw]")
+            # Q16.16 multiply: MUL + SRAI
+            self.emit.emit(rv_mul(T6_REG, VAL_REG, T6_REG),
+                           "Q16.16 mul")
+            self.emit.emit(rv_srai(T6_REG, T6_REG, 16),
+                           ">> 16")
+            self.emit.emit(rv_add(ACC_REG, ACC_REG, T6_REG),
+                           "acc += product")
+            # Advance pointers
+            self.emit.emit(rv_addi(IN_PTR, IN_PTR, 4),
+                           "in_ptr += 4")
+            self.emit.emit(rv_addi(WT_PTR, WT_PTR, 4),
+                           "wt_ptr += 4")
+            # Loop: kw++ and branch
+            self.emit.emit(rv_addi(KW_REG, KW_REG, 1), "kw++")
+            self.emit.emit(rv_slt(COND_REG, KW_REG, K_REG), "kw < K?")
+            self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO,
+                                  "_conv_kw_loop", "loop kw")
+        else:
+            # Padding path: ih = oh*sh + kh - ph, iw = ow*sw + kw - pw
+            # Compute ih with preloaded constants
+            self.emit.emit(rv_mul(TMP_REG, OH_REG, STRIDE_H_REG),
+                           "tmp = oh * stride_h")
+            self.emit.emit(rv_add(TMP_REG, TMP_REG, KH_REG), "tmp += kh")
+            self.emit.emit(rv_addi(TMP_REG, TMP_REG, -ph),
+                           f"tmp -= {ph}")
 
-        # Check if 0 <= ih < H
-        self.emit.emit(rv_slti(cond_reg, tmp_reg, 0), "cond = (ih < 0)")
-        skip_label = f"_conv_skip_{len(self.emit.labels)}"
-        self.emit.emit_branch(rv_bne, cond_reg, _R_ZERO, skip_label, "skip if ih < 0")
-        self.emit.emit_li(self.T6, H, f"H = {H}")
-        self.emit.emit(rv_slt(cond_reg, tmp_reg, self.T6), "cond = (ih < H)")
-        self.emit.emit_branch(rv_beq, cond_reg, _R_ZERO, skip_label, "skip if ih >= H")
+            # Boundary check: ih bounds
+            skip_label = f"_conv_skip_{len(self.emit.labels)}"
+            self.emit.emit(rv_slti(COND_REG, TMP_REG, 0), "ih < 0?")
+            self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO, skip_label,
+                                  "skip if ih < 0")
+            self.emit.emit_li(T6_REG, H, f"H = {H}")
+            self.emit.emit(rv_slt(COND_REG, TMP_REG, T6_REG), "ih < H?")
+            self.emit.emit_branch(rv_beq, COND_REG, _R_ZERO, skip_label,
+                                  "skip if ih >= H")
 
-        # Compute iw = ow * stride_w + kw - pad_w
-        self.emit.emit_li(self.T6, sw, f"stride_w = {sw}")
-        self.emit.emit(rv_mul(val_reg, W_out_reg, self.T6), "val = ow * stride_w")
-        self.emit.emit(rv_add(val_reg, val_reg, Kw_reg), "val += kw")
-        self.emit.emit(rv_addi(val_reg, val_reg, -pw), f"val -= pad_w ({pw}) → iw")
+            # Compute iw
+            self.emit.emit(rv_mul(VAL_REG, OW_REG, STRIDE_W_REG),
+                           "val = ow * stride_w")
+            self.emit.emit(rv_add(VAL_REG, VAL_REG, KW_REG), "val += kw")
+            self.emit.emit(rv_addi(VAL_REG, VAL_REG, -pw),
+                           f"val -= {pw}")
+            self.emit.emit(rv_slti(COND_REG, VAL_REG, 0), "iw < 0?")
+            self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO, skip_label,
+                                  "skip if iw < 0")
 
-        # Check if 0 <= iw < W
-        self.emit.emit(rv_slti(cond_reg, val_reg, 0), "cond = (iw < 0)")
-        self.emit.emit_branch(rv_bne, cond_reg, _R_ZERO, skip_label, "skip if iw < 0")
-        self.emit.emit_li(self.T6, W, f"W = {W}")
-        self.emit.emit(rv_slt(cond_reg, val_reg, self.T6), "cond = (iw < W)")
-        self.emit.emit_branch(rv_beq, cond_reg, _R_ZERO, skip_label, "skip if iw >= W")
+            self.emit.emit_li(T6_REG, W, f"W = {W}")
+            self.emit.emit(rv_slt(COND_REG, VAL_REG, T6_REG), "iw < W?")
+            self.emit.emit_branch(rv_beq, COND_REG, _R_ZERO, skip_label,
+                                  "skip if iw >= W")
 
-        # Load input[ic, ih, iw]
-        # offset = ic * H * W + ih * W + iw
-        self.emit.emit_li(addr_reg, H * W, f"H*W = {H*W}")
-        self.emit.emit(rv_mul(addr_reg, C_in_reg, addr_reg), "addr = ic * H * W")
-        self.emit.emit_li(self.T5, W, f"W = {W}")
-        self.emit.emit(rv_mul(self.T5, tmp_reg, self.T5), "tmp5 = ih * W")
-        self.emit.emit(rv_add(addr_reg, addr_reg, self.T5), "addr += ih * W")
-        self.emit.emit(rv_add(addr_reg, addr_reg, val_reg), "addr += iw")
-        self.emit.emit(rv_slli(addr_reg, addr_reg, 2), "addr *= 4 (byte offset)")
-        self.emit.emit(rv_add(addr_reg, self.S2, addr_reg), "addr += input_base")
-        self.emit.emit(rv_lw(val_reg, addr_reg, 0), "load input[ic,ih,iw]")
+            # Full address calculation for padded case
+            self.emit.emit(rv_mul(T6_REG, IC_REG, HW_REG),
+                           "addr = ic*H*W")
+            self.emit.emit(rv_mul(COND_REG, TMP_REG, W_REG),
+                           "tmp = ih*W")
+            self.emit.emit(rv_add(T6_REG, T6_REG, COND_REG),
+                           "addr += ih*W")
+            self.emit.emit(rv_add(T6_REG, T6_REG, VAL_REG),
+                           "addr += iw")
+            self.emit.emit(rv_slli(T6_REG, T6_REG, 2), "addr *= 4")
+            self.emit.emit(rv_add(T6_REG, S2_IN_BASE, T6_REG),
+                           "addr += input_base")
+            self.emit.emit(rv_lw(VAL_REG, T6_REG, 0),
+                           "load input[ic,ih,iw]")
 
-        # Load weight[oc, ic, kh, kw]
-        # weight_offset = oc*C_in*K*K + ic*K*K + kh*K + kw
-        self.emit.emit_li(addr_reg, C_in * K * K, f"C_in*K*K = {C_in*K*K}")
-        self.emit.emit(rv_mul(addr_reg, C_out_reg, addr_reg), "addr = oc * C_in*K*K")
-        self.emit.emit_li(self.T5, K * K, f"K*K = {K*K}")
-        self.emit.emit(rv_mul(self.T5, C_in_reg, self.T5), "tmp5 = ic * K*K")
-        self.emit.emit(rv_add(addr_reg, addr_reg, self.T5), "addr += ic * K*K")
-        self.emit.emit_li(self.T5, K, f"K = {K}")
-        self.emit.emit(rv_mul(self.T5, Kh_reg, self.T5), "tmp5 = kh * K")
-        self.emit.emit(rv_add(addr_reg, addr_reg, self.T5), "addr += kh * K")
-        self.emit.emit(rv_add(addr_reg, addr_reg, Kw_reg), "addr += kw")
-        self.emit.emit(rv_slli(addr_reg, addr_reg, 2), "addr *= 4 (byte offset)")
-        self.emit.emit(rv_add(addr_reg, self.S3, addr_reg), "addr += weight_base")
-        self.emit.emit(rv_lw(self.T5, addr_reg, 0), "load weight[oc,ic,kh,kw]")
+            self.emit.emit(rv_mul(T6_REG, OC_REG, WT_OC_STEP_REG),
+                           f"addr = oc * {C_in_K_K}")
+            self.emit.emit_li32(T6_REG, K_K, f"reload K*K = {K_K}")
+            self.emit.emit(rv_mul(COND_REG, IC_REG, T6_REG),
+                           f"tmp = ic*{K_K}")
+            self.emit.emit(rv_add(T6_REG, T6_REG, COND_REG),
+                           "addr += ic*K*K")
+            self.emit.emit(rv_mul(COND_REG, KH_REG, K_REG),
+                           "tmp = kh*K")
+            self.emit.emit(rv_add(T6_REG, T6_REG, COND_REG),
+                           "addr += kh*K")
+            self.emit.emit(rv_add(T6_REG, T6_REG, KW_REG),
+                           "addr += kw")
+            self.emit.emit(rv_slli(T6_REG, T6_REG, 2), "addr *= 4")
+            self.emit.emit(rv_add(T6_REG, S3_W_BASE, T6_REG),
+                           "addr += weight_base")
+            self.emit.emit(rv_lw(COND_REG, T6_REG, 0),
+                           "load weight[oc,ic,kh,kw]")
 
-        # MAC: acc += input_val * weight_val (Q16.16 multiply)
-        self.emit.emit_qmul_srai(self.T6, val_reg, self.T5, self.T4,
-                                 "Q16.16: input * weight")
-        self.emit.emit(rv_add(acc_reg, acc_reg, self.T6), "acc += input*weight")
+            self.emit.emit(rv_mul(T6_REG, VAL_REG, COND_REG),
+                           "Q16.16 mul")
+            self.emit.emit(rv_srai(T6_REG, T6_REG, 16),
+                           ">> 16")
+            self.emit.emit(rv_add(ACC_REG, ACC_REG, T6_REG),
+                           "acc += product")
 
-        self.emit.label(skip_label)
+            self.emit.label(skip_label)
 
-        # Increment kw
-        self.emit.emit(rv_addi(Kw_reg, Kw_reg, 1), "kw++")
-        self.emit.emit_li(self.T6, K, f"K = {K}")
-        self.emit.emit(rv_slt(cond_reg, Kw_reg, self.T6), "kw < K?")
-        self.emit.emit_branch(rv_bne, cond_reg, _R_ZERO, "_conv_kw_loop", "loop kw")
+            # kw increment
+            self.emit.emit(rv_addi(KW_REG, KW_REG, 1), "kw++")
+            self.emit.emit(rv_slt(COND_REG, KW_REG, K_REG), "kw < K?")
+            self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO,
+                                  "_conv_kw_loop", "loop kw")
 
-        # Increment kh
-        self.emit.emit(rv_addi(Kh_reg, Kh_reg, 1), "kh++")
-        self.emit.emit_li(self.T6, K, f"K = {K}")
-        self.emit.emit(rv_slt(cond_reg, Kh_reg, self.T6), "kh < K?")
-        self.emit.emit_branch(rv_bne, cond_reg, _R_ZERO, "_conv_kh_loop", "loop kh")
+        # ── After kw loop: advance for next kh row ─────────────────────
+        if no_pad:
+            # in_ptr: from input[ic, ih+kh, iw+K] → input[ic, ih+kh+1, iw]
+            #   subtract K columns (+K*4 from kw loop undo), add W row
+            #   net: (W - K) * 4
+            self.emit.emit(rv_addi(IN_PTR, IN_PTR, W_minus_K_times_4),
+                           f"in_ptr += (W({W})-K({K}))*4 = {W_minus_K_times_4}")
+            # wt_ptr already at correct position for next kh (advances naturally)
 
-        # Increment ic
-        self.emit.emit(rv_addi(C_in_reg, C_in_reg, 1), "ic++")
-        self.emit.emit_li(self.T6, C_in, f"C_in = {C_in}")
-        self.emit.emit(rv_slt(cond_reg, C_in_reg, self.T6), "ic < C_in?")
-        self.emit.emit_branch(rv_bne, cond_reg, _R_ZERO, "_conv_ic_loop", "loop ic")
+        # ── Increment kh ────────────────────────────────────────────────
+        self.emit.emit(rv_addi(KH_REG, KH_REG, 1), "kh++")
+        self.emit.emit(rv_slt(COND_REG, KH_REG, K_REG), "kh < K?")
+        self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO,
+                              "_conv_kh_loop", "loop kh")
 
-        # Store output[oc, oh, ow] = acc
-        # output_offset = oc*H_out*W_out + oh*W_out + ow
-        self.emit.emit_li(addr_reg, H_out * W_out, f"H_out*W_out = {H_out*W_out}")
-        self.emit.emit(rv_mul(addr_reg, C_out_reg, addr_reg), "addr = oc * H_out*W_out")
-        self.emit.emit_li(self.T6, W_out, f"W_out = {W_out}")
-        self.emit.emit(rv_mul(self.T6, H_out_reg, self.T6), "tmp = oh * W_out")
-        self.emit.emit(rv_add(addr_reg, addr_reg, self.T6), "addr += oh * W_out")
-        self.emit.emit(rv_add(addr_reg, addr_reg, W_out_reg), "addr += ow")
-        self.emit.emit(rv_slli(addr_reg, addr_reg, 2), "addr *= 4")
-        self.emit.emit(rv_add(addr_reg, self.S5, addr_reg), "addr += output_base")
-        self.emit.emit(rv_sw(addr_reg, acc_reg, 0), "store output[oc,oh,ow] = acc")
+        # ── Increment ic ────────────────────────────────────────────────
+        self.emit.emit(rv_addi(IC_REG, IC_REG, 1), "ic++")
+        self.emit.emit(rv_slt(COND_REG, IC_REG, C_IN_REG), "ic < C_in?")
+        self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO,
+                              "_conv_ic_loop", "loop ic")
 
-        # Increment ow
-        self.emit.emit(rv_addi(W_out_reg, W_out_reg, 1), "ow++")
-        self.emit.emit_li(self.T6, W_out, f"W_out = {W_out}")
-        self.emit.emit(rv_slt(cond_reg, W_out_reg, self.T6), "ow < W_out?")
-        self.emit.emit_branch(rv_bne, cond_reg, _R_ZERO, "_conv_ow_loop", "loop ow")
+        # ── Store output[oc, oh, ow] = acc ─────────────────────────────
+        # out_offset = oc*H_out*W_out + oh*W_out + ow
+        self.emit.emit_li(TMP_REG, H_out_W_out, f"H_out*W_out={H_out_W_out}")
+        self.emit.emit(rv_mul(TMP_REG, OC_REG, TMP_REG),
+                       "addr = oc * H_out_W_out")
+        self.emit.emit_li(T6_REG, W_out, f"W_out={W_out}")
+        self.emit.emit(rv_mul(T6_REG, OH_REG, T6_REG),
+                       "tmp = oh * W_out")
+        self.emit.emit(rv_add(TMP_REG, TMP_REG, T6_REG),
+                       "addr += oh * W_out")
+        self.emit.emit(rv_add(TMP_REG, TMP_REG, OW_REG),
+                       "addr += ow")
+        self.emit.emit(rv_slli(TMP_REG, TMP_REG, 2), "addr *= 4")
+        self.emit.emit(rv_add(TMP_REG, S5_OUT_BASE, TMP_REG),
+                       "+ output_base")
+        self.emit.emit(rv_sw(TMP_REG, ACC_REG, 0),
+                       "store output[oc,oh,ow]")
 
-        # Increment oh
-        self.emit.emit(rv_addi(H_out_reg, H_out_reg, 1), "oh++")
-        self.emit.emit_li(self.T6, H_out, f"H_out = {H_out}")
-        self.emit.emit(rv_slt(cond_reg, H_out_reg, self.T6), "oh < H_out?")
-        self.emit.emit_branch(rv_bne, cond_reg, _R_ZERO, "_conv_oh_loop", "loop oh")
+        # ── Increment ow ────────────────────────────────────────────────
+        self.emit.emit(rv_addi(OW_REG, OW_REG, 1), "ow++")
+        self.emit.emit_li(T6_REG, W_out, f"W_out={W_out}")
+        self.emit.emit(rv_slt(COND_REG, OW_REG, T6_REG), "ow < W_out?")
+        self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO,
+                              "_conv_ow_loop", "loop ow")
 
-        # Increment oc
-        self.emit.emit(rv_addi(C_out_reg, C_out_reg, 1), "oc++")
-        self.emit.emit_li(self.T6, C_out, f"C_out = {C_out}")
-        self.emit.emit(rv_slt(cond_reg, C_out_reg, self.T6), "oc < C_out?")
-        self.emit.emit_branch(rv_bne, cond_reg, _R_ZERO, "_conv_oc_loop", "loop oc")
+        # ── Increment oh ────────────────────────────────────────────────
+        self.emit.emit(rv_addi(OH_REG, OH_REG, 1), "oh++")
+        self.emit.emit_li(T6_REG, H_out, f"H_out={H_out}")
+        self.emit.emit(rv_slt(COND_REG, OH_REG, T6_REG), "oh < H_out?")
+        self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO,
+                              "_conv_oh_loop", "loop oh")
+
+        # ── Increment oc ────────────────────────────────────────────────
+        self.emit.emit(rv_addi(OC_REG, OC_REG, 1), "oc++")
+        self.emit.emit_li(T6_REG, C_out, f"C_out={C_out}")
+        self.emit.emit(rv_slt(COND_REG, OC_REG, T6_REG), "oc < C_out?")
+        self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO,
+                              "_conv_oc_loop", "loop oc")
 
     # ── ReLU ───────────────────────────────────────────────────────────
 
