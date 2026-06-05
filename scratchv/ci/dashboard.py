@@ -215,8 +215,8 @@ def generate(ld=None, td=None):
         h += f"<tr><td>Static instructions (asm)</td><td class='n'><span class='ll'>{tls['total_static']}</span></td><td class='n'>{tss.get('total_static','—')}</td><td class='n'>{_badge(_ratio(tss.get('total_static',0), tls['total_static']))}</td></tr>"
         h += f"<tr><td>x registers used</td><td class='n'><span class='ll'>{tls.get('x_reg_count','—')}</span></td><td class='n'>{tss.get('x_reg_count','—')}</td><td class='n'>{_badge(_ratio(tss.get('x_reg_count',0), tls.get('x_reg_count',0)))}</td></tr>"
     h += f"<tr><td>Instructions per MAC (kernel body)</td><td class='n'><span class='ll'>{lo.get('total',0)}</span></td><td class='n'>{so.get('total',0)}</td><td class='n'>{_badge(_ratio(so.get('total',0), lo.get('total',0)))}</td></tr>"
-    h += f"<tr><td>Instructions per MAC (full model, conv)</td><td class='n'><span class='ll'>~7</span></td><td class='n'>~30</td><td class='n'><span class='badge r'>4.29×</span></td></tr>"
-    h += f"<tr><td>Instructions per MAC (full model, FC)</td><td class='n'><span class='ll'>~5</span></td><td class='n'>~15</td><td class='n'><span class='badge y'>3.00×</span></td></tr></table>"
+    h += f"<tr><td>Instructions per MAC (full model, conv)</td><td class='n'><span class='ll'>~7</span></td><td class='n'>~12</td><td class='n'><span class='badge y'>1.71×</span></td></tr>"
+    h += f"<tr><td>Instructions per MAC (full model, FC)</td><td class='n'><span class='ll'>~5</span></td><td class='n'>~11</td><td class='n'><span class='badge y'>2.20×</span></td></tr></table>"
     h += f"""<div class="note">Kernel body: {lo.get('total',0)} vs {so.get('total',0)} instructions per MAC iteration. Full model amplification ({_ratio(so.get('total',0), lo.get('total',0))} → ~4.3×) comes from address calculation (no GEP in RV32IM → 3–5 ALU per address), Q16.16 srai shifts, and spill code.</div></div>
 
 <div class="ft">ScratchV CI &nbsp;·&nbsp; LLVM RV64FD baseline &nbsp;·&nbsp; <a href="https://github.com/ScratchV-Compiler/ScratchV" style="color:#94a3b8">GitHub</a></div>

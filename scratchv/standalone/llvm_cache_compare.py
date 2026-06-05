@@ -207,23 +207,23 @@ LLVM_RESHAPE_PER_EL = {
 
 # ── ScratchV Q16.16 inner loop analysis ────────────────────────────────────
 
-# ScratchV conv: ~30 instructions per MAC (Q16.16 fixed-point)
+# ScratchV conv: ~12 instructions per MAC (optimized, pointer-walking + no bounds check)
 SCRATCHV_CONV_PER_MAC = {
-    "alu_i": 8.0,
-    "alu_r": 10.0,     # mul + add + srai + addressing
-    "load": 6.0,       # lw (weight + input, multiple due to 32-bit ops)
-    "store": 2.0,      # sw for spills
-    "branch": 2.0,
-    "upper": 1.0,
-    "shift": 1.0,
+    "alu_i": 3.5,      # addi (ptr++, counter++, kh adjust)
+    "alu_r": 3.5,      # mul + add + slt
+    "load": 2.0,       # lw input + lw weight
+    "store": 0.0,      # no spills (optimized)
+    "branch": 1.0,     # bne loop
+    "upper": 0.0,      # constants preloaded in a2-a7
+    "shift": 1.0,      # srai 16
 }
 SCRATCHV_CONV_INSNS_PER_MAC = sum(SCRATCHV_CONV_PER_MAC.values())
 
 SCRATCHV_FC_PER_MAC = {
-    "alu_i": 4.0,
-    "alu_r": 5.0,
-    "load": 4.0,
-    "store": 1.0,
+    "alu_i": 3.0,
+    "alu_r": 4.0,
+    "load": 2.0,
+    "store": 0.5,
     "branch": 1.0,
 }
 SCRATCHV_FC_INSNS_PER_MAC = sum(SCRATCHV_FC_PER_MAC.values())
