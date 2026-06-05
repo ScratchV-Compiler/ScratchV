@@ -113,6 +113,11 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: cp docs/ScratchV.html benchmark_reports/ScratchV.html
 
+      # ── 优化历史页面 ──────────────────────────────────────────────────
+      - name: Generate optimization history page
+        if: github.ref == 'refs/heads/main'
+        run: python scratchv/ci/history_page.py -o benchmark_reports/history.html
+
       # ── 上传 Pages 产物 ──────────────────────────────────────────────
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main'
