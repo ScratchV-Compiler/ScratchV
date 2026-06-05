@@ -124,6 +124,11 @@ print(f'  Generated minimal CNN: $MODEL')
           path: benchmark_reports/
           retention-days: 30
 
+      # ── 保留推广主页（docs/ScratchV.html 不会被顶替） ────────────────
+      - name: Copy promotional page into Pages artifact
+        if: github.ref == 'refs/heads/main'
+        run: cp docs/ScratchV.html benchmark_reports/ScratchV.html
+
       # ── 上传 Pages 产物 ──────────────────────────────────────────────
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main'
