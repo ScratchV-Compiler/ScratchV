@@ -30,7 +30,26 @@ jobs:
           python3.12 -m pip install -e ".[all]"
 
       - name: Run all topic tests
-        run: python3.12 -m pytest tests/ -v --tb=short
+        run: |
+          mkdir -p benchmark_reports
+          python3.12 -m pytest tests/ -v --tb=short \
+            --junit-xml=benchmark_reports/test_results.xml
+
+      - name: Generate test visualization page
+        if: github.ref == 'refs/heads/main'
+        run: python3.12 scratchv/ci/test_page.py \
+          --junit benchmark_reports/test_results.xml \
+          -o benchmark_reports/tests.html
+
+      - name: Upload test reports
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            benchmark_reports/test_results.xml
+            benchmark_reports/tests.html
+          retention-days: 30
 
   # ═════════════════════════════════════════════════════════════════════════
   # 模型性能测试：ONNX模型管线 + DSL用例 + CNN RISC-V编译
@@ -117,6 +136,13 @@ jobs:
       - name: Generate optimization history page
         if: github.ref == 'refs/heads/main'
         run: python scratchv/ci/history_page.py -o benchmark_reports/history.html
+
+      # ── 测试可视化页面 ────────────────────────────────────────────────
+      - name: Generate test visualization page
+        if: github.ref == 'refs/heads/main'
+        run: python3.12 scratchv/ci/test_page.py \
+          --junit benchmark_reports/test_results.xml \
+          -o benchmark_reports/tests.html
 
       # ── 上传 Pages 产物 ──────────────────────────────────────────────
       - name: Upload Pages artifact
