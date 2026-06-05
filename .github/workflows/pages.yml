@@ -1,0 +1,66 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'benchmark_reports/optimization_history.json'
+      - 'scratchv/ci/history_page.py'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install tinyfive numpy
+
+      - name: Run benchmark (analytical)
+        run: |
+          pip install -e .
+          python scratchv/standalone/onnx_to_riscv_standalone.py models/graph/cnn.onnx \
+            -o /tmp/cnn_riscv.bin --estimate --report
+
+      - name: Generate history page
+        run: python scratchv/ci/history_page.py -o benchmark_reports/history.html
+
+      - name: Copy static assets
+        run: |
+          mkdir -p _site
+          cp benchmark_reports/history.html _site/index.html
+          cp benchmark_reports/optimization_history.json _site/
+          cp benchmark_reports/benchmark.html _site/ 2>/dev/null || true
+          cp benchmark_reports/benchmark.json _site/ 2>/dev/null || true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
