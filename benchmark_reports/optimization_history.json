@@ -1,0 +1,36 @@
+{
+  "title": "ScratchV 优化历史",
+  "model": "cnn.onnx (3×Conv + 3×MaxPool + 2×FC)",
+  "baseline": {
+    "name": "LLVM float32",
+    "static_insns": 1102,
+    "dynamic_insns": 1059548774,
+    "time_100mhz_s": 10.6
+  },
+  "milestones": [
+    {
+      "date": "2026-06-04",
+      "version": "v0.1.0",
+      "title": "初始版本",
+      "description": "ONNX→RISC-V 编译器初版。Conv/Gemm/MaxPool 均使用直接循环 + 完整地址重算 + 边界检查。Q16.16 定点乘使用 MULH+MUL 全精度。",
+      "static_insns": 785,
+      "dynamic_insns": 7802187284,
+      "vs_llvm_ratio": 7.37,
+      "time_100mhz_s": 78.0,
+      "per_mac_insns": 30,
+      "tag": "baseline"
+    },
+    {
+      "date": "2026-06-05",
+      "version": "v0.2.0",
+      "title": "Conv2D 内层循环优化",
+      "description": "四项优化：① 边界检查移除（pads=0 时跳过 ih/iw 越界检查）② 常量外提（a2-a7 寄存器预加载 K/stride/W/H*W/C_in）③ 指针步进（最内层 kw 循环 in_ptr/wt_ptr 指针加法）④ 强度削减（ih_base/iw_base 在 oh/ow 循环外一次性计算）。",
+      "static_insns": 749,
+      "dynamic_insns": 3221687828,
+      "vs_llvm_ratio": 3.04,
+      "time_100mhz_s": 32.2,
+      "per_mac_insns": 12,
+      "tag": "optimized"
+    }
+  ]
+}

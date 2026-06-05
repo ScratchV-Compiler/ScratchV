@@ -36,6 +36,12 @@ bench-tinyfive:
 		-o /tmp/cnn_riscv.bin --estimate --tinyfive --tinyfive-max-instr 200000
 	@echo "TinyFive simulation complete."
 
+# ── 优化历史页面 (GitHub Pages) ──────────────────────────────────────────
+
+bench-history:
+	python3 scratchv/ci/history_page.py -o benchmark_reports/history.html
+	@echo "History page: benchmark_reports/history.html"
+
 # ── CI Benchmark (LLVM + TinyFive + 可视化仪表盘) ──────────────────────────
 
 bench-ci:
