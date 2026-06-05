@@ -29,6 +29,13 @@ bench-cnn:
 		-o /tmp/cnn_riscv.bin --estimate --report
 	@echo "Reports: benchmark_reports/"
 
+# ── CNN RISC-V 编译 + TinyFive 仿真验证 ───────────────────────────────────
+
+bench-tinyfive:
+	python3 scratchv/standalone/onnx_to_riscv_standalone.py models/graph/cnn.onnx \
+		-o /tmp/cnn_riscv.bin --estimate --tinyfive --tinyfive-max-instr 200000
+	@echo "TinyFive simulation complete."
+
 # ── CI Benchmark (LLVM + TinyFive + 可视化仪表盘) ──────────────────────────
 
 bench-ci:

@@ -2397,11 +2397,116 @@ class CNNRISCVGenerator:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _run_tinyfive_sim(
+    output_bin: str, code_bytes: bytes, memory: MemoryPlan,
+    model: ONNXModel, data_offset: int, max_instr: int,
+) -> None:
+    """Run the compiled binary through TinyFive's RV32IM simulator.
+
+    Loads the binary into TinyFive's ProfiledMachine, sets up the
+    bare-metal ABI registers, generates random Q16.16 input, and
+    executes for *max_instr* cycles.  Reports TinyFive's built-in
+    performance counters (total, load, store, mul, add, branch).
+    """
+    import random
+    import struct
+
+    print(f"\n[tinyfive] Running TinyFive RV32IM simulation...")
+    try:
+        from scratchv.simulator.tinyfive import ProfiledMachine
+    except ImportError:
+        print("  ERROR: scratchv.simulator.tinyfive not found", file=sys.stderr)
+        return
+
+    m = ProfiledMachine(mem_size=256 * 1024 * 1024)  # 256 MB
+    if not m.available:
+        print("  ERROR: TinyFive not installed. Run: pip install tinyfive numpy",
+              file=sys.stderr)
+        return
+
+    # ── Load binary ──────────────────────────────────────────────────
+    code_words = list(struct.unpack(f"<{len(code_bytes)//4}I", code_bytes))
+    m.load_binary(code_words, origin=0)
+
+    # Load weight data at data_offset
+    with open(output_bin, "rb") as f:
+        full_binary = f.read()
+    data_bytes = full_binary[len(code_bytes):]
+    m.load_data(data_bytes, data_offset)
+    print(f"  Code: {len(code_words)} words at 0x0")
+    print(f"  Data: {len(data_bytes):,} bytes at 0x{data_offset:x}")
+
+    # ── Set up bare-metal ABI registers ──────────────────────────────
+    m.set_reg(2, 128 * 1024 * 1024)   # sp = 128 MB
+    m.set_reg(3, data_offset)          # gp = data section base
+
+    # Input buffer: place at 160 MB
+    INPUT_ADDR = 160 * 1024 * 1024
+    m.set_reg(10, INPUT_ADDR)          # a0 = input ptr
+
+    # Output buffer: place at 192 MB
+    OUTPUT_ADDR = 192 * 1024 * 1024
+    m.set_reg(11, OUTPUT_ADDR)         # a1 = output ptr
+
+    # Generate random Q16.16 input
+    input_shape = model.get_shape(model.inputs[0].name) if model.inputs else ()
+    input_el = 1
+    for d in input_shape:
+        input_el *= d
+    random.seed(42)
+    for i in range(input_el):
+        val = int((random.random() - 0.5) * 0.2 * 65536)  # ±0.1 in Q16.16
+        m.write_mem_i32(INPUT_ADDR + i * 4, val)
+
+    print(f"  Input:  {input_el:,} Q16.16 elements at 0x{INPUT_ADDR:x}")
+    print(f"  Output: buffer at 0x{OUTPUT_ADDR:x}")
+    print(f"  sp=0x{128*1024*1024:x}  gp=0x{data_offset:x}")
+
+    # ── Run simulation ───────────────────────────────────────────────
+    print(f"  Running (max {max_instr:,} instructions)...")
+    import time
+    t0 = time.perf_counter()
+    m.run(instructions=max_instr)
+    elapsed = time.perf_counter() - t0
+
+    # ── Report ───────────────────────────────────────────────────────
+    perf = m.get_perf()
+    mips = perf["total"] / elapsed / 1_000_000 if elapsed > 0 else 0
+    print(f"\n  ── TinyFive Simulation Results ──")
+    print(f"  Instructions executed: {perf['total']:,}")
+    print(f"  Wall time:            {elapsed:.2f}s")
+    print(f"  Simulated MIPS:       {mips:.1f}")
+    print(f"")
+    print(f"  ── Performance Counters (TinyFive built-in) ──")
+    print(f"  {'Counter':<12s} {'Count':>15s} {'%':>8s}")
+    print(f"  {'─'*12} {'─'*15} {'─'*8}")
+    total = max(perf['total'], 1)
+    for key, label in [('load', 'Load'), ('store', 'Store'), ('mul', 'Mul'),
+                        ('add', 'Add/ALU'), ('madd', 'Mul-Add'),
+                        ('branch', 'Branch')]:
+        val = perf.get(key, 0)
+        print(f"  {label:<12s} {val:>15,} {val/total*100:>7.1f}%")
+    print(f"  {'─'*12} {'─'*15} {'─'*8}")
+    print(f"  {'TOTAL':<12s} {total:>15,} {100.0:>7.1f}%")
+
+    # ── Output value ─────────────────────────────────────────────────
+    out_val = m.read_mem_i32(OUTPUT_ADDR)
+    out_float = out_val / 65536.0
+    print(f"\n  Output Q16.16: {out_val}  (≈ {out_float:.6f} float)")
+
+    # ── Register state at end ────────────────────────────────────────
+    print(f"\n  ── Final Register State ──")
+    for name, idx in [('ra', 1), ('sp', 2), ('gp', 3), ('a0', 10), ('a1', 11),
+                       ('t0', 5), ('t1', 6), ('t2', 7)]:
+        print(f"  {name:>4s} (x{idx:2d}): 0x{m.get_reg(idx):08x}")
+
+
 def convert_onnx_to_riscv(
     onnx_path: str, output_bin: str, output_asm: str = "",
     benchmark: bool = False, max_instr: int = 2_000_000_000,
     estimate: bool = False, report: bool = False,
     uarch: str = "basic",
+    tinyfive_sim: bool = False, tinyfive_max_instr: int = 100_000_000,
 ) -> int:
     """Full pipeline: ONNX model → RISC-V RV32IM binary.
 
@@ -2642,6 +2747,11 @@ def convert_onnx_to_riscv(
             import traceback
             traceback.print_exc()
 
+    # ── Optional: TinyFive simulation ────────────────────────────────────
+    if tinyfive_sim:
+        _run_tinyfive_sim(output_bin, code_bytes, memory,
+                          model, data_offset, tinyfive_max_instr)
+
     return 0
 
 
@@ -2684,6 +2794,15 @@ def main() -> int:
         "--max-instr", type=int, default=2_000_000_000,
         help="Max instructions for benchmark emulation (default: 2 billion)"
     )
+    parser.add_argument(
+        "--tinyfive", action="store_true",
+        help="Run compiled binary through TinyFive RV32IM simulator "
+             "(library-backed, independent verification)"
+    )
+    parser.add_argument(
+        "--tinyfive-max-instr", type=int, default=5_000_000,
+        help="Max instructions for TinyFive simulation (default: 5 million)"
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.model):
@@ -2701,6 +2820,8 @@ def main() -> int:
         estimate=args.estimate,
         report=args.report,
         uarch=args.uarch,
+        tinyfive_sim=args.tinyfive,
+        tinyfive_max_instr=args.tinyfive_max_instr,
     )
 
 
