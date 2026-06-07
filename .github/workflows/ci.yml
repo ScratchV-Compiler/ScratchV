@@ -37,9 +37,10 @@ jobs:
 
       - name: Generate test visualization page
         if: github.ref == 'refs/heads/main'
-        run: python3.12 scratchv/ci/test_page.py \
-          --junit benchmark_reports/test_results.xml \
-          -o benchmark_reports/tests.html
+        run: |
+          python3.12 scratchv/ci/test_page.py \
+            --junit benchmark_reports/test_results.xml \
+            -o benchmark_reports/tests.html
 
       - name: Upload test reports
         if: github.ref == 'refs/heads/main'
@@ -140,9 +141,10 @@ jobs:
       # ── 测试可视化页面 ────────────────────────────────────────────────
       - name: Generate test visualization page
         if: github.ref == 'refs/heads/main'
-        run: python3.12 scratchv/ci/test_page.py \
-          --junit benchmark_reports/test_results.xml \
-          -o benchmark_reports/tests.html
+        run: |
+          python3.12 scratchv/ci/test_page.py \
+            --junit benchmark_reports/test_results.xml \
+            -o benchmark_reports/tests.html
 
       # ── 上传 Pages 产物 ──────────────────────────────────────────────
       - name: Upload Pages artifact
