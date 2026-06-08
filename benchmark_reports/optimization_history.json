@@ -44,6 +44,23 @@
       "time_100mhz_s": 32.2,
       "per_mac_insns": 12,
       "tag": "optimized"
+    },
+    {
+      "date": "2026-06-08",
+      "version": "v0.3.0",
+      "title": "Conv2D 循环展开 + ic 指针增量",
+      "description": "K=3 时完全展开 kw/kh 循环（9个MAC线性排列），消除全部内层循环控制指令。ic 迭代改用指针增量代替地址重算。",
+      "changes": [
+        "kw+kh 全展开: K=3 时 9个MAC 直接展开, 消除 addi+slt+bne 循环控制, 节省 ~4条/MAC",
+        "ic 指针增量: 预计算 channel_advance 常数, ic 层从 14条地址重算 → 1条 add",
+        "行跳跃常量外提: 释放 s10/s11 寄存器存放 row_advance 和 ic_advance"
+      ],
+      "static_insns": 887,
+      "dynamic_insns": 2203799060,
+      "vs_llvm_ratio": 2.08,
+      "time_100mhz_s": 22.0,
+      "per_mac_insns": 8,
+      "tag": "optimized"
     }
   ]
 }

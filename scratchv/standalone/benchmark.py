@@ -877,8 +877,8 @@ def estimate_cnn_instructions(
     # Instruction counts per MAC (inner loop body)
     # Optimized: pointer-walking kw loop = 10 instr/MAC
     #   + kh/ic/outer-loop overhead ≈ 1.7-2.5 instr/MAC (varies by C_in)
-    # Weighted average ~12 instr/MAC for typical CNNs
-    CONV_INSNS_PER_MAC = 12
+    # K=3 unrolled: 7 instr/MAC body + ~1 amortized overhead (row/ic advance + ic ctrl)
+    CONV_INSNS_PER_MAC = 8
     FC_INSNS_PER_MAC = 15
 
     # Per-element ops (ReLU, MaxPool, Sigmoid, Reshape)
@@ -908,9 +908,9 @@ def estimate_cnn_instructions(
         macs = out_c * h_out * w_out * c_in * K * K
         insns = macs * CONV_INSNS_PER_MAC
         total_insns += insns
-        total_compute += int(macs * 7)   # ~7 compute insns per MAC (optimized)
-        total_memory += int(macs * 2)    # ~2 memory insns per MAC (optimized)
-        total_branch += int(macs * 0.7)  # ~0.7 branches per MAC (optimized)
+        total_compute += int(macs * 5)   # ~5 compute insns per MAC (unrolled: mul+srai+add+2 ptr inc)
+        total_memory += int(macs * 2)    # ~2 memory insns per MAC (2 lw)
+        total_branch += int(macs * 0.3)  # ~0.3 branches per MAC (amortized ic loop ctrl)
         layer_insns[name] = insns
 
         total_insns += out_c * h_out * w_out * 4  # bias load + loop increments
