@@ -84,6 +84,8 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2
 .hdr h1{font-size:1.15rem;color:#f1f5f9}
 .hdr .sub{font-size:.75rem;color:#94a3b8;margin-top:3px}
 .hdr .sub b{color:#e2e8f0}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
+@media(max-width:700px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
 .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:18px}
 @media(max-width:600px){.grid2{grid-template-columns:1fr}}
 .kpi{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;text-align:center}
@@ -96,6 +98,64 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2
 .sec{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:20px;margin-bottom:16px}
 .sec h2{font-size:.9rem;font-weight:700;margin-bottom:12px;color:#f1f5f9}
 .sec .sec-sub{font-size:.7rem;color:#64748b;margin-bottom:12px}
+.chart-section{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px 20px 16px;margin-bottom:18px}
+.chart-section h2{margin-bottom:4px}
+.chart-section .chart-sub{font-size:.7rem;color:#64748b;margin-bottom:16px}
+.chart-container{width:100%;overflow-x:auto}
+.chart-legend{display:flex;gap:20px;flex-wrap:wrap;justify-content:center;margin-top:12px;font-size:.72rem;color:#94a3b8}
+.chart-legend .leg-item{display:flex;align-items:center;gap:6px}
+.chart-legend .leg-line{width:24px;height:2px;border-radius:1px}
+.chart-legend .leg-dot{width:8px;height:8px;border-radius:50%}
+.version-selector{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-bottom:16px}
+.version-selector label.vs-label{display:flex;align-items:center;gap:5px;font-size:.72rem;color:#cbd5e1;cursor:pointer;padding:4px 10px;border-radius:4px;background:#0f172a;border:1px solid #334155;user-select:none}
+.version-selector label.vs-label:hover{border-color:#475569}
+.version-selector label.vs-label.checked{border-color:#f59e0b;background:#1e293b}
+.version-selector label:not(.vs-label){font-size:.65rem;color:#64748b;cursor:pointer;padding:4px 6px}
+.version-selector label:not(.vs-label):hover{color:#94a3b8}
+.version-selector input[type=checkbox]{display:none}
+.timeline{position:relative;padding-left:32px}
+.timeline::before{content:'';position:absolute;left:11px;top:8px;bottom:8px;width:2px;background:#334155}
+.milestone{position:relative;margin-bottom:28px}
+.milestone::before{content:'';position:absolute;left:-24px;top:6px;width:12px;height:12px;border-radius:50%;border:2px solid #64748b;background:#1e293b}
+.milestone.optimized::before{background:#22c55e;border-color:#22c55e}
+.milestone.baseline::before{background:#64748b;border-color:#64748b}
+.milestone .card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:18px 20px}
+.milestone .card:hover{border-color:#475569}
+.card summary{list-style:none;cursor:pointer;outline:none}
+.card summary::-webkit-details-marker{display:none}
+.card summary::marker{display:none;content:''}
+.card .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px}
+.card .ver{font-size:.75rem;font-weight:800;color:#f8fafc}
+.card .date{font-size:.7rem;color:#475569}
+.card .title{font-size:.95rem;font-weight:700;color:#f1f5f9;margin-bottom:6px}
+.card .desc{font-size:.78rem;color:#94a3b8;line-height:1.6;margin-bottom:12px}
+.card .expand-hint{font-size:.65rem;color:#475569;margin-top:4px}
+.changes-title{font-size:.7rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px}
+.changes-list{list-style:none;padding:0;margin:0 0 14px}
+.changes-list li{font-size:.74rem;color:#cbd5e1;line-height:1.6;padding:3px 0 3px 16px;position:relative}
+.changes-list li::before{content:'▸';position:absolute;left:0;color:#f59e0b;font-size:.65rem}
+.delta-bar{display:flex;align-items:center;gap:12px;margin-bottom:12px;font-size:.72rem;flex-wrap:wrap}
+.delta-bar .delta-item{display:flex;align-items:center;gap:4px;background:#0f172a;border-radius:4px;padding:4px 10px}
+.delta-bar .delta-label{color:#64748b}
+.delta-bar .delta-val{font-weight:700;font-variant-numeric:tabular-nums}
+.delta-bar .delta-val.up{color:#22c55e}
+.delta-bar .delta-val.down{color:#ef4444}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;font-size:.72rem}
+@media(max-width:600px){.metrics{grid-template-columns:repeat(2,1fr)}}
+.metrics .m{background:#0f172a;border-radius:4px;padding:6px 10px}
+.metrics .m .mv{font-weight:700;font-variant-numeric:tabular-nums}
+.metrics .m .ml{color:#64748b;font-size:.62rem}
+.detail-section{margin-top:12px;padding-top:12px;border-top:1px solid #334155}
+.detail-section h4{font-size:.72rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.3px;margin-bottom:8px}
+.detail-table{width:100%;border-collapse:collapse;font-size:.7rem;margin-bottom:12px}
+.detail-table th{background:#0f172a;padding:4px 8px;text-align:left;font-weight:600;color:#64748b;font-size:.6rem;text-transform:uppercase}
+.detail-table td{padding:3px 8px;border-bottom:1px solid #1e293b}
+.detail-table .n{text-align:right;font-variant-numeric:tabular-nums}
+.detail-table tr:hover td{background:#0f172a}
+.detail-badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:.6rem;font-weight:700}
+.detail-badge.g{background:#064e3b;color:#22c55e}
+.detail-badge.y{background:#78350f;color:#f59e0b}
+.detail-badge.r{background:#7f1d1d;color:#ef4444}
 table{width:100%;border-collapse:collapse;font-size:.78rem}
 th{background:#334155;padding:6px 10px;text-align:left;font-weight:600;color:#94a3b8;font-size:.65rem;text-transform:uppercase;letter-spacing:.3px}
 td{padding:5px 10px;border-bottom:1px solid #334155}
@@ -379,6 +439,343 @@ def _op_bar_chart(aggregates: dict) -> str:
     return svg
 
 
+# ── KPI Cards ──────────────────────────────────────────────────────────
+
+
+def _kpi_cards(milestones: list) -> str:
+    """Generate 4-card KPI grid from milestone data."""
+    if not milestones or len(milestones) < 1:
+        return ""
+
+    first = milestones[0]
+    last = milestones[-1]
+
+    dyn_reduction = (first["dynamic_insns"] - last["dynamic_insns"]) / max(first["dynamic_insns"], 1) * 100
+    gap_shrink = first["vs_llvm_ratio"] - last["vs_llvm_ratio"]
+    time_reduction = (first.get("time_100mhz_s", 0) - last.get("time_100mhz_s", 0)) / max(first.get("time_100mhz_s", 1), 1) * 100
+    current_ratio = last["vs_llvm_ratio"]
+
+    def _color_green(v):
+        return "g" if v >= 0 else "r"
+
+    def _color_ratio(r):
+        if r <= 1.5:
+            return "g"
+        elif r <= 4:
+            return "y"
+        return "r"
+
+    h = '<div class="kpi-grid">'
+    h += f'<div class="kpi"><div class="v g">−{dyn_reduction:.0f}%</div><div class="l">动态指令减少</div></div>'
+    h += f'<div class="kpi"><div class="v {_color_green(gap_shrink)}">{gap_shrink:.1f}x</div><div class="l">vs LLVM 差距缩小</div></div>'
+    h += f'<div class="kpi"><div class="v {_color_green(time_reduction)}">−{time_reduction:.0f}%</div><div class="l">推理时间减少 @100MHz</div></div>'
+    h += f'<div class="kpi"><div class="v {_color_ratio(current_ratio)}">{current_ratio:.2f}x</div><div class="l">当前 vs LLVM</div></div>'
+    h += '</div>'
+    return h
+
+
+# ── Trend SVG Chart ────────────────────────────────────────────────────
+
+
+def _trend_chart_svg(milestones: list, baseline_dyn: int) -> str:
+    """Generate SVG line chart with JS version toggle — dynamic instructions over versions."""
+    if not milestones:
+        return ""
+
+    W, H = 800, 360
+    ML, MR, MT, MB = 100, 40, 24, 56
+
+    # Y-axis range: 0 to max_dyn * 1.1, at least 8B
+    max_dyn = max(m.get("dynamic_insns", 0) for m in milestones)
+    y_max = max(max_dyn * 1.08, 8_000_000_000)
+    chart_h = H - MT - MB
+
+    def y_pos(dyn):
+        return MT + chart_h - (dyn / y_max) * chart_h
+
+    # Baseline line
+    baseline_y = y_pos(baseline_dyn) if baseline_dyn else y_pos(1_059_548_774)
+
+    svg = f'<svg id="chart-svg" viewBox="0 0 {W} {H}" width="100%" height="auto" style="max-width:{W}px;font-family:system-ui,sans-serif">'
+
+    # LLVM baseline dashed line
+    svg += f'\n  <line x1="{ML}" y1="{baseline_y}" x2="{W - MR}" y2="{baseline_y}" stroke="#22c55e" stroke-dasharray="6,4" stroke-width="1.5" opacity="0.6"/>'
+    svg += f'\n  <text x="{ML - 10}" y="{baseline_y + 4}" text-anchor="end" fill="#22c55e" font-size="11" font-weight="700">LLVM {baseline_dyn / 1e9:.2f}B</text>'
+
+    # Y-axis grid lines and labels (0 to y_max in 1B steps)
+    for b in range(1, int(y_max / 1e9) + 1):
+        gy = y_pos(b * 1_000_000_000)
+        svg += f'\n  <line x1="{ML}" y1="{gy}" x2="{W - MR}" y2="{gy}" stroke="#334155" stroke-width="1"/>'
+        svg += f'\n  <text x="{ML - 8}" y="{gy + 4}" text-anchor="end" fill="#64748b" font-size="10">{b}.00B</text>'
+
+    # X and Y axis lines
+    svg += f'\n  <line x1="{ML}" y1="{MT}" x2="{ML}" y2="{MT + chart_h}" stroke="#475569" stroke-width="1"/>'
+    svg += f'\n  <line x1="{ML}" y1="{MT + chart_h}" x2="{W - MR}" y2="{MT + chart_h}" stroke="#475569" stroke-width="1"/>'
+
+    # Scatter plot
+    num_versions = len(milestones)
+    points = []
+    for i, m in enumerate(milestones):
+        dyn = m.get("dynamic_insns", 0)
+        ratio = m.get("vs_llvm_ratio", 0)
+        if num_versions > 1:
+            x = ML + i * (W - ML - MR) / (num_versions - 1)
+        else:
+            x = ML + (W - ML - MR) / 2
+        cy = y_pos(dyn)
+        points.append((x, cy, dyn, ratio, m.get("version", f"v{i}")))
+
+    # Polyline connecting all points
+    pts_str = " ".join(f"{x:.1f},{cy:.1f}" for x, cy, _, _, _ in points)
+    svg += f'\n  <polyline class="sv-polyline" points="{pts_str}" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linejoin="round"/>'
+
+    # Data points, labels, version labels, ratio labels
+    label_offsets = []
+    for i, (x, cy, dyn, ratio, ver) in enumerate(points):
+        # Dot
+        svg += f'\n  <circle class="data-point" data-index="{i}" cx="{x:.1f}" cy="{cy:.1f}" r="5" fill="#f59e0b" stroke="#0f172a" stroke-width="2"/>'
+        # Dynamic insn label above dot
+        dy_label = -10
+        # Avoid overlap with previous label
+        for px, py in label_offsets:
+            if abs(x - px) < 80 and abs(cy + dy_label - py) < 16:
+                dy_label -= 18
+        label_offsets.append((x, cy + dy_label))
+        svg += f'\n  <text class="data-label" data-index="{i}" x="{x:.1f}" y="{cy + dy_label:.1f}" text-anchor="middle" fill="#f59e0b" font-size="11" font-weight="700">{dyn / 1e9:.2f}B</text>'
+        # Version label below
+        svg += f'\n  <text class="ver-label" data-index="{i}" x="{x:.1f}" y="{MT + chart_h + 20}" text-anchor="middle" fill="#94a3b8" font-size="11">{ver}</text>'
+        # Ratio label
+        svg += f'\n  <text class="ratio-label" data-index="{i}" x="{x:.1f}" y="{MT + chart_h + 38}" text-anchor="middle" fill="#64748b" font-size="10">{ratio:.1f}x vs LLVM</text>'
+
+    svg += '\n</svg>'
+
+    # JSON data for JS
+    json_data = [{"index": i, "version": m.get("version", f"v{i}"),
+                   "dynamic_insns": m.get("dynamic_insns", 0),
+                   "vs_llvm_ratio": m.get("vs_llvm_ratio", 0)} for i, m in enumerate(milestones)]
+
+    # Version selector + JS
+    h = '<div class="chart-section"><h2>动态指令趋势</h2>'
+    h += f'<div class="chart-sub">绿色虚线 = LLVM float32 baseline ({baseline_dyn / 1e9:.2f}B) | 橙色折线 = ScratchV 各版本 | 勾选版本框进行对比</div>'
+
+    # Version checkboxes
+    h += '<div class="version-selector">'
+    for i, m in enumerate(milestones):
+        ver = m.get("version", f"v{i}")
+        tag = m.get("tag", "")
+        dot_color = "#22c55e" if tag == "optimized" else "#64748b"
+        checked = " checked" if i >= len(milestones) - 2 else ""  # default: show last 2 + baseline
+        h += f'<label class="vs-label checked"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{dot_color};margin-right:2px"></span><input type="checkbox" class="ver-cb" data-index="{i}"{checked}>{ver}</label>'
+    h += '<label id="btn-select-all" style="background:transparent;border:none;font-size:.65rem;color:#64748b;cursor:pointer">全选</label>'
+    h += '<label id="btn-select-optimized" style="background:transparent;border:none;font-size:.65rem;color:#64748b;cursor:pointer">仅优化版</label>'
+    h += '</div>'
+
+    h += f'<div class="chart-container">{svg}</div>'
+    h += f'<script id="chart-data" type="application/json" data-baseline="{baseline_dyn}">{json.dumps(json_data)}</script>'
+
+    # Legend
+    h += '<div class="chart-legend">'
+    h += '<div class="leg-item"><span class="leg-line" style="background:#22c55e;border:1px dashed #22c55e"></span> LLVM baseline</div>'
+    h += '<div class="leg-item"><span class="leg-dot" style="background:#f59e0b"></span> ScratchV</div>'
+    h += '</div></div>'
+
+    # JS for interactivity
+    h += """<script>
+(function() {
+  const chartSvg = document.getElementById('chart-svg');
+  if (!chartSvg) return;
+  const chartDataEl = document.getElementById('chart-data');
+  if (!chartDataEl) return;
+  let milestones;
+  try { milestones = JSON.parse(chartDataEl.textContent); } catch(e) { return; }
+
+  function getAllCBs() { return document.querySelectorAll('.ver-cb'); }
+  function setAllIndexed(index, checked) {
+    getAllCBs().forEach(cb => { if (parseInt(cb.dataset.index) === index) cb.checked = checked; });
+  }
+
+  function redrawChart() {
+    const selected = new Set();
+    getAllCBs().forEach(cb => { if (cb.checked) selected.add(parseInt(cb.dataset.index)); });
+    const circles = chartSvg.querySelectorAll('.data-point');
+    const labels = chartSvg.querySelectorAll('.data-label');
+    const verLabels = chartSvg.querySelectorAll('.ver-label');
+    const ratioLabels = chartSvg.querySelectorAll('.ratio-label');
+    const polyline = chartSvg.querySelector('.sv-polyline');
+    const visiblePoints = [];
+
+    circles.forEach(c => {
+      const idx = parseInt(c.dataset.index);
+      if (selected.has(idx)) { c.style.display = ''; visiblePoints.push({x: c.getAttribute('cx'), y: c.getAttribute('cy')}); }
+      else { c.style.display = 'none'; }
+    });
+    labels.forEach(l => { l.style.display = selected.has(parseInt(l.dataset.index)) ? '' : 'none'; });
+    verLabels.forEach(l => { l.style.display = selected.has(parseInt(l.dataset.index)) ? '' : 'none'; });
+    ratioLabels.forEach(l => { l.style.display = selected.has(parseInt(l.dataset.index)) ? '' : 'none'; });
+
+    if (polyline && visiblePoints.length >= 2) {
+      polyline.setAttribute('points', visiblePoints.map(p => p.x + ',' + p.y).join(' '));
+      polyline.style.display = '';
+    } else if (polyline) { polyline.style.display = 'none'; }
+
+    document.querySelectorAll('.vs-label').forEach(lbl => {
+      const cb = lbl.querySelector('.ver-cb');
+      if (cb) { if (cb.checked) lbl.classList.add('checked'); else lbl.classList.remove('checked'); }
+    });
+  }
+
+  getAllCBs().forEach(cb => {
+    cb.addEventListener('change', function() {
+      setAllIndexed(parseInt(this.dataset.index), this.checked);
+      redrawChart();
+    });
+  });
+
+  const btnAll = document.getElementById('btn-select-all');
+  const btnOpt = document.getElementById('btn-select-optimized');
+  if (btnAll) btnAll.addEventListener('click', function(e) { e.preventDefault(); getAllCBs().forEach(cb => { cb.checked = true; }); redrawChart(); });
+  if (btnOpt) btnOpt.addEventListener('click', function(e) { e.preventDefault(); getAllCBs().forEach(cb => { const idx = parseInt(cb.dataset.index); cb.checked = milestones[idx] && milestones[idx].vs_llvm_ratio <= 3.0; }); redrawChart(); });
+  redrawChart();
+})();
+</script>"""
+    return h
+
+
+# ── Timeline ───────────────────────────────────────────────────────────
+
+
+def _timeline_html(milestones: list, baseline_dyn: int = 0) -> str:
+    """Generate expandable timeline cards with per-version instruction breakdown.
+
+    Args:
+        milestones: List of milestone dicts from optimization_history.json
+        baseline_dyn: LLVM baseline dynamic instruction count for gap calculation
+    """
+    if not milestones:
+        return ""
+
+    if baseline_dyn <= 0:
+        baseline_dyn = 1_059_548_774  # fallback default
+
+    h = '<h2 style="margin-bottom:16px">优化时间线 — 点击展开查看详情</h2>'
+    h += '<div class="timeline">'
+
+    CAT_LABELS_REV = {
+        "alu_r": "ALU R-type", "alu_i": "ALU I-type", "fp": "FP", "shift": "Shift",
+        "load": "Load", "store": "Store", "branch": "Branch", "jump": "Jump",
+        "upper": "Upper imm.",
+    }
+
+    for i, m in enumerate(milestones):
+        ver = m.get("version", f"v{i}")
+        tag = m.get("tag", "baseline")
+        date = m.get("date", "")
+        title = m.get("title", "")
+        desc = m.get("description", "")
+        changes = m.get("changes", [])
+        dyn = m.get("dynamic_insns", 0)
+        ratio = m.get("vs_llvm_ratio", 0)
+        time_s = m.get("time_100mhz_s", 0)
+        per_mac = m.get("per_mac_insns", 0)
+        breakdown = m.get("instruction_breakdown", {})
+        cats = breakdown.get("categories", {})
+        per_op = breakdown.get("per_operator", {})
+        total_dyn = breakdown.get("dynamic_insns", dyn)
+
+        # Delta from previous version
+        delta_html = ""
+        if i > 0:
+            prev = milestones[i - 1]
+            prev_dyn = prev.get("dynamic_insns", 1)
+            prev_ratio = prev.get("vs_llvm_ratio", 1)
+            dyn_delta = (dyn - prev_dyn) / max(prev_dyn, 1) * 100
+            ratio_delta = prev_ratio - ratio
+            time_delta = (time_s - prev.get("time_100mhz_s", 1)) / max(prev.get("time_100mhz_s", 1), 1) * 100
+            dyn_sign = "up" if dyn_delta < 0 else "down"
+            ratio_sign = "up" if ratio_delta > 0 else "down"
+            time_sign = "up" if time_delta < 0 else "down"
+            delta_html = f'<div class="delta-bar"><span style="color:#64748b;font-weight:600">较上一版:</span>'
+            delta_html += f'<span class="delta-item"><span class="delta-label">动态指令</span><span class="delta-val {dyn_sign}">{dyn_delta:+.1f}%</span></span>'
+            delta_html += f'<span class="delta-item"><span class="delta-label">vs LLVM</span><span class="delta-val {ratio_sign}">{ratio_delta:+.2f}x</span></span>'
+            delta_html += f'<span class="delta-item"><span class="delta-label">推理时间</span><span class="delta-val {time_sign}">{time_delta:+.1f}%</span></span>'
+            delta_html += '</div>'
+
+        # Gap vs LLVM
+        gap_dyn = dyn - baseline_dyn
+        gap_color = "#ef4444" if ratio > 4 else ("#f59e0b" if ratio > 1.5 else "#22c55e")
+
+        # Milestone class
+        ms_class = "milestone optimized" if tag == "optimized" else "milestone baseline"
+
+        # Open first (latest) card by default
+        open_attr = " open" if i == len(milestones) - 1 else ""
+
+        # Expand hint
+        expand_text = "▾ 点击收起详情" if i == len(milestones) - 1 else "▸ 点击展开详情（指令分类 + 算子对比）"
+
+        h += f'<div class="{ms_class}"><div class="card"><details{open_attr}><summary>'
+        h += f'<div class="top"><span class="ver">{ver}</span><span class="date">{date}</span></div>'
+        h += f'<div class="title">{title}</div>'
+        h += f'<div class="desc">{desc}</div>'
+        h += f'<div class="expand-hint">{expand_text}</div>'
+        h += '</summary>'
+
+        # Changes list
+        if changes:
+            h += '<div class="changes-title">优化要点</div><ul class="changes-list">'
+            for c in changes:
+                h += f'<li>{c}</li>'
+            h += '</ul>'
+
+        h += delta_html
+
+        # Metrics grid
+        h += '<div class="metrics">'
+        h += f'<div class="m"><div class="mv">{dyn / 1e9:.2f}B</div><div class="ml">动态指令</div></div>'
+        h += f'<div class="m"><div class="mv">{ratio:.2f}x</div><div class="ml">vs LLVM 比值</div></div>'
+        h += f'<div class="m"><div class="mv">{per_mac} instr/MAC</div><div class="ml">内层循环效率</div></div>'
+        h += f'<div class="m"><div class="mv">{time_s:.1f}s</div><div class="ml">@100MHz 推理时间</div></div>'
+        h += '</div>'
+
+        # Gap summary
+        h += f'<div style="margin-top:10px;font-size:.7rem;color:#64748b">与 LLVM 差距: <span style="color:{gap_color};font-weight:700">{gap_dyn / 1e9:.2f}B</span> 条指令 (<span style="color:{gap_color};font-weight:700">{ratio:.2f}x</span>)</div>'
+
+        # Detail section: instruction breakdown
+        h += '<div class="detail-section"><h4>Dynamic Instruction Breakdown</h4>'
+        h += '<table class="detail-table"><tr><th>Category</th><th class="n">Count</th><th class="n">%</th></tr>'
+        for cat_key in ["alu_r", "alu_i", "fp", "shift", "load", "store", "branch", "jump", "upper"]:
+            count = cats.get(cat_key, 0)
+            if count == 0:
+                h += f'<tr><td>{CAT_LABELS_REV.get(cat_key, cat_key)}</td><td class="n">0</td><td class="n">0.0%</td></tr>'
+            else:
+                pct = count / max(total_dyn, 1) * 100
+                count_str = f"{count / 1e6:.1f}M" if count >= 1e6 else f"{count:,}"
+                h += f'<tr><td>{CAT_LABELS_REV.get(cat_key, cat_key)}</td><td class="n">{count_str}</td><td class="n">{pct:.1f}%</td></tr>'
+        total_count_str = f"{total_dyn / 1e9:.2f}B" if total_dyn >= 1e9 else f"{total_dyn:,}"
+        h += f'<tr style="font-weight:700"><td>Total</td><td class="n">{total_count_str}</td><td class="n">100%</td></tr>'
+        h += '</table>'
+
+        # Per-operator breakdown
+        if per_op:
+            h += '<h4 style="margin-top:12px">Per-Operator Type</h4>'
+            h += '<table class="detail-table"><tr><th>Op Type</th><th class="n">Dynamic Insns</th><th class="n">vs LLVM</th></tr>'
+            for op_name in ["conv", "gemm", "maxpool", "relu", "sigmoid"]:
+                op_data = per_op.get(op_name)
+                if not op_data:
+                    continue
+                op_dyn = op_data.get("dynamic_insns", 0)
+                op_ratio = op_data.get("ratio", 0)
+                badge_class = "g" if op_ratio <= 1.5 else ("y" if op_ratio <= 4 else "r")
+                op_dyn_str = f"{op_dyn / 1e9:.2f}B" if op_dyn >= 1e9 else (f"{op_dyn / 1e6:.1f}M" if op_dyn >= 1e6 else f"{op_dyn:,}")
+                h += f'<tr><td>{op_name}</td><td class="n">{op_dyn_str}</td><td class="n"><span class="detail-badge {badge_class}">{op_ratio:.2f}x</span></td></tr>'
+            h += '</table>'
+
+        h += '</div></details></div></div>'
+
+    h += '</div>'
+    return h
+
+
 # ═══════════════════════════════════════════════════════════════════════
 
 
@@ -422,10 +819,7 @@ def generate(ld=None, single_op_data=None, history_data=None):
 <div class="hdr"><h1>ScratchV vs LLVM — 追赶 LLVM 进度</h1>
 <div class="sub"><b>LLVM RV64FD (float32)</b> — baseline (target ≤1.0x) &nbsp;|&nbsp; <b>ScratchV RV32IM (Q16.16)</b> — {R_insn} current</div></div>
 
-<div class="grid2">
-<div class="kpi"><div class="v{" g" if _ratio_float(St, Lt) <= 1.5 else (" y" if _ratio_float(St, Lt) <= 4 else " r")}">{R_insn}</div><div class="l">Current Dynamic Ratio</div><div class="d">LLVM {_f(Lt)} · ScratchV {_f(St)}</div></div>
-<div class="kpi"><div class="v y">{R_static}</div><div class="l">Static Instructions</div><div class="d">LLVM {_f(Ls)} · ScratchV {_f(Ss)}</div></div>
-</div>
+{_kpi_cards(milestones)}
 {_history_html()}"""
 
     # ── Section 1: Version vs LLVM Progress ──
@@ -435,6 +829,10 @@ def generate(ld=None, single_op_data=None, history_data=None):
 <div class="sec-sub">Each version's dynamic instruction ratio vs LLVM baseline (1.0x = LLVM). Goal: ≤1.0x (beat LLVM).</div>"""
         h += _version_progress_chart(milestones, baseline_dyn)
         h += "</div>"
+
+    # ── Trend Chart (line chart with JS interactivity) ──
+    if milestones:
+        h += _trend_chart_svg(milestones, baseline_dyn)
 
     # ── Section 2: Dynamic Instruction Distribution ──
     h += """
@@ -503,6 +901,13 @@ Store ratio {_ratio(Sd.get('store', 0), Ld.get('store', 0))}: LLVM keeps accumul
         h += '<div class="note">No single-operator data available. Run <code>make bench-single-ops</code> to generate per-operator benchmarks.</div>'
 
     h += "</div>"
+
+    # ── Section 4: Optimization Timeline ──
+    if milestones:
+        h += '<div class="sec"><h2>4. Optimization Timeline · 优化时间线</h2>'
+        h += '<div class="sec-sub">Click to expand each version — instruction category breakdown with percentages and per-operator comparison</div>'
+        h += _timeline_html(milestones, baseline_dyn)
+        h += '</div>'
 
     # ── Footer ──
     h += f"""
