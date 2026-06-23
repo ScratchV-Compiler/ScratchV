@@ -1,0 +1,117 @@
+{
+  "add_relu_relu": {
+    "category": "activation",
+    "avg_instr_count": 9.0,
+    "runs": 3
+  },
+  "relu_add": {
+    "category": "activation",
+    "avg_instr_count": 8.0,
+    "runs": 3
+  },
+  "relu_only": {
+    "category": "activation",
+    "avg_instr_count": 7.0,
+    "runs": 3
+  },
+  "relu_twice": {
+    "category": "activation",
+    "avg_instr_count": 8.0,
+    "runs": 3
+  },
+  "if_else": {
+    "category": "branch",
+    "avg_instr_count": 26.0,
+    "runs": 3
+  },
+  "if_relu": {
+    "category": "branch",
+    "avg_instr_count": 22.0,
+    "runs": 3
+  },
+  "if_then": {
+    "category": "branch",
+    "avg_instr_count": 26.0,
+    "runs": 3
+  },
+  "add_chain": {
+    "category": "elementwise",
+    "avg_instr_count": 8.0,
+    "runs": 3
+  },
+  "add_chain_3": {
+    "category": "elementwise",
+    "avg_instr_count": 9.0,
+    "runs": 3
+  },
+  "add_fan_in_4": {
+    "category": "elementwise",
+    "avg_instr_count": 9.0,
+    "runs": 3
+  },
+  "add_reuse": {
+    "category": "elementwise",
+    "avg_instr_count": 8.0,
+    "runs": 3
+  },
+  "vector_add": {
+    "category": "elementwise",
+    "avg_instr_count": 7.0,
+    "runs": 3
+  },
+  "loop_add_4": {
+    "category": "loop",
+    "avg_instr_count": 27.0,
+    "runs": 3
+  },
+  "loop_add_chain_4": {
+    "category": "loop",
+    "avg_instr_count": 31.0,
+    "runs": 3
+  },
+  "loop_relu_add_4": {
+    "category": "loop",
+    "avg_instr_count": 30.0,
+    "runs": 3
+  },
+  "dot_4": {
+    "category": "reduction",
+    "avg_instr_count": 8.0,
+    "runs": 3
+  },
+  "dot_8": {
+    "category": "reduction",
+    "avg_instr_count": 8.0,
+    "runs": 3
+  },
+  "dot_relu_4": {
+    "category": "reduction",
+    "avg_instr_count": 9.0,
+    "runs": 3
+  },
+  "dot_relu_8": {
+    "category": "reduction",
+    "avg_instr_count": 9.0,
+    "runs": 3
+  },
+  "matmul_2x2": {
+    "category": "tensor",
+    "avg_instr_count": 9.0,
+    "runs": 3
+  },
+  "matmul_4x4": {
+    "category": "tensor",
+    "avg_instr_count": 9.0,
+    "runs": 3
+  },
+  "matmul_add_2x2": {
+    "category": "tensor",
+    "avg_instr_count": 10.0,
+    "runs": 3
+  },
+  "matmul_relu_2x2": {
+    "category": "tensor",
+    "avg_instr_count": 10.0,
+    "runs": 3
+  }
+}

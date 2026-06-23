@@ -1,0 +1,9 @@
+{
+  "description": "Reuse the same intermediate add result on both operands of a second add.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "a": 2,
+    "b": 3
+  },
+  "expected_return": 10
+}

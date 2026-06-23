@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>ScratchV 课程版测试报告</title>
+  <style>
+    body { font-family: "Microsoft YaHei", sans-serif; margin: 32px; color: #1f2937; }
+    .summary { background: #f8fafc; border: 1px solid #e5e7eb; padding: 14px 18px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 18px; }
+    th, td { border: 1px solid #d1d5db; padding: 7px 9px; text-align: left; }
+    th { background: #f3f4f6; }
+    .pass { color: #047857; font-weight: 700; }
+    .fail { color: #b91c1c; font-weight: 700; }
+    img { max-width: 100%; margin-top: 18px; border: 1px solid #e5e7eb; }
+  </style>
+</head>
+<body>
+  <h1>ScratchV DSL 编译器性能测试报告</h1>
+  <div class="summary">
+    <p>用例总数：23，通过：23，失败：0，通过率：100.0%</p>
+    <p>测试目录：tests_main，性能退化阈值：5.0%</p>
+  </div>
+  <img src="course_report_instructions.png" alt="课程版指令数图表">
+  <table>
+    <thead>
+      <tr><th>用例</th><th>类别</th><th>状态</th><th>平均指令数</th><th>95%置信区间</th><th>变化率(%)</th><th>是否退化</th><th>描述</th></tr>
+    </thead>
+    <tbody>
+      
+      <tr>
+        <td>add_relu_relu</td>
+        <td>activation</td>
+        <td class="pass">PASS</td>
+        <td>9.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Add input and bias, then apply ReLU twice.</td>
+      </tr>
+      
+      <tr>
+        <td>relu_add</td>
+        <td>activation</td>
+        <td class="pass">PASS</td>
+        <td>8.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Add input and bias, then apply one ReLU.</td>
+      </tr>
+      
+      <tr>
+        <td>relu_only</td>
+        <td>activation</td>
+        <td class="pass">PASS</td>
+        <td>7.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Apply ReLU directly to a single input value.</td>
+      </tr>
+      
+      <tr>
+        <td>relu_twice</td>
+        <td>activation</td>
+        <td class="pass">PASS</td>
+        <td>8.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Apply ReLU twice to the same activation path.</td>
+      </tr>
+      
+      <tr>
+        <td>if_else</td>
+        <td>branch</td>
+        <td class="pass">PASS</td>
+        <td>26.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>if/else branch returns subtraction result when flag is zero.</td>
+      </tr>
+      
+      <tr>
+        <td>if_relu</td>
+        <td>branch</td>
+        <td class="pass">PASS</td>
+        <td>22.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>if/else branch combined with add and relu.</td>
+      </tr>
+      
+      <tr>
+        <td>if_then</td>
+        <td>branch</td>
+        <td class="pass">PASS</td>
+        <td>26.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>if/else branch returns add result when flag is non-zero.</td>
+      </tr>
+      
+      <tr>
+        <td>add_chain</td>
+        <td>elementwise</td>
+        <td class="pass">PASS</td>
+        <td>8.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Add a and b, then add c to the intermediate result.</td>
+      </tr>
+      
+      <tr>
+        <td>add_chain_3</td>
+        <td>elementwise</td>
+        <td class="pass">PASS</td>
+        <td>9.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Chain three add operations across four symbolic inputs.</td>
+      </tr>
+      
+      <tr>
+        <td>add_fan_in_4</td>
+        <td>elementwise</td>
+        <td class="pass">PASS</td>
+        <td>9.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Compute two independent adds and then merge them with a final add.</td>
+      </tr>
+      
+      <tr>
+        <td>add_reuse</td>
+        <td>elementwise</td>
+        <td class="pass">PASS</td>
+        <td>8.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Reuse the same intermediate add result on both operands of a second add.</td>
+      </tr>
+      
+      <tr>
+        <td>vector_add</td>
+        <td>elementwise</td>
+        <td class="pass">PASS</td>
+        <td>7.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Single add over two symbolic vector inputs.</td>
+      </tr>
+      
+      <tr>
+        <td>loop_add_4</td>
+        <td>loop</td>
+        <td class="pass">PASS</td>
+        <td>27.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Run a four-iteration loop whose body computes one add; final returned value is the last loop-body result.</td>
+      </tr>
+      
+      <tr>
+        <td>loop_add_chain_4</td>
+        <td>loop</td>
+        <td class="pass">PASS</td>
+        <td>31.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Run a four-iteration loop whose body computes two chained adds; final returned value is the last loop-body result.</td>
+      </tr>
+      
+      <tr>
+        <td>loop_relu_add_4</td>
+        <td>loop</td>
+        <td class="pass">PASS</td>
+        <td>30.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Run a four-iteration loop whose body computes add followed by ReLU; final returned value is the last loop-body result.</td>
+      </tr>
+      
+      <tr>
+        <td>dot_4</td>
+        <td>reduction</td>
+        <td class="pass">PASS</td>
+        <td>8.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Compute the dot product of two symbolic vectors of length 4.</td>
+      </tr>
+      
+      <tr>
+        <td>dot_8</td>
+        <td>reduction</td>
+        <td class="pass">PASS</td>
+        <td>8.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Compute the dot product of two symbolic vectors of length 8.</td>
+      </tr>
+      
+      <tr>
+        <td>dot_relu_4</td>
+        <td>reduction</td>
+        <td class="pass">PASS</td>
+        <td>9.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Compute a length-4 dot product and pass it through ReLU.</td>
+      </tr>
+      
+      <tr>
+        <td>dot_relu_8</td>
+        <td>reduction</td>
+        <td class="pass">PASS</td>
+        <td>9.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Compute a length-8 dot product and pass it through ReLU.</td>
+      </tr>
+      
+      <tr>
+        <td>matmul_2x2</td>
+        <td>tensor</td>
+        <td class="pass">PASS</td>
+        <td>9.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Compute a symbolic 2x2 by 2x2 matrix multiplication.</td>
+      </tr>
+      
+      <tr>
+        <td>matmul_4x4</td>
+        <td>tensor</td>
+        <td class="pass">PASS</td>
+        <td>9.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Compute a symbolic 4x4 by 4x4 matrix multiplication.</td>
+      </tr>
+      
+      <tr>
+        <td>matmul_add_2x2</td>
+        <td>tensor</td>
+        <td class="pass">PASS</td>
+        <td>10.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Compute a 2x2 matmul and then add a symbolic bias term.</td>
+      </tr>
+      
+      <tr>
+        <td>matmul_relu_2x2</td>
+        <td>tensor</td>
+        <td class="pass">PASS</td>
+        <td>10.00</td>
+        <td>±0.00</td>
+        <td>0.00</td>
+        <td>False</td>
+        <td>Compute a 2x2 matmul and then apply ReLU to its result.</td>
+      </tr>
+      
+    </tbody>
+  </table>
+</body>
+</html>
