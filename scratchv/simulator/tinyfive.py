@@ -227,6 +227,16 @@ class StubProfiledMachine(ProfiledMachine):
         self._pc = origin
         self._code_words = words
 
+    def load_asm(self, asm_lines: list[str], origin: int = 0x200):
+        self._pc = origin
+        self._code_words = []
+
+        for line in asm_lines:
+            line = line.split("#")[0].strip()
+            if not line or line.endswith(":"):
+                continue
+            self._code_words.append(line)
+
     def load_data(self, data: bytes, addr: int):
         for i, b in enumerate(data):
             self.memory[addr + i] = b
@@ -279,7 +289,7 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
         }
 
     lines = asm_code.strip().split("\n")
-    m.load_asm(lines, origin=0)
+    load_asm(lines, origin=0)
 
     try:
         m.run(instructions=100_000_000)
