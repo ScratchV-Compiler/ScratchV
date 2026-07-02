@@ -33,3 +33,6 @@ benchmark_reports/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# Auto-generated HTML docs (regenerate with: python scripts/build_docs_html.py)
+docs/topics/html/
