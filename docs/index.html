@@ -46,6 +46,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); line
 .tag-bench { background: #d1fae5; color: #059669; }
 .tag-docs { background: #fef3c7; color: #d97706; }
 .tag-github { background: #e0e7ff; color: #4f46e5; }
+.tag-topic { background: #ede9fe; color: #7c3aed; }
 
 /* Section title */
 .section-title { font-size: 1.3rem; font-weight: 700; margin: 48px 0 24px; display: flex; align-items: center; gap: 10px; }
@@ -78,7 +79,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); line
   <!-- Hero -->
   <div class="hero">
     <h1>⚡ ScratchV 编译器课程</h1>
-    <p>从零开始，亲手搭建一个 AI → RISC-V 编译器。<br>零基础友好 · 30个课题 · 3个难度层级</p>
+    <p>从零开始，亲手搭建一个 AI → RISC-V 编译器。<br>零基础友好 · 入门指南 + 课题指南 · 30个课题 · 3个难度层级</p>
     <div class="cta">
       <a href="topics/html/index.html" class="cta-primary">📘 开始学习</a>
       <a href="00-环境搭建指南.md" class="cta-secondary">🔧 先搭环境</a>
@@ -92,6 +93,12 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); line
       <h3>交互式课程</h3>
       <p>30个课题，带进度追踪、搜索、深色主题。从环境搭建到 CI Dashboard，循序渐进。</p>
       <span class="card-tag tag-course">推荐新手</span>
+    </a>
+    <a href="topics/index.html" class="card">
+      <div class="card-icon">📚</div>
+      <h3>课题指南</h3>
+      <p>30个编译器课题，按入门/中级/高级分级。从汇编美化到 SIMD 向量化，循序渐进。</p>
+      <span class="card-tag tag-topic">课题实战</span>
     </a>
     <a href="../benchmark_reports/dashboard.html" class="card">
       <div class="card-icon">📊</div>
