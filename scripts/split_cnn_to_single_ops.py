@@ -20,9 +20,6 @@ PROJ = Path(__file__).resolve().parent.parent
 MODEL_PATH = PROJ / "models" / "graph" / "cnn.onnx"
 OUTPUT_BASE = PROJ / "models" / "single_op"
 
-# PPQ auxiliary reshape nodes — skip these (they're shape manipulation, not real operators)
-SKIP_NODE_NAMES = {"PPQ_Operation_6", "PPQ_Operation_12"}
-
 # Map ONNX op_type to output directory name
 OP_DIR_MAP = {
     "Conv": "conv",
@@ -30,6 +27,7 @@ OP_DIR_MAP = {
     "MaxPool": "maxpool",
     "Gemm": "gemm",
     "Sigmoid": "sigmoid",
+    "Reshape": "reshape",
 }
 
 
@@ -183,10 +181,6 @@ def main():
     report = OrderedDict()  # op_type -> [model_names]
 
     for node in model.graph.node:
-        if node.name in SKIP_NODE_NAMES:
-            print(f"Skip: {node.name} ({node.op_type}) — PPQ auxiliary reshape")
-            continue
-
         op_dir_name = OP_DIR_MAP.get(node.op_type)
         if op_dir_name is None:
             print(f"Skip: {node.name} ({node.op_type}) — unknown op type, skipping")

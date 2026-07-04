@@ -38,6 +38,8 @@ MODEL_TO_LAYER = {
     "cnn_relu1_Relu":         ("relu",     "ReLU (after FC1)", "ReLU4"),
     "cnn_fc2_Gemm":           ("gemm",     "FC2",      "FC2 (128→1)"),
     "cnn_sigmoid1_Sigmoid":   ("sigmoid",  "Sigmoid",  "Sigmoid"),
+    "cnn_PPQ_Operation_6":   ("reshape",  "Reshape (flatten)", "Reshape (flatten)"),
+    "cnn_PPQ_Operation_12":  ("reshape",  "Reshape (flatten)", "Reshape (flatten)"),
 }
 
 # ── Per-operator per-MAC/EL instruction category breakdowns ──
@@ -106,6 +108,18 @@ SV_SIGMOID_PER_EL = {
     "shift": 2.0,
 }
 
+SV_RESHAPE_PER_EL = {
+    "alu_r": 0.0,     # no computation — pure data copy
+    "alu_i": 5.0,     # addi (loop counter + address calc: slli+add for src + slli+add for dst)
+    "load": 1.0,      # lw (load element)
+    "store": 1.0,     # sw (store element)
+    "branch": 1.0,    # bne (loop control)
+    "jump": 0.0,
+    "upper": 0.5,     # li32 for num_el (amortized)
+    "fp": 0.0,
+    "shift": 2.0,     # slli (address calc × 2 per element)
+}
+
 # LLVM RV64FD float32 per-MAC instruction distribution (from llvm_cache_compare.py)
 LLVM_CONV_PER_MAC = {
     "alu_i": 2.0, "alu_r": 0.5, "load": 2.0, "store": 0.0,
@@ -126,6 +140,15 @@ LLVM_RELU_PER_EL = {
 LLVM_SIGMOID_PER_EL = {
     "alu_i": 5.0, "alu_r": 3.0, "load": 3.0, "store": 2.0,
     "fp": 8.0, "branch": 2.0, "jump": 1.0, "upper": 1.0, "shift": 0.0,
+}
+
+LLVM_RESHAPE_PER_EL = {
+    "alu_i": 3.0,      # LLVM memcpy — mostly GEP + pointer arithmetic
+    "load": 1.0,       # load element
+    "store": 1.0,      # store element
+    "branch": 1.0,     # loop control
+    "alu_r": 0.0,      # no compute
+    "jump": 0.0, "upper": 0.0, "fp": 0.0, "shift": 0.0,
 }
 
 
@@ -241,8 +264,8 @@ def _get_layer_data() -> tuple[dict, dict, dict, dict]:
         elif name.startswith("Reshape"):
             sv_mult = elements
             ll_mult = elements
-            sv_unit = SV_RELU_PER_EL   # ReLU-like overhead
-            ll_unit = LLVM_RELU_PER_EL
+            sv_unit = SV_RESHAPE_PER_EL
+            ll_unit = LLVM_RESHAPE_PER_EL
         else:
             continue
 
@@ -381,7 +404,7 @@ def main():
     output = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "project": "ScratchV",
-        "source_model": "cnn.onnx (3×Conv + 3×MaxPool + 2×FC)",
+        "source_model": "cnn.onnx (3×Conv + 3×MaxPool + 2×Gemm + 4×ReLU + 1×Sigmoid + 2×Reshape)",
         "models": results,
         "aggregates": aggregates,
     }
@@ -396,7 +419,7 @@ def main():
     print("Operator-type aggregates:")
     print(f"{'Op Type':<12} {'Count':>5} {'SV Dynamic':>15} {'LLVM Dynamic':>15} {'Ratio':>8}")
     print("-" * 60)
-    for ot in ["conv", "gemm", "maxpool", "relu", "sigmoid"]:
+    for ot in ["conv", "gemm", "maxpool", "relu", "sigmoid", "reshape"]:
         if ot in aggregates:
             a = aggregates[ot]
             print(f"{ot:<12} {a['model_count']:>5} {a['total_scratchv_dynamic_insns']:>15,} "
