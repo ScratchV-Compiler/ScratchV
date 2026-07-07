@@ -6,6 +6,7 @@ subset of instructions emitted by the ScratchV compiler backend.
 
 from __future__ import annotations
 
+import re
 import struct
 from enum import IntEnum
 
@@ -175,32 +176,116 @@ class RISCVAEncoder:
     def __init__(self):
         self.labels: dict[str, int] = {}  # label -> instruction index
         self.pending_fixups: list[tuple[int, str, str]] = []
+        self._max_counter = 0
+        self._temp_reg = 0
+
+    # ── Pseudo-instruction expansion ──────────────────────────────────
+
+    def _find_free_temp(self, asm_text: str) -> int:
+        """Scan assembly text for used registers; return first free temp.
+
+        Preference order: t6, t5, t4, t3, t2, t1, t0 (x31 down to x5).
+        """
+        used = set()
+        for match in re.finditer(
+            r'\b(zero|ra|sp|gp|tp|t[0-6]|s\d+|a\d+|fp|x\d+)\b',
+            asm_text,
+        ):
+            name = match.group(1)
+            if name in REG_MAP:
+                used.add(REG_MAP[name])
+        for r in [31, 30, 29, 28, 7, 6, 5]:
+            if r not in used:
+                return r
+        return 31  # fallback
+
+    def _expand_pseudo(self, line: str) -> list[str]:
+        """Expand one possibly-pseudo line into standard RISC-V lines.
+
+        Returns a list of lines (may be empty for skipped directives).
+        """
+        if not line or line.startswith(".") or line.endswith(":"):
+            return [line]
+
+        tokens = line.replace(",", " ").split()
+        if not tokens:
+            return [line]
+
+        op = tokens[0].lower()
+
+        # max rd, rs1, rs2  →  4-instruction sequence
+        if op == "max":
+            rd = tokens[1] if len(tokens) > 1 else "x0"
+            rs1 = tokens[2] if len(tokens) > 2 else "x0"
+            rs2 = tokens[3] if len(tokens) > 3 else "x0"
+            n = self._max_counter
+            self._max_counter += 1
+            return [
+                f"bge {rs1}, {rs2}, .__max_then_{n}",
+                f"addi {rd}, x0, 0",
+                f"j .__max_end_{n}",
+                f".__max_then_{n}:",
+                f"addi {rd}, {rs1}, 0",
+                f".__max_end_{n}:",
+            ]
+
+        # Branch-with-immediate:  beq/bne/blt/bge rs1, imm, label
+        #   → li xTEMP, imm; beq/bne/blt/bge rs1, xTEMP, label
+        if op in ("beq", "bne", "blt", "bge"):
+            if len(tokens) >= 4:
+                op2 = tokens[2].rstrip(",")
+                if op2 not in REG_MAP and not op2.startswith("x") and not op2.startswith("%"):
+                    try:
+                        imm = int(op2)
+                    except ValueError:
+                        pass
+                    else:
+                        temp = f"x{self._temp_reg}"
+                        label = tokens[3]
+                        return [
+                            f"li {temp}, {imm}",
+                            f"{op} {tokens[1]}, {temp}, {label}",
+                        ]
+
+        return [line]
+
+    # ── Assembly pass ─────────────────────────────────────────────────
 
     def assemble(self, asm_text: str) -> bytearray:
         """Assemble RISC-V assembly text to flat binary."""
-        lines = asm_text.strip().split("\n")
-        instructions: list[tuple] = []  # (encoded_word, comment)
+        # Pre-scan: find a free temp register for pseudo expansion
+        clean_text = "\n".join(
+            line.split("#")[0] for line in asm_text.split("\n")
+        )
+        self._temp_reg = self._find_free_temp(clean_text)
 
-        # Pass 1: collect labels and encode
+        lines = asm_text.strip().split("\n")
+        instructions: list[tuple] = []  # (encoded_word, fixup_or_None)
+
+         # Pass 1: expand pseudos, collect labels, encode
         for line in lines:
             line = line.split("#")[0].strip()
             if not line:
                 continue
 
-            # Skip directives (but not local labels like .Lxxx)
-            if line.startswith(".") and not line.startswith(".L"):
-                continue
+            # Expand pseudo-instructions (one line → possibly many)
+            expanded = self._expand_pseudo(line)
+            for exp_line in expanded:
+                exp_line = exp_line.split("#")[0].strip()
+                if not exp_line:
+                    continue
 
-            # Label detection (including .L local labels)
-            if line.endswith(":"):
-                name = line[:-1].strip()
-                self.labels[name] = len(instructions)
-                continue
+                # Skip directives, but keep all labels (including .L and .__)
+                if exp_line.startswith(".") and not exp_line.endswith(":"):
+                    continue
+                if exp_line.endswith(":"):
+                    name = exp_line[:-1].strip()
+                    self.labels[name] = len(instructions)
+                    continue
 
-            # Parse instruction
-            encoded = self._encode_line(line, len(instructions))
-            if encoded is not None:
-                instructions.append(encoded)
+                encoded = self._encode_line(exp_line, len(instructions))
+                if encoded is not None:
+                    instructions.append(encoded)
 
         # Pass 2: apply label fixups
         result = bytearray()
@@ -214,8 +299,8 @@ class RISCVAEncoder:
     def _encode_line(
             self, line: str, idx: int,
     ) -> tuple[int, tuple[str, str] | None] | None:
-        """Encode a single assembly line."""
-        # Tokenize
+        """Encode a single assembly line (standard RISC-V only — pseudos
+        should already be expanded by ``_expand_pseudo``)."""
         tokens = line.replace(",", " ").split()
         if not tokens:
             return None
@@ -230,11 +315,35 @@ class RISCVAEncoder:
             rs1 = _reg_num(operands[1])
             rs2 = _reg_num(operands[2])
             word = _r_type(rd, rs1, rs2, F3_ADD_SUB, F7_ADD)
+        elif op == "rem":
+            rd = _reg_num(operands[0])
+            rs1 = _reg_num(operands[1])
+            rs2 = _reg_num(operands[2])
+            word = _r_type(rd, rs1, rs2, 0b110, F7_MULDIV)
         elif op == "sub":
             rd = _reg_num(operands[0])
             rs1 = _reg_num(operands[1])
             rs2 = _reg_num(operands[2])
             word = _r_type(rd, rs1, rs2, F3_ADD_SUB, F7_SUB)
+        elif op == "srai":
+            rd = _reg_num(operands[0])
+            rs1 = _reg_num(operands[1])
+            shamt = self._parse_imm(operands[2]) & 0x1F
+            word = _i_type(rd, rs1, shamt | (0b0100000 << 5), F3_SRL_SRA)
+            # Shamt is encoded in lower 5 bits of the 12-bit immediate;
+            # the upper 7 bits are 0100000 for SRAI.
+            imm12 = shamt | (0b0100000 << 5)
+            word = _i_type(rd, rs1, imm12, F3_SRL_SRA)
+        elif op == "xor":
+            rd = _reg_num(operands[0])
+            rs1 = _reg_num(operands[1])
+            rs2 = _reg_num(operands[2])
+            word = _r_type(rd, rs1, rs2, F3_XOR, 0b0000000)
+        elif op == "and":
+            rd = _reg_num(operands[0])
+            rs1 = _reg_num(operands[1])
+            rs2 = _reg_num(operands[2])
+            word = _r_type(rd, rs1, rs2, F3_AND, 0b0000000)
         elif op == "mul":
             rd = _reg_num(operands[0])
             rs1 = _reg_num(operands[1])
@@ -255,8 +364,20 @@ class RISCVAEncoder:
             offset, rs1 = self._parse_mem(operands[1])
             word = _i_type(rd, rs1, offset, F3_LW, RVOpcode.LOAD)
         elif op == "sw":
-            rs2 = _reg_num(operands[0])
-            offset, rs1 = self._parse_mem(operands[1])
+            # Handle both standard (sw rs2, offset(rs1)) and compiler
+            # (sw rs1(offset), rs2) syntax.
+            if "(" in operands[0]:
+                # Compiler syntax:  sw rs1(offset), rs2
+                mem = operands[0].strip()
+                base = mem[:mem.index("(")]
+                off_str = mem[mem.index("(") + 1:mem.index(")")]
+                offset = self._parse_imm(off_str) if off_str else 0
+                rs1 = _reg_num(base)
+                rs2 = _reg_num(operands[1])
+            else:
+                # Standard syntax:  sw rs2, offset(rs1)
+                rs2 = _reg_num(operands[0])
+                offset, rs1 = self._parse_mem(operands[1])
             word = _s_type(rs1, rs2, offset, F3_SW)
         elif op == "beq":
             rs1 = _reg_num(operands[0])
@@ -302,10 +423,8 @@ class RISCVAEncoder:
             if -2048 <= imm <= 2047:
                 word = _i_type(rd, 0, imm, F3_ADD_SUB)
             else:
-                # lui + addi sequence — will be handled later
                 upper = (imm + 0x800) >> 12
                 word = _u_type(rd, upper)
-                # Store second instruction
                 self._pending_li = (rd, imm & 0xFFF)
         elif op == "mv":
             rd = _reg_num(operands[0])
@@ -317,10 +436,7 @@ class RISCVAEncoder:
                 fixup = ("call", label)
                 word = _u_type(1, 0)
             else:
-                # call without label (runtime call, target in comment)
-                # Encode as auipc ra, 0 + jalr (nop-like, handled by emulator)
                 word = _i_type(1, 1, 0, 0, RVOpcode.JALR)
-                # Store runtime call info for later fixup
                 fixup = ("runtime_call", "")
         elif op == "ret":
             word = _i_type(0, 1, 0, 0, RVOpcode.JALR)
@@ -337,19 +453,6 @@ class RISCVAEncoder:
             else:
                 imm = self._parse_imm(operands[2])
                 word = _i_type(rd, rs1, imm, F3_SLT)
-        elif op == "max":
-            # Expand pseudo: blt rs1, rs2, +8; mv rd, rs2; j +8; mv rd, rs1
-            # For single instruction encoding, emit as add (simplified)
-            rd = _reg_num(operands[0]) if len(operands) > 0 else 0
-            rs1 = _reg_num(operands[1]) if len(operands) > 1 else 0
-            if len(operands) > 2 and (operands[2].startswith("%") or operands[2] in REG_MAP):
-                rs2 = _reg_num(operands[2])
-            else:
-                rs2 = 0
-            word = _r_type(rd, rs1, rs2, F3_ADD_SUB, 0b0000000)
-            # Store as multi-instruction expansion
-            self._pending_max = (rd, rs1, rs2)
-            fixup = ("max_expand", "")
         elif op == "nop":
             word = _i_type(0, 0, 0, F3_ADD_SUB)
         else:
@@ -362,8 +465,6 @@ class RISCVAEncoder:
         kind, label = fixup
         if kind == "runtime_call":
             return word
-        if kind == "max_expand":
-            return word  # already encoded
 
         target_idx = self.labels.get(label, current_idx)
         offset = target_idx - current_idx

@@ -105,7 +105,6 @@ class RegisterAllocator:
 
         for instr in self.instructions:
             if instr.op == MachineOp.LABEL:
-                self._flush_regs()
                 self._emit(instr)
                 continue
 

@@ -227,16 +227,6 @@ class StubProfiledMachine(ProfiledMachine):
         self._pc = origin
         self._code_words = words
 
-    def load_asm(self, asm_lines: list[str], origin: int = 0x200):
-        self._pc = origin
-        self._code_words = []
-
-        for line in asm_lines:
-            line = line.split("#")[0].strip()
-            if not line or line.endswith(":"):
-                continue
-            self._code_words.append(line)
-
     def load_data(self, data: bytes, addr: int):
         for i, b in enumerate(data):
             self.memory[addr + i] = b
@@ -273,6 +263,11 @@ class StubProfiledMachine(ProfiledMachine):
 def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
     """Verify generated assembly by running it in TinyFive.
 
+    Uses ``RISCVAEncoder`` to assemble text → binary, then loads via
+    ``load_binary()`` for reliable execution.  Falls back to
+    ``load_asm()`` if encoding fails.
+
+
     Args:
         asm_code: RISC-V assembly text.
         verbose: Print performance info.
@@ -287,9 +282,30 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
             "instr_count": 0,
             "error": "tinyfive not installed",
         }
+    # Primary path: assemble to binary via our encoder, then load.
+    try:
+        from scratchv.backend.riscv_encoder import assemble_to_binary
 
-    lines = asm_code.strip().split("\n")
-    load_asm(lines, origin=0)
+        binary = assemble_to_binary(asm_code)
+        if len(binary) > 0:
+            words = [
+                int.from_bytes(binary[i:i + 4], "little")
+                for i in range(0, len(binary), 4)
+            ]
+            m.load_binary(words, origin=0)
+            # Point ra past the end of valid memory.  The compiler emits
+            # ``jalr zero, ra`` for ``ret``, but ra is 0 on startup.
+            # By setting ra to an out-of-bounds address, the instruction
+            # fetch after the jump triggers an IndexError that the
+            # ``except Exception`` in ``run()`` catches cleanly.
+            m.set_reg(1, m.mem_size)  # ra = x1 = out-of-bounds
+        else:
+            raise ValueError("assembler produced empty binary")
+    except Exception as enc_err:
+        # Fallback: try TinyFive's limited asm() parser.
+        lines = asm_code.strip().split("\n")
+        m.load_asm(lines, origin=0)
+
 
     try:
         m.run(instructions=100_000_000)
