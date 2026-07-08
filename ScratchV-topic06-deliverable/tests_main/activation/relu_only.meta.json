@@ -1,0 +1,8 @@
+{
+  "description": "Apply ReLU directly to a single input value.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "x": -5
+  },
+  "expected_return": 0
+}

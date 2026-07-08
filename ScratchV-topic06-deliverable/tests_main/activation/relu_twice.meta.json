@@ -1,0 +1,8 @@
+{
+  "description": "Apply ReLU twice to the same activation path.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "input": 4
+  },
+  "expected_return": 4
+}
