@@ -183,6 +183,9 @@ class LinearScanAllocator:
         Mapping from virtual register to assigned physical register.
     spill_code:
         List of spill load/store instructions inserted during allocation.
+    peak_active:
+        Maximum length of the active list during allocation scan.
+        Reflects the upper bound of register pressure in the block.
     """
 
     def __init__(self, phys_regs: Optional[list[str]] = None):
@@ -196,6 +199,7 @@ class LinearScanAllocator:
             []  # (position, op, operand)
         )
         self._spill_slots: dict[str, int] = {}  # vreg -> slot offset
+        self.peak_active: int = 0  # max simultaneously live intervals seen
 
     # ------------------------------------------------------------------
     # Live interval computation
@@ -206,6 +210,8 @@ class LinearScanAllocator:
     ) -> list[LiveInterval]:
         """Compute live intervals for all virtual registers in a basic block.
 
+        Uses a single pass over the block (O(N+V) instead of O(V*N)).
+
         Parameters
         ----------
         block:
@@ -215,39 +221,39 @@ class LinearScanAllocator:
         -------
         List of LiveInterval objects sorted by start position.
         """
-        # Collect all virtual register names
-        vregs: set[str] = set()
+        # Single pass: track first definition and last use for each vreg
+        first_def: dict[str, int] = {}
+        last_use: dict[str, int] = {}
+        all_uses: dict[str, set[int]] = {}
+
         for inst in block:
-            vregs |= inst.defines
-            vregs |= inst.uses
+            i = inst.id
+
+            for d in inst.defines:
+                if d not in first_def:
+                    first_def[d] = i
+                if d in inst.uses:
+                    # define and use in same instruction
+                    if d not in all_uses:
+                        all_uses[d] = set()
+                    all_uses[d].add(i)
+                    prev = last_use.get(d, -1)
+                    last_use[d] = max(prev, i + 1)
+
+            for u in inst.uses:
+                if u not in all_uses:
+                    all_uses[u] = set()
+                all_uses[u].add(i)
+                prev = last_use.get(u, -1)
+                last_use[u] = max(prev, i + 1)
 
         intervals: list[LiveInterval] = []
+        all_vregs = set(first_def) | set(last_use)
 
-        for vreg in vregs:
-            start = -1
-            end = -1
-            uses = set()
-
-            for inst in block:
-                if vreg in inst.defines:
-                    if start == -1:
-                        start = inst.id
-                if vreg in inst.uses:
-                    uses.add(inst.id)
-                    end = max(end, inst.id + 1)
-                if vreg in inst.defines and vreg in inst.uses:
-                    # define and use in same instruction
-                    uses.add(inst.id)
-                    if start == -1:
-                        start = inst.id
-                    end = max(end, inst.id + 1)
-
-            if start == -1:
-                start = 0  # live-in parameter
-
-            if end == -1:
-                end = start + 1
-
+        for vreg in all_vregs:
+            start = first_def.get(vreg, 0)       # live-in if no def in block
+            end = last_use.get(vreg, start + 1)  # single-instruction range
+            uses = all_uses.get(vreg, set())
             intervals.append(LiveInterval(
                 vreg=vreg, start=start, end=end, uses=uses,
             ))
@@ -273,6 +279,7 @@ class LinearScanAllocator:
         self.alloc_map.clear()
         self.spill_code.clear()
         self._spill_slots.clear()
+        self.peak_active = 0
 
         # Active list: (interval, phys_reg) sorted by increasing end
         active: list[tuple[LiveInterval, str]] = []
@@ -291,13 +298,17 @@ class LinearScanAllocator:
                 # Need to spill
                 spill = self.spill(interval, active, free_regs)
                 if spill is not None:
-                    # Spill freed a register
-                    reg = (
-                        free_regs.pop(0) if free_regs
-                        else self.phys_regs[0]
-                    )
-                    self.alloc_map[interval.vreg] = reg
-                    active.append((interval, reg))
+                    # Spill freed a register from an active interval
+                    self.alloc_map[interval.vreg] = spill
+                    active.append((interval, spill))
+                else:
+                    # The current interval itself was spilled
+                    # No register assigned; it will be loaded on each use
+                    self.alloc_map[interval.vreg] = f"SPILL_{interval.vreg}"
+
+            # Track peak active count (after allocation decision and reaping)
+            if len(active) > self.peak_active:
+                self.peak_active = len(active)
 
         return dict(self.alloc_map)
 
@@ -332,7 +343,8 @@ class LinearScanAllocator:
 
         Returns
         -------
-        The physical register freed by spilling, or None if no spill possible.
+        The physical register freed by spilling, or None if no spill possible
+        (i.e. the current interval itself should be spilled instead).
         """
         if not active:
             return None
@@ -361,12 +373,9 @@ class LinearScanAllocator:
             free_regs.append(spill_reg)
             return spill_reg
 
-        # Otherwise, spill the current interval
-        slot = self._get_spill_slot(current.vreg)
-        self.spill_code.append(
-            (current.start, "sw",
-             f"{self.phys_regs[0]}, {slot}(sp)  # spill {current.vreg}")
-        )
+        # Otherwise, spill the current interval (it has the longest range).
+        # Do not assign any register — it will be loaded from stack on each use.
+        self._get_spill_slot(current.vreg)
         return None
 
     def _get_spill_slot(self, vreg: str) -> int:
@@ -395,15 +404,14 @@ class LinearScanAllocator:
         lines: list[str] = []
         rename = self.alloc_map
 
-        # Build a position -> spill load map
+        # Build position -> instruction overlay maps
         spill_loads: dict[int, list[str]] = {}
+        spill_stores: dict[int, list[str]] = {}
         for pos, op, operand in self.spill_code:
-            if "sw" in op:
-                lines.append(f"  {op} {operand}")
-            else:
-                if pos not in spill_loads:
-                    spill_loads[pos] = []
-                spill_loads[pos].append(f"  {op} {operand}")
+            target = spill_loads if "lw" in op else spill_stores
+            if pos not in target:
+                target[pos] = []
+            target[pos].append(f"  {op} {operand}")
 
         for inst in block:
             # Insert spill loads before instruction
@@ -411,9 +419,42 @@ class LinearScanAllocator:
                 for load_line in spill_loads[inst.id]:
                     lines.append(load_line)
 
+            # For intervals spilled entirely (not assigned a register),
+            # insert a load before every use and a store after every def
+            rename = dict(self.alloc_map)
+            for u in inst.uses:
+                if rename.get(u, "").startswith("SPILL_"):
+                    slot = self._spill_slots.get(u, 0)
+                    scratch = self._pick_scratch(inst, rename)
+                    lines.append(f"  lw {scratch}, {slot}(sp)  # reload {u}")
+                    rename[u] = scratch
+            for d in inst.defines:
+                if rename.get(d, "").startswith("SPILL_"):
+                    slot = self._spill_slots.get(d, 0)
+                    scratch = self._pick_scratch(inst, rename)
+                    rename[d] = scratch
+
             lines.append(inst.to_asm(rename))
 
+            for d in inst.defines:
+                if d in self._spill_slots and rename.get(d, "") in self.phys_regs:
+                    slot = self._spill_slots[d]
+                    lines.append(
+                        f"  sw {rename[d]}, {slot}(sp)  # spill {d}")
+
         return "\n".join(lines)
+
+    def _pick_scratch(
+            self, inst: LsInstruction,
+            rename: dict[str, str],
+    ) -> str:
+        """Pick a scratch register that does not conflict with operands."""
+        used = set(rename.get(o, o) for o in inst.operands)
+        for reg in self.phys_regs:
+            if reg not in used:
+                return reg
+        # Fallback — should rarely happen with 27 registers
+        return "t0"
 
     # ------------------------------------------------------------------
     # Report
@@ -422,13 +463,26 @@ class LinearScanAllocator:
     def report(self) -> str:
         """Return a string summary of the allocation result."""
         total = len(self.alloc_map)
-        spilled = len(self._spill_slots)
+        spilled_self = sum(
+            1 for v in self.alloc_map.values()
+            if isinstance(v, str) and v.startswith("SPILL_"))
+        spilled_evicted = len(self._spill_slots) - spilled_self
+        concurrently_assigned = (
+            total - spilled_self  # vregs that got a phys reg
+        )
         parts = []
         parts.append("Linear Scan Register Allocation Report")
         parts.append(f"  Virtual registers allocated: {total}")
-        parts.append(f"  Stack spill slots used: {spilled}")
+        parts.append(f"  Stack spill slots used: {len(self._spill_slots)}")
         parts.append(
-            f"  Physical registers available: {len(self.phys_regs)}"
+            f"  Physical registers in pool: {len(self.phys_regs)}"
+        )
+        parts.append(
+            f"  Peak simultaneously active: {self.peak_active}"
+        )
+        parts.append(
+            f"  Physical regs actually assigned: "
+            f"{min(concurrently_assigned, len(self.phys_regs))}"
         )
         if self._spill_slots:
             parts.append("  Spill details:")
