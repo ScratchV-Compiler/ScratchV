@@ -47,6 +47,12 @@ jobs:
           FILE_COUNT=0
           CHANGED_FILES=$(cat changed_files.txt)
 
+          # ── Check API key early ──
+          if [ -z "$SENSENOVA_API_KEY" ] || [ "${#SENSENOVA_API_KEY}" -lt 8 ]; then
+            echo "::error::SENSENOVA_API_KEY is not set or invalid. Aborting."
+            exit 1
+          fi
+
           if [ -z "$CHANGED_FILES" ]; then
             echo "No files changed, skipping review." >> "$REVIEW_FILE"
           else
@@ -55,20 +61,32 @@ jobs:
               echo "Reviewing: $FILE"
 
               # ── Get per-file diff ──
-              DIFF=$(git diff "origin/$BASE_REF...HEAD" -- "$FILE" 2>/dev/null || true)
-              if [ -z "$DIFF" ]; then
-                echo "  [SKIP] $FILE — no diff (binary or unchanged)"
+              DIFF=$(git diff "origin/$BASE_REF...HEAD" -- "$FILE" 2>/dev/null) || { echo "  [ERROR] git diff failed for $FILE"; continue; }
+
+              # ── Check if binary via git diff ──
+              if echo "$DIFF" | grep -q "^Binary files "; then
+                echo "  [SKIP] $FILE — binary file (detected by git diff)"
                 continue
               fi
 
-              # ── Checkif binary ──
-              if echo "$DIFF" | head -1 | grep -q "^Binary files"; then
-                echo "  [SKIP] $FILE — binary file"
-                continue
+              NL=$'\n'
+              # ── If empty (new file / special chars), show full content ──
+              if [ -z "$DIFF" ]; then
+                # Check file type before generating virtual diff
+                if [ -f "$FILE" ] && file -b --mime-encoding "$FILE" 2>/dev/null | grep -q binary; then
+                  echo "  [SKIP] $FILE — binary file (detected by file command)"
+                  continue
+                fi
+                LINE_COUNT=$(wc -l < "$FILE" 2>/dev/null) || { echo "  [SKIP] $FILE — cannot read"; continue; }
+                if [ "${LINE_COUNT}" -gt 2000 ]; then
+                  echo "  [SKIP] $FILE — too large (${LINE_COUNT} lines, max 2000)"
+                  continue
+                fi
+                DIFF="--- /dev/null${NL}+++ b/$FILE${NL}@@ -0,0 +1,$LINE_COUNT @@${NL}$(sed 's/^/+/' "$FILE")"
               fi
 
               # ── Build user message ──
-              USER_MSG="请 review 以下文件变更：\n\n文件: $FILE\n\n\`\`\`diff\n$DIFF\n\`\`\`"
+              USER_MSG="请 review 以下文件变更：${NL}${NL}文件: $FILE${NL}${NL}\`\`\`diff${NL}$DIFF${NL}\`\`\`"
 
               # ── Escape for JSON ──
               # Use jq to build the payload safely
@@ -86,7 +104,10 @@ jobs:
                 }')
 
               # ── Call SenseNova API ──
-              RESPONSE=$(curl -s -w "\n%{http_code}" \
+              if [ "${FILE_COUNT:-0}" -gt 0 ]; then
+                sleep 1  # rate-limit: 1s gap between files
+              fi
+              RESPONSE=$(curl -s --max-time 60 --retry 3 --retry-all-errors -w "\n%{http_code}" \
                 "https://token.sensenova.cn/v1/chat/completions" \
                 -H "Authorization: Bearer $SENSENOVA_API_KEY" \
                 -H "Content-Type: application/json" \
@@ -96,8 +117,9 @@ jobs:
               BODY=$(echo "$RESPONSE" | sed '$d')
 
               if [ "$HTTP_CODE" != "200" ]; then
-                echo "  [ERROR] HTTP $HTTP_CODE for $FILE"
-                echo "  Response: $(echo "$BODY" | head -5)"
+                FILE_SIZE=$(wc -c < "$FILE" 2>/dev/null || echo "?")
+                echo "  [ERROR] HTTP $HTTP_CODE for $FILE (${FILE_SIZE}B)"
+                echo "  Response: $(echo "$BODY" | head -3)"
                 continue
               fi
 
@@ -138,6 +160,13 @@ jobs:
           fi
 
           echo "Review written to $REVIEW_FILE"
+
+      - name: Upload review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-code-review
+          path: review_output.md
+          if-no-files-found: ignore
 
       - name: Post review comment
         uses: actions/github-script@v7
