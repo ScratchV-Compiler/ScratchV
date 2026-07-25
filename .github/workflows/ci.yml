@@ -24,15 +24,41 @@ jobs:
     steps:
       - name: Sync from local mirror (skip unstable GitHub checkout)
         run: |
+          echo "=== CI Sync ==="
+          retry() {
+            local desc="$1" rc=0; shift
+            for i in 1 2 3; do
+              if "$@" --depth=1; then rc=0; break; fi
+              rc=$?
+              if [ "$i" -lt 3 ]; then
+                echo "::warning::$desc failed, retry #$i in $((i*3))s"
+                sleep $((i * 3))
+              else
+                echo "::error::$desc failed after 3 attempts"
+              fi
+            done
+            return $rc
+          }
           MIRROR=/opt/ScratchV
           WORKSPACE=/opt/actions-runner/_work/ScratchV/ScratchV
-          # Copy pre-cloned repo to workspace (avoid GitHub network issues)
           rm -rf "$WORKSPACE"
           cp -a "$MIRROR" "$WORKSPACE"
           cd "$WORKSPACE"
-          # Try to fetch latest; fallback to local copy if network fails
-          git fetch origin main --depth=1 2>/dev/null || echo "WARNING: git fetch failed, using local mirror"
-          git checkout -f "$GITHUB_SHA" 2>/dev/null || git checkout -f origin/main 2>/dev/null || true
+          echo "Fetching origin main..."
+          retry "git fetch origin main" git fetch origin main || exit 1
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            PR_NUMBER="${GITHUB_REF#refs/pull/}"
+            PR_NUMBER="${PR_NUMBER%/merge}"
+            echo "Fetching PR #${PR_NUMBER} merge ref..."
+            retry "git fetch PR #${PR_NUMBER}" git fetch origin "refs/pull/${PR_NUMBER}/merge" || exit 1
+          fi
+          echo "Checking out $GITHUB_SHA..."
+          if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+            echo "::notice::Checkout successful: $(git log -1 --format='%h %ai %s')"
+          else
+            echo "::error::GITHUB_SHA ($GITHUB_SHA) not found in local repo — checkout failed"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: |
@@ -72,15 +98,41 @@ jobs:
     steps:
       - name: Sync from local mirror (skip unstable GitHub checkout)
         run: |
+          echo "=== CI Sync ==="
+          retry() {
+            local desc="$1" rc=0; shift
+            for i in 1 2 3; do
+              if "$@" --depth=1; then rc=0; break; fi
+              rc=$?
+              if [ "$i" -lt 3 ]; then
+                echo "::warning::$desc failed, retry #$i in $((i*3))s"
+                sleep $((i * 3))
+              else
+                echo "::error::$desc failed after 3 attempts"
+              fi
+            done
+            return $rc
+          }
           MIRROR=/opt/ScratchV
           WORKSPACE=/opt/actions-runner/_work/ScratchV/ScratchV
-          # Copy pre-cloned repo to workspace (avoid GitHub network issues)
           rm -rf "$WORKSPACE"
           cp -a "$MIRROR" "$WORKSPACE"
           cd "$WORKSPACE"
-          # Try to fetch latest; fallback to local copy if network fails
-          git fetch origin main --depth=1 2>/dev/null || echo "WARNING: git fetch failed, using local mirror"
-          git checkout -f "$GITHUB_SHA" 2>/dev/null || git checkout -f origin/main 2>/dev/null || true
+          echo "Fetching origin main..."
+          retry "git fetch origin main" git fetch origin main || exit 1
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            PR_NUMBER="${GITHUB_REF#refs/pull/}"
+            PR_NUMBER="${PR_NUMBER%/merge}"
+            echo "Fetching PR #${PR_NUMBER} merge ref..."
+            retry "git fetch PR #${PR_NUMBER}" git fetch origin "refs/pull/${PR_NUMBER}/merge" || exit 1
+          fi
+          echo "Checking out $GITHUB_SHA..."
+          if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+            echo "::notice::Checkout successful: $(git log -1 --format='%h %ai %s')"
+          else
+            echo "::error::GITHUB_SHA ($GITHUB_SHA) not found in local repo — checkout failed"
+            exit 1
+          fi
 
       - name: Install dependencies
         run: |
