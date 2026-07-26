@@ -7,7 +7,7 @@ are very welcome.
 ## Quick Start
 
 ```bash
-git clone https://github.com/kinsomwang/ScratchV
+git clone https://github.com/ScratchV-Compiler/ScratchV
 cd ScratchV
 pip install -e .            # install in editable mode
 pip install tinyfive        # optional: assembly verification
