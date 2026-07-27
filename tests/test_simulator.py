@@ -1,5 +1,7 @@
 """Tests for the TinyFive simulator adapter."""
 
+from unittest.mock import patch
+
 from scratchv.simulator.tinyfive import StubProfiledMachine, verify_assembly
 
 
@@ -35,12 +37,15 @@ class TestStubProfiledMachine:
 class TestVerifyAssembly:
     def test_verify_without_tinyfive(self):
         """Should return error result when tinyfive is not installed."""
-        result = verify_assembly("addi x10, x0, 42")
-        # On CI without tinyfive, should return error but not crash
+        with patch("scratchv.simulator.tinyfive.ProfiledMachine") as mock_m:
+            mock_m.return_value.available = False
+            result = verify_assembly("addi x10, x0, 42")
         assert "success" in result
         assert "instr_count" in result
 
     def test_empty_assembly(self):
-        result = verify_assembly("")
+        with patch("scratchv.simulator.tinyfive.ProfiledMachine") as mock_m:
+            mock_m.return_value.available = False
+            result = verify_assembly("")
         # Should handle empty input gracefully
         assert "success" in result
