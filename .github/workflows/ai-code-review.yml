@@ -16,29 +16,28 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        # default checkout in pull_request_target = base branch
+        # only needed for reading .github/prompts/code-review-prompt.md
 
-      - name: Get changed files
-        id: changed
+      - name: Fetch PR diff data
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BASE_REF="${GITHUB_BASE_REF:-main}"
-          echo "base_ref=$BASE_REF" >> "$GITHUB_OUTPUT"
-          CHANGED=$(git diff --name-only "origin/$BASE_REF...HEAD")
-          echo "$CHANGED" > changed_files.txt
-          COUNT=$(echo "$CHANGED" | wc -l)
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          # 一次性获取所有文件的 patch 数据，存为 JSON 避免重复调用 API
+          gh api "/repos/${{ github.repository }}/pulls/$PR_NUMBER/files" > pr_files.json
+          jq -r '.[].filename' pr_files.json > changed_files.txt
+          COUNT=$(wc -l < changed_files.txt)
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "Changed files ($COUNT):"
-          echo "$CHANGED"
+          cat changed_files.txt
 
       - name: AI Code Review
         id: review
         env:
           SENSENOVA_API_KEY: ${{ secrets.SENSENOVA_API_KEY }}
         run: |
-          BASE_REF="${GITHUB_BASE_REF:-main}"
-
           # ── Inline system prompt ──
           SYSTEM_PROMPT=$(cat .github/prompts/code-review-prompt.md)
 
@@ -69,28 +68,13 @@ jobs:
               fi
               echo "Reviewing: $FILE"
 
-              # ── Get per-file diff ──
-              DIFF=$(git diff "origin/$BASE_REF...HEAD" -- "$FILE" 2>/dev/null) || { echo "  [ERROR] git diff failed for $FILE"; continue; }
+              # ── Get per-file diff from cached JSON ──
+              DIFF=$(jq -r '.[] | select(.filename == "'"$FILE"'") | .patch // empty' pr_files.json)
 
-              # ── Check if binary via git diff ──
-              if echo "$DIFF" | grep -q "^Binary files "; then
-                echo "  [SKIP] $FILE — binary file (detected by git diff)"
-                continue
-              fi
-
-              # ── If empty (new file / special chars), show full content ──
+              # ── Skip if binary or not diffable (patch is null/empty) ──
               if [ -z "$DIFF" ]; then
-                # Check file type before generating virtual diff
-                if [ -f "$FILE" ] && file -b --mime-encoding "$FILE" 2>/dev/null | grep -q binary; then
-                  echo "  [SKIP] $FILE — binary file (detected by file command)"
-                  continue
-                fi
-                LINE_COUNT=$(wc -l < "$FILE" 2>/dev/null) || { echo "  [SKIP] $FILE — cannot read"; continue; }
-                if [ "${LINE_COUNT}" -gt 2000 ]; then
-                  echo "  [SKIP] $FILE — too large (${LINE_COUNT} lines, max 2000)"
-                  continue
-                fi
-                DIFF="--- /dev/null${NL}+++ b/$FILE${NL}@@ -0,0 +1,$LINE_COUNT @@${NL}$(sed 's/^/+/' "$FILE")"
+                echo "  [SKIP] $FILE — binary or not diffable (no patch from API)"
+                continue
               fi
 
               # ── Build user message ──
@@ -125,8 +109,7 @@ jobs:
               BODY=$(echo "$RESPONSE" | sed '$d')
 
               if [ "$HTTP_CODE" != "200" ]; then
-                FILE_SIZE=$(wc -c < "$FILE" 2>/dev/null || echo "?")
-                echo "  [ERROR] HTTP $HTTP_CODE for $FILE (${FILE_SIZE}B)"
+                echo "  [ERROR] HTTP $HTTP_CODE for $FILE"
                 echo "  Response: $(echo "$BODY" | head -3)"
                 continue
               fi
