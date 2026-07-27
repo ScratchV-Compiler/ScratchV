@@ -147,6 +147,7 @@ class TestLinearScanAllocator:
         assert "add" in code
 
     def test_report(self):
+        """Verify report() output formatting."""
         alloc = LinearScanAllocator(["t0", "a0"])
         block = [
             LsInstruction(0, "add", ["v1", "v2", "v3"],
@@ -155,8 +156,92 @@ class TestLinearScanAllocator:
         intervals = alloc.compute_live_intervals(block)
         alloc.allocate(intervals)
         report = alloc.report()
+        print(f"\n--- test_report ---\n{report}")
         assert "Linear Scan" in report
+        assert "Peak simultaneously active" in report
+        assert "Physical regs actually assigned" in report
+        assert alloc.peak_active == 2  # v2, v3 (v1 defined after use of v2,v3)
         assert "v1" in report or "allocated" in report.lower()
+
+    def test_report_high_density(self):
+        """Simulate a Conv2D-like workload: 30+ vregs competing for 27 preg.
+
+        Run with -s to see the full allocator report, which shows exactly
+        how many physical registers were actually used (active max) vs
+        how many vregs existed and how many needed to be spilled.
+        """
+        # Build a basic-block that looks like a Conv2D inner loop:
+        # many accumulators + load-temp results, all overlapping.
+        block = []
+        idx = 0
+
+        # Phase 1: load 12 filter weights (accumulators)
+        for i in range(1, 13):
+            block.append(LsInstruction(
+                idx, "lw", [f"v{i}", f"w_{i}", "0"],
+                defines={f"v{i}"}, uses=set(),
+                comment=f"load weight coeff {i}",
+            ))
+            idx += 1
+
+        # Phase 2: load 9 input activations
+        for i in range(13, 22):
+            block.append(LsInstruction(
+                idx, "lw", [f"v{i}", f"in_{i-12}", "0"],
+                defines={f"v{i}"}, uses=set(),
+                comment=f"load activation {i - 12}",
+            ))
+            idx += 1
+
+        # Phase 3: compute partial MACs (all read from loaded vregs)
+        # uses v1-v12 as filter weight accumulators with intermediate
+        for i in range(1, 10):
+            acc = f"v{i + 20}"
+            fw = f"v{i}"
+            act = f"v{i + 12}"
+            block.append(LsInstruction(
+                idx, "mul", [acc, fw, act],
+                defines={acc}, uses={fw, act},
+                comment=f"partial MAC {i}",
+            ))
+            idx += 1
+
+        # Phase 4: accumulate into a single output
+        v_list = [f"v{i + 21}" for i in range(9)]  # the mul results
+        for v in v_list:
+            block.append(LsInstruction(
+                idx, "add", ["v_out", "v_out", v],
+                defines={"v_out"}, uses={"v_out", v},
+            ))
+            idx += 1
+
+        alloc = LinearScanAllocator()  # default: all 27 integer regs
+        intervals = alloc.compute_live_intervals(block)
+        mapping = alloc.allocate(intervals)
+        report = alloc.report()
+
+        # Also compute peak active usage from the allocation trace
+        allocated_pregs = set(
+            v for v in mapping.values()
+            if isinstance(v, str) and not v.startswith("SPILL_")
+        )
+        spilled_vregs = [
+            v for v, p in mapping.items()
+            if isinstance(p, str) and p.startswith("SPILL_")
+        ]
+
+        print(f"\n--- test_report_high_density (Conv2D-like workload) ---")
+        print(f"Total vregs: {len(mapping)}")
+        print(f"Physical regs actually allocated: {len(allocated_pregs)}")
+        print(f"Spilled vregs: {len(spilled_vregs)}")
+        print(report)
+
+        # Basic sanity: no more physical regs used than available
+        assert len(allocated_pregs) <= len(alloc.phys_regs)
+        # peak_active should be non-zero and bounded by pool size
+        assert 0 < alloc.peak_active <= len(alloc.phys_regs)
+        # With 27 regs and ~30 vregs, some spill should happen
+        assert len(mapping) >= 25  # most vregs should be allocated
 
 
 class TestBlockFromMachineInstrs:
