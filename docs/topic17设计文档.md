@@ -1,8 +1,8 @@
 # ScratchV 寄存器分配（基本块内线性扫描）技术设计文档
 
-> 文档版本：v1.2  \
+> 文档版本：v1.3  \
 > 编写日期：2026-07-13  \
-> 最后更新：2026-07-16（v1.2：新增 peak_active 统计，report 输出峰值活跃数）  \
+> 最后更新：2026-07-27（v1.3：修复 Bug A eviction alloc_map 未更新、Bug B peak_active 被锁定、Bug C _pick_scratch 记忆缺失；新增 peak_real_pressure 指标；新增 _scratch_cache 优化 reload 效率）  \
 > 涉及模块：`regalloc_linear.py`（寄存器分配器）、`instruction_select.py`（指令选择器）  \
 > 功能范围：基本块内虚拟寄存器到物理寄存器的映射、线性扫描分配、溢出处理
 
@@ -392,7 +392,43 @@ v1.1 对核心实现进行了以下优化和修复：
 
 Conv2D 模拟 workload 实测结果：30 个 vreg，27 个物理寄存器池，峰值同时活跃仅 17，物理寄存器实际分配 27，零溢出。
 
-### 5.4 参考资料
+### 5.4 v1.3 Bug 修复与优化
+
+v1.3 修复了 3 个 bug，新增 2 个优化：
+
+| 编号 | 类型 | 问题 | 修复方式 | 影响 |
+|------|------|------|----------|------|
+| 1 | Bug A（严重·正确性） | `spill()` eviction 后 `alloc_map` 未更新为 `SPILL_` | 在 eviction 分支中追加 `self.alloc_map[spill_interval.vreg] = f"SPILL_{spill_interval.vreg}"` | 修复被 evict 的 vreg 后续使用时不生成 lw reload，直接使用被污染寄存器的问题 |
+| 2 | Bug B（中·诊断） | `peak_active` 被 pool size 锁定，不包含 self-spill | 新增 `peak_real_pressure` 字段，统计时包含 self-spill 的区间 | 23 场景测试中部分场景真实压力比之前显示高 100%+ |
+| 3 | Bug C（低·代码质量） | `_pick_scratch` 每次选不同 scratch 寄存器 | 新增 `_scratch_cache` 缓存，同一 vreg 尝试复用上次选择的 scratch 寄存器 | 自溢 vreg 连续使用时可减少冗余 lw |
+| 4 | 优化 | 测试框架中 eviction/self-spill 计数逻辑 | Bug A 修复后 evicted 和 self-spill 都用 `SPILL_` 前缀，改为从 `spill_code` 条目数区分 | eviction 计数准确 |
+
+#### Bug A 详细说明
+
+**场景复现**（2 寄存器 pool）：
+```
+v0=[0,11) → a0         # 分配到 a0
+v1=[1,3)  → a1         # 分配到 a1
+v2=[3,5)  → evict v0   # a0 被 v2 占用
+  sw a0, -4(sp)         # 溢出 v0
+  v2 → a0
+  但 alloc_map[v0] 仍是 a0 !    ← Bug
+
+后续使用 v0 时：不生成 lw，直接读取 a0
+但 a0 存的是 v2 的值 → 错误
+```
+
+**修复**：在 `spill()` 的 eviction 分支中（第 366-374 行），active.pop 之后追加 `self.alloc_map[spill_interval.vreg] = f"SPILL_{spill_interval.vreg}"`。
+
+验证：修复前 5 个场景标记 `STORE_ONLY`（有 sw 无 lw），修复后全部消失，stores == loads。
+
+#### Bug B 详细说明
+
+`peak_active` 的计算基于 `len(active)`，但 self-spill 的区间不会进入 active 列表（`spill()` 返回 None 时，allocate 直接标记 `SPILL_` 而不做 `active.append()`）。因此当所有活跃区间都 self-spill 时，`peak_active` 被 pool size 锁定。
+
+**修复**：新增 `self.peak_real_pressure`，在统计时额外加上 self-spill 的区间。
+
+### 5.5 参考资料
 
 - ScratchV 项目文档：`docs/topics/17-寄存器分配.md`
 - Poletto & Sarkar (1999): *Linear Scan Register Allocation*, ACM TOPLAS

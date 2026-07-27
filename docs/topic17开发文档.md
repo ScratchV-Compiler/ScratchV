@@ -1,8 +1,8 @@
 # ScratchV 功能开发文档 — 课题17：寄存器分配（基本块内线性扫描）
 
-> **文档版本**：v1.2  \
+> **文档版本**：v1.3  \
 > **创建日期**：2026-07-13  \
-> **最后更新**：2026-07-16（v1.2：新增 peak_active 统计指标，report 输出寄存器压力上界）  \
+> **最后更新**：2026-07-27（v1.3：修复 3 个 bug——alloc_map eviction 未更新、peak_active 被 pool 锁定、_pick_scratch 记忆缺失；新增 peak_real_pressure 指标；新增 _scratch_cache 优化 lw 复用）  \
 > **作者**：Xi  \
 > **关联 Issue**：无  \
 > **涉及模块**：backend/（寄存器分配后端）
@@ -242,9 +242,42 @@ if len(active) > self.peak_active:
 
 Conv2D 模拟 workload 实测：30 vreg, 27 preg 池, peak_active=17, 零溢出。说明真实 workload 的寄存器压力远低于理论上限（27）。
 
+### 7.5 v1.3 Bug 修复与优化
+
+**Bug A：eviction 后 alloc_map 未更新（严重·正确性）**
+
+**根因**：`spill()` 在 eviction 分支中（第 361-374 行）将 victim 从 active 弹出、生成 sw、释放寄存器，但没有将 victim 在 `alloc_map` 中的条目改为 `SPILL_`。导致后续指令使用被 evict 的 vreg 时，`get_allocated_code()` 检查到 alloc_map 中是物理寄存器名（非 SPILL_ 开头），不生成 lw reload，直接使用该物理寄存器——但寄存器的值已被新 vreg 覆盖。
+
+**修复**：在 `spill()` 的第 366 行追加 `self.alloc_map[spill_interval.vreg] = f"SPILL_{spill_interval.vreg}"`。
+
+**验证**：修复前 5 个场景标记 `STORE_ONLY`（stores>0, loads=0），sw 写入栈后对应 vreg 永不 reload；修复后 stores == loads，全部消除。
+
 ---
 
-**模板使用说明**：
-- 本文档基于 ScratchV 开发文档模板编写，`[ ]` 占位符已替换为实际内容。
-- 随开发进度更新状态和实现细节。
-- 保持 Markdown 格式，便于版本管理和评审。
+**Bug B：peak_active 被 pool 锁定（中·诊断）**
+
+**根因**：`peak_active` 基于 `len(active)` 计算。self-spill 的区间（`spill()` 返回 None）不执行 `active.append()`，因此 active 长度永远不超过 pool_size。但真实寄存器压力应包含这些自溢的区间。
+
+**修复**：新增 `self.peak_real_pressure`，在峰值统计时额外计算 self-spill 的区间（`spilled_here=True` 时 `real_pressure += 1`）。
+
+**效果**：`report()` 新增输出行：
+- `Peak real pressure (incl. self-spill): N`
+
+---
+
+**Bug C：_pick_scratch 寄存器记忆缺失（低·代码质量）**
+
+**根因**：`_pick_scratch` 每次为自溢的 SPILL_ vreg 选择不冲突的 scratch 寄存器，但不记住上次选了哪个。同一 vreg 在连续指令中被使用时，每次可能 reload 到不同的寄存器，浪费 lw。
+
+**修复**：新增 `_scratch_cache: dict[str, str]` 缓存，`_pick_scratch` 接受 `vreg_hint` 参数，优先复用上次为该 vreg 选择的 scratch 寄存器（如果仍不冲突）。
+
+---
+
+### 7.6 未完成的优化方向
+
+| 编号 | 方向 | 触发场景 | 预期效果 | 工作量 |
+|------|------|----------|----------|--------|
+| Opt 1 | 成本感知的溢出 victim 选择 | large_800x150（48 次 eviction） | sw+lw 减少 5-15% | ~20 行 |
+| Opt 2 | 栈槽复用（slot reuse） | spiral_60（slot 复用率 0%） | 栈用量减少 30-50% | ~20 行 |
+| Opt 3 | 自溢 sw 省略（无后续 use） | T05_all_overlap（evict 后无 use） | sw 减少最多 37% | ~10 行 |
+| Opt 4 | 栈槽按区间结束回收 | 长区间锁死场景 | 栈槽数减少 30%+ | ~20 行 |
