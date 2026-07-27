@@ -45,16 +45,16 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
     total_vregs = len(alloc.alloc_map)
     spilled_self = sum(1 for v in alloc.alloc_map.values()
                        if isinstance(v, str) and v.startswith('SPILL_'))
-    # eviction count = spill_slots - self_spill if alloc_map has SPILL_ markers
-    # More precisely, eviction count = number of entries in spill_slots that
-    # are NOT self-spilled. But the allocator only self-spills.
-    # Actually, eviction happens inside spill() when it returns a reg;
-    # self-spill when spill() returns None.
-    # We can count: every spill_slot key where alloc_map shows a phys reg
-    # (not SPILL_) is an eviction.
-    evicted = sum(1 for v in alloc._spill_slots
-                  if v in alloc.alloc_map and not alloc.alloc_map[v].startswith('SPILL_'))
-    self_spill = len(alloc._spill_slots) - evicted
+    # === Eviction vs self-spill counting ===
+    # With Bug A fix (alloc_map update in spill()), both evicted and self-spilled
+    # vregs get "SPILL_" prefix in alloc_map. So we can't distinguish them by
+    # alloc_map alone. Instead, count evictions from spill_code entries:
+    #   - eviction = spill_code entries with 'sw' (emitted by spill() for eviction)
+    #   - self-spill = total spill_slots entries minus eviction sw count
+    evicted_sw_count = sum(1 for _pos, op, _operand in alloc.spill_code
+                           if 'sw' in op)
+    self_spill = max(0, len(alloc._spill_slots) - evicted_sw_count)
+    evicted = evicted_sw_count
 
     # Code metrics
     stores = code.count('  sw ')

@@ -199,7 +199,9 @@ class LinearScanAllocator:
             []  # (position, op, operand)
         )
         self._spill_slots: dict[str, int] = {}  # vreg -> slot offset
-        self.peak_active: int = 0  # max simultaneously live intervals seen
+        self.peak_active: int = 0  # max simultaneously live intervals seen (phys regs assigned)
+        self.peak_real_pressure: int = 0  # max simultaneously live intervals including self-spilled
+        self._scratch_cache: dict[str, str] = {}  # vreg -> last scratch reg for reload memory
 
     # ------------------------------------------------------------------
     # Live interval computation
@@ -280,6 +282,8 @@ class LinearScanAllocator:
         self.spill_code.clear()
         self._spill_slots.clear()
         self.peak_active = 0
+        self.peak_real_pressure = 0
+        self._scratch_cache.clear()
 
         # Active list: (interval, phys_reg) sorted by increasing end
         active: list[tuple[LiveInterval, str]] = []
@@ -294,6 +298,7 @@ class LinearScanAllocator:
                 reg = free_regs.pop(0)
                 self.alloc_map[interval.vreg] = reg
                 active.append((interval, reg))
+                spilled_here = False
             else:
                 # Need to spill
                 spill = self.spill(interval, active, free_regs)
@@ -301,14 +306,23 @@ class LinearScanAllocator:
                     # Spill freed a register from an active interval
                     self.alloc_map[interval.vreg] = spill
                     active.append((interval, spill))
+                    spilled_here = False
                 else:
                     # The current interval itself was spilled
                     # No register assigned; it will be loaded on each use
                     self.alloc_map[interval.vreg] = f"SPILL_{interval.vreg}"
+                    spilled_here = True
 
-            # Track peak active count (after allocation decision and reaping)
+            # Track peak active count and real register pressure.
+            # peak_active tracks intervals that got a phys reg (active list);
+            # peak_real_pressure includes self-spilled intervals too.
             if len(active) > self.peak_active:
                 self.peak_active = len(active)
+            real_pressure = len(active)
+            if spilled_here:
+                real_pressure += 1
+            if real_pressure > self.peak_real_pressure:
+                self.peak_real_pressure = real_pressure
 
         return dict(self.alloc_map)
 
@@ -365,6 +379,9 @@ class LinearScanAllocator:
             # Spill the farthest interval
             slot = self._get_spill_slot(spill_interval.vreg)
             active.pop(spill_idx)
+            # Mark the evicted vreg as spilled so get_allocated_code() knows
+            # to emit a reload (lw) before its subsequent uses.
+            self.alloc_map[spill_interval.vreg] = f"SPILL_{spill_interval.vreg}"
             # Emit store after the definition point
             self.spill_code.append(
                 (spill_interval.start, "sw",
@@ -425,13 +442,13 @@ class LinearScanAllocator:
             for u in inst.uses:
                 if rename.get(u, "").startswith("SPILL_"):
                     slot = self._spill_slots.get(u, 0)
-                    scratch = self._pick_scratch(inst, rename)
+                    scratch = self._pick_scratch(inst, rename, vreg_hint=u)
                     lines.append(f"  lw {scratch}, {slot}(sp)  # reload {u}")
                     rename[u] = scratch
             for d in inst.defines:
                 if rename.get(d, "").startswith("SPILL_"):
                     slot = self._spill_slots.get(d, 0)
-                    scratch = self._pick_scratch(inst, rename)
+                    scratch = self._pick_scratch(inst, rename, vreg_hint=d)
                     rename[d] = scratch
 
             lines.append(inst.to_asm(rename))
@@ -447,11 +464,26 @@ class LinearScanAllocator:
     def _pick_scratch(
             self, inst: LsInstruction,
             rename: dict[str, str],
+            vreg_hint: str = "",
     ) -> str:
-        """Pick a scratch register that does not conflict with operands."""
+        """Pick a scratch register that does not conflict with operands.
+
+        When *vreg_hint* is provided, tries to reuse the same scratch register
+        that was last picked for that vreg, reducing redundant lw instructions.
+        """
+        # Cached scratch reuse: if the same vreg is being reloaded, try the
+        # same register again (it may still be free and avoids a new lw).
+        if vreg_hint and vreg_hint in self._scratch_cache:
+            cached = self._scratch_cache[vreg_hint]
+            used = set(rename.get(o, o) for o in inst.operands)
+            if cached not in used:
+                return cached
+
         used = set(rename.get(o, o) for o in inst.operands)
         for reg in self.phys_regs:
             if reg not in used:
+                if vreg_hint:
+                    self._scratch_cache[vreg_hint] = reg
                 return reg
         # Fallback — should rarely happen with 27 registers
         return "t0"
@@ -479,6 +511,10 @@ class LinearScanAllocator:
         )
         parts.append(
             f"  Peak simultaneously active: {self.peak_active}"
+        )
+        parts.append(
+            f"  Peak real pressure (incl. self-spill): "
+            f"{max(self.peak_active, self.peak_real_pressure)}"
         )
         parts.append(
             f"  Physical regs actually assigned: "
