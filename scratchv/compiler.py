@@ -57,7 +57,7 @@ class CompilerConfig:
 
     backend: str = "riscv"
     optimize_level: str = "none"
-    reg_alloc: str = "greedy"
+    reg_alloc: str = "linear"
     dump_ir: bool = False
     verify: bool = False
     rtol: float = 1e-5
@@ -403,21 +403,17 @@ class CompilerDriver:
         selector = InstructionSelector(program)
         machine_instrs = selector.run()
 
-        alloc = RegisterAllocator(machine_instrs, mode=self.config.reg_alloc)
-        allocated = alloc.run()
-
-        # Optional: use linear-scan instead
+        # Linear-scan: skip greedy allocator, use liveness-driven allocator
         if self.config.reg_alloc == "linear":
             from scratchv.backend.regalloc_linear import (
                 LinearScanAllocator, block_from_machine_instrs,
             )
-            ls_insts = block_from_machine_instrs(allocated)
+            ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
-            intervals = lsa.compute_live_intervals(ls_insts)
-            lsa.allocate(intervals)
-            # Use linear-scan allocated code as assembly directly
-            return lsa.get_allocated_code(ls_insts)
+            return lsa.emit(ls_insts)
 
+        alloc = RegisterAllocator(machine_instrs, mode=self.config.reg_alloc)
+        allocated = alloc.run()
         emitter = AsmEmitter(allocated)
         return emitter.emit()
 

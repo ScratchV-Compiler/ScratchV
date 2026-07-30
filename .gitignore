@@ -10,6 +10,7 @@ models/
 venv/
 .venv/
 .claude/
+.omo/
 scratchv.egg-info/
 benchmark_reports/
 

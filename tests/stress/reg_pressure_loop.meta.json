@@ -1,0 +1,8 @@
+{
+  "description": "Loop regression test: accumulator survives across 10 loop back-edges while loop body creates 6-chain of dependent intermediates (Fibonacci-like). Validates that LABEL at loop header does not corrupt vreg-to-physreg mappings across iterations.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "x": 1
+  },
+  "expected_return": 210
+}

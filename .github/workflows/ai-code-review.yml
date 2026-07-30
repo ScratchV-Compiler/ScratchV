@@ -2,7 +2,7 @@ name: AI Code Review
 
 on:
   workflow_dispatch:
-  pull_request:
+  pull_request_target:
     branches: [main]
 
 permissions:
@@ -16,59 +16,69 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        # default checkout in pull_request_target = base branch
+        # only needed for reading .github/prompts/code-review-prompt.md
 
-      - name: Get changed files
-        id: changed
+      - name: Fetch PR diff data
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BASE_REF="${GITHUB_BASE_REF:-main}"
-          echo "base_ref=$BASE_REF" >> "$GITHUB_OUTPUT"
-          CHANGED=$(git diff --name-only "origin/$BASE_REF...HEAD")
-          echo "$CHANGED" > changed_files.txt
-          COUNT=$(echo "$CHANGED" | wc -l)
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          # 一次性获取所有文件的 patch 数据，存为 JSON 避免重复调用 API
+          gh api "/repos/${{ github.repository }}/pulls/$PR_NUMBER/files" > pr_files.json
+          jq -r '.[].filename' pr_files.json > changed_files.txt
+          COUNT=$(wc -l < changed_files.txt)
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "Changed files ($COUNT):"
-          echo "$CHANGED"
+          cat changed_files.txt
 
       - name: AI Code Review
         id: review
         env:
           SENSENOVA_API_KEY: ${{ secrets.SENSENOVA_API_KEY }}
         run: |
-          BASE_REF="${GITHUB_BASE_REF:-main}"
-
           # ── Inline system prompt ──
           SYSTEM_PROMPT=$(cat .github/prompts/code-review-prompt.md)
 
-          REVIEW_FILE="review_output.md"
+           REVIEW_FILE="review_output.md"
           : > "$REVIEW_FILE"
           HAS_REVIEW=false
           FILE_COUNT=0
+          MAX_REVIEW_FILES=10
+          SKIPPED_FILES=""
           CHANGED_FILES=$(cat changed_files.txt)
+
+          # ── Check API key early ──
+          if [ -z "$SENSENOVA_API_KEY" ] || [ "${#SENSENOVA_API_KEY}" -lt 8 ]; then
+            echo "::error::SENSENOVA_API_KEY is not set or invalid. Aborting."
+            exit 1
+          fi
 
           if [ -z "$CHANGED_FILES" ]; then
             echo "No files changed, skipping review." >> "$REVIEW_FILE"
           else
             while IFS= read -r FILE; do
+              NL=$'\n'
               [ -z "$FILE" ] && continue
-              echo "Reviewing: $FILE"
-
-              # ── Get per-file diff ──
-              DIFF=$(git diff "origin/$BASE_REF...HEAD" -- "$FILE" 2>/dev/null || true)
-              if [ -z "$DIFF" ]; then
-                echo "  [SKIP] $FILE — no diff (binary or unchanged)"
+              if [ "${FILE_COUNT}" -ge "${MAX_REVIEW_FILES}" ]; then
+                echo "  [SKIP] $FILE — max ${MAX_REVIEW_FILES} files reached"
+                SKIPPED_FILES="${SKIPPED_FILES}  - $FILE${NL}"
                 continue
               fi
+              echo "Reviewing: $FILE"
 
-              # ── Checkif binary ──
-              if echo "$DIFF" | head -1 | grep -q "^Binary files"; then
-                echo "  [SKIP] $FILE — binary file"
+              # ── Get per-file diff from cached JSON ──
+              DIFF=$(jq -r '.[] | select(.filename == "'"$FILE"'") | .patch // empty' pr_files.json)
+
+              # ── Skip if binary or not diffable (patch is null/empty) ──
+              if [ -z "$DIFF" ]; then
+                echo "  [SKIP] $FILE — binary or not diffable (no patch from API)"
                 continue
               fi
 
               # ── Build user message ──
-              USER_MSG="请 review 以下文件变更：\n\n文件: $FILE\n\n\`\`\`diff\n$DIFF\n\`\`\`"
+              USER_MSG="请 review 以下文件变更：${NL}${NL}文件: $FILE${NL}${NL}\`\`\`diff${NL}$DIFF${NL}\`\`\`"
 
               # ── Escape for JSON ──
               # Use jq to build the payload safely
@@ -83,10 +93,13 @@ jobs:
                     {role: "user", content: $user}
                   ],
                   stream: false
-                }')
+                }') || { echo "  [ERROR] Failed to build JSON payload for $FILE"; continue; }
 
               # ── Call SenseNova API ──
-              RESPONSE=$(curl -s -w "\n%{http_code}" \
+              if [ "${FILE_COUNT:-0}" -gt 0 ]; then
+                sleep 1  # rate-limit: 1s gap between files
+              fi
+              RESPONSE=$(curl -s --max-time 60 --retry 3 --retry-all-errors -w "\n%{http_code}" \
                 "https://token.sensenova.cn/v1/chat/completions" \
                 -H "Authorization: Bearer $SENSENOVA_API_KEY" \
                 -H "Content-Type: application/json" \
@@ -97,7 +110,7 @@ jobs:
 
               if [ "$HTTP_CODE" != "200" ]; then
                 echo "  [ERROR] HTTP $HTTP_CODE for $FILE"
-                echo "  Response: $(echo "$BODY" | head -5)"
+                echo "  Response: $(echo "$BODY" | head -3)"
                 continue
               fi
 
@@ -126,18 +139,37 @@ jobs:
           fi
 
           # ── Final summary ──
-          if [ "$HAS_REVIEW" = false ]; then
-            printf '%s\n' '## 🤖 AI Code Review' '' 'No reviewable changes found (all files binary, unchanged, or empty).' > "$REVIEW_FILE"
-          else
-            SUMMARY=$(printf '# 🤖 AI Code Review\n\n> 共审查 **%s** 个变更文件\n\n' "${FILE_COUNT}")
-            {
-              echo "$SUMMARY"
-              echo ""
+          {
+            echo "# 🤖 AI Code Review"
+            echo ""
+            echo "> 共审查 **${FILE_COUNT}** 个变更文件"
+            if [ -n "$SKIPPED_FILES" ]; then
+              SKIP_COUNT=$(echo "$SKIPPED_FILES" | grep -c '  - ' || true)
+              echo "> ⚠️ 另有 **${SKIP_COUNT}** 个文件超过上限（最多 ${MAX_REVIEW_FILES} 个）未审查"
+            fi
+            echo ""
+            if [ "$HAS_REVIEW" = true ]; then
               cat "$REVIEW_FILE"
-            } > "${REVIEW_FILE}.tmp" && mv "${REVIEW_FILE}.tmp" "$REVIEW_FILE"
-          fi
+            else
+              echo "No reviewable changes found (all files binary, unchanged, or empty)."
+            fi
+            if [ -n "$SKIPPED_FILES" ]; then
+              echo ""
+              echo "---"
+              echo "### ⚠️ 未审查的文件"
+              printf '%b' "$SKIPPED_FILES"
+            fi
+          } > "${REVIEW_FILE}.tmp"
+          mv "${REVIEW_FILE}.tmp" "$REVIEW_FILE"
 
           echo "Review written to $REVIEW_FILE"
+
+      - name: Upload review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-code-review
+          path: review_output.md
+          if-no-files-found: ignore
 
       - name: Post review comment
         uses: actions/github-script@v7
@@ -158,12 +190,7 @@ jobs:
               return;
             }
 
-            // Skip comment for cross-repo PRs (fork → upstream): GITHUB_TOKEN lacks write access
             const pr = context.payload.pull_request;
-            if (pr && pr.head.repo.full_name !== pr.base.repo.full_name) {
-              console.log('Cross-repo PR detected, skipping comment (GITHUB_TOKEN cannot write to upstream).');
-              return;
-            }
 
             // For pull_request events, get the PR number
             let issueNumber;
