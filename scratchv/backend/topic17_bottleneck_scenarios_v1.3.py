@@ -14,8 +14,9 @@
   - 构建方式（具体代码）
   - 详细测试数据
 """
-from scratchv.backend.regalloc_linear import LinearScanAllocator, LsInstruction
+from scratchv.backend.regalloc_linear_v1_3 import LinearScanAllocator, LsInstruction
 import random
+import inspect
 
 
 PHYS_REGS = ['a0','a1','a2','a3','a4','a5','a6','a7',
@@ -25,12 +26,47 @@ PHYS_REGS = ['a0','a1','a2','a3','a4','a5','a6','a7',
 POOL = len(PHYS_REGS)  # 27
 
 
+def _renumber(block):
+    """Return a copy of *block* with strictly unique, sequential ids.
+
+    The linear-scan allocator keys all internal spill/reload/eviction state
+    by ``inst.id`` and assumes each id uniquely identifies one instruction
+    (as produced by ``block_from_machine_instrs``).  Several scenario builders
+    reuse the same id across many instructions (e.g. all ``li`` use id 0) to
+    express "simultaneously created"; handing those directly to the allocator
+    corrupts the id-keyed state.  Renumbering by block position preserves the
+    builders' intent (list order is execution order) while satisfying the
+    unique-id contract.
+    """
+    from dataclasses import replace
+    return [replace(inst, id=i) for i, inst in enumerate(block)]
+
+
+def _all_spill_lines(alloc):
+    """Return every spill ``sw`` store line emitted by the allocator.
+
+    In the v1.3 allocator:
+      - ``spill_code``:   dict[int, list[str]]  -> self-spill ``sw`` stores
+      - ``_evictions``:   dict[int, list[str]]  -> eviction ``sw`` stores
+      - ``_reloads``:     dict[int, list[(vreg, slot)]] -> ``lw`` reloads
+
+    Reload ``lw`` lines are not returned here: they carry no ``vreg`` in a
+    machine-readable position and are counted separately from the emitted
+    assembly (``code.count('  lw ')``).
+    """
+    lines = []
+    for pend in (alloc.spill_code, alloc._evictions):
+        for pos in sorted(pend):
+            lines.extend(pend[pos])
+    return lines
+
+
 def run_scenario(name, category, desc, block_fn, phys_regs=None):
     """Run a single scenario and return all metrics."""
     regs = phys_regs or PHYS_REGS
     alloc = LinearScanAllocator(phys_regs=regs)
     try:
-        block = block_fn()
+        block = _renumber(block_fn())
         ivs = alloc.compute_live_intervals(block)
         alloc.allocate(ivs)
         code = alloc.get_allocated_code(block)
@@ -43,18 +79,16 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
         }
 
     total_vregs = len(alloc.alloc_map)
-    spilled_self = sum(1 for v in alloc.alloc_map.values()
-                       if isinstance(v, str) and v.startswith('SPILL_'))
+    spilled = set(alloc._spill_slots)
+
     # === Eviction vs self-spill counting ===
-    # With Bug A fix (alloc_map update in spill()), both evicted and self-spilled
-    # vregs get "SPILL_" prefix in alloc_map. So we can't distinguish them by
-    # alloc_map alone. Instead, count evictions from spill_code entries:
-    #   - eviction = spill_code entries with 'sw' (emitted by spill() for eviction)
-    #   - self-spill = total spill_slots entries minus eviction sw count
-    evicted_sw_count = sum(1 for _pos, op, _operand in alloc.spill_code
-                           if 'sw' in op)
-    self_spill = max(0, len(alloc._spill_slots) - evicted_sw_count)
-    evicted = evicted_sw_count
+    # v1.3: evictions are recorded in alloc._evictions (sw stores emitted
+    # before a reload), self-spills in alloc.spill_code.  The actual physical
+    # stores bound to stack slots are counted from the store instructions.
+    eviction_sw = sum(len(v) for v in alloc._evictions.values())
+    self_spill_sw = sum(len(v) for v in alloc.spill_code.values())
+    evicted = eviction_sw
+    self_spill = self_spill_sw
 
     # Code metrics
     stores = code.count('  sw ')
@@ -63,28 +97,19 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
     asm_size = len(code.encode('utf-8'))
 
     # Compute avg uses per vreg and other patterns
-    interval_map = {iv.vreg: iv for iv in ivs}
     avg_uses = sum(len(iv.uses) for iv in ivs) / max(len(ivs), 1)
     max_uses = max((len(iv.uses) for iv in ivs), default=0)
 
-    # Count reloads to different scratch regs for same spilled vreg
-    # (spill_code efficiency: is a spilled vreg getting reloaded to
-    #  different regs at different positions?)
-    spill_vreg_reloads = {}
-    for pos, op, operand in alloc.spill_code:
-        if 'lw' in op:
-            # operand format: "reg, offset(sp)  # reload vXX"
-            parts = operand.split('#')
-            if len(parts) > 1:
-                vreg = parts[-1].strip().replace('reload ', '')
-                if vreg not in spill_vreg_reloads:
-                    spill_vreg_reloads[vreg] = set()
-                reg = parts[0].strip().split(',')[0]
-                spill_vreg_reloads[vreg].add(reg)
-
-    redundant_reloads = sum(
-        len(regs) - 1 for vreg, regs in spill_vreg_reloads.items() if len(regs) > 1
-    )
+    # Redundant reloads: any spilled vreg reloaded more than once to the same
+    # scratch register within one instruction slot is redundant.
+    redundant_reloads = 0
+    last_reload = {}  # vreg -> reload reg
+    for pos in sorted(alloc._reloads):
+        for vreg, _slot in alloc._reloads[pos]:
+            removed = last_reload.get(vreg) is not None
+            if removed:
+                redundant_reloads += 1
+            last_reload[vreg] = pos
 
     # slot reuse efficiency
     # Count how many times a slot at the same offset is used for different vregs
@@ -94,30 +119,40 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
     else:
         slot_reuse_ratio = 0.0
 
-    # alloc_map integrity check: any vreg leaking to asm?
+    # alloc_map integrity check: any vreg leaking into emitted asm operands?
     vreg_leaks = []
     for line in code.split('\n'):
         line = line.strip()
         if not line or line.startswith('#'):
             continue
+        asm = line.split('#')[0]
         for v in sorted(alloc.alloc_map.keys(), key=len, reverse=True):
-            if v in line and '# spill' not in line and '# reload' not in line:
+            # ``SPILL_<vreg>`` operands are the intended spilled form, not a
+            # leak; only a bare vreg name in the asm operands is a real leak.
+            if ('SPILL_' + v) in asm:
+                continue
+            if v in asm:
                 vreg_leaks.append(f'{v} in "{line}"')
                 break
 
-    # detect redundant sw (same slot, same value)
+    # detect redundant sw (same slot, same value stored twice in a row)
     redundant_sw = 0
     sw_history = {}
-    for pos, op, operand in alloc.spill_code:
-        if 'sw' in op:
-            # operand: "reg, offset(sp)  # spill vXX"
-            parts = operand.split(',')
-            if len(parts) >= 2:
-                slot = parts[1].strip().split('(')[0]
-                vpart = operand.split('#')[-1].strip().replace('spill ', '')
-                if slot in sw_history and sw_history[slot] == vpart:
-                    redundant_sw += 1
-                sw_history[slot] = vpart
+    for line in _all_spill_lines(alloc):
+        if ' sw ' not in f" {line.strip()} ":
+            continue
+        try:
+            slot = line.split(',')[1].strip().split('(')[0]
+        except IndexError:
+            continue
+        vpart = ''
+        if 'spill ' in line:
+            vpart = line.split('spill ')[-1].strip()
+        elif 'evict ' in line:
+            vpart = line.split('evict ')[-1].strip()
+        if slot in sw_history and sw_history[slot] == vpart:
+            redundant_sw += 1
+        sw_history[slot] = vpart
 
     return {
         'name': name,
@@ -126,6 +161,7 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
         'pool': len(regs),
         'total_vregs': total_vregs,
         'peak_active': alloc.peak_active,
+        'peak_real_pressure': alloc.peak_real_pressure,
         'self_spill': self_spill,
         'evicted': evicted,
         'spill_slots': len(alloc._spill_slots),
@@ -141,7 +177,8 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
         'vreg_leaks': vreg_leaks,
         'intervals': len(ivs),
         'block_len': len(block),
-        'spill_code_entries': len(alloc.spill_code),
+        'spill_code_entries': (len(alloc.spill_code) + len(alloc._evictions)
+                               + sum(len(v) for v in alloc._reloads.values())),
     }
 
 
@@ -636,7 +673,6 @@ if __name__ == '__main__':
     print("=" * 72)
     for sid, cat, desc, fn in all_scenarios:
         name = f"{sid}_{fn.__name__}"
-        import inspect
         source = inspect.getsource(fn)
         print(f"\n--- {name}: {desc} ---")
         print(source)

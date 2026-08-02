@@ -1,9 +1,9 @@
 # ScratchV 寄存器分配（基本块内线性扫描）技术设计文档
 
-> 文档版本：v1.3  \
+> 文档版本：v1.3.1  \
 > 编写日期：2026-07-13  \
-> 最后更新：2026-07-27（v1.3：修复 Bug A eviction alloc_map 未更新、Bug B peak_active 被锁定、Bug C _pick_scratch 记忆缺失；新增 peak_real_pressure 指标；新增 _scratch_cache 优化 reload 效率）  \
-> 涉及模块：`regalloc_linear.py`（寄存器分配器）、`instruction_select.py`（指令选择器）  \
+> 最后更新：2026-08-02（v1.3.1：修复 self-spill 写死 `phys_regs[0]` 寄存器污染、eviction 后 `del rename` 导致 vreg 泄漏、模块名含 `.` 无法 import、场景脚本解析与 v1.3 数据结构不符；模块重命名为 `regalloc_linear_v1_3.py`）  \
+> 涉及模块：`regalloc_linear_v1_3.py`（寄存器分配器）、`instruction_select.py`（指令选择器）、`topic17_bottleneck_scenarios_v1.3.py`（回归场景）  \
 > 功能范围：基本块内虚拟寄存器到物理寄存器的映射、线性扫描分配、溢出处理
 
 ---
@@ -158,7 +158,9 @@ Linear Scan Register Allocation Report
 
 | 文件 | 修改类型 | 说明 |
 |------|----------|------|
-| `scratchv/backend/regalloc_linear.py` | **新增** | 线性扫描分配器主模块 |
+| `scratchv/backend/regalloc_linear.py` | **新增** | 线性扫描分配器主模块（基线版本） |
+| `scratchv/backend/regalloc_linear_v1_3.py` | **新增**（原名 `regalloc_linear_v1.3.py`，v1.3.1 重命名） | v1.3 改进版分配器：新增 `peak_real_pressure`、`_scratch_cache`；修复 eviction 后 alloc_map 未更新、self-spill 寄存器污染、eviction 后 vreg 泄漏 |
+| `scratchv/backend/topic17_bottleneck_scenarios_v1.3.py` | **新增** | 23 个瓶颈场景的回归测试脚本（v1.3.1 修复导入与指标解析） |
 | `scratchv/backend/instruction_select.py` | 修改 | 确保每条 MachineInstr 带 defines/uses 标注 |
 | `scratchv/standalone/onnx_to_riscv_standalone.py` | 修改 | 管线中插入寄存器分配步骤，添加 `--regalloc=linear` 选项 |
 | `tests/test_regalloc.py` | 新增 | 寄存器分配单元测试 |
@@ -428,7 +430,52 @@ v2=[3,5)  → evict v0   # a0 被 v2 占用
 
 **修复**：新增 `self.peak_real_pressure`，在统计时额外加上 self-spill 的区间。
 
-### 5.5 参考资料
+### 5.5 v1.3.1 代码审查修复（PR #37 → 审查反馈落实）
+
+v1.3.1 基于 PR #37 的 AI 代码审查反馈，经逐条核对确认并修复了 6 个问题（4 个在分配器、1 个模块命名、1 个场景脚本）。核心修复如下：
+
+| # | 类型 | 问题（v1.3 实现） | 修复（v1.3.1） |
+|---|------|--------------------|----------------|
+| 1 | 可导入性（严重） | 文件名 `regalloc_linear_v1.3.py` 含 `.`，Python 无法 `import` | 重命名为 `regalloc_linear_v1_3.py` |
+| 2 | 正确性（严重） | self-spill 写死 `temp_reg = phys_regs[0]`，在所有寄存器被占时污染仍存活的 vreg | self-spill 分支改为统一 evict 结束最晚的活跃区间，将寄存器让给 `current` |
+| 3 | 正确性（严重） | `_evict_for_reload` 用 `del rename[vreg]` 永久删除映射，导致 vreg 泄漏进汇编 | 改为 `rename[vreg] = "SPILL_" + vreg` 降级，并让 reload/evict 跳过非物理寄存器条目 |
+| 4 | 代码质量（低） | `compute_live_intervals` 冗余 define+use 分支 | 删除重复分支 |
+| 5 | 代码质量（低） | `import machine_types` 在函数内重复执行 | 上移到模块级 |
+| 6 | 可运行性（严重） | 场景脚本 import 错误、按旧 `spill_code` 列表接口解析、重复指令 id | 改 import v1_3、重写指标解析适配 dict 结构、`_renumber()` 统一 id |
+
+#### Fix 2 详细说明：self-spill 寄存器污染
+
+**场景**（寄存器全被占用，且 `current` 活得比所有活跃区间都久）：
+```
+v_status=[0,11) → a0   # 1号活跃区间
+v_other=[1,5)  → a1
+v_new=[3,100)          # 定义时间为 3，活到 100，远超所有活跃区间
+# 无空闲寄存器。v1.3 self-spill 分支执行：
+temp_reg = phys_regs[0]  # = a0
+alloc_map[v_new] = a0    # v_new 永久占用 a0
+spill_code[3] += "sw a0, slot(sp)"
+# 但 a0 此刻仍存 v_status 的值（v_status 活跃到 10）！
+# → 污染：v_status 后续读 a0 得到的是 v_new（或 undefined）
+```
+
+**修复**：当 `free_regs` 为空时，不再尝试 self-spill（避免写死寄存器），而是统一 evict「结束最晚」的活跃区间，把其寄存器让给 `current`。由于 `current` 活得比所有活跃区间都久，让出寄存器后 `current` 会把它保留到块尾，被 evict 的 victim 仅在需要时按需 reload。这既消除了正确性缺陷，又比反复 reload 长生命 `current` 更高效。
+
+#### Fix 3 详细说明：eviction 后 rename 泄漏
+
+**根因**：`get_allocated_code()` 用一份向前遍历、随指令修改的 `rename`（初值 = `dict(alloc_map)`）。`_evict_for_reload` 通过 `del rename[victim]` 把 victim 从映射中移除。若 victim 之后出现定义/使用且没有对应的 reload 路径，`inst.to_asm(rename)` 中 `rename.get(vreg, vreg)` 回退为原始 `vXX` 名字，把虚拟寄存器泄漏进最终汇编（B01/E01/F04 实测复现）。
+
+**修复**：victim 不删除而降级为 `SPILL_<victim>` 标记，使其后续定义走 scratch 重命名路径、后续使用触发 reload。由于该标记不代表物理寄存器，在 `_pick_reload_reg`/`_evict_for_reload` 中需跳过非物理寄存器条目。验证：泄漏场景消失，23/23 场景无泄漏、无寄存器冲突。
+
+#### v1.3.1 验证结果（23 个瓶颈场景回归）
+
+独立运行 `python scratchv/backend/topic17_bottleneck_scenarios_v1.3.py`，23 个场景全部通过：
+- **无 vreg 泄漏**：生成汇编中不存在未映射的虚拟寄存器名
+- **无寄存器冲突**：无两个同时存活的区间被分配同一物理寄存器
+- 单元测试 `tests/test_regalloc_linear.py` 全部通过（18 passed，无回归）
+
+> 设计边界说明：跨基本块 liveness（live-in/live-out）与多定义 vreg 属设计边界而非本次 bug，列入后续优化（见开发文档 7.7 Opt 5）。
+
+### 5.6 参考资料
 
 - ScratchV 项目文档：`docs/topics/17-寄存器分配.md`
 - Poletto & Sarkar (1999): *Linear Scan Register Allocation*, ACM TOPLAS

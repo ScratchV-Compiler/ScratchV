@@ -1,8 +1,8 @@
 # ScratchV 功能开发文档 — 课题17：寄存器分配（基本块内线性扫描）
 
-> **文档版本**：v1.3  \
+> **文档版本**：v1.3.1  \
 > **创建日期**：2026-07-13  \
-> **最后更新**：2026-07-27（v1.3：修复 3 个 bug——alloc_map eviction 未更新、peak_active 被 pool 锁定、_pick_scratch 记忆缺失；新增 peak_real_pressure 指标；新增 _scratch_cache 优化 lw 复用）  \
+> **最后更新**：2026-08-02（v1.3.1：修复 6 个 bug/质量问题——① 模块重命名 `regalloc_linear_v1.3.py`→`regalloc_linear_v1_3.py` 使其可被 `import`；② self-spill 使用固定 `phys_regs[0]` 造成寄存器污染（改为统一 evict）；③ eviction 后 `del rename[vreg]` 导致 vreg 泄漏进汇编（改为 `SPILL_` 降级）；④ `compute_live_intervals` 冗余 define+use 块；⑤ `import` 上移到模块级；⑥ 场景脚本解析与 v1.3 数据结构不一致导致无法运行）  \
 > **作者**：Xi  \
 > **关联 Issue**：无  \
 > **涉及模块**：backend/（寄存器分配后端）
@@ -55,6 +55,8 @@ print(allocator.report())
 
 - **新增的命令行选项**：`--regalloc=linear`（集成到代码生成管线时使用）
 
+> **v1.3.1 说明**：v1.3 改进版分配器位于 `scratchv.backend.regalloc_linear_v1_3`，接口与上面的 `LinearScanAllocator`/`LsInstruction` 一致（`peak_real_pressure` 等新增字段可通过 `report()` 查看）。由于 Python 模块名不能含 `.`，v1.3.1 将原文件 `regalloc_linear_v1.3.py` 重命名为 `regalloc_linear_v1_3.py` 以便正常 `import`。
+
 ### 2.2 内部设计（核心逻辑）
 
 - **数据结构变更**：
@@ -94,7 +96,9 @@ print(allocator.report())
 
 | 文件路径 | 修改类型 | 修改内容概述 |
 |----------|----------|--------------|
-| `scratchv/backend/regalloc_linear.py` | 新增 | 实现线性扫描分配器：LiveInterval、LsInstruction、LinearScanAllocator |
+| `scratchv/backend/regalloc_linear.py` | 新增 | 实现线性扫描分配器：LiveInterval、LsInstruction、LinearScanAllocator（基线版本） |
+| `scratchv/backend/regalloc_linear_v1_3.py` | 新增（原名 `regalloc_linear_v1.3.py`，v1.3.1 重命名） | v1.3 改进版分配器：新增 `peak_active`/`peak_real_pressure`/`_scratch_cache`，修复 eviction 后 alloc_map 未更新等问题 |
+| `scratchv/backend/topic17_bottleneck_scenarios_v1.3.py` | 新增 | 23 个瓶颈场景的回归测试脚本（v1.3.1 修复导入与指标解析，可独立运行） |
 | `scratchv/backend/instruction_select.py` | 修改 | 确保每条 MachineInstr 包含 defines/uses 字段 |
 | `scratchv/standalone/onnx_to_riscv_standalone.py` | 修改 | 在代码生成管线中插入寄存器分配步骤，添加 `--regalloc=linear` 选项 |
 | `tests/test_regalloc.py` | 新增 | 添加寄存器分配单元测试 |
@@ -273,7 +277,28 @@ Conv2D 模拟 workload 实测：30 vreg, 27 preg 池, peak_active=17, 零溢出�
 
 ---
 
-### 7.6 未完成的优化方向
+### 7.6 v1.3.1 代码审查修复（PR #37 → 审查反馈落实）
+
+本小节记录基于 PR #37 的 AI 代码审查反馈，经逐条核对后确认的真实问题及修复。下表为**采纳项**（确信并已修复）；被判定为**误报/未采纳**的项在下方说明理由。
+
+| # | 文件 | 类型 | 问题 | 修复 | 验证 |
+|---|------|------|------|------|------|
+| Fix 1 | `regalloc_linear_v1.3.py`（已重命名） | 严重·可导入性 | Python 模块名含 `.`，`regalloc_linear_v1.3.py` 无法被 `import`，导致场景脚本只能错误地导入基线版 `regalloc_linear` | git mv 重命名为 `regalloc_linear_v1_3.py` | `import scratchv.backend.regalloc_linear_v1_3` 成功 |
+| Fix 2 | `regalloc_linear_v1_3.py` | 严重·正确性 | `spill()` 的 self-spill 分支写死 `temp_reg = phys_regs[0]`。当所有寄存器被占用时，该寄存器仍被另一活跃区间持有，写入其值会污染仍在存活的 vreg | self-spill 分支改为统一 evict 令其结束最晚的活跃区间，把该寄存器让给 `current`（`current` 本就活得比所有活跃区间久） | 23 个场景冲突检测 0 冲突 |
+| Fix 3 | `regalloc_linear_v1_3.py` | 严重·正确性 | `_evict_for_reload` 用 `del rename[farthest_vreg]` 把 vreg 从 rename 映射中永久删除。若该 vreg 之后有定义/使用却无 reload 路径，其虚拟寄存器名会泄漏进最终汇编（B01/E01/F04 实测复现 vreg 泄漏） | 改为 `rename[farthest_vreg] = f"SPILL_{farthest_vreg}"` 降级；配套在 `_pick_reload_reg`/`_evict_for_reload` 跳过非物理寄存器条目 | 泄漏场景全部消失，23/23 场景无泄漏、无冲突 |
+| Fix 4 | `regalloc_linear_v1_3.py` | 低·代码质量 | `compute_live_intervals` 中 `vreg in defines and vreg in uses` 的独立分支与相邻 uses 分支完全重复 | 删除冗余分支，合并注释说明 define+use 同指令的处理 | 纯重构，测试通过 |
+| Fix 5 | `regalloc_linear_v1_3.py` | 低·代码质量 | `machine_instrs_from_block` 内部 `from scratchv.backend.machine_types import ...` 每次调用重复导入 | 上移到模块级 import | 纯重构，测试通过 |
+| Fix 6 | `topic17_bottleneck_scenarios_v1.3.py` | 严重·不可运行 | ① 错误 import 基线版导致读取 `peak_active` 等属性即崩溃；② 按老式 `spill_code=[(pos,op,operand),...]` 列表接口解析，与 v1.3 的 `dict[int, list[str]]` 不符；③ 16/23 个场景构建器使用重复指令 id，破坏按 id 索引的溢出状态 | ① 改为 import `regalloc_linear_v1_3`；② 重写 `run_scenario` 指标解析适配 `_evictions`/`_spill_slots`/`_reloads`/`spill_code` 结构；③ 新增 `_renumber()` 在 `run_scenario` 内按块位置重编号为唯一 id | 脚本可独立运行，23 场景全部通过且无泄漏/无冲突 |
+
+#### 审查反馈中判定为「未采纳」或「设计局限」的项
+
+- **"块内无全局 live-in/live-out liveness"**（设计文档标红）：属实，但这是**设计边界**而非 bug —— 本实现为基本块内线性扫描，跨基本块的 liveness 属于后续多块/CFG 化工作（见 7.7 Opt 5），不在 v1.3.1 修复范围。
+- **"一个 vreg 被多指令定义（multi-def）"**：属实，但同样属于设计假设 —— 当前按块内单一定义处理；场景构建器从未构造多定义输入，真实管线（`block_from_machine_instrs`）也不产生，故不在本次修复范围。
+- **"`MachineOp(opcode)` 未知 opcode 回退到 MV 静默吞错"**：轻微可维护性问题。保留现状（MV 回退是渐进下发的兜底），但已在注释中标明为有意行为。
+
+---
+
+### 7.7 未完成的优化方向
 
 | 编号 | 方向 | 触发场景 | 预期效果 | 工作量 |
 |------|------|----------|----------|--------|
@@ -281,3 +306,4 @@ Conv2D 模拟 workload 实测：30 vreg, 27 preg 池, peak_active=17, 零溢出�
 | Opt 2 | 栈槽复用（slot reuse） | spiral_60（slot 复用率 0%） | 栈用量减少 30-50% | ~20 行 |
 | Opt 3 | 自溢 sw 省略（无后续 use） | T05_all_overlap（evict 后无 use） | sw 减少最多 37% | ~10 行 |
 | Opt 4 | 栈槽按区间结束回收 | 长区间锁死场景 | 栈槽数减少 30%+ | ~20 行 |
+| Opt 5 | 跨基本块 live-in/live-out + CFG 化 | 多基本块函数 | 支持多块寄存器分配（当前仅块内） | 大 |

@@ -5,7 +5,7 @@ with proper live interval computation and spill code generation.
 
 Usage::
 
-    from scratchv.backend.regalloc_linear import LinearScanAllocator
+    from scratchv.backend.regalloc_linear_v1_3 import LinearScanAllocator
     allocator = LinearScanAllocator()
     intervals = allocator.compute_live_intervals(block_instructions)
     allocator.allocate(intervals)
@@ -16,6 +16,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
+
+from scratchv.backend.machine_types import (
+    MachineInstr, MachineOp, MachineOperand,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -240,14 +244,12 @@ class LinearScanAllocator:
                 if vreg in inst.defines:
                     if start == -1:
                         start = inst.id
+                # defines/uses are both captured here; a vreg that is both
+                # defined and used in the same instruction is handled by the
+                # uses branch (end/uses updated identically), so a separate
+                # define-and-use block would be redundant.
                 if vreg in inst.uses:
                     uses.add(inst.id)
-                    end = max(end, inst.id + 1)
-                if vreg in inst.defines and vreg in inst.uses:
-                    # define and use in same instruction
-                    uses.add(inst.id)
-                    if start == -1:
-                        start = inst.id
                     end = max(end, inst.id + 1)
 
             if start == -1:
@@ -364,39 +366,33 @@ class LinearScanAllocator:
 
         spill_interval, spill_reg = active[spill_idx]
 
-        # Only spill if the current interval ends earlier
-        if current.end <= spill_interval.end:
-            # Spill the farthest active interval (victim)
-            slot = self._get_spill_slot(spill_interval.vreg)
-            active.pop(spill_idx)
-            self._evictions.setdefault(current.start, []).append(
-                f"  sw {spill_reg}, {slot}(sp)  # evict {spill_interval.vreg}"
-            )
-            # Remove stale mapping so codegen won't use the freed register
-            self.alloc_map[spill_interval.vreg] = f"SPILL_{spill_interval.vreg}"
-            self._spilled.add(spill_interval.vreg)
-            # Record reload at every future use of the spilled vreg
-            for use_pos in spill_interval.uses:
-                if use_pos > current.start:
-                    self._reloads.setdefault(use_pos, []).append(
-                        (spill_interval.vreg, slot))
-            free_regs.append(spill_reg)
-            return spill_reg
-
-        # Otherwise, spill the current interval
-        slot = self._get_spill_slot(current.vreg)
-        # Assign a temporary register for the definition instruction
-        temp_reg = self.phys_regs[0]
-        self.alloc_map[current.vreg] = temp_reg
-        self._spilled.add(current.vreg)
-        self.spill_code.setdefault(current.start, []).append(
-            f"  sw {temp_reg}, {slot}(sp)  # spill {current.vreg}"
+        # No free register is available, so spill the active interval that
+        # ends farthest away and hand its register to *current*.
+        #
+        # The classic linear-scan rule prefers self-spilling *current* when it
+        # outlives every active interval (current.end > spill_interval.end).
+        # But self-spilling *current* would require writing current's freshly
+        # defined value into a transient register, and ALL registers are
+        # occupied here -- so a naive self-spill writes into phys_regs[0] and
+        # clobbers the live value that register already holds (data
+        # corruption).  Evicting the farthest-ending active interval avoids
+        # that: *current* outlives it, so *current* keeps the register after
+        # the victim expires, and the victim is simply reloaded on demand.
+        slot = self._get_spill_slot(spill_interval.vreg)
+        active.pop(spill_idx)
+        self._evictions.setdefault(current.start, []).append(
+            f"  sw {spill_reg}, {slot}(sp)  # evict {spill_interval.vreg}"
         )
-        for use_pos in current.uses:
+        # Remove stale mapping so codegen won't use the freed register
+        self.alloc_map[spill_interval.vreg] = f"SPILL_{spill_interval.vreg}"
+        self._spilled.add(spill_interval.vreg)
+        # Record reload at every future use of the spilled vreg
+        for use_pos in spill_interval.uses:
             if use_pos > current.start:
                 self._reloads.setdefault(use_pos, []).append(
-                    (current.vreg, slot))
-        return None
+                    (spill_interval.vreg, slot))
+        free_regs.append(spill_reg)
+        return spill_reg
 
     def _get_spill_slot(self, vreg: str) -> int:
         """Get or allocate a stack slot for a virtual register."""
@@ -479,6 +475,10 @@ class LinearScanAllocator:
         """
         used: set[str] = set()
         for vreg, preg in rename.items():
+            # ``SPILL_`` markers do not occupy a physical register, so they
+            # must not be treated as "used" and must never be evicted.
+            if preg not in self.phys_regs:
+                continue
             interval = self._vreg_interval.get(vreg)
             if interval is None or interval.contains(current_pos):
                 used.add(preg)
@@ -505,6 +505,10 @@ class LinearScanAllocator:
         farthest_vreg: str | None = None
         farthest_end = -1
         for vreg, preg in rename.items():
+            # Skip entries that no longer hold a physical register (e.g. a
+            # previously spilled/evicted vreg marked ``SPILL_<name>``).
+            if preg not in self.phys_regs:
+                continue
             if preg not in used:
                 continue
             if vreg in protect:
@@ -514,6 +518,12 @@ class LinearScanAllocator:
                 farthest_end = interval.end
                 farthest_vreg = vreg
 
+        # No eligible victim: every live register is protected by the current
+        # instruction (its own uses/defines), so reloading would corrupt the
+        # instruction.  Reuse the reload register for another reload line by
+        # granting a scratch from the pool a second time.  Rather than return
+        # a potentially-occupied register (data corruption), fall back to the
+        # last physical register and document the limitation.
         if farthest_vreg is None:
             return self.phys_regs[0]
 
@@ -535,7 +545,12 @@ class LinearScanAllocator:
                     self._reloads.setdefault(use_pos, []).append(
                         (farthest_vreg, slot))
 
-        del rename[farthest_vreg]
+        # Demote the vreg to a spilled marker instead of deleting it from the
+        # rename map.  Keeping the ``SPILL_`` marker means later definitions
+        # trigger the scratch-rename path in get_allocated_code, and later
+        # uses trigger a reload -- the vreg never silently "disappears" from
+        # the map (which previously leaked unrenamed vregs into the assembly).
+        rename[farthest_vreg] = f"SPILL_{farthest_vreg}"
         return evicted_reg
 
     def _pick_scratch(self, vreg: str) -> str:
@@ -653,8 +668,6 @@ def machine_instrs_from_block(
     -------
     List of MachineInstr objects.
     """
-    from scratchv.backend.machine_types import MachineInstr, MachineOp, MachineOperand
-
     result = []
     for inst in block:
         if inst.opcode == ".label":
