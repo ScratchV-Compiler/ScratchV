@@ -1,9 +1,9 @@
 # ScratchV RISC-V 汇编代码美化器开发文档
 
-> **文档版本**：v1.1  
-> **创建日期**：2026-07-13  
-> **更新日期**：2026-07-23   
-> **涉及模块**：`scratchv/backend/asm_beautifier.py`、`scratchv/backend/asm_parser.py`  
+> **文档版本**：v1.2
+> **创建日期**：2026-07-13
+> **更新日期**：2026-08-02
+> **涉及模块**：`scratchv/backend/asm_beautifier.py`、`scratchv/backend/asm_parser_for_beautifier.py`
 
 ---
 
@@ -42,16 +42,47 @@ metadata_path     ::= metadata_char { metadata_char }
 metadata_char     ::= any non-whitespace character except ":"
 opcode            ::= instruction | pseudo_instruction | directive
 pseudo_instruction ::= "li" | "mv" | "call" | "ret" | ...
-operands          ::= operand { "," operand }
+operands          ::= operand { top_level_comma operand }
+top_level_comma   ::= ","  (* only when parenthesis depth is zero *)
 comment           ::= "#" text
 ```
 
-实现时，解析器应提取标签、操作码、原始操作数字符串、操作数列表和注释；操作数按顶层逗号拆分，括号内的逗号不得作为操作数分隔符。`_op_/...:` 和 `_op_PPQ_Operation_<number>_<number>:` 作为算子元数据标签完整保留，不得识别为函数入口。标准指令、汇编器伪指令和汇编器指示必须分类处理。
+实现时，解析器应提取标签、操作码、原始操作数字符串、操作数列表和注释；操作数按顶层逗号拆分，括号内的逗号不得作为操作数分隔符。`metadata_path` 可包含 `/`，但不得包含空白或 `:`。`_op_/...:` 和 `_op_PPQ_Operation_<number>_<number>:` 作为算子元数据标签完整保留，不得识别为函数入口。标准指令、汇编器伪指令和汇编器指示必须分类处理。
 
 
 - **新增/修改的 API**：
 
 ```python
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, TypedDict
+
+ParseStatus = Literal[
+    "valid",
+    "metadata_label",
+    "incomplete_operands",
+    "unknown_opcode",
+    "malformed",
+]
+
+class FieldLengths(TypedDict):
+    label: int
+    opcode: int
+    operands_str: int
+    comment: int
+
+@dataclass
+class ParsedAsmLine:
+    raw: str
+    label: str | None
+    opcode: str | None
+    operands_str: str
+    operands: list[str]
+    comment: str | None
+    lineno: int
+    parse_status: ParseStatus
+    field_lengths: FieldLengths
+
 def beautify_asm(
     asm_text: str,
     align: bool = True,
@@ -70,6 +101,16 @@ def parse_asm(
     asm_text: str,
 ) -> list[ParsedAsmLine]:
     """按原始顺序解析完整汇编文本，保留空行和行号。"""
+
+def beautify_file(
+    input_path: str | Path,
+    output_path: str | Path | None = None,
+    align: bool = True,
+    add_comments: bool = True,
+    abi_register_names: bool = False,
+    encoding: str = "utf-8",
+) -> str:
+    """读取并美化汇编；可选地原子写入目标文件，并返回结果。"""
 ```
 
 | 参数 | 类型 | 默认值 | 行为 |
@@ -79,9 +120,9 @@ def parse_asm(
 | `add_comments` | `bool` | `True` | 是否为已登记指令添加自动语义注释。 |
 | `abi_register_names` | `bool` | `False` | 是否仅在自动注释中将 `x0` 至 `x31` 转为 ABI 别名。 |
 
-返回值始终为字符串；函数不得修改输入对象，不执行文件写入。空输入和仅含空白的输入必须稳定返回字符串且不抛异常，具体换行形式由兼容性测试固定。
+`beautify_asm()` 返回值始终为字符串，不得修改输入对象或执行文件写入。空输入和仅含空白的输入必须稳定返回字符串且不抛异常，具体换行形式由兼容性测试固定。
 
-`beautify_file()` 负责文件读取和输出，并同步暴露 `align`、`add_comments`、`abi_register_names` 三个选项。`abi_register_names` 默认值为 `False`，且仅影响自动生成的语义注释。
+`ParsedAsmLine`、`parse_asm_line()` 与 `parse_asm()` 由美化器专用模块 `scratchv/backend/asm_parser_for_beautifier.py` 提供。该模块需要保留原始操作数字符串、字符串字面量中的 `#` 与逗号、元数据标签、五种 `parse_status` 和字段长度；这些能力超出现有共享 `_asm_parser.py` 的契约，因此不得通过修改 `_asm_parser.py` 强行满足美化器需求，以免影响 peephole、const-merge、inst-counter、inst-scheduler 等既有调用方。`beautify_file()` 同步暴露 `align`、`add_comments`、`abi_register_names`，默认使用 UTF-8。指定 `output_path` 时先写入同目录临时文件，成功后原子替换目标；未指定时只返回字符串。`abi_register_names` 默认值为 `False`，且仅影响自动生成的语义注释。
 
 #### 独立命令行接口
 
@@ -129,7 +170,9 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 
 ### 2.3 接口定义（模块间交互）
 
-- **上游依赖**：接收 ScratchV 汇编发射器或用户文件产生的 RISC-V 文本。美化器只依赖最终文本、显式选项，以及 `scratchv/backend/asm_parser.py` 提供的单行字段解析结果，这里采用自己新编写的asm_parser_for_beautifier。
+- **上游依赖**：接收 ScratchV 汇编发射器或用户文件产生的 RISC-V 文本。美化器依赖最终文本、显式选项，以及专用模块 `scratchv/backend/asm_parser_for_beautifier.py` 提供的 `ParsedAsmLine`、`parse_asm_line()` 与 `parse_asm()`。
+- **解析器并存边界**：`scratchv/backend/_asm_parser.py` 保持现有接口和行为，继续供 peephole、const-merge、inst-counter、inst-scheduler 等汇编级 pass 使用；`asm_parser_for_beautifier.py` 只供 `asm_beautifier.py` 使用。两个模块不得互相导入，也不得让其他 pass 在本课题中迁移到专用解析器。
+- **重复逻辑控制**：`asm_beautifier.py` 本身不得再实现逐行解析正则或操作数拆分逻辑；所有美化器专用解析行为集中在 `asm_parser_for_beautifier.py`。两套解析器允许因契约不同而并存，但公共合法汇编子集应通过兼容性测试保持字段含义一致。
 - **下游影响**：输出仍是可供 RISC-V 汇编器读取的 `.s` 文本，也可交给指令统计、终端输出和人工审阅。新增标题必须全部使用 `#` 注释，不能形成伪指令。
 
 ---
@@ -141,9 +184,9 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 | 文件路径 | 修改类型 | 修改内容概述 |
 |----------|----------|--------------|
 | `scratchv/backend/asm_beautifier.py` | 重构 | 完善指令规格表、列对齐、注释生成、段/函数识别、文件 API 和 CLI。 |
-| `scratchv/backend/asm_parser_for_beautifier.py` | 新建 | 完善安全解析器、元数据标签识别和解析状态。 |
+| `scratchv/backend/asm_parser_for_beautifier.py` | 新建 | 实现美化器专用安全解析器、原文字段保留、字符串感知、元数据标签识别和解析状态；不修改 `_asm_parser.py`。 |
 | `tests/test_asm_beautifier.py` | 重构 | 按新规格重写单元测试，覆盖正常、边界、异常及 CLI 行为。 |
-| `tests/test_asm_line_parser.py` | 新增 | 测试 `parse_asm_line()` 的字段提取、字段长度、操作数拆分、元数据标签和状态分类。 |
+| `tests/test_asm_line_parser.py` | 新增 | 测试 `parse_asm_line()` 的字段提取、字段长度、操作数拆分、字符串边界、元数据标签和状态分类。 |
 | `benchmarks/bench_asm_beautifier.py` | 修改 | 使用固定样例和合成大输入统计耗时、波动、输出大小及膨胀比例。 |
 
 ### 3.2 分步实现计划
@@ -153,7 +196,7 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 | 步骤 | 任务描述 | 预期产出 | 验证方式 |
 |------|----------|----------|----------|
 | 1 | 先编写解析测试，再实现逐行解析、操作数拆分及 `parse_status` 分类。 | 能正确提取汇编字段，并安全处理未知、缺失和异常输入。 | 解析与状态分类测试通过。 |
-| 2 | 先编写格式化测试，再实现两遍列宽扫描、字段对齐和保守输出。 | 标签、操作码和操作数对齐，异常行及原始内容不被破坏。 | 输入输出对比及格式化测试通过。 |
+| 2 | 先编写格式化测试，再实现两遍列宽扫描、字段对齐和保守输出。 | 普通标签独占一行；运行时指令与伪指令的操作码、操作数及注释对齐，顶层操作数逗号后统一保留一个空格；汇编器指示和异常行按 `raw` 原样输出。 | 输入输出对比及格式化测试通过。 |
 | 3 | 先编写语义注释测试，再实现指令模板、伪指令、注释合并和 ABI 别名转换。 | 已支持指令生成正确注释，未知指令不生成误导性注释。 | 指令语义、伪指令及 ABI 测试通过。 |
 | 4 | 先编写结构识别测试，再实现段标题、函数入口、元数据标签和数据定义处理。 | 汇编段与函数结构清晰，算子元数据和数据内容保持安全。 | 段、函数、元数据及数据测试通过。 |
 | 5 | 先编写文件与 CLI 测试，再实现 `beautify_file()`、原子写入、命令行参数和错误处理。 | Python API 与命令行工具可稳定处理正常及异常文件。 | 文件、CLI 子进程及错误路径测试通过。 |
@@ -178,7 +221,7 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 
 ### 4.1 测试概述
 
-测试不拆分为独立汇编样例文件，统一集中在以下三个文件中：
+测试资产不拆分为独立汇编样例文件，统一放在两个单元测试文件和一个性能基准文件中：
 
 | 测试 | 描述 | 预期 |
 |------|------|------|
@@ -189,11 +232,14 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 | 字段长度与格式化 | 测试字段长度统计、列对齐、段与函数结构标记。 | 长度统计和输出位置正确，美化前后语义保持不变。 |
 | 语义注释 | 在 `tests/test_asm_beautifier.py` 中测试指令注释、原始注释保留及 `nop` 注释处理。 | 注释符合指令语义，原始注释不丢失，已有说明的 `nop` 不追加 `no operation`。 |
 | 接口与配置 | 测试 Python API、文件处理、命令行接口及配置开关。 | 各接口和选项行为一致，错误路径能够稳定报告。 |
+| 解析器隔离与兼容 | 检查 beautifier 只导入 `asm_parser_for_beautifier.py`，既有 pass 继续导入 `_asm_parser.py`；对双方都支持的合法汇编子集比较标签、opcode、操作数与注释字段。 | 不修改既有 pass 的解析行为；公共字段含义一致，美化器特有状态和原文字段仅由专用解析器提供。 |
 | 性能基准 | 在 `benchmarks/bench_asm_beautifier.py` 中生成不同规模的汇编文本并记录指标。 | 性能表现稳定，不出现无法解释的明显退化。 |
 
 ### 4.2 验收标准（Definition of Done）
 
 - [ ] 新实现不再依赖单个宽松正则表达式完成整行解析。
+- [ ] `asm_beautifier.py` 只从 `asm_parser_for_beautifier.py` 导入解析能力，自身不保留第二份逐行解析或操作数拆分实现。
+- [ ] `_asm_parser.py` 及其 peephole、const-merge、inst-counter、inst-scheduler 等既有调用方的接口和行为不变，相关回归测试通过。
 - [ ] 五种 `parse_status` 均有直接单元测试和明确输出策略。
 - [ ] 测试概述表中的各类测试均达到预期。
 - [ ] `tests/test_asm_line_parser.py` 和 `tests/test_asm_beautifier.py` 测试全部通过。
@@ -203,7 +249,7 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 - [ ] 数据字符串、标签、原始操作数和用户注释不被破坏。
 - [ ] 开启 ABI 别名仅影响自动注释，默认输出保持向后兼容。
 - [ ] `beautify_file()` 同步暴露 `align`、`add_comments`、`abi_register_names`，CLI 使用设计规定的 `--abi-register-names` 正向开关。
-- [ ] 四类段标题和函数标题的文本、60 个 `=` 分隔线均与设计文档第 2.2 节一致。
+- [ ] 四类段标题映射与设计文档第 1.1 节一致；标题插入顺序、函数标题格式和 60 个 `=` 分隔线与设计文档第 2.2、2.4 节一致。
 - [ ] CLI 文件错误返回非零状态码，失败写入不会留下不完整目标文件。
 - [ ] 基准结果已记录且没有无法解释的明显时间或输出体积退化。
 - [ ] 公共 API、CLI 和相关用户文档已更新，代码包含必要类型标注和文档字符串。
@@ -233,10 +279,10 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 
 | 阶段 | 计划完成日期 | 状态（待开始/进行中/已完成） |
 |------|--------------|------------------------------|
-| 技术设计编写 | 2026-07-20 | ✅ 已完成 |
-| 测试用例编写 | 2026-07-24 | ✅ 已完成 |
-| 编码实现 | 待排期 | ⬜ 进行中 |
-| 自测与调试 | 待排期 | ⬜ 待开始 |
+| 技术设计编写 | 2026-07-31 | ✅ 已完成 |
+| 测试用例编写 | 2026-07-31 | ✅ 已完成 |
+| 编码实现 | 2026-08-23 | ⬜ 进行中 |
+| 自测与调试 | 2026-08-31 | ⬜ 进行中 |
 | 代码审查（PR） | 待排期 | ⬜ 待开始 |
 | 合并主分支 | 待排期 | ⬜ 待开始 |
 
@@ -246,7 +292,7 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 
 ### 7.1 参考资料
 
-- 《ScratchV RISC-V 汇编代码美化器技术设计文档》v1.1
+- 《ScratchV RISC-V 汇编代码美化器技术设计文档》v1.3
 - `docs/topics/05-汇编代码美化器.md`
 - RISC-V Assembly Programmer's Manual
 - RISC-V ELF psABI Specification
