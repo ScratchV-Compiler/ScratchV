@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>课题指南 — ScratchV 编译器课程</title>
+<meta name="description" content="ScratchV 30个编译器课题，按入门/中级/高级分级。从 ONNX 到 RISC-V 的全流程实战。">
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   ScratchV Topic Guide — Design System (复用 docs/index.html)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg: #f8f9fb; --bg-card: #ffffff; --text: #2c3e50; --text-secondary: #6b7280;
+  --accent: #2563eb; --accent-light: #dbeafe; --border: #e5e7eb;
+  --radius: 16px; --radius-sm: 10px; --shadow: 0 1px 3px rgba(0,0,0,0.1);
+  --shadow-lg: 0 10px 30px rgba(0,0,0,0.08);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  --badge-green: #059669; --badge-green-bg: #d1fae5;
+  --badge-yellow: #d97706; --badge-yellow-bg: #fef3c7;
+  --badge-red: #dc2626; --badge-red-bg: #fee2e2;
+  --badge-gray: #6b7280; --badge-gray-bg: #f3f4f6;
+}
+[data-theme="dark"] {
+  --bg: #0f1119; --bg-card: #1a1d28; --text: #e2e8f0; --text-secondary: #94a3b8;
+  --accent: #3b82f6; --accent-light: #1e3a5f; --border: #2d3148;
+  --shadow: 0 1px 3px rgba(0,0,0,0.4); --shadow-lg: 0 10px 30px rgba(0,0,0,0.3);
+  --badge-green-bg: #064e3b; --badge-yellow-bg: #78350f;
+  --badge-red-bg: #7f1d1d; --badge-gray-bg: #374151;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; -webkit-font-smoothing: antialiased; }
+.container { max-width: 1060px; margin: 0 auto; padding: 24px; }
+
+/* Hero */
+.hero { text-align: center; padding: 60px 24px 48px; background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 50%, #7c3aed 100%); color: #fff; border-radius: var(--radius); margin: 32px 0 48px; }
+.hero h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 8px; letter-spacing: -0.5px; }
+.hero p { font-size: 1.15rem; opacity: 0.9; max-width: 560px; margin: 0 auto 24px; }
+.hero .hero-stats { display: flex; justify-content: center; gap: 32px; margin-top: 24px; flex-wrap: wrap; }
+.hero-stat { text-align: center; }
+.hero-stat-val { font-size: 2rem; font-weight: 800; }
+.hero-stat-label { font-size: 12px; opacity: 0.7; text-transform: uppercase; letter-spacing: 1px; }
+
+/* Back link */
+.back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); text-decoration: none; font-size: 13px; margin-bottom: 16px; transition: color 0.2s; }
+.back-link:hover { color: var(--accent); }
+
+/* Filter bar */
+.filter-bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 32px; }
+.filter-btn { padding: 8px 18px; border: 1px solid var(--border); border-radius: 20px; font-size: 13px; font-family: var(--font); background: var(--bg-card); color: var(--text-secondary); cursor: pointer; transition: all 0.2s; }
+.filter-btn:hover { border-color: var(--accent); color: var(--accent); }
+.filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.filter-count { font-size: 11px; opacity: 0.7; margin-left: 2px; }
+
+/* Section */
+.topic-section { margin-bottom: 48px; }
+.section-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.section-header h2 { font-size: 1.25rem; font-weight: 700; }
+.section-header .section-count { font-size: 12px; padding: 3px 10px; border-radius: 12px; font-weight: 600; }
+.section-count.beginner { background: var(--badge-green-bg); color: var(--badge-green); }
+.section-count.intermediate { background: var(--badge-yellow-bg); color: var(--badge-yellow); }
+.section-count.advanced { background: var(--badge-red-bg); color: var(--badge-red); }
+.section-count.planned { background: var(--badge-gray-bg); color: var(--badge-gray); }
+.section-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+
+/* Topic cards grid */
+.topic-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.topic-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 20px 22px; text-decoration: none; color: var(--text); transition: all 0.2s; box-shadow: var(--shadow); display: flex; gap: 14px; align-items: flex-start; }
+.topic-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: var(--accent); }
+.topic-num { font-size: 1.1rem; font-weight: 800; color: var(--accent); min-width: 32px; text-align: center; line-height: 1; padding-top: 2px; }
+.topic-num.planned { color: var(--text-secondary); }
+.topic-body { flex: 1; min-width: 0; }
+.topic-title { font-weight: 700; font-size: 14px; margin-bottom: 4px; line-height: 1.3; }
+.topic-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 8px; }
+.topic-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+.topic-badge { font-size: 11px; padding: 3px 10px; border-radius: 12px; font-weight: 600; }
+.badge-practice { background: var(--badge-green-bg); color: var(--badge-green); }
+.badge-reference { background: var(--badge-yellow-bg); color: var(--badge-yellow); }
+.badge-planned { background: var(--badge-gray-bg); color: var(--badge-gray); }
+
+/* Footer */
+.footer { text-align: center; padding: 40px 0; margin-top: 48px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-secondary); }
+.footer a { color: var(--accent); text-decoration: none; }
+
+/* Theme toggle */
+.theme-toggle { position: fixed; top: 20px; right: 20px; z-index: 99; width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 20px; background: var(--bg-card); cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow); }
+
+/* Hidden state for filter */
+.topic-section.hidden { display: none; }
+
+@media (max-width: 700px) {
+  .hero h1 { font-size: 1.6rem; }
+  .hero p { font-size: 14px; }
+  .hero-stats { gap: 16px; }
+  .topic-cards { grid-template-columns: 1fr; }
+  .container { padding: 16px; }
+  .filter-bar { gap: 6px; }
+  .filter-btn { padding: 6px 14px; font-size: 12px; }
+}
+</style>
+</head>
+<body>
+<button class="theme-toggle" id="themeToggle" aria-label="切换主题">🌓</button>
+
+<div class="container">
+  <a href="../index.html" class="back-link">← 返回首页</a>
+
+  <!-- Hero -->
+  <div class="hero">
+    <h1>📚 课题指南</h1>
+    <p>30 个编译器课题，从零搭建 AI → RISC-V 编译器。<br>按入门 / 中级 / 高级分级，循序渐进。</p>
+    <div class="hero-stats">
+      <div class="hero-stat"><div class="hero-stat-val">30</div><div class="hero-stat-label">课题</div></div>
+      <div class="hero-stat"><div class="hero-stat-val">5</div><div class="hero-stat-label">难度层级</div></div>
+      <div class="hero-stat"><div class="hero-stat-val">2</div><div class="hero-stat-label">类型</div></div>
+    </div>
+  </div>
+
+  <!-- Filter -->
+  <div class="filter-bar">
+    <button class="filter-btn active" data-filter="all">全部<span class="filter-count">30</span></button>
+    <button class="filter-btn" data-filter="beginner-build">🔰 入门·动手做<span class="filter-count">7</span></button>
+    <button class="filter-btn" data-filter="beginner-observe">📊 入门·学会看<span class="filter-count">8</span></button>
+    <button class="filter-btn" data-filter="intermediate">📗 中级<span class="filter-count">9</span></button>
+    <button class="filter-btn" data-filter="advanced">📕 高级<span class="filter-count">3</span></button>
+    <button class="filter-btn" data-filter="planned">⬜ 规划中<span class="filter-count">3</span></button>
+  </div>
+
+  <!-- 🔰 入门模块 — 动手做 -->
+  <div class="topic-section" data-category="beginner-build">
+    <div class="section-header">
+      <h2>🔰 入门模块 — 动手做</h2>
+      <span class="section-count beginner">7 个课题</span>
+    </div>
+    <p class="section-desc">从零开始实现编译器的基础工具：代码美化、日志、错误提示、CFG、窥孔优化、指令调度。</p>
+    <div class="topic-cards">
+
+      <a href="html/05-汇编代码美化器.html" class="topic-card">
+        <span class="topic-num">05</span>
+        <div class="topic-body">
+          <div class="topic-title">RISC-V 汇编代码美化器</div>
+          <div class="topic-desc">格式化 RISC-V 汇编输出，自动缩进、对齐、注释整理，让原生汇编输出变得可读。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/07-编译器日志增强器.html" class="topic-card">
+        <span class="topic-num">07</span>
+        <div class="topic-body">
+          <div class="topic-title">编译器日志增强器</div>
+          <div class="topic-desc">为编译器各阶段添加结构化日志，支持分级（DEBUG/INFO/WARN）和颜色高亮输出。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/09-DSL-错误提示美化器.html" class="topic-card">
+        <span class="topic-num">09</span>
+        <div class="topic-body">
+          <div class="topic-title">DSL 错误提示美化器</div>
+          <div class="topic-desc">增强 DSL 编译错误诊断：精确定位行列号、提供修复建议、类似 Rust 的错误格式。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/11-控制流图-CFG-生成器.html" class="topic-card">
+        <span class="topic-num">11</span>
+        <div class="topic-body">
+          <div class="topic-title">控制流图（CFG）生成器</div>
+          <div class="topic-desc">从 IR 基本块构建控制流图，支持 DOT 格式导出，可视化函数的分支和循环结构。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/13-窥孔优化器.html" class="topic-card">
+        <span class="topic-num">13</span>
+        <div class="topic-body">
+          <div class="topic-title">窥孔优化器</div>
+          <div class="topic-desc">在 RISC-V 汇编级别实现滑动窗口优化：冗余指令消除、常量折叠、地址合并。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/18-指令调度器.html" class="topic-card">
+        <span class="topic-num">18</span>
+        <div class="topic-body">
+          <div class="topic-title">指令调度器</div>
+          <div class="topic-desc">基本块内列表调度算法：构建依赖 DAG，重排指令减少流水线停顿，提升执行效率。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/20-代码规范与格式化.html" class="topic-card">
+        <span class="topic-num">20</span>
+        <div class="topic-body">
+          <div class="topic-title">项目代码规范与格式化</div>
+          <div class="topic-desc">建立统一的 Python 代码风格：Black + isort + flake8，pre-commit 自动检查和修复。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+    </div>
+  </div>
+
+  <!-- 📊 入门模块 — 学会看 -->
+  <div class="topic-section" data-category="beginner-observe">
+    <div class="section-header">
+      <h2>📊 入门模块 — 学会看</h2>
+      <span class="section-count beginner">8 个课题</span>
+    </div>
+    <p class="section-desc">学习使用性能分析和可视化工具：Benchmark、指令计数、Cache 模拟、Spike 仿真、多维度对比。</p>
+    <div class="topic-cards">
+
+      <a href="html/06-性能基准套件.html" class="topic-card">
+        <span class="topic-num">06</span>
+        <div class="topic-body">
+          <div class="topic-title">编译器性能测试套件</div>
+          <div class="topic-desc">搭建 Benchmark 框架，自动化编译→运行→采集指标，支持多模型批量对比测试。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/12-指令计数统计器.html" class="topic-card">
+        <span class="topic-num">12</span>
+        <div class="topic-body">
+          <div class="topic-title">RISC-V 后端指令计数统计器</div>
+          <div class="topic-desc">统计生成的 RISC-V 指令分布：算术/访存/分支比例，识别代码膨胀热点。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/23-Cache-行为分析.html" class="topic-card">
+        <span class="topic-num">23</span>
+        <div class="topic-body">
+          <div class="topic-title">Cache 行为分析</div>
+          <div class="topic-desc">组相联 + LRU 替换策略的 Cache 模拟器，分析指令/数据缓存的命中率和缺失模式。</div>
+          <div class="topic-meta"><span class="topic-badge badge-reference">参考分析</span></div>
+        </div>
+      </a>
+
+      <a href="html/24-Spike-仿真集成.html" class="topic-card">
+        <span class="topic-num">24</span>
+        <div class="topic-body">
+          <div class="topic-title">Spike 仿真集成</div>
+          <div class="topic-desc">集成 RISC-V 官方 Spike 仿真器，自动化运行编译产物并验证计算结果正确性。</div>
+          <div class="topic-meta"><span class="topic-badge badge-reference">参考分析</span></div>
+        </div>
+      </a>
+
+      <a href="html/25-LLVM-vs-ScratchV-对比.html" class="topic-card">
+        <span class="topic-num">25</span>
+        <div class="topic-body">
+          <div class="topic-title">LLVM vs ScratchV 对比工具</div>
+          <div class="topic-desc">同输入下对比 LLVM 和 ScratchV 生成的 RISC-V 汇编：指令数、质量差距、优化机会。</div>
+          <div class="topic-meta"><span class="topic-badge badge-reference">参考分析</span></div>
+        </div>
+      </a>
+
+      <a href="html/26-TinyFive-对比工具.html" class="topic-card">
+        <span class="topic-num">26</span>
+        <div class="topic-body">
+          <div class="topic-title">TinyFive 对比工具</div>
+          <div class="topic-desc">与 TinyFive 编译器进行静态对比：指令序列差异、寄存器使用效率、代码密度分析。</div>
+          <div class="topic-meta"><span class="topic-badge badge-reference">参考分析</span></div>
+        </div>
+      </a>
+
+      <a href="html/27-RV32-全量-Benchmark.html" class="topic-card">
+        <span class="topic-num">27</span>
+        <div class="topic-body">
+          <div class="topic-title">RV32 全量 Benchmark</div>
+          <div class="topic-desc">统一 RV32 ISA 下的多编译器全量对比：覆盖所有 ONNX 算子，生成标准化对比报告。</div>
+          <div class="topic-meta"><span class="topic-badge badge-reference">参考分析</span></div>
+        </div>
+      </a>
+
+      <a href="html/30-性能仪表盘-Dashboard.html" class="topic-card">
+        <span class="topic-num">30</span>
+        <div class="topic-body">
+          <div class="topic-title">性能仪表盘 Dashboard</div>
+          <div class="topic-desc">CI 自动化基准编排 + 交互式可视化仪表盘：动态指令数、缓存命中率、历史趋势。</div>
+          <div class="topic-meta"><span class="topic-badge badge-reference">参考分析</span></div>
+        </div>
+      </a>
+
+    </div>
+  </div>
+
+  <!-- 📗 中级模块 -->
+  <div class="topic-section" data-category="intermediate">
+    <div class="section-header">
+      <h2>📗 中级模块 — 核心编译器管线</h2>
+      <span class="section-count intermediate">9 个课题</span>
+    </div>
+    <p class="section-desc">编译器前中后端的关键模块：DSL 增强、ONNX 解析、IR 系统、优化器、指令选择、寄存器分配、Standalone 编译器。</p>
+    <div class="topic-cards">
+
+      <a href="html/01-DSL-前端增强器.html" class="topic-card">
+        <span class="topic-num">01</span>
+        <div class="topic-body">
+          <div class="topic-title">DSL 前端增强器</div>
+          <div class="topic-desc">为 DSL 添加 if/else 和 while 控制流语法，递归下降解析 → AST → IR，实现图灵完备。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/02-ONNX-解析器.html" class="topic-card">
+        <span class="topic-num">02</span>
+        <div class="topic-body">
+          <div class="topic-title">ONNX 模型解析器</div>
+          <div class="topic-desc">读取 ONNX 模型文件，提取计算图（算子类型、参数、拓扑序），为后续编译提供输入。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/03-IR-中间表示系统.html" class="topic-card">
+        <span class="topic-num">03</span>
+        <div class="topic-body">
+          <div class="topic-title">中间表示系统（IR）</div>
+          <div class="topic-desc">设计三地址码 IR：指令定义、基本块、CFG、SSA 形式。编译器前后端的桥梁。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/04-IR-优化器框架.html" class="topic-card">
+        <span class="topic-num">04</span>
+        <div class="topic-body">
+          <div class="topic-title">IR 优化器框架</div>
+          <div class="topic-desc">5 个优化 Pass：常量折叠、死代码消除、复制传播、代数化简、公共子表达式消除。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/08-后端指令选择.html" class="topic-card">
+        <span class="topic-num">08</span>
+        <div class="topic-body">
+          <div class="topic-title">后端指令选择</div>
+          <div class="topic-desc">IR → RISC-V 指令的映射：树覆盖算法，将通用 IR 操作翻译为目标架构的机器指令。</div>
+          <div class="topic-meta"><span class="topic-badge badge-reference">参考分析</span></div>
+        </div>
+      </a>
+
+      <a href="html/14-常量加载合并优化.html" class="topic-card">
+        <span class="topic-num">14</span>
+        <div class="topic-body">
+          <div class="topic-title">常量加载合并优化</div>
+          <div class="topic-desc">RISC-V 大常量加载优化：合并多条 LUI/ADDI 指令，减少 32 位立即数加载的指令数。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/16-LLVM-代码生成后端.html" class="topic-card">
+        <span class="topic-num">16</span>
+        <div class="topic-body">
+          <div class="topic-title">LLVM 代码生成后端</div>
+          <div class="topic-desc">IR → LLVM IR 翻译，利用 LLVM 成熟后端生成优化后的 RISC-V 代码，与原生路径对比。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/17-寄存器分配.html" class="topic-card">
+        <span class="topic-num">17</span>
+        <div class="topic-body">
+          <div class="topic-title">寄存器分配</div>
+          <div class="topic-desc">基本块内线性扫描算法：活跃区间分析、溢出决策、寄存器池管理，平衡性能和正确性。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/19-Standalone-RISC-V-编译器.html" class="topic-card">
+        <span class="topic-num">19</span>
+        <div class="topic-body">
+          <div class="topic-title">Standalone RISC-V 编译器</div>
+          <div class="topic-desc">端到端独立编译流程：ONNX → IR → RISC-V 可执行文件，不依赖 LLVM 的完整编译管线。</div>
+          <div class="topic-meta"><span class="topic-badge badge-reference">参考分析</span></div>
+        </div>
+      </a>
+
+    </div>
+  </div>
+
+  <!-- 📕 高级模块 -->
+  <div class="topic-section" data-category="advanced">
+    <div class="section-header">
+      <h2>📕 高级模块 — 深入实现</h2>
+      <span class="section-count advanced">3 个课题</span>
+    </div>
+    <p class="section-desc">深入编译器验证、LLVM 集成和多目标编译：IR 验证器、Standalone LLVM 编译器、扩展指令选择。</p>
+    <div class="topic-cards">
+
+      <a href="html/21-IR-验证器.html" class="topic-card">
+        <span class="topic-num">21</span>
+        <div class="topic-body">
+          <div class="topic-title">IR 验证器</div>
+          <div class="topic-desc">7 条静态验证规则，在优化前后检查 IR 合法性：类型检查、SSA 属性、使用-定义一致性。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/22-Standalone-LLVM-编译器.html" class="topic-card">
+        <span class="topic-num">22</span>
+        <div class="topic-body">
+          <div class="topic-title">Standalone LLVM 编译器</div>
+          <div class="topic-desc">独立使用 LLVM 库编译 ONNX 模型：解析 → LLVM IR → RISC-V，完整的 LLVM 路径实现。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+      <a href="html/28-扩展指令选择-F-D-abs-sqrt.html" class="topic-card">
+        <span class="topic-num">28</span>
+        <div class="topic-body">
+          <div class="topic-title">扩展指令选择</div>
+          <div class="topic-desc">为 RISC-V F/D 扩展和 abs/sqrt 特殊指令生成优化的浮点代码序列，提升数值计算性能。</div>
+          <div class="topic-meta"><span class="topic-badge badge-practice">项目实战</span></div>
+        </div>
+      </a>
+
+    </div>
+  </div>
+
+  <!-- ⬜ 规划中 -->
+  <div class="topic-section" data-category="planned">
+    <div class="section-header">
+      <h2>⬜ 规划中</h2>
+      <span class="section-count planned">3 个课题</span>
+    </div>
+    <p class="section-desc">未来将开发的编译器优化模块，欢迎贡献。</p>
+    <div class="topic-cards">
+
+      <a href="html/10-循环展开优化.html" class="topic-card">
+        <span class="topic-num planned">10</span>
+        <div class="topic-body">
+          <div class="topic-title">循环展开优化</div>
+          <div class="topic-desc">自动展开小循环体，减少分支开销，增加指令级并行机会和后续优化的上下文。</div>
+          <div class="topic-meta"><span class="topic-badge badge-planned">规划中</span></div>
+        </div>
+      </a>
+
+      <a href="html/15-函数内联.html" class="topic-card">
+        <span class="topic-num planned">15</span>
+        <div class="topic-body">
+          <div class="topic-title">函数内联</div>
+          <div class="topic-desc">将小函数调用替换为函数体，消除调用开销（保存/恢复寄存器、跳转），扩大优化范围。</div>
+          <div class="topic-meta"><span class="topic-badge badge-planned">规划中</span></div>
+        </div>
+      </a>
+
+      <a href="html/29-SIMD-向量化.html" class="topic-card">
+        <span class="topic-num planned">29</span>
+        <div class="topic-body">
+          <div class="topic-title">SIMD 向量化</div>
+          <div class="topic-desc">利用 RISC-V P/V 扩展实现数据级并行：一次指令处理多个数据，大幅提升矩阵运算性能。</div>
+          <div class="topic-meta"><span class="topic-badge badge-planned">规划中</span></div>
+        </div>
+      </a>
+
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <p>ScratchV — AI 编译器实战课程 · <a href="../index.html">返回首页</a> · <a href="INDEX.md">Markdown 索引</a> · <a href="https://github.com/ScratchV-Compiler/ScratchV">GitHub</a></p>
+  </div>
+</div>
+
+<script>
+// ── Theme toggle ──────────────────────────────────────────────────────
+const toggle = document.getElementById('themeToggle');
+const html = document.documentElement;
+const saved = localStorage.getItem('scratchv-theme');
+if (saved) html.setAttribute('data-theme', saved);
+else if (window.matchMedia('(prefers-color-scheme: dark)').matches) html.setAttribute('data-theme', 'dark');
+toggle.addEventListener('click', () => {
+  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  html.setAttribute('data-theme', next);
+  localStorage.setItem('scratchv-theme', next);
+});
+
+// ── Category filter ──────────────────────────────────────────────────
+const filterBtns = document.querySelectorAll('.filter-btn');
+const sections = document.querySelectorAll('.topic-section');
+
+filterBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    // Update active button
+    filterBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    const filter = btn.dataset.filter;
+    sections.forEach(section => {
+      if (filter === 'all' || section.dataset.category === filter) {
+        section.classList.remove('hidden');
+      } else {
+        section.classList.add('hidden');
+      }
+    });
+  });
+});
+</script>
+</body>
+</html>
