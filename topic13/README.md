@@ -13,6 +13,8 @@
 | 类型 | 读者 | 路径 |
 |------|------|------|
 | **设计文档** | 人（架构/审查/汇报） | [`docs/topics/13-窥孔优化器-设计文档.md`](../docs/topics/13-窥孔优化器-设计文档.md) |
+| **赛道 A 设计文档** | Parser 复用 / review 跟进 | [`docs/topics/13-窥孔优化器-赛道A-设计文档.md`](../docs/topics/13-窥孔优化器-赛道A-设计文档.md) |
+| **赛道 A 开发文档** | 实现与验收清单 | [`docs/topics/13-窥孔优化器-赛道A-开发文档.md`](../docs/topics/13-窥孔优化器-赛道A-开发文档.md) |
 | **开发文档** | AI / 维护者 | [`docs/topics/archive/topic13_asm_peephole_guide.md`](../docs/topics/archive/topic13_asm_peephole_guide.md) |
 | **新手教程** | 入门学习 | [`docs/topics/13-窥孔优化器.md`](../docs/topics/13-窥孔优化器.md) |
 | **课题提案（归档）** | 原始任务说明 | [`docs/topics/archive/课题13：窥孔优化器.md`](../docs/topics/archive/课题13：窥孔优化器.md) |

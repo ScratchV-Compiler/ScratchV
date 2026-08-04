@@ -507,5 +507,40 @@ class TestSemanticEquivalence:
         assert post.get("t0", 0) != pre["t0"]
 
 
+@pytest.mark.unit
+class TestTrackAParserReuseAndHardening:
+    """Track A: shared _asm_parser reuse + review follow-ups."""
+
+    def test_asmline_is_shared_parsed_type(self):
+        from scratchv.backend._asm_parser import ParsedAsmLine
+        from scratchv.backend.asm_peephole import AsmLine
+
+        assert AsmLine is ParsedAsmLine
+        al = _parse_line("  add t0, t1, t2")
+        assert isinstance(al, ParsedAsmLine)
+
+    def test_count_opcodes_skips_directives(self):
+        from scratchv.backend.asm_peephole import _count_opcodes
+
+        lines = _parse_asm(".text\nmain:\n  addi t0, t0, 1\n  ret\n")
+        assert _count_opcodes(lines) == 2
+
+    def test_short_mv_operands_do_not_crash(self):
+        """Malformed mv with one operand must not raise IndexError."""
+        optimizer = AsmPeepholeOptimizer()
+        asm = "  mv t0\n  mv t1, t0\n"
+        result, changes = optimizer.optimize(asm)
+        assert isinstance(result, str)
+        assert changes >= 0
+
+    def test_addi_zero_self_with_zero_alias(self):
+        optimizer = AsmPeepholeOptimizer()
+        asm = "  addi zero, x0, 0\n  ret\n"
+        result, changes = optimizer.optimize(asm)
+        assert changes == 1
+        assert "addi" not in result
+        assert "ret" in result
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

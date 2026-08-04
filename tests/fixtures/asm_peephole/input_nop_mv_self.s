@@ -1,4 +1,6 @@
+# Eliminate no-ops and identity moves
 .text
+.globl main
 main:
   nop
   mv t0, t0

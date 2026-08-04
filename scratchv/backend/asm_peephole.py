@@ -3,6 +3,10 @@
 Applies peephole optimization rules to RISC-V assembly text using
 sliding-window pattern matching with register wildcards.
 
+Parsing is delegated to the shared backend parser
+(``scratchv.backend._asm_parser``) so beautifier / peephole / const-merge
+share one AsmLine representation.
+
 Usage::
 
     from scratchv.backend.asm_peephole import AsmPeepholeOptimizer
@@ -12,40 +16,24 @@ Usage::
 
 from __future__ import annotations
 
-import re
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
+
+from scratchv.backend._asm_parser import (
+    ParsedAsmLine,
+    lines_to_asm as _shared_lines_to_asm,
+    parse_asm as _shared_parse_asm,
+    parse_line as _shared_parse_line,
+)
 
 
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
 
-
-@dataclass
-class AsmLine:
-    """Represents one parsed line of assembly."""
-    raw: str
-    label: Optional[str] = None
-    opcode: Optional[str] = None
-    operands: list[str] = field(default_factory=list)
-    comment: Optional[str] = None
-    lineno: int = 0
-
-    def __str__(self) -> str:
-        if self.label is not None and self.opcode is None:
-            return self.raw
-        parts = []
-        if self.label:
-            parts.append(f"{self.label}:")
-        if self.opcode:
-            parts.append(f"  {self.opcode}")
-            if self.operands:
-                parts.append(" " + ", ".join(self.operands))
-        if self.comment:
-            parts.append(f"  # {self.comment}")
-        return "".join(parts)
+# Backward-compatible alias: peephole historically used ``AsmLine``.
+AsmLine = ParsedAsmLine
 
 
 @dataclass
@@ -66,6 +54,9 @@ class PeepholeRule:
     register_constraints:
         Optional list of tuples ``(dst_instr, src_instr, src_op)`` requiring
         ``window[dst_instr].operands[0] == window[src_instr].operands[src_op]``.
+        Indices are **0-based positions inside the match window** (not global
+        line numbers). Example: ``(0, 1, 1)`` means "rd of window[0] must
+        equal operand 1 of window[1]".
     """
     name: str
     pattern: list[str]
@@ -79,118 +70,58 @@ class PeepholeRule:
 
 
 # ---------------------------------------------------------------------------
-# Parsing
+# Parsing — thin wrappers over shared ``_asm_parser``
 # ---------------------------------------------------------------------------
 
-_LINE_RE = re.compile(
-    r'^\s*'
-    r'(?P<label>[A-Za-z_.][A-Za-z0-9_.]*:)?\s*'
-    r'(?P<opcode>\.?\w[\w.]*)?\s*'
-    r'(?P<operands>[^#]*?)'
-    r'(?:\s*#\s*(?P<comment>.*))?'
-    r'$'
-)
-
-
 def _parse_line(line: str, lineno: int = 0) -> AsmLine:
-    """Parse a single assembly line into an AsmLine object."""
-    m = _LINE_RE.match(line)
-    if m is None:
-        return AsmLine(raw=line, lineno=lineno)
-
-    label = m.group("label")
-    if label is not None:
-        label = label.rstrip(":")
-
-    opcode = m.group("opcode")
-    if opcode is not None:
-        opcode = opcode.strip().lower()
-
-    operands_raw = (m.group("operands") or "").strip()
-    operands_list = [
-        o.strip() for o in operands_raw.split(",") if o.strip()
-    ]
-
-    comment = m.group("comment")
-    if comment is not None:
-        comment = comment.strip()
-
-    return AsmLine(
-        raw=line,
-        label=label,
-        opcode=opcode,
-        operands=operands_list,
-        comment=comment,
-        lineno=lineno,
-    )
-
-
-def _split_operands(s: str) -> list[str]:
-    """Split operand string by comma, respecting parentheses."""
-    parts = []
-    depth = 0
-    current = []
-    for ch in s:
-        if ch == "," and depth == 0:
-            parts.append("".join(current).strip())
-            current = []
-        else:
-            current.append(ch)
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-    if current or not parts:
-        parts.append("".join(current).strip())
-    return [p for p in parts if p]
+    """Parse a single assembly line (shared parser)."""
+    return _shared_parse_line(line, lineno=lineno)
 
 
 def _parse_asm(asm_text: str) -> list[AsmLine]:
-    """Parse full assembly text into a list of AsmLine objects."""
-    lines = asm_text.strip().split("\n")
-    result = []
-    line_count = 0
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        # Preserve empty lines but as minimal records
-        if not stripped:
-            result.append(AsmLine(raw=line, lineno=i))
-            continue
-        al = _parse_line(line, lineno=i)
-        result.append(al)
-        if al.opcode is not None:
-            line_count += 1
-    return result
+    """Parse full assembly text (shared parser).
+
+    Leading/trailing blank lines from ``strip()`` are dropped so behaviour
+    matches the historical peephole parser used by existing tests.
+    """
+    return _shared_parse_asm(asm_text.strip())
 
 
 def _lines_to_asm(lines: list[AsmLine]) -> str:
-    """Convert a list of AsmLine objects back to assembly text."""
-    output = []
-    for al in lines:
-        if al.opcode is None and al.label is None and not al.raw.strip():
-            output.append("")
-        elif al.label is not None and al.opcode is None and not al.operands:
-            output.append(f"{al.label}:")
-        else:
-            parts = []
-            if al.label:
-                parts.append(f"{al.label}:")
-            if al.opcode:
-                parts.append(f"  {al.opcode}")
-                if al.operands:
-                    parts.append(" " + ", ".join(al.operands))
-            if al.comment:
-                parts.append(f"  # {al.comment}")
-            output.append("".join(parts))
-    return "\n".join(output)
+    """Convert parsed lines back to assembly text (shared formatter)."""
+    return _shared_lines_to_asm(lines)
 
 
 def _count_opcodes(lines: list[AsmLine]) -> int:
-    """Count real instruction opcodes (labels and ``.``-directives excluded)."""
+    """Count real instruction opcodes (labels and directives excluded)."""
     return sum(
         1 for al in lines
-        if al.opcode is not None and not al.opcode.startswith(".")
+        if al.opcode is not None and not al.is_directive
     )
+
+
+# ---------------------------------------------------------------------------
+# Register alias helpers (x0 == zero)
+# ---------------------------------------------------------------------------
+
+_ZERO_ALIASES = frozenset({"x0", "zero"})
+
+
+def _canon_reg(name: str) -> str:
+    """Normalize register aliases so ``x0`` and ``zero`` compare equal."""
+    if name in _ZERO_ALIASES:
+        return "x0"
+    return name
+
+
+def _regs_equal(a: str, b: str) -> bool:
+    """Equality with zero-register alias awareness."""
+    return _canon_reg(a) == _canon_reg(b)
+
+
+def _is_zero_reg(name: str) -> bool:
+    """Return True if *name* is the hardwired-zero register."""
+    return name in _ZERO_ALIASES
 
 
 # ---------------------------------------------------------------------------
@@ -351,40 +282,39 @@ def _match_rule(
         if i > 0 and line.label:
             return None
 
-    # Apply register constraints
+    # Apply register constraints (window-local indices; x0/zero aliases).
     for constraint in rule.register_constraints:
         dst_instr, src_instr, src_op = constraint
         if src_instr >= len(window) or dst_instr >= len(window):
             return None
         if not window[dst_instr].operands or not window[src_instr].operands:
             return None
-        dst_rd = (
-            window[dst_instr].operands[0]
-            if window[dst_instr].operands else None
-        )
-        if src_op < len(window[src_instr].operands):
-            src_val = window[src_instr].operands[src_op]
-        else:
+        if src_op >= len(window[src_instr].operands):
             return None
-        if dst_rd != src_val:
+        dst_rd = window[dst_instr].operands[0]
+        src_val = window[src_instr].operands[src_op]
+        if not _regs_equal(dst_rd, src_val):
             return None
 
-    # For Rule 4 (beq x0,x0 -> j): both operands must be zero
+    # beq x0/zero, x0/zero, label -> j label
     if rule.name == "beq zero-zero to jump":
         ops = window[0].operands
         if len(ops) < 2:
             return None
-        if ops[0] not in ("x0", "zero") or ops[1] not in ("x0", "zero"):
+        if not (_is_zero_reg(ops[0]) and _is_zero_reg(ops[1])):
             return None
 
     # mv-chain rule must not match swap-shaped pairs: mv x,y; mv y,x
     # (that pattern is not a no-op and must be left untouched).
+    # Guard operand lengths to avoid IndexError on malformed / short lines.
     if rule.name == "redundant mv elimination":
         if (
             len(window) >= 2
             and len(window[0].operands) >= 2
-            and window[1].operands
-            and window[1].operands[0] == window[0].operands[1]
+            and len(window[1].operands) >= 2
+            and _regs_equal(
+                window[1].operands[0], window[0].operands[1]
+            )
         ):
             return None
 
@@ -414,11 +344,12 @@ def _match_rule(
             return None
 
     # addi rd, rs, 0 (rd != rs) -> mv rd, rs
+    # Non-integer immediates (labels/symbols) are skipped via _parse_imm.
     if rule.name == "addi-zero to mv":
         ops = window[0].operands
         if len(ops) < 3 or _parse_imm(ops[2]) != 0:
             return None
-        if ops[0] == ops[1]:
+        if _regs_equal(ops[0], ops[1]):
             return None  # handled by addi-zero self elimination
 
     return bindings
