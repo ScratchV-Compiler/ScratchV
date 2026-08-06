@@ -5,7 +5,7 @@ with proper live interval computation and spill code generation.
 
 Usage::
 
-    from scratchv.backend.regalloc_linear_v1_3 import LinearScanAllocator
+    from scratchv.backend.regalloc_linear_v1_4 import LinearScanAllocator
     allocator = LinearScanAllocator()
     intervals = allocator.compute_live_intervals(block_instructions)
     allocator.allocate(intervals)
@@ -431,26 +431,69 @@ class LinearScanAllocator:
             if inst.id in self._evictions:
                 lines.extend(self._evictions[inst.id])
 
+            # Physical registers currently live here (i.e. mapped in
+            # *rename* and active at this position).  Both reload targets
+            # and spilled-vreg scratches must avoid these.
+            live_regs: set[str] = set()
+            for vreg, preg in rename.items():
+                if preg not in self.phys_regs:
+                    continue  # SPILL_ marker, holds no physical register
+                iv = self._vreg_interval.get(vreg)
+                if iv is None or iv.contains(inst.id):
+                    live_regs.add(preg)
+
             # Insert reloads before the instruction
+            reload_reg: str | None = None
             if inst.id in self._reloads:
                 # Vregs used/defined by this instruction must not be evicted
                 # by _evict_for_reload, otherwise inst.to_asm() would get
                 # an unresolved vreg name.
                 protected: set[str] = inst.uses | inst.defines
                 for vreg, slot in self._reloads[inst.id]:
-                    reload_reg = self._pick_reload_reg(rename, inst.id, protected)
+                    reload_reg = self._pick_reload_reg(
+                        rename, inst.id, protected, reuse_reg=reload_reg)
                     lines.append(
                         f"  lw {reload_reg}, {slot}(sp)"
                         f"  # reload {vreg}"
                     )
                     rename[vreg] = reload_reg
+                    live_regs.add(reload_reg)
+                # A reload register lands in the live set above; if the
+                # instruction later re-defines a spilled vreg, its scratch
+                # must not collide with a register that still feeds this
+                # instruction.
 
-            # For spilled vregs defined here, pick a scratch register
+            # For spilled vregs defined here, pick a scratch register.
+            # A spilled vreg being re-defined (define+use, e.g. ``v = v op v``)
+            # must both read the reloaded old value and then write the new
+            # value back to its stack slot, otherwise the freshly computed
+            # value is lost and a later reload reads a stale slot.
             for d in inst.defines:
-                if d in rename and rename[d].startswith("SPILL_"):
-                    slot = self._spill_slots.get(d, 0)
-                    scratch = self._pick_scratch(d)
-                    rename[d] = scratch
+                if d not in self._spilled:
+                    continue
+                # d is a spilled vreg that this instruction redefines.  Its
+                # fresh value must be stored back to the slot so that a later
+                # reload observes the new value.  (Membership in self._spilled
+                # is the right test — checking rename[d] for a literal
+                # "SPILL_" prefix is not robust, because an earlier
+                # redefinition already coerced rename[d] to a physical
+                # register, hiding later redefinitions of the same vreg.)
+                slot = self._spill_slots.get(d, 0)
+                cur = rename.get(d)
+                if cur is None or str(cur).startswith("SPILL_"):
+                    # Not yet in a physical register this instruction can
+                    # write into; pick a scratch and let to_asm route the
+                    # definition here.
+                    cur = self._pick_scratch(d, busy=live_regs)
+                    rename[d] = cur
+                    live_regs.add(cur)
+                # spill_code is emitted AFTER inst.to_asm(), at which point
+                # rename[d] holds the freshly computed value, so storing it
+                # back now is safe (no intervening clobber).
+                self.spill_code.setdefault(inst.id, []).append(
+                    f"  sw {cur}, {slot}(sp)"
+                    f"  # store redefined {d}"
+                )
 
             lines.append(inst.to_asm(rename))
 
@@ -461,7 +504,8 @@ class LinearScanAllocator:
         return "\n".join(lines)
 
     def _pick_reload_reg(self, rename: dict[str, str], current_pos: int,
-                          protected_vregs: set[str] | None = None) -> str:
+                          protected_vregs: set[str] | None = None,
+                          reuse_reg: str | None = None) -> str:
         """Pick a free physical register for a reload ``lw``.
 
         Filters *rename* by actual liveness at *current_pos* so that
@@ -472,6 +516,15 @@ class LinearScanAllocator:
         *protected_vregs* are excluded from eviction — typically the
         current instruction's own uses/defines — since evicting them
         would leave the instruction with an unresolved vreg name.
+
+        *reuse_reg* is an optional register already selected as a reload
+        target earlier in the *same* instruction slot.  A reload register
+        only lives for the duration of its own ``lw`` (the value is
+        consumed by the following instruction), so it is safe for several
+        reloads within one slot to share a single physical register.  This
+        is the key safety net that prevents the fallback path in
+        ``_evict_for_reload`` from ever needing to hand out an occupied
+        register.
         """
         used: set[str] = set()
         for vreg, preg in rename.items():
@@ -485,11 +538,20 @@ class LinearScanAllocator:
         for reg in self.phys_regs:
             if reg not in used:
                 return reg
-        return self._evict_for_reload(rename, used, current_pos, protected_vregs)
+        # All physical registers are live at this position.  First try to
+        # reuse a reload register already chosen earlier in this *same*
+        # instruction slot: that register only holds a transient ``lw``
+        # result that has since been consumed, so overwriting it with the
+        # next reload is safe and needs no eviction.  Only when no such
+        # reuse is available do we fall through to eviction.
+        if reuse_reg is not None:
+            return reuse_reg
+        return self._evict_for_reload(rename, used, current_pos, protected_vregs, reuse_reg)
 
     def _evict_for_reload(
         self, rename: dict[str, str], used: set[str], current_pos: int,
         protected_vregs: set[str] | None = None,
+        reuse_reg: str | None = None,
     ) -> str:
         """Evict a live register to make room for a reload.
 
@@ -500,6 +562,11 @@ class LinearScanAllocator:
         Vregs in *protected_vregs* are excluded from eviction — they are
         needed by the instruction at *current_pos* and evicting them
         would produce unresolved vreg names in the output.
+
+        *reuse_reg* mirrors the argument to ``_pick_reload_reg``: it is a
+        reload register already handed out earlier in this same
+        instruction slot and is a safe last-resort target because its
+        prior ``lw`` value has already been consumed.
         """
         protect = protected_vregs or set()
         farthest_vreg: str | None = None
@@ -519,13 +586,25 @@ class LinearScanAllocator:
                 farthest_vreg = vreg
 
         # No eligible victim: every live register is protected by the current
-        # instruction (its own uses/defines), so reloading would corrupt the
-        # instruction.  Reuse the reload register for another reload line by
-        # granting a scratch from the pool a second time.  Rather than return
-        # a potentially-occupied register (data corruption), fall back to the
-        # last physical register and document the limitation.
+        # instruction (its own uses/defines), so reloading via an evicted
+        # register would corrupt the instruction.  If a reload register was
+        # already handed out for this instruction slot, reuse it: its prior
+        # ``lw`` value has already been consumed, so a second ``lw`` into the
+        # same register is safe.  Otherwise this is a degenerate input where a
+        # single instruction simultaneously references more operands than the
+        # target ISA can express — silently returning an occupied register
+        # (as the previous ``self.phys_regs[0]`` fallback did) would clobber a
+        # still-live value and silently corrupt output, so fail loudly instead.
         if farthest_vreg is None:
-            return self.phys_regs[0]
+            if reuse_reg is not None:
+                return reuse_reg
+            raise RuntimeError(
+                "regalloc: cannot reload a spilled register at position "
+                f"{current_pos}: all live physical registers are held by the "
+                "instruction's own operands and no reload register is "
+                "reusable. Input references more simultaneously live vregs "
+                "than the physical pool provides."
+            )
 
         evicted_reg = rename[farthest_vreg]
         slot = self._get_spill_slot(farthest_vreg)
@@ -553,19 +632,33 @@ class LinearScanAllocator:
         rename[farthest_vreg] = f"SPILL_{farthest_vreg}"
         return evicted_reg
 
-    def _pick_scratch(self, vreg: str) -> str:
+    def _pick_scratch(self, vreg: str, busy: set[str] | None = None) -> str:
         """Pick a scratch register for a spilled vreg definition.
 
         Uses a cache so the same vreg tends to get the same scratch reg,
-        reducing redundant loads in tight loops.
+        reducing redundant stores in tight loops.
+
+        *busy* is the set of physical registers already in use at this
+        point of code generation (reload targets, live vregs, previously
+        chosen scratches within the same instruction).  Without it the
+        scratch could collide with a register used as a reload target or
+        held by an active vreg, silently clobbering that value.  If the
+        cache's preferred register is busy, fall back to any free one.
         """
-        if vreg in self._scratch_cache:
-            return self._scratch_cache[vreg]
-        busy: set[str] = set(self.alloc_map.values())
+        busy = busy or set()
+        candidate = self._scratch_cache.get(vreg)
+        if candidate is not None and candidate not in busy:
+            return candidate
         for reg in self.phys_regs:
             if reg not in busy:
                 self._scratch_cache[vreg] = reg
                 return reg
+        # No register is free; reuse the cached scratch as a last resort
+        # (caller must have already spilled everything that matters).  This
+        # can only happen on degenerate inputs already flagged by
+        # ``_evict_for_reload``.
+        if candidate is not None:
+            return candidate
         reg = self.phys_regs[0]
         self._scratch_cache[vreg] = reg
         return reg

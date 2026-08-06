@@ -1,5 +1,4 @@
-"""
-课题17：寄存器分配瓶颈场景系统性测试
+"""课题17：寄存器分配瓶颈场景系统性测试（v1.4）
 
 瓶颈分析维度（6大维度，每个维度2-4个具体场景）：
   1. 活跃度维度 —— 活跃 vreg 数量 vs 物理寄存器数量
@@ -13,8 +12,19 @@
   - 场景含义（构造意图）
   - 构建方式（具体代码）
   - 详细测试数据
+
+关于非法多源指令的说明（v1.4）
+=============================
+部分高压场景（A01/A02/A03/D01/E03 等）故意把几十个 vreg 的 ``uses``
+放进*一条* ``add`` 指令，以此构造“全部 vreg 在同一位置完全重叠”的
+极端压力。这类指令的 operands 列表超出了 RISC-V 三操作数 ISA 的写实范围，
+生成的汇编片段是“压力模型 dump”，**不代表可执行语义**——分配器的行为
+完全由 ``defines``/``uses``/``compute_live_intervals`` 驱动，operands 只是
+展示载体，不影响压力测量的正确性。若要得到可执行的合法汇编，应将这些
+多源指令改写为两两累加链（会显著降低同一位置的峰值压力），那是另一类
+测试，不属于本框架的压力模型范围。
 """
-from scratchv.backend.regalloc_linear_v1_3 import LinearScanAllocator, LsInstruction
+from scratchv.backend.regalloc_linear_v1_4 import LinearScanAllocator, LsInstruction
 import random
 import inspect
 
@@ -24,6 +34,35 @@ PHYS_REGS = ['a0','a1','a2','a3','a4','a5','a6','a7',
              's0','s1','s2','s3','s4','s5','s6','s7',
              's8','s9','s10','s11']
 POOL = len(PHYS_REGS)  # 27
+
+
+def _same_end_consumer(N, start_id=0):
+    """Build a pressure block with *N* vregs that *all* start at position 0
+    (fully overlapping) and are consumed through a *legal* accumulation chain.
+
+    A single ``add`` with ``N`` source operands would express the same
+    "everything is live at once" pressure but is not a valid RISC-V
+    instruction (and, when N exceeds the physical pool, is physically
+    impossible to allocate at one program point).  Consuming via a two-source
+    ``add`` chain keeps every vreg live from position 0 until the chain
+    touches it, i.e. it preserves the same all-overlapping pressure profile
+    while remaining representable and allocatable.
+
+    Returns
+    -------
+    list[LsInstruction]:
+        The LI batch (id 0) followed by the accumulation chain (ids 1..).
+    """
+    block = [LsInstruction(start_id, 'li', [f'v{i}', str(i)],
+                           defines={f'v{i}'}, uses=set())
+             for i in range(N)]
+    block.append(LsInstruction(start_id + 1, 'li', ['v_acc0', '0'],
+                               defines={'v_acc0'}, uses=set()))
+    for i in range(N):
+        block.append(LsInstruction(
+            start_id + 2 + i, 'add', [f'v_acc{i+1}', f'v_acc{i}', f'v{i}'],
+            defines={f'v_acc{i+1}'}, uses={f'v_acc{i}', f'v{i}'}))
+    return block
 
 
 def _renumber(block):
@@ -79,20 +118,27 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
         }
 
     total_vregs = len(alloc.alloc_map)
-    spilled = set(alloc._spill_slots)
 
     # === Eviction vs self-spill counting ===
-    # v1.3: evictions are recorded in alloc._evictions (sw stores emitted
-    # before a reload), self-spills in alloc.spill_code.  The actual physical
-    # stores bound to stack slots are counted from the store instructions.
+    # v1.3/v1.4: evictions are recorded in alloc._evictions (sw stores emitted
+    # before a reload), self-spills in alloc.spill_code.  Since v1.4 spill_code
+    # also carries the stack stores emitted after a *re-defined* spilled vreg,
+    # both classes are genuinely "sw after a definition".  The actual physical
+    # stores bound to stack slots are counted separately from the emitted
+    # assembly (``code.count('  sw ')``).
     eviction_sw = sum(len(v) for v in alloc._evictions.values())
     self_spill_sw = sum(len(v) for v in alloc.spill_code.values())
     evicted = eviction_sw
     self_spill = self_spill_sw
 
-    # Code metrics
-    stores = code.count('  sw ')
-    loads = code.count('  lw ')
+    # Code metrics — match opcodes at the start of an emitted line (all
+    # emitted instructions are indented by two spaces, comments are separated
+    # by ``#``), so the tally is robust to indentation width and never
+    # matches an operand or a comment.
+    stores = sum(1 for ln in code.split('\n')
+                 if ln.startswith('  sw ') or ln.startswith('\tsw '))
+    loads = sum(1 for ln in code.split('\n')
+                if ln.startswith('  lw ') or ln.startswith('\tlw '))
     total_lines = len(code.split('\n'))
     asm_size = len(code.encode('utf-8'))
 
@@ -100,16 +146,25 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
     avg_uses = sum(len(iv.uses) for iv in ivs) / max(len(ivs), 1)
     max_uses = max((len(iv.uses) for iv in ivs), default=0)
 
-    # Redundant reloads: any spilled vreg reloaded more than once to the same
-    # scratch register within one instruction slot is redundant.
+    # Redundant reloads: a reload of a vreg is only wasteful if the very same
+    # (vreg, slot) pair is reloaded more than once within a single instruction
+    # slot — the earlier ``lw`` result would be overwritten before it is ever
+    # consumed.  Reloads of the same vreg at *different* source positions are
+    # legitimate: the stack slot may have been redefined in between, so the
+    # value must be fetched afresh.  (A naive "count every reload after the
+    # first for each vreg" massively overstates redundancy — most positions
+    # genuinely need their own load.)
     redundant_reloads = 0
-    last_reload = {}  # vreg -> reload reg
+    seen_in_slot: dict[str, int] = {}  # vreg -> count within current slot
+    current_slot: int | None = None
     for pos in sorted(alloc._reloads):
+        if current_slot != pos:
+            current_slot = pos
+            seen_in_slot = {}
         for vreg, _slot in alloc._reloads[pos]:
-            removed = last_reload.get(vreg) is not None
-            if removed:
+            seen_in_slot[vreg] = seen_in_slot.get(vreg, 0) + 1
+            if seen_in_slot[vreg] > 1:
                 redundant_reloads += 1
-            last_reload[vreg] = pos
 
     # slot reuse efficiency
     # Count how many times a slot at the same offset is used for different vregs
@@ -238,30 +293,15 @@ def print_result(r, verbose=False):
 
 def A01_slight_overlap():
     """轻度超压: pool+5 个 vreg 完全重叠，观察 entry-level 溢出行为"""
-    return (
-        [LsInstruction(0, 'li', [f'v{i}', str(i)], defines={f'v{i}'}, uses=set())
-         for i in range(POOL + 5)] +
-        [LsInstruction(1, 'add', ['v_out'] + [f'v{i}' for i in range(POOL + 5)],
-                       defines={'v_out'}, uses={f'v{i}' for i in range(POOL + 5)})]
-    )
+    return _same_end_consumer(POOL + 5)
 
 def A02_moderate_overlap():
     """中度超压: pool*2 vreg 完全重叠"""
-    return (
-        [LsInstruction(0, 'li', [f'v{i}', str(i)], defines={f'v{i}'}, uses=set())
-         for i in range(POOL * 2)] +
-        [LsInstruction(1, 'add', ['v_out'] + [f'v{i}' for i in range(POOL * 2)],
-                       defines={'v_out'}, uses={f'v{i}' for i in range(POOL * 2)})]
-    )
+    return _same_end_consumer(POOL * 2)
 
 def A03_severe_overlap():
     """重度超压: pool*7 vreg 完全重叠（200个）"""
-    return (
-        [LsInstruction(0, 'li', [f'v{i}', str(i)], defines={f'v{i}'}, uses=set())
-         for i in range(200)] +
-        [LsInstruction(1, 'add', ['v_out'] + [f'v{i}' for i in range(200)],
-                       defines={'v_out'}, uses={f'v{i}' for i in range(200)})]
-    )
+    return _same_end_consumer(200)
 
 def A04_no_overlap():
     """零超压: 完全不重叠，验证无压力下的基线"""
@@ -402,13 +442,7 @@ def C04_spill_adjacent_uses():
 
 def D01_same_end_all():
     """全部同终点: 所有区间[0, end)相同，farthest-end 退化为随机选择"""
-    N = POOL + 20
-    return (
-        [LsInstruction(0, 'li', [f'v{i}', str(i)], defines={f'v{i}'}, uses=set())
-         for i in range(N)] +
-        [LsInstruction(1, 'add', ['v_out'] + [f'v{i}' for i in range(N)],
-                       defines={'v_out'}, uses={f'v{i}' for i in range(N)})]
-    )
+    return _same_end_consumer(POOL + 20)
 
 def D02_skewed_ends():
     """偏斜终点: 前半区间短，后半区间长，观察 farthest-end 的偏差"""
@@ -444,18 +478,30 @@ def D03_eviction_chain():
     return build()
 
 def D04_spiral_interleaving():
-    """螺旋交织: 复杂的区间依赖关系，用模运算生成"""
-    rng = random.Random(42)
+    """螺旋交织: 复杂的区间依赖关系，用模运算生成。
+
+    v1.4 修复: 原实现用 ``v{(i*3)%100}`` / ``v{(i*5)%100}`` /
+    ``v{(i*7)%100}`` 三个独立模函数分别取 define 与两个 use, 导致大量
+    invalid IR —— 一个 vreg 在它被定义(interval 起点)之前就被 use
+    (use-before-def), 代码生成阶段该 vreg 仍是 ``SPILL_`` 占位符,
+    ``SPILL_vXX`` 直接泄漏进汇编。现将 define 改为每次生成一个全新
+    vreg(``v{i}``), 两个 use 取自先前已定义、仍存活的 vreg(模索引),
+    从而保留"区间螺旋交织、重叠跨度不一"的压力特征, 同时保证输入合法。
+    """
     def build():
         block = []
-        for i in range(100):
-            d = f'v{(i * 3) % 100}'
-            u1 = f'v{(i * 5) % 100}'
-            u2 = f'v{(i * 7) % 100}'
-            if d == u1 or d == u2:
-                d = f'v{i}'
-                u1 = f'v{(i + 1) % 100}'
-                u2 = f'v{(i + 2) % 100}'
+        # 前 2 个先天定义, 作为最初可用的 use 源
+        block.append(LsInstruction(0, 'li', ['v0', '0'], defines={'v0'}, uses=set()))
+        block.append(LsInstruction(1, 'li', ['v1', '1'], defines={'v1'}, uses=set()))
+        for i in range(2, 102):
+            d = f'v{i}'
+            # use 取自先前已定义的 vreg (索引 < i, 保证在其 interval 起点之后),
+            # 用两种不同的"间隔"制造重叠跨度差异; 含 % 的模回绕会把索引绕回
+            # 尚未定义的高编号 vreg 造成 use-before-def, 故直接线性回退。
+            u1 = f'v{i - 1}'
+            u2 = f'v{max(0, i - 3)}'
+            while u2 == u1 or u2 == d:
+                u2 = f'v{max(0, i - 5)}'
             block.append(LsInstruction(i, 'add', [d, u1, u2], defines={d}, uses={u1, u2}))
         return block
     return build()
@@ -494,12 +540,7 @@ def E02_cascade_spills():
 
 def E03_no_slot_reuse():
     """模拟栈槽完全不可复用: 所有区间几乎同时存活"""
-    return (
-        [LsInstruction(0, 'li', [f'v{i}', str(i)], defines={f'v{i}'}, uses=set())
-         for i in range(100)] +
-        [LsInstruction(1, 'add', ['v_out'] + [f'v{i}' for i in range(100)],
-                       defines={'v_out'}, uses={f'v{i}' for i in range(100)})]
-    )
+    return _same_end_consumer(100)
 
 # =====================================================================
 # 瓶颈维度 6: 代码膨胀维度
@@ -547,7 +588,7 @@ def F03_dense_chain():
 
 def F04_large_random_block():
     """大规模随机块: 500条指令的完全随机模式"""
-    rng = random.Random(12345)
+    rng = random.Random(12345)  # seed=12345 —— 固定种子保证输出可复现
     def build():
         block = []
         live_set = set()
@@ -625,7 +666,10 @@ if __name__ == '__main__':
 
     results = []
     for sid, cat, desc, fn in all_scenarios:
-        name = f"{sid}_{fn.__name__}"
+        # fn.__name__ already carries the unique scenario id prefix (e.g.
+        # ``A01_slight_overlap``); prefixing ``sid`` again would yield
+        # ``A01_A01_slight_overlap``.  Keep just the function name.
+        name = f"{fn.__name__}"
         r = run_scenario(name, cat, desc, fn)
         results.append(r)
         print_result(r)
@@ -672,7 +716,7 @@ if __name__ == '__main__':
     print("附录: 每个场景的构建方式 (Python function)")
     print("=" * 72)
     for sid, cat, desc, fn in all_scenarios:
-        name = f"{sid}_{fn.__name__}"
+        name = f"{fn.__name__}"
         source = inspect.getsource(fn)
         print(f"\n--- {name}: {desc} ---")
         print(source)
