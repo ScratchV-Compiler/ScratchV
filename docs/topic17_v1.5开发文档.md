@@ -1,8 +1,8 @@
 # ScratchV 功能开发文档 — 课题17：寄存器分配（基本块内线性扫描）
 
-> **文档版本**：v1.4  \
+> **文档版本**：v1.5  \
 > **创建日期**：2026-07-13  \
-> **最后更新**：2026-08-06（v1.4：基于 PR #37 AI 代码审查再核对，修复剩余真实问题——① `spill_code` 重定义写回路径补全：spilled vreg 被纯重定义（非 define+use 重叠）后新值未写回栈，且同一 vreg 多次重定义因 `rename` 已降级为物理寄存器而漏检（由 `rename[d].startswith("SPILL_")` 改为 `d in self._spilled` 判据）；② 场景 D04 非法输入修复：`(i*3)%100` 等模回绕导致 99 处 use-before-def，`SPILL_vXX` 泄漏进汇编；③ 分配器 Bug A/B/C（redefine 写回、`_pick_scratch` 冲突、`_evict_for_reload` 回退）与 A01/A02/A03/D01/E03 多源 add 重构为合法累加链；文件重命名为 `regalloc_linear_v1_4.py`）  \
+> **最后更新**：2026-08-06（v1.4：基于 PR #37 AI 代码审查再核对，修复剩余真实问题——① `spill_code` 重定义写回路径补全：spilled vreg 被纯重定义（非 define+use 重叠）后新值未写回栈，且同一 vreg 多次重定义因 `rename` 已降级为物理寄存器而漏检（由 `rename[d].startswith("SPILL_")` 改为 `d in self._spilled` 判据）；② 场景 D04 非法输入修复：`(i*3)%100` 等模回绕导致 99 处 use-before-def，`SPILL_vXX` 泄漏进汇编；③ 分配器 Bug A/B/C（redefine 写回、`_pick_scratch` 冲突、`_evict_for_reload` 回退）与 A01/A02/A03/D01/E03 多源 add 重构为合法累加链；文件重命名为 `regalloc_linear_v1_5.py`）。v1.5：按 7/31 最新一轮 AI 审查复核——修正 `_to_mop` 以 `_REG_NUMS` 精确匹配取代前缀误判（`a_temp` 不再被当作物理寄存器）、场景指标检测修正（`_all_spill_lines` 按位置合并、`vreg_leaks` 词边界匹配、`spill_code_entries` 统一为条目数）、`report()` 负偏移说明；订正开发/设计文档中与源码不一致的复杂度声明与自溢分支描述）  \
 > **作者**：Xi  \
 > **关联 Issue**：无  \
 > **涉及模块**：backend/（寄存器分配后端）
@@ -55,7 +55,7 @@ print(allocator.report())
 
 - **新增的命令行选项**：`--regalloc=linear`（集成到代码生成管线时使用）
 
-> **v1.4 说明**：分配器位于 `scratchv.backend.regalloc_linear_v1_4`，接口与上面的 `LinearScanAllocator`/`LsInstruction` 一致（`peak_real_pressure` 等新增字段可通过 `report()` 查看）。模块名历次演进：`regalloc_linear_v1.3.py`（含 `.` 无法 import，v1.3.1 重命名为 `regalloc_linear_v1_3.py`）→ v1.4 重命名为 `regalloc_linear_v1_4.py`。
+> **v1.5 说明**：分配器位于 `scratchv.backend.regalloc_linear_v1_5`，接口与上面的 `LinearScanAllocator`/`LsInstruction` 一致（`peak_real_pressure` 等新增字段可通过 `report()` 查看）。模块名历次演进：`regalloc_linear_v1.3.py`（含 `.` 无法 import，v1.3.1 重命名为 `regalloc_linear_v1_3.py`）→ v1.4 阶段重命名 `regalloc_linear_v1_4.py` → v1.5 最终确定为 `regalloc_linear_v1_5.py`。
 
 ### 2.2 内部设计（核心逻辑）
 
@@ -97,8 +97,8 @@ print(allocator.report())
 | 文件路径 | 修改类型 | 修改内容概述 |
 |----------|----------|--------------|
 | `scratchv/backend/regalloc_linear.py` | 新增 | 实现线性扫描分配器：LiveInterval、LsInstruction、LinearScanAllocator（基线版本） |
-| `scratchv/backend/regalloc_linear_v1_4.py` | 新增（继承自 `regalloc_linear_v1_3.py`，v1.4 重命名） | v1.4 分配器：v1.3 新增 `peak_active`/`peak_real_pressure`/`_scratch_cache`，修复 eviction 后 alloc_map 未更新等问题；v1.4 补全重定义写回路径、`_pick_scratch` 冲突、`_evict_for_reload` 回退 |
-| `scratchv/backend/topic17_bottleneck_scenarios_v1.4.py` | 新增 | 23 个瓶颈场景回归脚本（v1.3.1 修复导入与指标解析，可独立运行；v1.4 重构多源 add 场景、重写 D04 消除 use-before-def） |
+| `scratchv/backend/regalloc_linear_v1_5.py` | 新增（继承自 `regalloc_linear_v1_3.py`，v1.4 重命名） | v1.4 分配器：v1.3 新增 `peak_active`/`peak_real_pressure`/`_scratch_cache`，修复 eviction 后 alloc_map 未更新等问题；v1.4 补全重定义写回路径、`_pick_scratch` 冲突、`_evict_for_reload` 回退 |
+| `scratchv/backend/topic17_bottleneck_scenarios_v1_5.py` | 新增 | 23 个瓶颈场景回归脚本（v1.3.1 修复导入与指标解析，可独立运行；v1.4 重构多源 add 场景、重写 D04 消除 use-before-def） |
 | `scratchv/backend/instruction_select.py` | 修改 | 确保每条 MachineInstr 包含 defines/uses 字段 |
 | `scratchv/standalone/onnx_to_riscv_standalone.py` | 修改 | 在代码生成管线中插入寄存器分配步骤，添加 `--regalloc=linear` 选项 |
 | `tests/test_regalloc.py` | 新增 | 添加寄存器分配单元测试 |
@@ -283,12 +283,12 @@ Conv2D 模拟 workload 实测：30 vreg, 27 preg 池, peak_active=17, 零溢出�
 
 | # | 文件 | 类型 | 问题 | 修复 | 验证 |
 |---|------|------|------|------|------|
-| Fix 1 | `regalloc_linear_v1.4.py`（已重命名） | 严重·可导入性 | Python 模块名含 `.`，`regalloc_linear_v1.4.py` 无法被 `import`，导致场景脚本只能错误地导入基线版 `regalloc_linear` | git mv 重命名为 `regalloc_linear_v1_4.py` | `import scratchv.backend.regalloc_linear_v1_4` 成功 |
-| Fix 2 | `regalloc_linear_v1_4.py` | 严重·正确性 | `spill()` 的 self-spill 分支写死 `temp_reg = phys_regs[0]`。当所有寄存器被占用时，该寄存器仍被另一活跃区间持有，写入其值会污染仍在存活的 vreg | self-spill 分支改为统一 evict 令其结束最晚的活跃区间，把该寄存器让给 `current`（`current` 本就活得比所有活跃区间久） | 23 个场景冲突检测 0 冲突 |
-| Fix 3 | `regalloc_linear_v1_4.py` | 严重·正确性 | `_evict_for_reload` 用 `del rename[farthest_vreg]` 把 vreg 从 rename 映射中永久删除。若该 vreg 之后有定义/使用却无 reload 路径，其虚拟寄存器名会泄漏进最终汇编（B01/E01/F04 实测复现 vreg 泄漏） | 改为 `rename[farthest_vreg] = f"SPILL_{farthest_vreg}"` 降级；配套在 `_pick_reload_reg`/`_evict_for_reload` 跳过非物理寄存器条目 | 泄漏场景全部消失，23/23 场景无泄漏、无冲突 |
-| Fix 4 | `regalloc_linear_v1_4.py` | 低·代码质量 | `compute_live_intervals` 中 `vreg in defines and vreg in uses` 的独立分支与相邻 uses 分支完全重复 | 删除冗余分支，合并注释说明 define+use 同指令的处理 | 纯重构，测试通过 |
-| Fix 5 | `regalloc_linear_v1_4.py` | 低·代码质量 | `machine_instrs_from_block` 内部 `from scratchv.backend.machine_types import ...` 每次调用重复导入 | 上移到模块级 import | 纯重构，测试通过 |
-| Fix 6 | `topic17_bottleneck_scenarios_v1.4.py` | 严重·不可运行 | ① 错误 import 基线版导致读取 `peak_active` 等属性即崩溃；② 按老式 `spill_code=[(pos,op,operand),...]` 列表接口解析，与 v1.3 的 `dict[int, list[str]]` 不符；③ 16/23 个场景构建器使用重复指令 id，破坏按 id 索引的溢出状态 | ① 改为 import `regalloc_linear_v1_4`；② 重写 `run_scenario` 指标解析适配 `_evictions`/`_spill_slots`/`_reloads`/`spill_code` 结构；③ 新增 `_renumber()` 在 `run_scenario` 内按块位置重编号为唯一 id | 脚本可独立运行，23 场景全部通过且无泄漏/无冲突 |
+| Fix 1 | `regalloc_linear_v1_5.py`（已重命名） | 严重·可导入性 | Python 模块名含 `.`，`regalloc_linear_v1_5.py` 无法被 `import`，导致场景脚本只能错误地导入基线版 `regalloc_linear` | git mv 重命名为 `regalloc_linear_v1_5.py` | `import scratchv.backend.regalloc_linear_v1_5` 成功 |
+| Fix 2 | `regalloc_linear_v1_5.py` | 严重·正确性 | `spill()` 的 self-spill 分支写死 `temp_reg = phys_regs[0]`。当所有寄存器被占用时，该寄存器仍被另一活跃区间持有，写入其值会污染仍在存活的 vreg | self-spill 分支改为统一 evict 令其结束最晚的活跃区间，把该寄存器让给 `current`（`current` 本就活得比所有活跃区间久） | 23 个场景冲突检测 0 冲突 |
+| Fix 3 | `regalloc_linear_v1_5.py` | 严重·正确性 | `_evict_for_reload` 用 `del rename[farthest_vreg]` 把 vreg 从 rename 映射中永久删除。若该 vreg 之后有定义/使用却无 reload 路径，其虚拟寄存器名会泄漏进最终汇编（B01/E01/F04 实测复现 vreg 泄漏） | 改为 `rename[farthest_vreg] = f"SPILL_{farthest_vreg}"` 降级；配套在 `_pick_reload_reg`/`_evict_for_reload` 跳过非物理寄存器条目 | 泄漏场景全部消失，23/23 场景无泄漏、无冲突 |
+| Fix 4 | `regalloc_linear_v1_5.py` | 低·代码质量 | `compute_live_intervals` 中 `vreg in defines and vreg in uses` 的独立分支与相邻 uses 分支完全重复 | 删除冗余分支，合并注释说明 define+use 同指令的处理 | 纯重构，测试通过 |
+| Fix 5 | `regalloc_linear_v1_5.py` | 低·代码质量 | `machine_instrs_from_block` 内部 `from scratchv.backend.machine_types import ...` 每次调用重复导入 | 上移到模块级 import | 纯重构，测试通过 |
+| Fix 6 | `topic17_bottleneck_scenarios_v1_5.py` | 严重·不可运行 | ① 错误 import 基线版导致读取 `peak_active` 等属性即崩溃；② 按老式 `spill_code=[(pos,op,operand),...]` 列表接口解析，与 v1.3 的 `dict[int, list[str]]` 不符；③ 16/23 个场景构建器使用重复指令 id，破坏按 id 索引的溢出状态 | ① 改为 import `regalloc_linear_v1_5`；② 重写 `run_scenario` 指标解析适配 `_evictions`/`_spill_slots`/`_reloads`/`spill_code` 结构；③ 新增 `_renumber()` 在 `run_scenario` 内按块位置重编号为唯一 id | 脚本可独立运行，23 场景全部通过且无泄漏/无冲突 |
 
 #### 审查反馈中判定为「未采纳」或「设计局限」的项
 
@@ -304,27 +304,49 @@ v1.4 在 v1.3.1 基础上继续核对 PR #37 的 AI 审查反馈，确认并修�
 
 | # | 文件 | 类型 | 问题 | 修复 | 验证 |
 |---|------|------|------|------|------|
-| Fix 7 | `regalloc_linear_v1_4.py` | 严重·正确性 | Bug A 修复不完整：spilled vreg 被**纯重定义**（`li v0, 999`，src 不含 v0）后新值未写回栈，且同一 vreg 被**多次重定义**时，因首次重定义已把 `rename[d]` 降级为物理寄存器，后续重定义用 `rename[d].startswith("SPILL_")` 判据漏检 → 新值丢失，后续 reload 读到栈上旧值 | redefine 判据由 `rename[d].startswith("SPILL_")` 改为 `d in self._spilled`（可靠判据），并在 `to_asm` 后统一用 `rename[d]` 当前值生成 `sw` 写回，覆盖纯重定义与 define+use 两条路径 | 单寄存器 redefine-after-spill、同 vreg 双重重定义语义仿真 0 错误 |
-| Fix 8 | `regalloc_linear_v1_4.py` | 中·正确性 | `_pick_scratch` 未感知同一指令内已选的 reload 寄存器，scratch 可能与 reload 目标冲突（Bug B） | `_pick_scratch` 增加 `busy` 参数，调用处传入 `live_regs`（含已选 reload 寄存器） | 高压场景 scratch 冲突检测 0 冲突 |
-| Fix 9 | `regalloc_linear_v1_4.py` | 中·正确性 | `_evict_for_reload` 在无可用 victim 时回退 `phys_regs[0]`，可能覆盖仍存活的寄存器（Bug C） | 改为优先复用同指令内上一个 reload 寄存器（其值已消费、安全），仅当无复用且确无 victim 时才抛清晰 `RuntimeError`（不可能输入防御） | 不可分配输入不再静默破坏数据 |
-| Fix 10 | `topic17_bottleneck_scenarios_v1_4.py` | 严重·不可运行 | 场景 A01/A02/A03/D01/E03 使用非法多源 `add`（单指令超过全部 27 个物理寄存器的操作数），分配时 `RuntimeError` | 重构为两条合法源累加链（`_same_end_consumer` 辅助），保留压力剖面同时保证可分配 | 23 场景全部运行通过 |
-| Fix 11 | `topic17_bottleneck_scenarios_v1_4.py` | 严重·正确性 | 场景 **D04 螺旋交织**用 `v{(i*3)%100}`/`v{(i*5)%100}`/`v{(i*7)%100}` 三个独立模函数分别取 define 与 use，模回绕产生 99 处 **use-before-def**（vreg 在 interval 起点前被用），代码生成时其 `rename` 仍为 `SPILL_vXX`，`SPILL_vXX` 直接泄漏进最终汇编 | 重写 D04 builder：define 每次生成全新 vreg `v{i}`，use 取自严格前向（索引 `< i`）的已定义 vreg，保留螺旋交织重叠压力、消除非法输入 | D04 0 泄漏、0 use-before-def，语义仿真通过 |
+| Fix 7 | `regalloc_linear_v1_5.py` | 严重·正确性 | Bug A 修复不完整：spilled vreg 被**纯重定义**（`li v0, 999`，src 不含 v0）后新值未写回栈，且同一 vreg 被**多次重定义**时，因首次重定义已把 `rename[d]` 降级为物理寄存器，后续重定义用 `rename[d].startswith("SPILL_")` 判据漏检 → 新值丢失，后续 reload 读到栈上旧值 | redefine 判据由 `rename[d].startswith("SPILL_")` 改为 `d in self._spilled`（可靠判据），并在 `to_asm` 后统一用 `rename[d]` 当前值生成 `sw` 写回，覆盖纯重定义与 define+use 两条路径 | 单寄存器 redefine-after-spill、同 vreg 双重重定义语义仿真 0 错误 |
+| Fix 8 | `regalloc_linear_v1_5.py` | 中·正确性 | `_pick_scratch` 未感知同一指令内已选的 reload 寄存器，scratch 可能与 reload 目标冲突（Bug B） | `_pick_scratch` 增加 `busy` 参数，调用处传入 `live_regs`（含已选 reload 寄存器） | 高压场景 scratch 冲突检测 0 冲突 |
+| Fix 9 | `regalloc_linear_v1_5.py` | 中·正确性 | `_evict_for_reload` 在无可用 victim 时回退 `phys_regs[0]`，可能覆盖仍存活的寄存器（Bug C） | 改为优先复用同指令内上一个 reload 寄存器（其值已消费、安全），仅当无复用且确无 victim 时才抛清晰 `RuntimeError`（不可能输入防御） | 不可分配输入不再静默破坏数据 |
+| Fix 10 | `topic17_bottleneck_scenarios_v1_5.py` | 严重·不可运行 | 场景 A01/A02/A03/D01/E03 使用非法多源 `add`（单指令超过全部 27 个物理寄存器的操作数），分配时 `RuntimeError` | 重构为两条合法源累加链（`_same_end_consumer` 辅助），保留压力剖面同时保证可分配 | 23 场景全部运行通过 |
+| Fix 11 | `topic17_bottleneck_scenarios_v1_5.py` | 严重·正确性 | 场景 **D04 螺旋交织**用 `v{(i*3)%100}`/`v{(i*5)%100}`/`v{(i*7)%100}` 三个独立模函数分别取 define 与 use，模回绕产生 99 处 **use-before-def**（vreg 在 interval 起点前被用），代码生成时其 `rename` 仍为 `SPILL_vXX`，`SPILL_vXX` 直接泄漏进最终汇编 | 重写 D04 builder：define 每次生成全新 vreg `v{i}`，use 取自严格前向（索引 `< i`）的已定义 vreg，保留螺旋交织重叠压力、消除非法输入 | D04 0 泄漏、0 use-before-def，语义仿真通过 |
 
 > **设计边界确认**（承接 v1.3.1）："块内无全局 liveness"与"多定义 vreg（multi-def）"仍属设计边界，非本次 bug。v1.4 的 Fix 7 处理的"同一 spilled vreg 多次重定义"是**分配-泄露路径**（值写回遗漏），并非为分配器新增 multi-def 静态语义支持——真实管线不产生多定义输入，未扩展算法模型。
 
 #### v1.4 模块重命名
 
-与 v1.3.1 相同，为保持模块可 `import`，v1.4 将 `regalloc_linear_v1_3.py` 与 `topic17_bottleneck_scenarios_v1.3.py` 重命名为 `regalloc_linear_v1_4.py` 与 `topic17_bottleneck_scenarios_v1.4.py`（`git mv`），内部 import 同步更新。
+历次重命名，为保持模块可 `import`：v1.3.1 将 `regalloc_linear_v1.3.py`（含 `.` 无法 import）改名为 `regalloc_linear_v1_3.py`；v1.4 阶段改为 `regalloc_linear_v1_4.py` 与 `topic17_bottleneck_scenarios_v1.4.py`；v1.5 最终统一为 `regalloc_linear_v1_5.py` 与 `topic17_bottleneck_scenarios_v1_5.py`（`git mv`），内部 import 同步更新。
 
 #### v1.4 验证结果
 
-- **23 个瓶颈场景**独立运行全部通过（`python scratchv/backend/topic17_bottleneck_scenarios_v1.4.py`），指标与 v1.3.1 基线一致（redund: D04=1, F04=644），无泄漏、无冲突。
+- **23 个瓶颈场景**独立运行全部通过（`python scratchv/backend/topic17_bottleneck_scenarios_v1_5.py`），指标与 v1.3.1 基线一致（redund: D04=1, F04=644），无泄漏、无冲突。
 - **语义仿真器**：A01-A04、B01-B04、C01-C04、D01-D04、E01-E03、F01-F04 全部 0 错误；针对 Fix 7 新增的 redefine-after-spill、同 vreg 双重重定义用例在单/双寄存器池下 0 错误。
 - **单元测试**：`tests/test_regalloc_linear.py` 18 passed 无回归；全量 `pytest tests/` 342 passed（2 个失败均为 `test_simulator.py` 的 tinyfive 环境问题，与本次 PR 无关）。
 
 ---
 
-### 7.8 未完成的优化方向
+### 7.8 v1.5 代码审查复核（7/31 最新 AI 审查反馈落实）
+
+v1.5 按 PR #37 于 2026-07-31 发布的最新一轮 AI 代码审查报告逐条核对，修正了 **1 个真实 bug + 4 处小修**，并将若干审查项判定为设计边界 / 误报。完整逐条分类与理由见设计文档 §5.6.1；此处记录实际代码变更：
+
+| # | 文件 | 类型 | 审查反馈 | 修改 |
+|---|------|------|----------|------|
+| R1 | `regalloc_linear_v1_5.py` | **真实 bug** | `machine_instrs_from_block._to_mop` 用 `startswith("a"/"t"/"s"/"f"/"x")` 前缀判断物理寄存器，`a_temp` 这类 vreg 剥 `%` 后会被误判为物理寄存器 | 改为对 `_REG_NUMS` 精确成员匹配；实测 `a_temp→vreg`、`a0→reg`、`v5→vreg`、`42→imm` |
+| R2 | `topic17_bottleneck_scenarios_v1_5.py` `_all_spill_lines` | 小修 | `redundant_sw` 检测需按执行序遍历两类 sw，原实现先类后按分组、可能交错失真 | 合并进 `pos_map` 再按位置排序输出 |
+| R3 | `topic17_bottleneck_scenarios_v1_5.py` `vreg_leaks` | 小修 | `if v in asm` 子串匹配会误报长名（`v0` 命中 `v0_2`） | 改 `re` 词边界匹配 `rf'\b{re.escape(v)}\b'` |
+| R4 | `topic17_bottleneck_scenarios_v1_5.py` `spill_code_entries` | 小修 | 前三项混用位置数/条目数不可比 | 统一为条目数（各 dict 值 `sum(len)`） |
+| R5 | `regalloc_linear_v1_5.py` `report()` | 小修 | 负偏移 `sp+-4` 无方向说明 | 输出补“offset 为负 = 栈向下增长”说明 |
+
+**本版判定为「设计边界 / 误报 / 暂不采纳」的项**（详见设计文档 §5.6.1）：
+- `_pick_scratch` 全忙回退 `phys_regs[0]` → 审查建议抛 `RuntimeError`。**核实：改为抛异常会使 9 个高压场景（A01/A02/A03/B01/C01/C02/C04/D01/E03/F01）直接 ERROR**——这些是超物理池的单点压力 dump（明示“不代表可执行语义”），会真实命中全忙分支。维持回退 + 补强注释说明边界；可执行/合法输入由 `_evict_for_reload` 保证不会走到该分支。
+- `_renumber` 摊平“同时创建”压力：分配器 id-键控状态与“同一位置多指令”的固有冲突，维持现状（docstring 补说明）。
+- `setdefault`“缺字母 f”审查条：**误报**——`dict.setdefault` 是正确方法，未改动。
+- `get_allocated_code` 拆分重构、`farthest→furthest`、multi-def 静态支持：低价值 / 设计边界，不采纳。
+
+**v1.5 验证**：`python scratchv/backend/topic17_bottleneck_scenarios_v1_5.py` 23 场景 0 VLEAK / 0 ERROR；`tests/test_regalloc_linear.py` 18 passed；`machine_instrs_from_block` 往返分类实测正确。
+
+---
+
+### 7.9 未完成的优化方向
 
 | 编号 | 方向 | 触发场景 | 预期效果 | 工作量 |
 |------|------|----------|----------|--------|

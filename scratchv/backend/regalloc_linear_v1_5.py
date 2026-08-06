@@ -5,7 +5,7 @@ with proper live interval computation and spill code generation.
 
 Usage::
 
-    from scratchv.backend.regalloc_linear_v1_4 import LinearScanAllocator
+    from scratchv.backend.regalloc_linear_v1_5 import LinearScanAllocator
     allocator = LinearScanAllocator()
     intervals = allocator.compute_live_intervals(block_instructions)
     allocator.allocate(intervals)
@@ -653,10 +653,22 @@ class LinearScanAllocator:
             if reg not in busy:
                 self._scratch_cache[vreg] = reg
                 return reg
-        # No register is free; reuse the cached scratch as a last resort
-        # (caller must have already spilled everything that matters).  This
-        # can only happen on degenerate inputs already flagged by
-        # ``_evict_for_reload``.
+        # No *unbusy* register exists — every physical register in the pool is
+        # either held by a still-live vreg or already the target of a reload in
+        # this same instruction.
+        #
+        # This only happens on inputs that put more simultaneously-live values
+        # at one program point than the physical pool provides.  In the shipped
+        # pressure-measurement scenarios (``topic17_bottleneck_scenarios``)
+        # such blocks are multi-source *pressure dumps* whose operand lists
+        # deliberately exceed the RISC-V 3-operand limit and are documented as
+        # "not executable semantics" — they exercise spill metrics, not a
+        # post-clobber code path.  For those we fall back to re-using the
+        # cached scratch for this vreg (the register it was most recently tied
+        # to), which the immediate ``sw`` store in ``get_allocated_code`` makes
+        # transient.  For *executable/legal* input the invariant that forces a
+        # free register is established by ``_evict_for_reload`` before reloads
+        # are emitted, so this fallback is never reached on allocatable input.
         if candidate is not None:
             return candidate
         reg = self.phys_regs[0]
@@ -681,7 +693,7 @@ class LinearScanAllocator:
             f"  Physical registers available: {len(self.phys_regs)}"
         )
         if self._spill_slots:
-            parts.append("  Spill details:")
+            parts.append("  Spill details (slot offsets are negative: stack grows down, so `sp + offset` < 0):")
             for vreg, slot in self._spill_slots.items():
                 parts.append(f"    {vreg}: sp+{slot}")
         return "\n".join(parts)
@@ -777,8 +789,13 @@ def machine_instrs_from_block(
 
         # Build operands
         def _to_mop(s: str) -> MachineOperand:
-            if s.startswith("x") or s.startswith("a") or s.startswith("t") or \
-               s.startswith("s") or s.startswith("f") or s in ("zero", "ra", "sp", "gp", "tp", "fp"):
+            # Exact membership against the known register-name table, NOT
+            # prefix matching: a virtual register like ``%a_temp`` (stripped
+            # to ``a_temp``) starts with "a" but is not a physical register,
+            # and prefix matching would misclassify it as ``MachineOperand.reg``.
+            # ``_REG_NUMS`` holds every valid RISC-V physical register name
+            # (including ``x``-aliases, zero/ra/sp/gp/tp/fp).
+            if s in _REG_NUMS:
                 return MachineOperand.reg(s)
             try:
                 return MachineOperand.immediate(int(s))

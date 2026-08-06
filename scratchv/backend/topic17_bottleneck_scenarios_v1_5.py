@@ -1,4 +1,4 @@
-"""课题17：寄存器分配瓶颈场景系统性测试（v1.4）
+"""课题17：寄存器分配瓶颈场景系统性测试（v1.5）
 
 瓶颈分析维度（6大维度，每个维度2-4个具体场景）：
   1. 活跃度维度 —— 活跃 vreg 数量 vs 物理寄存器数量
@@ -13,7 +13,7 @@
   - 构建方式（具体代码）
   - 详细测试数据
 
-关于非法多源指令的说明（v1.4）
+关于非法多源指令的说明（v1.5）
 =============================
 部分高压场景（A01/A02/A03/D01/E03 等）故意把几十个 vreg 的 ``uses``
 放进*一条* ``add`` 指令，以此构造“全部 vreg 在同一位置完全重叠”的
@@ -24,9 +24,10 @@
 多源指令改写为两两累加链（会显著降低同一位置的峰值压力），那是另一类
 测试，不属于本框架的压力模型范围。
 """
-from scratchv.backend.regalloc_linear_v1_4 import LinearScanAllocator, LsInstruction
+from scratchv.backend.regalloc_linear_v1_5 import LinearScanAllocator, LsInstruction
 import random
 import inspect
+import re
 
 
 PHYS_REGS = ['a0','a1','a2','a3','a4','a5','a6','a7',
@@ -76,6 +77,14 @@ def _renumber(block):
     corrupts the id-keyed state.  Renumbering by block position preserves the
     builders' intent (list order is execution order) while satisfying the
     unique-id contract.
+
+    Trade-off: a batch of ``li`` intended to be *created simultaneously at one
+    position* (duplicate id, e.g. all ``v0..vN`` forced to a common start) is
+    spread here across sequential starts, so the dynamic peak pressure is
+    carried by the *consumers* (e.g. the accumulation chain), not by a single
+    program point.  This is an inherent limit of modelling N live values at one
+    point with legal RISC-V 2-source ops — see the multi-source pressure-dump
+    note on the A-family builders.
     """
     from dataclasses import replace
     return [replace(inst, id=i) for i, inst in enumerate(block)]
@@ -84,19 +93,29 @@ def _renumber(block):
 def _all_spill_lines(alloc):
     """Return every spill ``sw`` store line emitted by the allocator.
 
-    In the v1.3 allocator:
-      - ``spill_code``:   dict[int, list[str]]  -> self-spill ``sw`` stores
+    In the v1.4 allocator:
+      - ``spill_code``:   dict[int, list[str]]  -> self-spill / redefined-spilled ``sw`` stores
       - ``_evictions``:   dict[int, list[str]]  -> eviction ``sw`` stores
       - ``_reloads``:     dict[int, list[(vreg, slot)]] -> ``lw`` reloads
 
     Reload ``lw`` lines are not returned here: they carry no ``vreg`` in a
     machine-readable position and are counted separately from the emitted
     assembly (``code.count('  lw ')``).
+
+    The two store classes are merged by instruction position (not appended
+    sequentially class-then-class), because both kinds of ``sw`` may interleave
+    at the same or neighbouring positions.  Consumers that rely on execution
+    order (e.g. the consecutive-same-slot ``redundant_sw`` detection) must see
+    them in emitted order, otherwise the interleaving is lost and the metric
+    mis-computes redundancy.
     """
     lines = []
+    pos_map: dict[int, list[str]] = {}
     for pend in (alloc.spill_code, alloc._evictions):
-        for pos in sorted(pend):
-            lines.extend(pend[pos])
+        for pos in pend:
+            pos_map.setdefault(pos, []).extend(pend[pos])
+    for pos in sorted(pos_map):
+        lines.extend(pos_map[pos])
     return lines
 
 
@@ -186,7 +205,10 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
             # leak; only a bare vreg name in the asm operands is a real leak.
             if ('SPILL_' + v) in asm:
                 continue
-            if v in asm:
+            # Match on word boundaries, not a bare substring: ``v0`` must not
+            # be reported as leaking merely because it appears inside a longer
+            # name like ``v0_2`` or as a substring of an unrelated token.
+            if re.search(rf'\b{re.escape(v)}\b', asm):
                 vreg_leaks.append(f'{v} in "{line}"')
                 break
 
@@ -232,7 +254,8 @@ def run_scenario(name, category, desc, block_fn, phys_regs=None):
         'vreg_leaks': vreg_leaks,
         'intervals': len(ivs),
         'block_len': len(block),
-        'spill_code_entries': (len(alloc.spill_code) + len(alloc._evictions)
+        'spill_code_entries': (sum(len(v) for v in alloc.spill_code.values())
+                               + sum(len(v) for v in alloc._evictions.values())
                                + sum(len(v) for v in alloc._reloads.values())),
     }
 

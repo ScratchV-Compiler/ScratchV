@@ -1,9 +1,9 @@
 # ScratchV 寄存器分配（基本块内线性扫描）技术设计文档
 
-> 文档版本：v1.4  \
+> 文档版本：v1.5  \
 > 编写日期：2026-07-13  \
-> 最后更新：2026-08-06（v1.4：在 v1.3.1 基础上补充修复——① 重定义写回路径补全：spilled vreg 纯重定义/多次重定义时新值未写回栈，redefine 判据改为 `d in self._spilled`；② 场景 D04 非法 use-before-def 输入修复，杜绝 `SPILL_vXX` 泄漏进汇编；③ `_pick_scratch` 冲突、`_evict_for_reload` 回退、多源 add 非法场景重构；模块重命名为 `regalloc_linear_v1_4.py`）  \
-> 涉及模块：`regalloc_linear_v1_4.py`（寄存器分配器）、`instruction_select.py`（指令选择器）、`topic17_bottleneck_scenarios_v1.4.py`（回归场景）  \
+> 最后更新：2026-08-06（v1.4：在 v1.3.1 基础上补充修复——① 重定义写回路径补全：spilled vreg 纯重定义/多次重定义时新值未写回栈，redefine 判据改为 `d in self._spilled`；② 场景 D04 非法 use-before-def 输入修复，杜绝 `SPILL_vXX` 泄漏进汇编；③ `_pick_scratch` 冲突、`_evict_for_reload` 回退、多源 add 非法场景重构；模块重命名为 `regalloc_linear_v1_5.py`。v1.5：按 7/31 最新 AI 审查复核——修正 `_to_mop` 寄存器前缀误判、场景指标检测（`_all_spill_lines` 顺序 / `vreg_leaks` 词边界 / `spill_code_entries` 单位）、`report()` 负偏移说明；订正文档与源码不一致的复杂度声明、自溢分支、spill code 数据结构）  \
+> 涉及模块：`regalloc_linear_v1_5.py`（寄存器分配器）、`instruction_select.py`（指令选择器）、`topic17_bottleneck_scenarios_v1_5.py`（回归场景）  \
 > 功能范围：基本块内虚拟寄存器到物理寄存器的映射、线性扫描分配、溢出处理
 
 ---
@@ -159,8 +159,8 @@ Linear Scan Register Allocation Report
 | 文件 | 修改类型 | 说明 |
 |------|----------|------|
 | `scratchv/backend/regalloc_linear.py` | **新增** | 线性扫描分配器主模块（基线版本） |
-| `scratchv/backend/regalloc_linear_v1_4.py` | **新增**（继承自 `regalloc_linear_v1_3.py`，v1.4 重命名） | 分配器主模块：v1.3 新增 `peak_real_pressure`、`_scratch_cache`，修复 eviction 后 alloc_map 未更新、self-spill 寄存器污染、eviction 后 vreg 泄漏；v1.4 补全重定义写回路径（`d in self._spilled` 判据）、`_pick_scratch` 冲突、`_evict_for_reload` 回退 |
-| `scratchv/backend/topic17_bottleneck_scenarios_v1.4.py` | **新增** | 23 个瓶颈场景回归脚本（v1.3.1 修复导入与指标解析；v1.4 重构 A01/A02/A03/D01/E03 多源 add 为合法累加链、重写 D04 消除 use-before-def） |
+| `scratchv/backend/regalloc_linear_v1_5.py` | **新增**（继承自 `regalloc_linear_v1_3.py`，v1.4 重命名） | 分配器主模块：v1.3 新增 `peak_real_pressure`、`_scratch_cache`，修复 eviction 后 alloc_map 未更新、self-spill 寄存器污染、eviction 后 vreg 泄漏；v1.4 补全重定义写回路径（`d in self._spilled` 判据）、`_pick_scratch` 冲突、`_evict_for_reload` 回退 |
+| `scratchv/backend/topic17_bottleneck_scenarios_v1_5.py` | **新增** | 23 个瓶颈场景回归脚本（v1.3.1 修复导入与指标解析；v1.4 重构 A01/A02/A03/D01/E03 多源 add 为合法累加链、重写 D04 消除 use-before-def） |
 | `scratchv/backend/instruction_select.py` | 修改 | 确保每条 MachineInstr 带 defines/uses 标注 |
 | `scratchv/standalone/onnx_to_riscv_standalone.py` | 修改 | 管线中插入寄存器分配步骤，添加 `--regalloc=linear` 选项 |
 | `tests/test_regalloc.py` | 新增 | 寄存器分配单元测试 |
@@ -186,38 +186,40 @@ class LsInstruction:
     uses: set[str]
 ```
 
-#### Step 2：活跃区间计算（O(N+V) 单遍扫描）
+#### Step 2：活跃区间计算
+
+> **复杂度说明（v1.4 修正）**：早期文档声称 O(N+V) 单遍扫描。实际 v1.4 实现为对每个 vreg 分别扫描一遍整块，复杂度 **O(V·N)**（N=指令数，V=vreg 数），见下方与源码一致的实现。对寄存器规模较大的块会退化，但基本块内指令数与 vreg 数通常有限（数百量级），实测 23 个场景与真实 CNN 管线均在此规模内，无性能瓶颈。若需进一步优化，可用单遍扫描降为 O(N+V)（见 7.8 Opt），但需配套维护排序后的区间列表。
 
 ```python
-def compute_live_intervals(self, block: list[LsInstruction]) -> list[LiveInterval]:
-    # 单遍扫描：跟踪每个 vreg 的首定义和末次使用
-    first_def: dict[str, int] = {}
-    last_use: dict[str, int] = {}
-    all_uses: dict[str, set[int]] = {}
-
+def compute_live_intervals(self, block):
+    # 收集所有 vreg（定义 ∪ 使用）
+    vregs: set[str] = set()
     for inst in block:
-        i = inst.id
-        for d in inst.defines:
-            if d not in first_def:
-                first_def[d] = i
-            if d in inst.uses:
-                # 同一指令内定义并使用的 vreg
-                all_uses.setdefault(d, set()).add(i)
-                last_use[d] = max(last_use.get(d, -1), i + 1)
-        for u in inst.uses:
-            all_uses.setdefault(u, set()).add(i)
-            last_use[u] = max(last_use.get(u, -1), i + 1)
+        vregs |= inst.defines
+        vregs |= inst.uses
 
     intervals = []
-    for vreg in set(first_def) | set(last_use):
-        start = first_def.get(vreg, 0)       # 块内无定义即为 live-in
-        end = last_use.get(vreg, start + 1)  # 无使用则区间长度为 1
-        intervals.append(LiveInterval(vreg, start, end, all_uses.get(vreg, set())))
+    for vreg in vregs:
+        start = -1
+        end = -1
+        uses = set()
+        for inst in block:
+            if vreg in inst.defines:
+                if start == -1:
+                    start = inst.id
+            # define+use 同指令由 uses 分支统一处理，
+            # 独立的 define-and-use 分支是冗余的（已删除）
+            if vreg in inst.uses:
+                uses.add(inst.id)
+                end = max(end, inst.id + 1)
+        if start == -1:
+            start = 0  # live-in 参数
+        if end == -1:
+            end = start + 1
+        intervals.append(LiveInterval(vreg, start, end, uses))
 
     return sorted(intervals, key=lambda iv: iv.start)
 ```
-
-**优化说明**：v1.1 将原 O(V*N) 的两重循环改为 O(N+V) 单遍扫描，同时消除了 define+use 同指令的冗余处理逻辑。
 
 #### Step 3：核心分配循环
 
@@ -236,13 +238,11 @@ def allocate(self, intervals: list[LiveInterval]) -> dict[str, str]:
         else:
             spill = self.spill(interval, active, free_regs)
             if spill is not None:
-                # 踢出活跃区间中 end 最晚的，将其寄存器给当前区间
+                # 从 active 中踢出 end 最晚的区间，将其寄存器给当前区间
                 self.alloc_map[interval.vreg] = spill
                 active.append((interval, spill))
-            else:
-                # 当前区间自身被溢出（它是所有活跃区间中 end 最晚的）
-                # 不分配物理寄存器，标记为 SPILL_，每次使用前从栈加载
-                self.alloc_map[interval.vreg] = f"SPILL_{interval.vreg}"
+            # spill() 返回 None 仅发生在 active 为空（退化输入）时；
+            # v1.4 已取消“当前区间自溢标记 SPILL_”的旧分支（见 Step 3 说明）。
     return dict(self.alloc_map)
 ```
 
@@ -250,52 +250,40 @@ def allocate(self, intervals: list[LiveInterval]) -> dict[str, str]:
 - 溢出一个很快结束的变量，刚溢出就要加载回来，得不偿失
 - 溢出一个还要用很久的变量，省出的寄存器可以服务多个后续区间
 
-**溢出自身的情形**：当当前区间比所有活跃区间都更晚结束时，将其自身标记为 SPILL_ 而不分配任何物理寄存器。该变量的所有使用点都会插入 lw 加载到一个临时寄存器（通过 `_pick_scratch` 选择一个不与当前指令操作数冲突的寄存器）。
+> **说明（v1.3.1 / v1.4 修正）**：早期版本（v1.0/v1.1）存在“当前区间比所有活跃区间都更晚结束时，将**它自己**标记为 SPILL_ 而不分配寄存器”的自溢分支。自 v1.3.1 起该分支被移除：`spill()` 统一改为踢出活跃区间中 end 最晚的那个、把它的寄存器让给 `current`（`current` 本就活得比所有活跃区间久），从而**不再**为当前区间标记 `SPILL_`；`_pick_scratch` 仅为**被溢出的 vreg 定义**选取临时寄存器。该改动消除了 self-spill 写死 `phys_regs[0]` 污染仍存活 vreg 的缺陷（v1.3.1 Fix 2）。
 
 #### Step 4：Spill Code 生成
 
 溢出变量需要生成额外的加载/存储指令：
 
-- **被踢出的溢出**（spill 踢出活跃区间）：在该区间的定义点后插入 `sw reg, offset(sp)`，free_regs 回收该寄存器
-- **自身溢出**（当前区间被标记为 SPILL_）：不分配寄存器，每次使用前插入 `lw scratch, offset(sp)`，每次定义后插入 `sw scratch, offset(sp)`
+- **eviction 溢出**（`_evict_for_reload` / `spill` 踢出活跃区间）：先将 victim 的旧值 `sw reg, offset(sp)` 写回栈（`_evictions` 表），free_regs 回收该寄存器
+- **重定义写回**：被溢出的 spilled vreg 在指令中被重定义（define，含纯 redefinition 与 define+use）后，用 `_pick_scratch` 选临时寄存器将新值 `sw` 写回栈槽（`spill_code` 表）
 
-vreg → preg 替换和 spill code 插入在 `get_allocated_code` 中统一完成：
+vreg → preg 替换和 spill code 插入在 `get_allocated_code` 中统一完成。内部状态结构（与源码一致）：
 
 ```python
-def get_allocated_code(self, block: list[LsInstruction]) -> str:
-    lines: list[str] = []
-    # 构建位置 → 指令覆盖表
-    spill_loads: dict[int, list[str]] = {}
-    spill_stores: dict[int, list[str]] = {}
-    for pos, op, operand in self.spill_code:
-        target = spill_loads if "lw" in op else spill_stores
-        target.setdefault(pos, []).append(f"  {op} {operand}")
-
-    for inst in block:
-        # 使用前插入 lw
-        if inst.id in spill_loads:
-            for line in spill_loads[inst.id]:
-                lines.append(line)
-        # SPILL_标记的变量：按需加载到临时寄存器
-        rename = dict(self.alloc_map)
-        for u in inst.uses:
-            if str(rename.get(u, "")).startswith("SPILL_"):
-                slot = self._spill_slots[u]
-                scratch = self._pick_scratch(inst, rename)
-                lines.append(f"  lw {scratch}, {slot}(sp)  # reload {u}")
-                rename[u] = scratch
-        lines.append(inst.to_asm(rename))
-        # 定义后插入 sw（被溢出变量的持久化）
-        if inst.id in spill_stores:
-            for line in spill_stores[inst.id]:
-                lines.append(line)
-        for d in inst.defines:
-            if d in self._spill_slots and str(rename.get(d, "")) in self.phys_regs:
-                lines.append(f"  sw {rename[d]}, {self._spill_slots[d]}(sp)  # spill {d}")
-    return "\n".join(lines)
+# 均以 inst.id 为键：
+self._reloads   : dict[int, list[(vreg, slot)]]   # 位置 → 需 reload 的 (vreg, 栈槽)
+self._spill_code: dict[int, list[str]]             # 重定义溢出的 sw 写回行
+self._evictions : dict[int, list[str]]             # eviction 的 sw 写回行
+self._spilled   : set[str]                         # 已被溢出（需写回）的 vreg
+self._spill_slots: dict[str, int]                  # vreg → 栈偏移（向下增长，为负）
 ```
 
-**v1.1 修复说明**：原实现将 sw 全部追加到输出末尾而不是定义指令之后，导致溢出值不能及时写回栈。新实现使用 `spill_stores` 表按位置插入 sw，同时处理了 SPILL_ 标记变量的临时寄存器加载。
+`get_allocated_code` 的主流程（简化，与源码一致）：
+
+1. 拷贝 `rename = dict(self.alloc_map)` 作为 vreg → 寄存器映射。
+2. 对每条指令 `inst`：
+   a. 先发射 `_evictions[inst.id]`（eviction sw 在 reload 之前）。
+   b. 计算当前存活物理寄存器集合 `live_regs`（rename 中属于物理池、且其区间覆盖当前位置的寄存器）。
+   c. 若 `inst.id in self._reloads`，对每个待 reload 的 vreg 用 `_pick_reload_reg` 选寄存器（避让 `protected = inst.uses | inst.defines`）发射 `lw`，`rename[vreg] = reload_reg`，并把该寄存器加入 `live_regs`。
+   d. 对 `inst.defines` 中被溢出（`d in self._spilled`）的 vreg：若当前 `rename[d]` 不是可写物理寄存器，用 `_pick_scratch(d, busy=live_regs)` 选一个不冲突的 scratch，`rename[d] = scratch`；随后把该 vreg 的 `sw` 记录进 `self.spill_code`（在 `to_asm` 之后发射）。
+   e. `lines.append(inst.to_asm(rename))`。
+   f. 发射 `self.spill_code[inst.id]`（重定义写回 sw）。
+
+> **v1.1 修复说明**：原实现将 sw 全部追加到输出末尾而不是定义指令之后，导致溢出值不能及时写回栈。后续修订改用按 `inst.id` 分组的位置表，在定义指令后立即写回。
+
+> **v1.4 修正**：早期文档的代码示例把 `self.spill_code` 当作 `[(pos, op, operand)]` 元组列表遍历，并把 `_pick_scratch` 写成 `(inst, rename)` 双参调用——均与实际 v1.4 的 dict 结构与 `(vreg, busy)` 签名不符，现已在本文档订正为与源码一致。
 
 #### Step 5：集成到编译器管线
 
@@ -436,7 +424,7 @@ v1.3.1 基于 PR #37 的 AI 代码审查反馈，经逐条核对确认并修复�
 
 | # | 类型 | 问题（v1.3 实现） | 修复（v1.3.1） |
 |---|------|--------------------|----------------|
-| 1 | 可导入性（严重） | 文件名 `regalloc_linear_v1.4.py` 含 `.`，Python 无法 `import` | 重命名为 `regalloc_linear_v1_4.py` |
+| 1 | 可导入性（严重） | 文件名 `regalloc_linear_v1_5.py` 含 `.`，Python 无法 `import` | 重命名为 `regalloc_linear_v1_5.py` |
 | 2 | 正确性（严重） | self-spill 写死 `temp_reg = phys_regs[0]`，在所有寄存器被占时污染仍存活的 vreg | self-spill 分支改为统一 evict 结束最晚的活跃区间，将寄存器让给 `current` |
 | 3 | 正确性（严重） | `_evict_for_reload` 用 `del rename[vreg]` 永久删除映射，导致 vreg 泄漏进汇编 | 改为 `rename[vreg] = "SPILL_" + vreg` 降级，并让 reload/evict 跳过非物理寄存器条目 |
 | 4 | 代码质量（低） | `compute_live_intervals` 冗余 define+use 分支 | 删除重复分支 |
@@ -468,7 +456,7 @@ spill_code[3] += "sw a0, slot(sp)"
 
 #### v1.3.1 验证结果（23 个瓶颈场景回归）
 
-独立运行 `python scratchv/backend/topic17_bottleneck_scenarios_v1.4.py`，23 个场景全部通过：
+独立运行 `python scratchv/backend/topic17_bottleneck_scenarios_v1_5.py`，23 个场景全部通过：
 - **无 vreg 泄漏**：生成汇编中不存在未映射的虚拟寄存器名
 - **无寄存器冲突**：无两个同时存活的区间被分配同一物理寄存器
 - 单元测试 `tests/test_regalloc_linear.py` 全部通过（18 passed，无回归）
@@ -495,11 +483,45 @@ v1.4 对分配器与场景脚本的补充修复（对应开发文档 7.7 Fix 7-1
 
 #### v1.4 验证结果（23 个瓶颈场景回归）
 
-独立运行 `python scratchv/backend/topic17_bottleneck_scenarios_v1.4.py`，23 个场景全部通过：
+独立运行 `python scratchv/backend/topic17_bottleneck_scenarios_v1_5.py`，23 个场景全部通过：
 - **无泄漏**：D04 修复后生成的汇编不再出现 `SPILL_` 占位符泄漏（原 9 处，现 0 处）；其余 22 场景本就干净。
 - **无寄存器冲突**：无两个同时存活的区间被分配同一物理寄存器。
 - **语义仿真**：针对 Fix 7 的 redefine-after-spill、同 vreg 双重重定义用例在单/双寄存器池下 0 错误；A-F 全部场景 0 错误。
 - 单元测试 `tests/test_regalloc_linear.py` 18 passed；全量 `pytest tests/` 342 passed（2 个失败均为 `test_simulator.py` 的 tinyfive 环境问题，与本次 PR 无关）。
+
+#### 5.6.1 v1.5：最新 AI 代码审查复核（7/31 报告）
+
+PR #37 于 2026-07-31 的新一轮 AI 代码审查报告对 v1.4 六个变更文件提出了意见。经逐条对照源码核实后的 **采纳 / 小修 / 未采纳** 分类如下。
+
+**一、代码采纳项（已修改 `regalloc_linear_v1_5.py` / `topic17_bottleneck_scenarios_v1_5.py`）**
+
+| # | 位置 | 级别 | 审查意见 | 判定 | 处置 |
+|---|------|------|----------|------|------|
+| R1 | `regalloc_linear_v1_5.py` `_to_mop` | **真实 bug** | 用 `s.startswith("a"/"t"/"s"/"f"/"x")` 前缀判断操作数是否为物理寄存器；`a_temp` 这类 vreg（剥 `%` 后）会被误判为物理寄存器 | **必须改** | 改为对 `_REG_NUMS`（完整寄存器名表）做**精确成员匹配**。实测 `a_temp`→vreg、`a0`→reg、`v5`→vreg、`42`→imm 全部正确 |
+| R2 | `topic17...` `_all_spill_lines` | 小修·指标精度 | 先遍历 `spill_code` 再 `_evictions`，两类 sw 可能按位置交错，`redundant_sw` 连判失真 | **小修** | 改为合并进 `pos_map` 后按位置排序输出，保证执行序 |
+| R3 | `topic17...` `vreg_leaks` 检测 | 小修·误报稳健性 | `if v in asm` 子串匹配，`v0` 会命中 `v0_2` 等更长名 | **小修** | 改用 `\b` 词边界正则 `rf'\b{re.escape(v)}\b'`（保留长名优先、`SPILL_` 豁免） |
+| R4 | `topic17...` `spill_code_entries` | 小修·单位一致 | 前三项混用“位置数”(len) 与“条目数”(sum len)，无可比性 | **小修** | 统一改为条目数（对每个 dict 值 `sum(len(v))`） |
+| R5 | `regalloc_linear_v1_5.py` `report()` | nit·可读性 | 负偏移（`sp+-4`）无方向说明，栈向下增长易误解 | **小修** | 输出行补充“offset 为负 = 栈向下增长”说明 |
+
+**二、代码未采纳项（设计正确，或审查为误报）**
+
+| # | 审查意见 | 判定 | 理由 |
+|---|----------|------|------|
+| R6 | `_pick_scratch` 全忙时回退 `phys_regs[0]` 应抛 `RuntimeError` | **设计边界（维持现状）** | 实测改为抛异常会使 9 个高压场景（A01/A02/A03/B01/C01/C02/C04/D01/E03/F01）直接 ERROR。这些场景按设计是“超过物理池的单点压力 dump”（多源 operand 超 RISC-V 三操作数，文档明示“不代表可执行语义”），会真实命中“27 个寄存器全忙”分支。故保留回退、仅补强注释说明该边界；对**可执行/合法**输入，`_evict_for_reload` 在发射 reload 前已保证存在空闲寄存器，不会走到该分支 |
+| R7 | `get_allocated_code` 过长，应拆分 `_emit_reloads/_emit_scratch_stores/_emit_evictions` | 低价值重构 | 纯可读性建议，约 120 行函数有清晰分节注释；拆分无功能收益，暂不采纳（列入 7.8 后续方向） |
+| R8 | `compute_live_intervals` 忽略多定义（multi-def） | **设计边界** | 基本块单定义假设是既定边界（承接 v1.3.1/v1.4 文档）；Fix 7 只覆盖 spilled vreg 重定义写回，未扩展静态多定义语义 |
+| R9 | 前缀匹配（R1 同）之外的“`farthest` 应为 `furthest`” | nit·拼写 | 局部变量命名，功能无影响；不强制替换（避免无关 diff） |
+
+**三、场景脚本 `_renumber` 意见（设计张力，维持现状）**
+
+审查指出 `_renumber` 将本意“同一位置同时创建”的多个 `li`（重复 id）改为顺序唯一 id，会**摊平起点的同时压力**。核实结论：这是分配器 id-键控状态（`spill_code`/`_reloads`/`_evictions` 均以 `inst.id` 为键）与“同一位置多指令”表达之间的**固有冲突**——分配器要求唯一 id，而合法 RISC-V 二源指令无法在一个程序点同时消费 N 个 vreg 来复现“全叠峰压”。`_renumber` 以“列表序=执行序”保留构建意图，是正确决策；场景文档已声明多源 add 为压力模型 dump。**维持现状**，仅在场景模块 docstring 补充一句：`_renumber` 会把本意同时创建的 LI 批摊平成顺序起点，峰值压力由累加链消费点保证。
+
+**四、文档修正（本设计文档 & 开发文档）**
+
+1. **复杂度订正**：§2.2 Step 2 原文档/示例声称 `compute_live_intervals` 为 O(N+V) 单遍扫描，实际与源码一致为 **O(V·N)**（对每个 vreg 扫描整块一次）；已订正文档，并说明可用单遍扫描降阶（列 7.8）。
+2. **自溢分支订正**：§2.2 Step 3 原文档保留“当前区间自溢标记 `SPILL_`”的 v1.0/v1.1 分支，与 v1.3.1/v1.4 实际的“统一 evict 最晚结束区间、不再为当前标记 SPILL_”矛盾；已改为与源码一致并加修正说明。
+3. **Spill code 数据结构订正**：§2.2 Step 4 原示例把 `spill_code` 当 `[(pos,op,operand)]` 列表、`_pick_scratch` 写成 `(inst, rename)` 双参——均与实际 dict 结构与 `(vreg, busy)` 签名不符；已订正为真实 API 并补 `_reloads`/`_evictions`/`_spilled`/`_spill_slots` 状态定义。
+4. **`setdefault` 审查条为误报**：审查称第 178 行 `setdefault` “缺字母 f 应为 setdefault”——`dict.setdefault` 是正确方法，该条是**误报**，未改动代码。
 
 ### 5.7 参考资料
 
