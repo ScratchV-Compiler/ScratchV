@@ -1,0 +1,11 @@
+{
+  "description": "Compute two independent adds and then merge them with a final add.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "a": 1,
+    "b": 2,
+    "c": 3,
+    "d": 4
+  },
+  "expected_return": 10
+}

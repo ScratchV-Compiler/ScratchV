@@ -1,0 +1,11 @@
+{
+  "description": "Compute a symbolic 4x4 by 4x4 matrix multiplication.",
+  "expected_output_type": "tensor",
+  "output_dtype": "int32",
+  "output_shape": [4, 4],
+  "inputs": {
+    "A": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    "B": [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]
+  },
+  "expected_return": [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]]
+}

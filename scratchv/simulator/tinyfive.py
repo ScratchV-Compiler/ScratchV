@@ -260,7 +260,47 @@ class StubProfiledMachine(ProfiledMachine):
         self._pc = val
 
 
-def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
+_REG_NUMS: dict[str, int] = {
+    "zero": 0, "x0": 0,
+    "ra": 1, "x1": 1,
+    "sp": 2, "x2": 2,
+    "gp": 3, "x3": 3,
+    "tp": 4, "x4": 4,
+    "t0": 5, "x5": 5,
+    "t1": 6, "x6": 6,
+    "t2": 7, "x7": 7,
+    "s0": 8, "fp": 8, "x8": 8,
+    "s1": 9, "x9": 9,
+    "a0": 10, "x10": 10,
+    "a1": 11, "x11": 11,
+    "a2": 12, "x12": 12,
+    "a3": 13, "x13": 13,
+    "a4": 14, "x14": 14,
+    "a5": 15, "x15": 15,
+    "a6": 16, "x16": 16,
+    "a7": 17, "x17": 17,
+    "s2": 18, "x18": 18,
+    "s3": 19, "x19": 19,
+    "s4": 20, "x20": 20,
+    "s5": 21, "x21": 21,
+    "s6": 22, "x22": 22,
+    "s7": 23, "x23": 23,
+    "s8": 24, "x24": 24,
+    "s9": 25, "x25": 25,
+    "s10": 26, "x26": 26,
+    "s11": 27, "x27": 27,
+    "t3": 28, "x28": 28,
+    "t4": 29, "x29": 29,
+    "t5": 30, "x30": 30,
+    "t6": 31, "x31": 31,
+}
+
+
+def verify_assembly(
+    asm_code: str,
+    verbose: bool = False,
+    initial_registers: Optional[dict[str, int]] = None,
+) -> dict:
     """Verify generated assembly by running it in TinyFive.
 
     Uses ``RISCVAEncoder`` to assemble text → binary, then loads via
@@ -272,13 +312,15 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
         verbose: Print performance info.
 
     Returns:
-        dict with keys: success, instr_count, error
+        dict with keys: success, instr_count, return_value, error
     """
     m = ProfiledMachine(mem_size=128 * 1024 * 1024)
     if not m.available:
         return {
             "success": False,
             "instr_count": 0,
+            "return_value": None,
+            "backend": "tinyfive",
             "error": "tinyfive not installed",
         }
 
@@ -306,13 +348,26 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
         lines = asm_code.strip().split("\n")
         m.load_asm(lines, origin=0)
 
+    for reg_name, value in (initial_registers or {}).items():
+        reg_num = _REG_NUMS.get(reg_name)
+        if reg_num is not None:
+            m.set_reg(reg_num, int(value))
+
     try:
         m.run(instructions=100_000_000)
     except Exception as e:
         return {
             "success": False,
             "instr_count": m.instr_count,
+            "return_value": None,
+            "backend": "tinyfive",
             "error": str(e),
         }
 
-    return {"success": True, "instr_count": m.instr_count, "error": None}
+    return {
+        "success": True,
+        "instr_count": m.instr_count,
+        "return_value": m.get_reg(10),
+        "backend": "tinyfive",
+        "error": None,
+    }
