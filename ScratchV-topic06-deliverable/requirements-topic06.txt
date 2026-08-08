@@ -1,4 +1,2 @@
 tinyfive
 pytest
-jinja2
-matplotlib

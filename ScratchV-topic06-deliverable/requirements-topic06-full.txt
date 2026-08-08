@@ -1,0 +1,3 @@
+-r requirements-topic06.txt
+jinja2
+matplotlib

@@ -1,6 +1,8 @@
 {
   "description": "Compute a 2x2 matmul and then add a symbolic bias term.",
-  "expected_output_type": "return_value",
+  "expected_output_type": "tensor",
+  "output_dtype": "int32",
+  "output_shape": [2, 2],
   "inputs": {
     "A": [[1, 2], [3, 4]],
     "B": [[5, 6], [7, 8]],

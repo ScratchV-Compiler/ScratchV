@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
-          python -m pip install tinyfive pytest jinja2 matplotlib
+          python -m pip install -r requirements-topic06.txt
 
       - name: Run unit tests
         run: python -m pytest -q
@@ -36,6 +36,6 @@ jobs:
           name: scratchv-course-benchmark-reports
           path: |
             reports/report.md
-            reports/report.html
-            reports/course_report_instructions.png
+            reports/report.json
+            reports/failures/
             reports/benchmark_baseline.json

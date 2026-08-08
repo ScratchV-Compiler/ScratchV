@@ -11,27 +11,12 @@
   },
   "relu_only": {
     "category": "activation",
-    "avg_instr_count": 4.0,
+    "avg_instr_count": 5.0,
     "runs": 3
   },
   "relu_twice": {
     "category": "activation",
     "avg_instr_count": 6.0,
-    "runs": 3
-  },
-  "if_else": {
-    "category": "branch",
-    "avg_instr_count": 0.0,
-    "runs": 3
-  },
-  "if_relu": {
-    "category": "branch",
-    "avg_instr_count": 0.0,
-    "runs": 3
-  },
-  "if_then": {
-    "category": "branch",
-    "avg_instr_count": 0.0,
     "runs": 3
   },
   "add_chain": {
