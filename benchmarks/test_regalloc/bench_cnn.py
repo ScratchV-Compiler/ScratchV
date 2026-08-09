@@ -8,6 +8,7 @@ verifies execution via the RV32 emulator.
 
 import argparse
 import os
+import re
 import statistics
 import sys
 import time
@@ -18,6 +19,7 @@ from scratchv.backend.regalloc_linear import (
     _INT_REGS,
 )
 from scratchv.backend.register_alloc import RegisterAllocator
+from scratchv.standalone.compare_codegen import count_riscv_instrs
 
 
 # ---------------------------------------------------------------------------
@@ -54,72 +56,7 @@ def _compile_onnx(onnx_path: str) -> tuple:
 # ---------------------------------------------------------------------------
 # Assembly validation
 # ---------------------------------------------------------------------------
-
-_KNOWN_OPS = {
-    "add",
-    "addi",
-    "sub",
-    "mul",
-    "div",
-    "rem",
-    "and",
-    "andi",
-    "or",
-    "ori",
-    "xor",
-    "xori",
-    "sll",
-    "slli",
-    "srl",
-    "srli",
-    "sra",
-    "srai",
-    "slt",
-    "slti",
-    "sltu",
-    "sltiu",
-    "lw",
-    "lh",
-    "lb",
-    "lbu",
-    "lhu",
-    "sw",
-    "sh",
-    "sb",
-    "beq",
-    "bne",
-    "blt",
-    "bge",
-    "bltu",
-    "bgeu",
-    "jal",
-    "jalr",
-    "auipc",
-    "lui",
-    "li",
-    "mv",
-    "nop",
-    "ret",
-    "bnez",
-    "j",
-    "max",
-    ".label",
-    ".text",
-    ".data",
-    ".global",
-    ".type",
-    "flw",
-    "fsw",
-    "fadd.s",
-    "fsub.s",
-    "fmul.s",
-    "fdiv.s",
-    "feq.s",
-    "flt.s",
-    "fle.s",
-    "fcvt.w.s",
-    "fcvt.s.w",
-}
+from .bench_utils import _KNOWN_OPS
 
 
 def _validate_asm(asm: str) -> list[str]:
@@ -185,6 +122,89 @@ def _run_emulator(cnn_path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# LLVM comparison
+# ---------------------------------------------------------------------------
+
+# Instruction category buckets used to compare opcode mixes between the
+# ScratchV backend and the LLVM backend. `sd`/`ld` are ABI stack
+# save/restore pairs — the classic LLVM frame-management cost.
+from .bench_utils import (
+    _CAT_ALU,
+    _CAT_LOAD,
+    _CAT_STORE,
+    _CAT_BRANCH,
+    _CAT_MUL,
+    _CAT_STACK,
+)
+from .bench_utils import _op_categories
+
+# RV64 ABI callee-saved registers — `sd`/`ld` to these at sp offsets are
+# prologue/epilogue frame save/restore, not spills.
+from .bench_utils import _CALLEE_SAVED
+
+
+def _llvm_spill_stats(asm: str) -> dict:
+    """Approximate LLVM spill/frame stats from RISC-V assembly.
+
+    libLLVM codegen does not expose regalloc pass statistics, so spill
+    counts are inferred from sp-based memory accesses:
+      - ``sd``/``ld`` to callee-saved regs → ABI frame save/restore
+      - 4-byte ``sw``/``lw``/``fsw``/``flw`` → spilled values
+        (each spill site emits a store + reload pair)
+
+    Returns ``{llvm_spill_slots, llvm_frame_save, llvm_frame_restore}``.
+    """
+    frame_save = frame_restore = spill4 = 0
+    for line in asm.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^(sd|ld|sw|lw|fsw|flw)\s+([^,]+),\s*(-?\d+)\(sp\)", line)
+        if not m:
+            continue
+        op, reg, _ = m.group(1), m.group(2).strip(), int(m.group(3))
+        if op in ("sd", "ld") and reg in _CALLEE_SAVED:
+            if op == "sd":
+                frame_save += 1
+            else:
+                frame_restore += 1
+        elif op in ("sw", "lw", "fsw", "flw"):
+            spill4 += 1
+    return {
+        "llvm_spill_slots": spill4 // 2,
+        "llvm_frame_save": frame_save,
+        "llvm_frame_restore": frame_restore,
+    }
+
+
+def _llvm_compare(cnn_path: str) -> dict:
+    """Compile *cnn_path* via LLVM (O2) and return comparison stats.
+
+    Reuses the libLLVM pipeline from ``compare_codegen.py``: ONNX →
+    LLVM IR → RISC-V assembly at both RV64IM and RV64FD feature sets.
+    """
+    from scratchv.standalone.compare_codegen import _load_llvm, llvm_ir_to_riscv
+    from scratchv.standalone.onnx_to_llvm_standalone import convert_onnx_to_llvm
+    from .bench_utils import llvmlite_ir_to_riscv
+
+    # lib = _load_llvm()
+    ir = convert_onnx_to_llvm(cnn_path)
+    im_cnt, im_asm, _ = llvmlite_ir_to_riscv(ir, "+m", 2)
+    fd_cnt, fd_asm, fd_cats = llvmlite_ir_to_riscv(ir, "+m,+f,+d", 2)
+
+    result = {
+        "llvm_im_instrs": im_cnt,
+        "llvm_fd_instrs": fd_cnt,
+        "llvm_fd_cats": fd_cats,
+        "llvm_fd_cat_buckets": _op_categories(fd_cats),
+        "_llvm_fd_asm": fd_asm,
+        "_llvm_im_asm": im_asm,
+    }
+    result.update(_llvm_spill_stats(fd_asm))
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Benchmark
 # ---------------------------------------------------------------------------
 
@@ -197,6 +217,7 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
     times = []
     spill_counts = []
 
+    # Warm up
     for _ in range(repeats):
         alloc = LinearScanAllocator(phys_regs=phys_regs)
         t0 = time.perf_counter()
@@ -210,6 +231,7 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
     alloc.allocate(alloc.compute_live_intervals(block))
     code = alloc.get_allocated_code(block)
     asm_errors = _validate_asm(code)
+    sv_cnt, sv_cats = count_riscv_instrs(code)
 
     # Greedy allocator baseline
     t0 = time.perf_counter()
@@ -224,10 +246,12 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         "ir_inst_count": ir_count,
         "machine_instrs": len(machine),
         "vreg_count": len(alloc.alloc_map),
-        "spills": spill_counts[-1],
         "reg_spill_count": spill_counts[-1],
         "peak_active": alloc.peak_active,
         "asm_lines": len(code.splitlines()),
+        "sv_static_instrs": sv_cnt,
+        "sv_cats": sv_cats,
+        "sv_cat_buckets": _op_categories(sv_cats),
         "asm_errors": asm_errors,
         "asm_valid": len(asm_errors) == 0,
         "greedy_time_s": greedy_time,
@@ -250,6 +274,18 @@ def run_bench(
     stats["emu_passed"] = emu["passed"]
     stats["emu_error"] = emu.get("error", "")
     stats["valid"] = stats["asm_valid"]
+
+    # LLVM comparison (non-fatal)
+    try:
+        stats.update(_llvm_compare(cnn_path))
+        stats["llvm_available"] = True
+    except Exception as exc:
+        stats["llvm_available"] = False
+        stats["llvm_error"] = str(exc)[:120]
+    if stats["llvm_available"]:
+        stats["instr_ratio_fd"] = round(
+            stats["llvm_fd_instrs"] / max(stats["sv_static_instrs"], 1), 2
+        )
     return stats
 
 
@@ -280,7 +316,7 @@ def main():
     phys_regs = list(_INT_REGS)
 
     print("=" * 60)
-    print("Benchmark 3 — CNN Model Integration")
+    print("Benchmark 3 — CNN Model Integration And Comparation With LLVM Backend")
     print(f"  Model: {os.path.basename(args.cnn_path)}")
     print("=" * 60)
 
@@ -294,7 +330,7 @@ def main():
     print(
         f"{'cnn':>8} {stats['mean_s'] * 1000:>10.3f} "
         f"{stats['stdev_s'] * 1000:>10.3f} "
-        f"{stats['vreg_count']:>6} {stats['spills']:>7} "
+        f"{stats['vreg_count']:>6} {stats['reg_spill_count']:>7} "
         f"{stats['peak_active']:>6} {stats['asm_lines']:>5}"
     )
 
@@ -313,10 +349,33 @@ def main():
     else:
         print(f"  Emulator: ✓ passed")
 
+    # LLVM comparison output
+    print()
+    print("-" * 55)
+    print("  LLVM comparison (O2, same ONNX model)")
+    print("-" * 55)
+
+    print(
+        f"  ScratchV LinearScan: {stats['sv_static_instrs']} instrs "
+        f"{stats['sv_cat_buckets']}"
+    )
+    print(f"  LLVM RV64IM:         {stats['llvm_im_instrs']} instrs")
+    print(
+        f"  LLVM RV64FD:         {stats['llvm_fd_instrs']} instrs "
+        f"({stats['instr_ratio_fd']}x vs ScratchV) "
+        f"{stats['llvm_fd_cat_buckets']}"
+    )
+    print(
+        f"  Spill (LLVM approx): {stats['llvm_spill_slots']} slots "
+        f"(frame save/restore {stats['llvm_frame_save']}/"
+        f"{stats['llvm_frame_restore']}); "
+        f"ScratchV (exact): reg_spill_count={stats['reg_spill_count']}"
+    )
+
     asm_ok = "PASS" if stats["asm_valid"] else "FAIL"
     print(
         f"\n  asm_valid={stats['asm_valid']}, "
-        f"reg_spill_count={stats['spills']}  [{asm_ok}]"
+        f"reg_spill_count={stats['reg_spill_count']}  [{asm_ok}]"
     )
     return 0 if stats["asm_valid"] else 1
 

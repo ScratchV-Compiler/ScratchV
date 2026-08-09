@@ -129,7 +129,7 @@ def main():
         f"{'✓' if r2.get('valid') else '✗'}"
     )
 
-    # Benchmark 3 — CNN Integration
+    # Benchmark 3 — CNN Integration And Comparation With LLVM
     cnn_default = "models/graph/cnn.onnx"
     r3 = bench_cnn.run_bench(cnn_path=cnn_default, repeats=args.repeats)
     results["3. CNN Integration"] = r3
@@ -180,4 +180,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main() or 0)
-

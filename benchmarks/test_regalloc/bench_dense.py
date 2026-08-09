@@ -110,7 +110,7 @@ def main():
         "--repeats", type=int, default=30, help="Number of repeat measurements"
     )
     args = parser.parse_args()
-    # limit to 5 phys_regs
+
     phys_regs = [f"r{i}" for i in range(5)]
 
     print("=" * 60)
