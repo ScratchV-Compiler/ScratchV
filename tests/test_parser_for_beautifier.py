@@ -6,7 +6,12 @@ attribute access.
 
 import pytest
 
-from asm_parser_for_beautifier import parse_asm_line
+try:
+    from scratchv.backend.asm_parser_for_beautifier import parse_asm_line
+except ModuleNotFoundError as error:
+    if error.name != "scratchv":
+        raise
+    from asm_parser_for_beautifier import parse_asm_line
 
 
 class TestValidAsmLine:
