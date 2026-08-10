@@ -1,5 +1,5 @@
 # flake8: noqa
-"""Benchmark for RISC-V Assembly Beautifier.
+"""Stress benchmark for RISC-V Assembly Beautifier.
 
 Measures beautification time and output size for assembly files
 of varying complexity.
@@ -22,8 +22,13 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+
+# 仅当以脚本方式直接运行时，才把项目根加入导入路径，避免该模块被当作
+# 普通模块导入时污染全局 sys.path 并改变其它导入顺序。推荐改用
+# `python -m benchmarks.bench_asm_beautifier` 运行，此时无需修改 sys.path。
+if __name__ == "__main__":
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
 
 from scratchv.backend.asm_beautifier import beautify_asm
 

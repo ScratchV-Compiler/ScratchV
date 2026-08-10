@@ -21,6 +21,7 @@ if __package__:
         DIRECTIVES,
         INSTRUCTION_SPECS,
         ParsedAsmLine,
+        _is_metadata_label,
         parse_asm,
     )
 else:
@@ -28,6 +29,7 @@ else:
         DIRECTIVES,
         INSTRUCTION_SPECS,
         ParsedAsmLine,
+        _is_metadata_label,
         parse_asm,
     )
 
@@ -610,6 +612,7 @@ def _collect_function_labels(
             current_section == ".text"
             and line.label is not None
             and line.parse_status == "valid"
+            and not _is_metadata_label(line.label)
         ):
             text_labels.add(line.label)
 

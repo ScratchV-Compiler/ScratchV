@@ -293,10 +293,14 @@ def _status_for(
     opcode: Optional[str],
     operands: list[str],
 ) -> ParseStatus:
-    """根据标签、opcode 和操作数数量确定解析状态。"""
+    """根据 opcode 和操作数数量确定解析状态。
 
-    if _is_metadata_label(label):
-        return "metadata_label"
+    本函数仅在标签带有操作体（非空 body）时调用，独占一行的元数据标签
+    已在 ``parse_asm_line`` 中先行判定为 ``metadata_label``。因此此处不再
+    依据标签是否为元数据标签改变状态，避免把“元数据标签 + 合法指令”的行
+    错误地整体标成 ``metadata_label`` 而跳过列对齐。
+    """
+
     # 空行、普通标签和已登记汇编器指示均可安全处理。
     if opcode is None or opcode in DIRECTIVES:
         return "valid"

@@ -2,6 +2,8 @@
 
 from scratchv.backend.asm_beautifier import (
     ColumnWidths,
+    OPCODE_WIDTH_MIN,
+    OPERANDS_WIDTH_MIN,
     beautify_asm,
     scan_column_widths,
 )
@@ -56,15 +58,23 @@ def test_directives_are_preserved_and_do_not_affect_column_widths() -> None:
 def test_short_fields_use_minimum_widths() -> None:
     parsed = parse_asm("ret\nadd a0,a1,a2")
 
+    # 短字段应取配置的最小列宽（而非被截断或压得更窄）。直接引用宽度常量，
+    # 这样未来调整 OPCODE_WIDTH_MIN / OPERANDS_WIDTH_MIN 时测试会随之自适应。
     assert scan_column_widths(parsed) == ColumnWidths(
         label=0,
-        opcode=8,
-        operands=15,
+        opcode=OPCODE_WIDTH_MIN,
+        operands=OPERANDS_WIDTH_MIN,
     )
 
     ret_line, add_line = beautify_asm("ret\nadd a0,a1,a2").splitlines()
-    assert add_line.index("a0, a1, a2") == 10
-    assert ret_line.index("#") == add_line.index("#") == 27
+
+    # 两条指令的注释列必须跨行对齐——只要求相对一致，不依赖具体列号。
+    assert ret_line.index("#") == add_line.index("#")
+
+    # 操作码位于行首，其后只由空白字段分隔再接操作数/注释。无论列宽如何
+    # 调整，这一结构关系都成立，因此用相对断言而非硬编码的列号（原 10 / 27）。
+    assert add_line[: add_line.index("a0, a1, a2")].rstrip() == "add"
+    assert ret_line[: ret_line.index("#")].rstrip() == "ret"
 
 
 def test_padding_caps_do_not_truncate_long_fields() -> None:

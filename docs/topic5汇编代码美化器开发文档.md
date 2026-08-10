@@ -172,6 +172,8 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 
 函数识别仅针对本文件 `.text` 段内定义且不是 `metadata_label` 的标签：显式 `.type symbol, @function` 和 `.globl/.global symbol` 声明优先，其次识别本文件中直接 `call symbol` 的目标，并将 `.text` 段内的 `main` 作为程序入口特例。局部或控制流标签、仅作为分支目标的标签、数据段标签和无法确认用途的普通标签不生成函数标题。`align=False` 时仍插入函数标题，但保持原标签行布局。函数标题不是输出第一行时，写入前检查上一行：上一行非空则补一个空行，已经为空则不追加；重复美化不得叠加同名标题或前置空行。
 
+段标题与函数标题均具备幂等性：当输入已紧邻包含对应的 `# ... SECTION` 段标题或 `# --- Function: ... ---` 标题时，美化器不再重复插入，重复美化输入不会产生叠加的标题或额外的空行。因此同一份 `.s` 文件连续美化多次输出稳定不变。
+
 ### 2.3 接口定义（模块间交互）
 
 - **上游依赖**：接收 ScratchV 汇编发射器或用户文件产生的 RISC-V 文本。美化器依赖最终文本、显式选项，以及专用模块 `scratchv/backend/asm_parser_for_beautifier.py` 提供的 `ParsedAsmLine`、`parse_asm_line()` 与 `parse_asm()`。

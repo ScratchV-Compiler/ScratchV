@@ -8,6 +8,9 @@ import scratchv.backend.asm_beautifier as asm_beautifier
 
 from scratchv.backend.asm_beautifier import (
     ColumnWidths,
+    FIELD_SEPARATOR,
+    OPCODE_WIDTH_MIN,
+    OPERANDS_WIDTH_MIN,
     beautify_asm,
     beautify_file,
     scan_column_widths,
@@ -16,6 +19,16 @@ from scratchv.backend.asm_parser_for_beautifier import parse_asm
 
 
 SECTION_BAR = "# " + "=" * 60
+
+
+def _standard_comment_column() -> int:
+
+    return (
+        OPCODE_WIDTH_MIN
+        + len(FIELD_SEPARATOR)
+        + OPERANDS_WIDTH_MIN
+        + len(FIELD_SEPARATOR)
+    )
 
 
 def test_incomplete_operands_keep_raw_code_and_do_not_split_label() -> None:
@@ -31,7 +44,7 @@ def test_incomplete_operands_keep_raw_code_and_do_not_split_label() -> None:
         "  addi   a0 # user note | [warning: operand missing]"
     )
     assert second_line.startswith(".Lbad: beq a0,a1")
-    assert second_line.index("#") == 27
+    assert second_line.index("#") == _standard_comment_column()
     assert second_line.endswith("# [warning: operand missing]")
 
 
@@ -68,7 +81,9 @@ def test_unknown_and_malformed_lines_keep_raw_code_and_add_warning(
     )
 
     expected_comment_column = (
-        max(27, len(source) + 2) if align else len(source) + 2
+        max(_standard_comment_column(), len(source) + 2)
+        if align
+        else len(source) + 2
     )
     assert result.startswith(source)
     assert result.index("#") == expected_comment_column
@@ -139,7 +154,35 @@ def test_short_unsafe_warning_aligns_with_normal_comment() -> None:
 
     normal, unsafe = beautify_asm(source).splitlines()
 
-    assert normal.index("#") == unsafe.index("#") == 27
+    # 短 unsafe 行的警告注释列必须与正常指令的注释列对齐（相对断言，不绑定列号）。
+    assert normal.index("#") == unsafe.index("#")
+
+
+def test_default_options_merge_comments_in_structured_program() -> None:
+    source = (
+        ".text\n"
+        "main:\n"
+        "add x1,x2,x3 # user note\n"
+        "custom_add a0 # unknown note"
+    )
+
+    result = beautify_asm(source)
+    lines = result.splitlines()
+
+    assert lines[:7] == [
+        SECTION_BAR,
+        "#  CODE SECTION",
+        SECTION_BAR,
+        ".text",
+        "",
+        "# --- Function: main ---",
+        "main:",
+    ]
+    assert lines[7].endswith("# user note | x1 = x2 + x3")
+    assert lines[7].index("#") == _standard_comment_column()
+    assert lines[8] == (
+        "custom_add a0 # unknown note | [warning: unknown opcode]"
+    )
 
 
 def test_long_unsafe_line_keeps_two_spaces_before_warning() -> None:

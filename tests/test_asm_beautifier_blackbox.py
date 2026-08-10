@@ -15,7 +15,7 @@ if not CLI_SCRIPT.is_file():
 CLI_COMMAND = [sys.executable, str(CLI_SCRIPT)]
 
 
-def run_cli(*args: object) -> subprocess.CompletedProcess[str]:
+def run_cli(*args: str | Path) -> subprocess.CompletedProcess[str]:
     """Run the standalone script and capture its text streams."""
 
     return subprocess.run(
@@ -23,6 +23,7 @@ def run_cli(*args: object) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        timeout=10,
     )
 
 

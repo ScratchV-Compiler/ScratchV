@@ -269,10 +269,12 @@ python -m scratchv.backend.asm_beautifier input.s --abi-register-names
 | `input` | 无，必需 | UTF-8 汇编输入路径。 |
 | `-o`, `--output` | 未指定 | 指定时原子写入该路径；未指定时只向标准输出写入结果。 |
 | `--no-align` | 关闭 | 传入后设置 `align=False`。 |
-| `--no-comments` | 关闭 | 传入后设置 `add_comments=False`，但保留用户原始注释。 |
+| `--no-comments` | 关闭 | 传入后设置 `add_comments=False`，关闭自动生成的**语义注释**，但保留用户原始注释。 |
 | `--abi-register-names` | 关闭 | 传入后设置 `abi_register_names=True`，仅改变自动注释。 |
 
 成功时退出码为 `0`。参数错误由 `argparse` 输出到标准错误并返回 `2`；文件读取、编码或写入失败输出包含目标路径与原因的单行错误并返回 `1`。失败时标准输出不得混入部分美化结果。
+
+`--no-comments` 仅关闭**自动语义注释**（`add_comments=False`）。第 2.6 节规定的三种解析警告注释（`[warning: operand missing]`、`[warning: unknown opcode]`、`[warning: malformed instruction]`）属于诊断信息而非语义注释，不受 `add_comments` 或 `--no-comments` 影响，即使传入该开关仍会输出，以保证异常行不被静默放过。原始用户注释也始终保留。
 
 ---
 
