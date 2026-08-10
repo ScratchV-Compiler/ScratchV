@@ -1,4 +1,4 @@
-"""Tests for extracting fields from one RISC-V assembly line.
+"""Functional unit tests for the RISC-V assembly line parser.
 
 ``parse_asm_line`` returns a ``ParsedAsmLine`` dataclass, so tests use
 attribute access.
@@ -6,12 +6,7 @@ attribute access.
 
 import pytest
 
-try:
-    from scratchv.backend.asm_parser_for_beautifier import parse_asm_line
-except ModuleNotFoundError as error:
-    if error.name != "scratchv":
-        raise
-    from asm_parser_for_beautifier import parse_asm_line
+from scratchv.backend.asm_parser_for_beautifier import parse_asm, parse_asm_line
 
 
 class TestValidAsmLine:
@@ -143,6 +138,12 @@ class TestValidAsmLine:
         assert result.comment is None
         assert result.parse_status == "valid"
 
+    def test_parenthesized_comma_remains_in_one_operand(self):
+        result = parse_asm_line("lw a0, 8(sp, t0)")
+
+        assert result.operands == ["a0", "8(sp, t0)"]
+        assert result.parse_status == "valid"
+
     def test_comment_only(self):
         result = parse_asm_line("# This is a comment")
 
@@ -176,6 +177,12 @@ class TestEscapedQuotes:
         assert result.operands_str == r'"a\"#b"'
         assert result.operands == [r'"a\"#b"']
         assert result.comment == "trailing comment"
+        assert result.parse_status == "valid"
+
+    def test_plain_space_inside_string_remains_in_one_operand(self):
+        result = parse_asm_line('.asciz "a b"')
+
+        assert result.operands == ['"a b"']
         assert result.parse_status == "valid"
 
     def test_escaped_quote_keeps_comma_and_space_inside_string(self):
@@ -246,6 +253,23 @@ class TestMetadataLabel:
             "opcode": 0,
             "operands_str": 0,
             "comment": 0,
+        }
+
+    def test_operator_metadata_label_preserves_comment(self):
+        source = "_op_/layer1.0/Conv_5: # operator boundary"
+        result = parse_asm_line(source)
+
+        assert result.label == "_op_/layer1.0/Conv_5"
+        assert result.opcode is None
+        assert result.operands_str == ""
+        assert result.operands == []
+        assert result.comment == "operator boundary"
+        assert result.parse_status == "metadata_label"
+        assert result.field_lengths == {
+            "label": len("_op_/layer1.0/Conv_5"),
+            "opcode": 0,
+            "operands_str": 0,
+            "comment": len("operator boundary"),
         }
 
     def test_internal_done_label_is_not_metadata(self):
@@ -378,6 +402,21 @@ class TestParseStatus:
         assert result.comment == "keep this comment"
         assert result.parse_status == "unknown_opcode"
 
+    def test_unknown_opcode_takes_priority_over_operand_count(self):
+        result = parse_asm_line("custom_add a0")
+
+        assert result.opcode == "custom_add"
+        assert result.operands == ["a0"]
+        assert result.parse_status == "unknown_opcode"
+
+    def test_hash_inside_unclosed_memory_operand_starts_comment(self):
+        result = parse_asm_line("lw a0, 0(sp # invalid address")
+
+        assert result.opcode == "lw"
+        assert result.operands_str == "a0, 0(sp"
+        assert result.comment == "invalid address"
+        assert result.parse_status == "malformed"
+
     @pytest.mark.parametrize(
         "source",
         [
@@ -396,6 +435,12 @@ class TestParseStatus:
 
         assert result.raw == source
         assert result.parse_status == "malformed"
+
+
+def test_parse_asm_uses_one_based_line_numbers() -> None:
+    parsed = parse_asm("add a0,a1,a2\n\nret")
+
+    assert [line.lineno for line in parsed] == [1, 2, 3]
 
 
 if __name__ == "__main__":

@@ -102,15 +102,15 @@ function_label ::= function_name ":"
 | 元素 | 说明 |
 |------|------|
 | `aligned_label` | 标签列左对齐，标签后保留冒号；填充宽度最大为 30 字符，超长标签保持原样输出 |
-| `aligned_opcode` | 操作码列左对齐；填充宽度最大为 12 字符，超长操作码保持原样输出 |
-| `aligned_operands` | 操作数字符串作为整体左对齐；填充宽度最大为 40 字符，超长操作数字段保持原样输出；仅将顶层逗号分隔符规范化为 `, `，不改变括号内部格式或操作数词法内容 |
+| `aligned_opcode` | 操作码列左对齐；填充宽度最小为 8 字符、最大为 12 字符，超长操作码保持原样输出 |
+| `aligned_operands` | 操作数字符串作为整体左对齐；填充宽度最小为 15 字符、最大为 40 字符，超长操作数字段保持原样输出；仅将顶层逗号分隔符规范化为 `, `，不改变括号内部格式或操作数词法内容 |
 | `aligned_comment` | 原始注释或自动生成的语义注释 |
 | `section_bar` | 段标记用`=`隔开 |
 | `section_title` | 段标记 |
-| `function_mark` | 函数入口标记，用于突出 `main` 等函数标签 |
+| `function_mark` | 函数入口标记，用于突出 `main` 等函数标签；除位于整个输入或输出的第一行外，标题前至少保留一个空行 |
 | `function_block` | 函数标记后，函数标签独占一行；函数体无标签指令从行首开始，不与函数标签同行，也不添加前导缩进 |
 
-三列的实际填充宽度分别按 `min(参与扫描行的字段最大长度, 30/12/40)` 计算。字段长度未超过填充宽度时使用空格补齐；字段长度超过上限时不截断也不强制填充，其后字段自然右移。因此，上限范围内的行保持列对齐，含超长字段的行允许局部溢出，以原文和汇编语义安全优先。
+三列的实际填充宽度分别按 `label_width = min(max_label, 30)`、`opcode_width = min(max(max_opcode, 8), 12)`、`operands_width = min(max(max_operands, 15), 40)` 计算。操作码和操作数即使短于最小宽度，也分别保留 8 和 15 字符的固定字段，使短汇编片段的操作数列与注释列保持稳定。字段长度未超过填充宽度时使用空格补齐；字段长度超过上限时不截断也不强制填充，其后字段自然右移。因此，上限范围内的行保持列对齐，含超长字段的行允许局部溢出，以原文和汇编语义安全优先。
 
 段标题与原始 directive 的输出顺序是强制契约：段标题紧邻插入在对应 directive 之前，原始 `.text`、`.data`、`.bss`、`.rodata` 行完整保留，directive 之后插入一个空行。四类映射如下：
 
@@ -188,7 +188,7 @@ def beautify_file(
 ) -> str: ...
 ```
 
-`raw` 始终保存不含行尾换行符的原始行；`label` 不含末尾冒号；`comment` 不含 `#` 和紧随其后的分隔空格。`field_lengths` 按上述规范化字段计算，缺失字段长度为 `0`。`beautify_file()` 始终返回美化结果；指定 `output_path` 时，先写入同目录临时文件，成功后原子替换目标文件，失败时不得留下部分输出。
+`raw` 始终保存不含行尾换行符的原始行；`label` 不含末尾冒号；`comment` 不含 `#` 和紧随其后的分隔空格；`lineno` 为从 1 开始的源文件行号。`field_lengths` 按上述规范化字段计算，缺失字段长度为 `0`。`beautify_file()` 始终返回美化结果；指定 `output_path` 时，先写入同目录临时文件，成功后原子替换目标文件，失败时不得留下部分输出。
 
 两个解析器的职责边界如下：
 
@@ -209,9 +209,11 @@ def beautify_file(
 2. `.type <symbol>, @function` 明确声明的符号是函数。
 3. `.globl <symbol>` 或 `.global <symbol>` 声明且在 `.text` 段定义的符号是函数。
 4. 直接 `call <symbol>` 的目标在本文件 `.text` 段存在同名定义时，识别为函数。
-5. `.L1`、`L1`、`loop1`、`_L1` 等局部或控制流标签，以及仅作为分支目标出现的普通标签，不生成函数标题；其他无法确定的标签采用保守策略，也不生成标题。
+5. `.text` 段内定义的 `main` 作为程序入口特例，即使没有显式声明或本地 `call`，也识别为函数。
+6. `.L1`、`L1`、`loop1`、`_L1` 等局部或控制流标签，以及仅作为分支目标出现的普通标签，不生成函数标题；其他无法确定的标签采用保守策略，也不生成标题。
 
 显式声明优先于命名启发式；实现不得仅凭“标签不以点号开头”判定函数。函数标题插入在函数标签之前；`.globl`、`.type` 等原始指示保持原位置，不移动到函数块内部。
+开启 `--no-align` 时仍插入函数标题，但函数标签及其同行指令保持原始布局，不强制拆分；默认对齐模式下，函数标签独占一行，同行指令移动到紧随其后的函数体行。函数标题不是整个输入或输出的第一行时，其前面至少保留一个空行；已有空行时不得重复追加。对已经紧邻同名函数标题的标签不重复插入标题，保证重复运行美化器时不会叠加标题或空行。
 
 ### 2.5 约束规则
 
@@ -236,7 +238,9 @@ def beautify_file(
 | `unknown_opcode` | 注释前代码部分逐字保留 | `[warning: unknown opcode]` | 跳过具体模板和 fallback 推测 |
 | `malformed` | 注释前代码部分逐字保留 | `[warning: malformed instruction]` | 跳过模板匹配，不解释局部片段 |
 
-警告注释替代自动语义注释；若原行已有用户注释，按“原注释 ` | ` 警告”的顺序合并。三种异常状态均不得输出或拼接任何指令模板匹配结果。示例：
+状态判定按以下优先级执行：字段边界、括号或字符串异常时为 `malformed`；字段结构完整后，未登记 opcode 优先标记为 `unknown_opcode`；仅对已登记 opcode 检查操作数数量并标记 `incomplete_operands`。因此 `custom_add a0` 的状态为 `unknown_opcode`，而不是 `incomplete_operands`。
+
+警告注释替代自动语义注释，且不受 `add_comments` 或 ABI 寄存器别名开关影响。开启列对齐且异常行没有原始用户注释时，警告的 `#` 应与普通指令注释列对齐；异常代码超过统一注释列时，在原代码后至少保留两个空格再输出警告。若原行已有用户注释，保留其原始位置，并按“原注释 ` | ` 警告”的顺序合并。若原注释已经以当前状态对应的同类警告结尾，不得重复追加，保证重复美化输出稳定。三种异常状态均不得输出或拼接任何指令模板匹配结果。示例：
 
 ```asm
 L1: add a0                   # [warning: operand missing]
@@ -274,19 +278,16 @@ python -m scratchv.backend.asm_beautifier input.s --abi-register-names
 
 ## 三、测试设计
 
-测试资产不拆分为独立汇编样例文件，统一放在两个单元测试文件和一个性能基准文件中：
+测试资产不拆分为独立汇编样例文件，按功能单元测试、功能集成测试、黑盒测试和压力测试组织：
 
 | 测试 | 描述 | 预期 |
 |------|------|------|
-| 正常输入解析 | 在 `tests/test_asm_line_parser.py` 中测试普通指令、标签、指示、注释、空行及操作数拆分。 | 各字段提取正确，`parse_status` 为 `valid`。 |
-| 元数据标签解析 | 在 `tests/test_asm_line_parser.py` 中测试算子元数据标签与普通内部标签的区分。 | 元数据标签完整保留并标记为 `metadata_label`，且不被识别为函数入口。 |
-| 操作数缺失 | 在两个单元测试文件中检查已知操作码缺少操作数时的解析和输出。 | 标记为 `incomplete_operands`，注释前代码部分逐字保留，注释只输出 `[warning: operand missing]`。 |
-| 异常输入 | 在两个单元测试文件中检查异常标签、重复分隔符、未知操作码和非汇编文本。 | 正确区分 `unknown_opcode` 与 `malformed`，注释前代码部分逐字保留，分别输出 `[warning: unknown opcode]` 与 `[warning: malformed instruction]`。 |
-| 字段长度与格式化 | 测试字段长度统计、列对齐、段与函数结构标记。 | 长度统计和输出位置正确，美化前后语义保持不变。 |
-| 语义注释 | 在 `tests/test_asm_beautifier.py` 中测试指令注释、异常警告、原始注释保留及 `nop` 注释处理。 | 正常指令注释符合语义；三种异常状态只输出对应警告，不含模板结果；原始注释不丢失，已有说明的 `nop` 不追加 `no operation`。 |
-| 接口与配置 | 测试 Python API、文件处理、命令行接口及配置开关。 | 各接口和选项行为一致，错误路径能够稳定报告。 |
-| 解析器隔离与兼容 | 静态检查 beautifier 只导入专用解析器，既有 pass 继续导入 `_asm_parser.py`；对双方支持的普通合法汇编比较公共字段。 | 调用边界不串用；公共字段含义一致，美化器专有差异有独立测试。 |
-| 性能基准 | 在 `benchmarks/bench_asm_beautifier.py` 中生成不同规模的汇编文本并记录指标。 | 性能表现稳定，不出现无法解释的明显退化。 |
+| 功能单元：解析 | `tests/test_parser_for_beautifier.py` 直接测试字段提取、字符串/括号扫描、元数据标签、行号和 `parse_status`。 | 解析字段和五种状态正确。 |
+| 功能单元：注释 | `tests/test_asm_beautifier_comments.py` 直接测试模板填充、ABI 别名和注释合并规则。 | 指令语义准确，不生成未知或不完整模板。 |
+| 功能单元：格式化 | `tests/test_asm_beautifier_formatting.py` 测试列宽、顶层操作数规范化、注释列、指示原样保留和换行。 | 格式化规则独立且稳定。 |
+| 功能集成 | `tests/test_asm_beautifier_integration.py` 验证解析、格式化、异常警告、段/函数标记、文件 API 与完整程序输出。 | 各模块组合后保持语义、格式和幂等性。 |
+| 黑盒 | `tests/test_asm_beautifier_blackbox.py` 通过子进程运行 CLI，验证参数、标准流、文件输出和退出码。 | 用户可观察行为符合 CLI 契约。 |
+| 压力测试 | `benchmarks/bench_asm_beautifier.py` 使用固定和合成汇编输入记录耗时、波动和输出大小。 | 性能稳定，无无法解释的退化。 |
 
 ## 四、修改模块与实现步骤
 
@@ -294,8 +295,11 @@ python -m scratchv.backend.asm_beautifier input.s --abi-register-names
 
 - [asm_beautifier.py](/ScratchV/scratchv/backend/asm_beautifier.py)：负责逐行解析、列宽扫描、格式化输出、语义注释、段标题及命令行入口。
 - [asm_parser_for_beautifier.py](/ScratchV/scratchv/backend/asm_parser_for_beautifier.py)：美化器专用解析模块，负责原文字段保留、字符串与括号状态扫描、元数据标签和解析状态；不替换现有 `_asm_parser.py`。
-- [test_asm_line_parser.py](/ScratchV/tests/test_asm_line_parser.py)：负责验证解析字段、字段长度、操作数拆分、元数据标签和异常状态分类。
-- [test_asm_beautifier.py](/ScratchV/tests/test_asm_beautifier.py)：集中保存格式化、语义注释、结构标记、文件接口和 CLI 用例，汇编输入以内联字符串或参数化数据提供。
+- [test_parser_for_beautifier.py](/ScratchV/tests/test_parser_for_beautifier.py)：功能单元测试，负责验证解析字段、字段长度、操作数拆分、元数据标签和异常状态分类。
+- [test_asm_beautifier_comments.py](/ScratchV/tests/test_asm_beautifier_comments.py)：功能单元测试，负责验证注释模板、伪指令和 ABI 别名。
+- [test_asm_beautifier_formatting.py](/ScratchV/tests/test_asm_beautifier_formatting.py)：功能单元测试，负责验证列宽、操作数规范化、注释列和换行保持。
+- [test_asm_beautifier_integration.py](/ScratchV/tests/test_asm_beautifier_integration.py)：功能集成测试，负责验证格式化、结构标记、异常输出、文件 API 和完整程序处理。
+- [test_asm_beautifier_blackbox.py](/ScratchV/tests/test_asm_beautifier_blackbox.py)：黑盒测试，负责验证 CLI 的参数、标准流、文件输出和错误退出码。
 - [bench_asm_beautifier.py](/ScratchV/benchmarks/bench_asm_beautifier.py)：在内存中生成不同规模的汇编输入并记录性能指标，不依赖独立样例 `.s` 文件。
 
 ### 4.2 语法与处理约定
@@ -314,11 +318,11 @@ python -m scratchv.backend.asm_beautifier input.s --abi-register-names
 - `operands_str`：原始操作数字符串，用于后续列宽统计和输出；
 - `operands`：按逗号拆分后的操作数列表，用于语义注释生成；
 - `comment`：去掉 `#` 及分隔空格后的行尾注释内容；
-- `lineno`: 解析的代码行数序号，便于输出定位错误；
+- `lineno`: 从 1 开始的源文件行号，便于输出定位错误；
 - `parse_status`：解析状态，取值为 `valid`、`metadata_label`、`incomplete_operands`、`unknown_opcode` 或 `malformed`；
 - `field_lengths`：`label`、`opcode`、`operands_str`、`comment` 四个字段的字符长度，用于后续列宽统计。
 
-操作数拆分时需要识别括号深度，保证 `28(sp)`、`0(a0)` 这类内存寻址表达式作为一个整体处理，不被错误拆开。行尾注释分隔符 `#` 仅在字符串字面量和括号之外生效，确保 `.asciz "a#b"` 等数据定义保持完整。解析器只识别字段边界并保留 `operands_str` 原文；后续格式化器仅将顶层操作数分隔符规范化为 `, `（移除逗号前空白，并把逗号后空白折叠为一个），不改写括号内部格式或操作数词法内容。
+操作数拆分时需要识别括号深度，保证 `28(sp)`、`0(a0)` 这类内存寻址表达式作为一个整体处理，不被错误拆开。行尾注释分隔符 `#` 在字符串字面量之外始终生效，即使前方存在未闭合括号；确保 `.asciz "a#b"` 等数据定义保持完整，并将 `lw a0, 0(sp # comment` 保守标记为 `malformed`。解析器只识别字段边界并保留 `operands_str` 原文；后续格式化器仅将顶层操作数分隔符规范化为 `, `（移除逗号前空白，并把逗号后空白折叠为一个），不改写括号内部格式或操作数词法内容。
 
 解析前先识别完整标签行，再分类标签类型。完整匹配 `^_op_/[^:\s]+$` 或 `^_op_PPQ_Operation_\d+_\d+$` 的标签标记为 `metadata_label`；标签内容必须完整保存，不能按 `/` 或 `.` 拆分。`_input_copy_done`、`_mp_done` 等不匹配上述格式的内部标签仍标记为 `valid`。出现重复逗号、重复标签冒号、无法确定字段边界等情况时，标记为 `malformed`，注释前代码部分逐字保留，跳过列对齐和指令模板匹配，并在输出注释中写入 `[warning: malformed instruction]`。`field_lengths` 按解析后的字段值计算：标签不含冒号，注释不含 `#` 和分隔空格，缺失字段记为 `0`。
 
@@ -328,12 +332,12 @@ python -m scratchv.backend.asm_beautifier input.s --abi-register-names
 
 列对齐采用两阶段处理：
 
-1. **第一阶段：扫描列宽**。先解析全部汇编行，仅对解析状态为 `valid` 的运行时指令与伪指令统计 `label`、`opcode` 和规范化后操作数字符串的最大长度，得到 `max_label`、`max_opcode` 和 `max_operands`。实际填充宽度按 `label_width = min(max_label, 30)`、`opcode_width = min(max_opcode, 12)`、`operands_width = min(max_operands, 40)` 计算。`DIRECTIVES` 集合中的汇编器指示以及 `incomplete_operands`、`unknown_opcode`、`malformed` 行不参与扫描。
+1. **第一阶段：扫描列宽**。先解析全部汇编行，仅对解析状态为 `valid` 的运行时指令与伪指令统计 `label`、`opcode` 和规范化后操作数字符串的最大长度，得到 `max_label`、`max_opcode` 和 `max_operands`。实际填充宽度按 `label_width = min(max_label, 30)`、`opcode_width = min(max(max_opcode, 8), 12)`、`operands_width = min(max(max_operands, 15), 40)` 计算。`DIRECTIVES` 集合中的汇编器指示以及 `incomplete_operands`、`unknown_opcode`、`malformed` 行不参与扫描。
 2. **第二阶段：格式化输出**。对参与扫描的指令行，将操作码和操作数字段按对应列宽左对齐，顶层操作数分隔符统一为 `, `。所有普通标签必须单独输出，不能与指令同行；无标签指令从行首开始，不添加前导缩进。已有行尾注释保留；自动注释存在时，以 ` | ` 分隔。纯注释补充前导空格，使 `#` 与指令注释列对齐。空行、汇编器指示和 `metadata_label` 行按原规则输出；`incomplete_operands`、`unknown_opcode` 和 `malformed` 行不参与列对齐或操作数空格规范化，注释前代码部分逐字保持不变，仅在注释位置输出对应警告。元数据标签不得触发函数标题。
 
 数据定义行和其他汇编器指示按第 2.5 节原样输出，不参与字段对齐。段标题必须在原始分段 directive 之前输出，directive 本身完整保留，随后输出一个空行。函数入口严格使用第 2.4 节的符号规则。
 
-列宽上限只限制填充宽度，不截断标签、操作码或操作数字符串。长度不超过填充宽度的字段使用空格补齐；超长字段不填充并保持原样，其后字段允许自然右移，不要求该行继续与普通行对齐。该降级行为以保证美化后的 `.s` 文件仍可被汇编并保持原有语义为优先。开启 `--no-align` 时跳过列宽扫描与对齐，按原字段顺序输出。
+操作码和操作数的最小填充宽度分别为 8 和 15，用于稳定操作数列及注释列的位置；列宽上限只限制填充宽度，不截断标签、操作码或操作数字符串。长度不超过填充宽度的字段使用空格补齐；超长字段不填充并保持原样，其后字段允许自然右移，不要求该行继续与普通行对齐。该降级行为以保证美化后的 `.s` 文件仍可被汇编并保持原有语义为优先。开启 `--no-align` 时跳过列宽扫描与对齐，按原字段顺序输出。
 
 ### 4.5 语义注释模板与伪指令处理
 
@@ -358,7 +362,7 @@ ABI 寄存器别名应在模板占位符填充阶段处理。实现需维护 `x0
 
 ### 4.6 集成与回归测试
 
-集成与回归测试不再编写独立的详细用例清单，统一按照第三章表格规定的两个单元测试文件和一个性能基准文件组织和验证。
+集成与回归测试按第三章表格规定的功能单元、功能集成、黑盒和压力测试分类组织；每个行为只在最贴合其职责的一类中保留主断言，避免重复覆盖造成维护漂移。
 
 ---
 ## 五、附录

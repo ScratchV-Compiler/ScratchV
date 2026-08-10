@@ -172,7 +172,7 @@ def _is_metadata_label(label: Optional[str]) -> bool:
 def _split_comment(
     line: str,
 ) -> tuple[str, Optional[str], bool]:
-    """在字符串和括号之外查找行尾注释。"""
+    """在字符串之外查找行尾注释。"""
 
     in_string = False
     depth = 0
@@ -188,7 +188,7 @@ def _split_comment(
                 depth -= 1
                 if depth < 0:
                     return line.rstrip(), None, False
-            elif char == "#" and depth == 0:
+            elif char == "#":
                 return (
                     line[:index].rstrip(),
                     line[index + 1 :].strip(),
@@ -301,6 +301,8 @@ def _status_for(
     if opcode is None or opcode in DIRECTIVES:
         return "valid"
 
+    # 字段结构正确后，未知 opcode 优先于操作数数量诊断。未知指令没有
+    # 可适用的操作数规格，不能误报为缺少操作数。
     spec = INSTRUCTION_SPECS.get(opcode)
     if spec is None:
         return "unknown_opcode"
@@ -400,6 +402,6 @@ def parse_asm(asm_text: str) -> list[ParsedAsmLine]:
     # 统一三种换行符后再逐行解析，raw 不包含换行符本身。
     normalized = asm_text.replace("\r\n", "\n").replace("\r", "\n")
     return [
-        parse_asm_line(line, lineno=index)
+        parse_asm_line(line, lineno=index + 1)
         for index, line in enumerate(normalized.split("\n"))
     ]

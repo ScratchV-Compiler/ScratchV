@@ -47,7 +47,7 @@ top_level_comma   ::= ","  (* only when parenthesis depth is zero *)
 comment           ::= "#" text
 ```
 
-实现时，解析器应提取标签、操作码、原始操作数字符串、操作数列表和注释；操作数按顶层逗号拆分，括号内的逗号不得作为操作数分隔符。`metadata_path` 可包含 `/`，但不得包含空白或 `:`。`_op_/...:` 和 `_op_PPQ_Operation_<number>_<number>:` 作为算子元数据标签完整保留，不得识别为函数入口。标准指令、汇编器伪指令和汇编器指示必须分类处理。
+实现时，解析器应提取标签、操作码、原始操作数字符串、操作数列表和注释；操作数按顶层逗号拆分，括号内的逗号不得作为操作数分隔符。字符串字面量外的 `#` 始终开始行尾注释，不受括号深度影响。`metadata_path` 可包含 `/`，但不得包含空白或 `:`。`_op_/...:` 和 `_op_PPQ_Operation_<number>_<number>:` 作为算子元数据标签完整保留，不得识别为函数入口。标准指令、汇编器伪指令和汇编器指示必须分类处理。
 
 
 - **新增/修改的 API**：
@@ -146,7 +146,7 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 
 #### 数据结构变更
 
-不新增 AST 节点或 IR 指令，仅新增逐行解析结果，保存 `raw`、`label`、`opcode`、`operands_str`、`operands`、`comment`、`lineno`、`parse_status` 和 `field_lengths`。指令规格、语义注释模板及 ABI 寄存器映射使用模块级只读常量。
+不新增 AST 节点或 IR 指令，仅新增逐行解析结果，保存 `raw`、`label`、`opcode`、`operands_str`、`operands`、`comment`、从 1 开始的 `lineno`、`parse_status` 和 `field_lengths`。指令规格、语义注释模板及 ABI 寄存器映射使用模块级只读常量。
 
 #### 关键算法/流程
 
@@ -158,17 +158,19 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
   → 按顶层逗号拆分操作数（识别括号深度）
   → 分类 parse_status
   → 统计合法行各字段长度
-  → 第一遍收集段状态、函数符号和安全列宽
+  → 第一遍收集段状态、.type/.globl/.global 声明、本地 call 目标、main 特例和安全列宽
   → 第二遍插入段/函数标题并格式化有效行
   → 合并原始注释与自动语义注释
   → 输出文本
 ```
 
-格式化器仅把括号深度为零的操作数分隔符规范化为 `, `（无前置空白、后置一个空格），括号内部格式和操作数词法内容保持不变。三列填充宽度按 `min(实际最大长度, 30/12/40)` 计算；超长字段不截断、不填充，其后字段允许自然右移。
+格式化器仅把括号深度为零的操作数分隔符规范化为 `, `（无前置空白、后置一个空格），括号内部格式和操作数词法内容保持不变。标签填充宽度按 `min(max_label, 30)` 计算，操作码填充宽度按 `min(max(max_opcode, 8), 12)` 计算，操作数填充宽度按 `min(max(max_operands, 15), 40)` 计算；因此操作码和操作数的最小宽度分别为 8 和 15。超长字段不截断、不填充，其后字段允许自然右移。
 
 #### 状态管理
 
 不新增全局可变状态。单次调用仅维护解析结果、段与函数信息、列宽和输出缓冲区，多次调用之间互不影响。
+
+函数识别仅针对本文件 `.text` 段内定义且不是 `metadata_label` 的标签：显式 `.type symbol, @function` 和 `.globl/.global symbol` 声明优先，其次识别本文件中直接 `call symbol` 的目标，并将 `.text` 段内的 `main` 作为程序入口特例。局部或控制流标签、仅作为分支目标的标签、数据段标签和无法确认用途的普通标签不生成函数标题。`align=False` 时仍插入函数标题，但保持原标签行布局。函数标题不是输出第一行时，写入前检查上一行：上一行非空则补一个空行，已经为空则不追加；重复美化不得叠加同名标题或前置空行。
 
 ### 2.3 接口定义（模块间交互）
 
@@ -187,8 +189,11 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 |----------|----------|--------------|
 | `scratchv/backend/asm_beautifier.py` | 重构 | 完善指令规格表、列对齐、注释生成、段/函数识别、文件 API 和 CLI。 |
 | `scratchv/backend/asm_parser_for_beautifier.py` | 新建 | 实现美化器专用安全解析器、原文字段保留、字符串感知、元数据标签识别和解析状态；不修改 `_asm_parser.py`。 |
-| `tests/test_asm_beautifier.py` | 重构 | 按新规格重写单元测试，覆盖正常、边界、异常及 CLI 行为。 |
-| `tests/test_asm_line_parser.py` | 新增 | 测试 `parse_asm_line()` 的字段提取、字段长度、操作数拆分、字符串边界、元数据标签和状态分类。 |
+| `tests/test_parser_for_beautifier.py` | 新增 | 功能单元测试：验证 `parse_asm_line()` 的字段提取、字段长度、操作数拆分、字符串边界、元数据标签和状态分类。 |
+| `tests/test_asm_beautifier_comments.py` | 新增 | 功能单元测试：验证注释模板、伪指令和 ABI 别名。 |
+| `tests/test_asm_beautifier_formatting.py` | 新增 | 功能单元测试：验证列宽、操作数规范化、注释列、指示原样保留和换行。 |
+| `tests/test_asm_beautifier_integration.py` | 新增 | 功能集成测试：验证解析、格式化、异常处理、段/函数标记、文件 API 和完整程序。 |
+| `tests/test_asm_beautifier_blackbox.py` | 新增 | 黑盒测试：通过 CLI 子进程验证参数、标准流、文件输出和退出码。 |
 | `benchmarks/bench_asm_beautifier.py` | 修改 | 使用固定样例和合成大输入统计耗时、波动、输出大小及膨胀比例。 |
 
 ### 3.2 分步实现计划
@@ -225,7 +230,9 @@ python3 -m scratchv.backend.asm_beautifier input.s --abi-register-names
 | `unknown_opcode` | `[warning: unknown opcode]` | 跳过模板匹配和 fallback 推测 |
 | `malformed` | `[warning: malformed instruction]` | 跳过模板匹配，不解释局部片段 |
 
-若输入已有用户注释，必须先保留原注释，再用 ` | ` 追加上述警告；不得追加任何指令模板匹配结果。标签、操作码、已有操作数及其空白组成的代码部分不得因生成警告而改变。例如：
+状态判定先处理字段边界、括号或字符串异常并标记为 `malformed`；字段结构完整后，未知 opcode 优先于操作数数量检查。仅已登记 opcode 的操作数不足才标记为 `incomplete_operands`，因此 `custom_add a0` 必须输出 `[warning: unknown opcode]`。
+
+异常警告不受自动注释或 ABI 别名开关影响。开启列对齐且异常行没有用户注释时，以正常指令的统一注释列作为警告 `#` 的最小起始位置；异常代码已经达到或超过该位置时，在原代码后保留至少两个空格。若输入已有用户注释，必须保留其原始位置，再用 ` | ` 追加上述警告。若注释已经以当前状态对应的同类警告结尾，则保持原行，不得重复追加。任何异常行都不得追加指令模板匹配结果，标签、操作码、已有操作数及其空白组成的代码部分不得因生成警告而改变。例如：
 
 ```asm
 L1: add a0                    # [warning: operand missing]
@@ -239,28 +246,37 @@ L3: li,,a0,,3                # [warning: malformed instruction]
 
 ### 4.1 测试概述
 
-测试资产不拆分为独立汇编样例文件，统一放在两个单元测试文件和一个性能基准文件中：
+测试资产不拆分为独立汇编样例文件，按功能单元测试、功能集成测试、黑盒测试和压力测试组织：
 
 | 测试 | 描述 | 预期 |
 |------|------|------|
-| 正常输入解析 | 在 `tests/test_asm_line_parser.py` 中测试普通指令、标签、指示、注释、空行及操作数拆分。 | 各字段提取正确，`parse_status` 为 `valid`。 |
-| 元数据标签解析 | 在 `tests/test_asm_line_parser.py` 中测试算子元数据标签与普通内部标签的区分。 | 元数据标签完整保留并标记为 `metadata_label`，且不被识别为函数入口。 |
-| 操作数缺失 | 在两个单元测试文件中检查已知操作码缺少操作数时的解析和输出。 | 标记为 `incomplete_operands`，注释前代码部分逐字保留，注释只输出 `[warning: operand missing]`。 |
-| 异常输入 | 在两个单元测试文件中检查异常标签、重复分隔符、未知操作码和非汇编文本。 | 正确区分 `unknown_opcode` 与 `malformed`，注释前代码部分逐字保留，分别输出 `[warning: unknown opcode]` 与 `[warning: malformed instruction]`。 |
-| 字段长度与格式化 | 测试字段长度统计、列对齐、段与函数结构标记。 | 长度统计和输出位置正确，美化前后语义保持不变。 |
-| 语义注释 | 在 `tests/test_asm_beautifier.py` 中测试指令注释、异常警告、原始注释保留及 `nop` 注释处理。 | 正常指令注释符合语义；三种异常状态只输出对应警告，不含模板结果；原始注释不丢失，已有说明的 `nop` 不追加 `no operation`。 |
-| 接口与配置 | 测试 Python API、文件处理、命令行接口及配置开关。 | 各接口和选项行为一致，错误路径能够稳定报告。 |
-| 解析器隔离与兼容 | 检查 beautifier 只导入 `asm_parser_for_beautifier.py`，既有 pass 继续导入 `_asm_parser.py`；对双方都支持的合法汇编子集比较标签、opcode、操作数与注释字段。 | 不修改既有 pass 的解析行为；公共字段含义一致，美化器特有状态和原文字段仅由专用解析器提供。 |
-| 性能基准 | 在 `benchmarks/bench_asm_beautifier.py` 中生成不同规模的汇编文本并记录指标。 | 性能表现稳定，不出现无法解释的明显退化。 |
+| 功能单元：解析 | `tests/test_parser_for_beautifier.py` 直接测试字段提取、字符串/括号扫描、元数据标签、行号和 `parse_status`。 | 解析字段和五种状态正确。 |
+| 功能单元：注释 | `tests/test_asm_beautifier_comments.py` 直接测试模板填充、ABI 别名和注释合并规则。 | 指令语义准确，不生成未知或不完整模板。 |
+| 功能单元：格式化 | `tests/test_asm_beautifier_formatting.py` 测试列宽、顶层操作数规范化、注释列、指示原样保留和换行。 | 格式化规则独立且稳定。 |
+| 功能集成 | `tests/test_asm_beautifier_integration.py` 验证解析、格式化、异常警告、段/函数标记、文件 API 与完整程序输出。 | 各模块组合后保持语义、格式和幂等性。 |
+| 黑盒 | `tests/test_asm_beautifier_blackbox.py` 通过子进程运行 CLI，验证参数、标准流、文件输出和退出码。 | 用户可观察行为符合 CLI 契约。 |
+| 压力测试 | `benchmarks/bench_asm_beautifier.py` 使用固定和合成汇编输入记录耗时、波动和输出大小。 | 性能稳定，无无法解释的退化。 |
 
-### 4.2 验收标准（Definition of Done）
+### 4.2 压力测试基线
+
+基准脚本使用固定的 simple、moderate、large 汇编样例，以及确定性的 synthetic_1k 和 synthetic_5k 输入。每个样例重复美化并校验输出一致，记录输入/输出字符数、输出膨胀比例、最小值、最大值、均值、中位数和标准差；同时比较 `align` 与自动注释开关的功能开销。
+
+执行命令：
+
+```bash
+python benchmarks/bench_asm_beautifier.py --repeats 3
+```
+
+输出中的均值和标准差用于同一环境下的回归比较，不作为跨机器的固定性能阈值。
+
+### 4.3 验收标准（Definition of Done）
 
 - [ ] 新实现不再依赖单个宽松正则表达式完成整行解析。
 - [ ] `asm_beautifier.py` 只从 `asm_parser_for_beautifier.py` 导入解析能力，自身不保留第二份逐行解析或操作数拆分实现。
 - [ ] `_asm_parser.py` 及其 peephole、const-merge、inst-counter、inst-scheduler 等既有调用方的接口和行为不变，相关回归测试通过。
 - [ ] 五种 `parse_status` 均有直接单元测试和明确输出策略。
 - [ ] 测试概述表中的各类测试均达到预期。
-- [ ] `tests/test_asm_line_parser.py` 和 `tests/test_asm_beautifier.py` 测试全部通过。
+- [ ] 功能单元、功能集成、黑盒测试和压力测试均通过，且各类别职责清晰、无重复主断言。
 - [ ] `python3 -m pytest tests/ -v` 全部通过，不引入项目回归。
 - [ ] 元数据标签保持原样；三种异常行的注释前代码部分逐字保持不变，输出对应警告注释，不生成函数标题或指令模板结果。
 - [ ] 已有算子说明的 `nop` 不追加 `no operation`，无注释的普通 `nop` 行为保持不变。
@@ -268,7 +284,7 @@ L3: li,,a0,,3                # [warning: malformed instruction]
 - [ ] 开启 ABI 别名仅影响自动注释，默认输出保持向后兼容。
 - [ ] `beautify_file()` 同步暴露 `align`、`add_comments`、`abi_register_names`，CLI 使用设计规定的 `--abi-register-names` 正向开关。
 - [ ] 四类段标题映射、标题插入顺序和 60 个 `=` 分隔线与设计文档第 2.2 节一致；函数入口识别与标题插入位置与设计文档第 2.4 节一致。
-- [ ] 标签、操作码和操作数的填充宽度分别为 `min(实际最大长度, 30/12/40)`；超长字段保持原样且允许后续字段右移，不与常规字段对齐。
+- [ ] 标签填充宽度为 `min(max_label, 30)`，操作码填充宽度为 `min(max(max_opcode, 8), 12)`，操作数填充宽度为 `min(max(max_operands, 15), 40)`；短字段按最小宽度对齐，超长字段保持原样且允许后续字段右移，不与常规字段对齐。
 - [ ] CLI 文件错误返回非零状态码，失败写入不会留下不完整目标文件。
 - [ ] 基准结果已记录且没有无法解释的明显时间或输出体积退化。
 - [ ] 公共 API、CLI 和相关用户文档已更新，代码包含必要类型标注和文档字符串。

@@ -97,6 +97,13 @@ def test_unsafe_line_keeps_user_comment_before_warning(
     assert result == f"{source} | {warning}"
 
 
+def test_unknown_opcode_takes_priority_over_operand_count() -> None:
+    result = beautify_asm("custom_add a0", add_comments=False)
+
+    assert result.endswith("# [warning: unknown opcode]")
+    assert "operand missing" not in result
+
+
 @pytest.mark.parametrize(
     "source",
     [
