@@ -153,8 +153,7 @@ def test_short_unsafe_warning_aligns_with_normal_comment() -> None:
     source = "add a0,a1,a2\ncustom_op x1,x2"
 
     normal, unsafe = beautify_asm(source).splitlines()
-
-    # 短 unsafe 行的警告注释列必须与正常指令的注释列对齐（相对断言，不绑定列号）。
+    
     assert normal.index("#") == unsafe.index("#")
 
 
