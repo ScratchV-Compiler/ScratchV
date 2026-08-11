@@ -53,6 +53,7 @@ class CompilerConfig:
         cycle_stats:    Run 5-stage pipeline cycle estimation (detailed).
         enable_forwarding:  Enable forwarding in cycle estimator.
         branch_predictor:   Branch predictor mode for cycle estimator.
+        verify_ir:      Validate IR throughout the compilation pipeline.
     """
 
     backend: str = "riscv"
@@ -73,6 +74,7 @@ class CompilerConfig:
     cycle_stats: bool = False
     enable_forwarding: bool = True
     branch_predictor: str = "always_not_taken"
+    verify_ir: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -253,15 +255,30 @@ class CompilerDriver:
             from scratchv.ir.printer import IRPrinter
             ir_dump_before = IRPrinter(program).dump()
 
-        # --- 2. Verify IR (if configured) ---
-        if self.config.use_logger:
-            self._verify_ir(program, warnings)
+        # --- 2. Verify parsed IR (if configured) ---
+        if self.config.verify_ir:
+            verify_result = self._verify_ir(program, "after parsing")
+            warnings.extend(verify_result.warnings)
+            if not verify_result.success:
+                return CompileResult(
+                    success=False,
+                    errors=[verify_result.message],
+                    warnings=warnings,
+                )
 
         # --- 3. Optimize ---
         opt_message = ""
         if self.config.optimize_level != "none":
             opt_result = self._run_optimizations(program)
             opt_message = opt_result.message
+            warnings.extend(opt_result.warnings)
+            if not opt_result.success:
+                return CompileResult(
+                    success=False,
+                    errors=[opt_result.message],
+                    warnings=warnings,
+                )
+            program = opt_result.data
 
         ir_dump_after = ""
         if self.config.dump_ir:
@@ -277,13 +294,27 @@ class CompilerDriver:
                 ") ---\n" + ir_dump_after
             )
 
-        # --- 4. Code generation ---
+        # --- 4. Verify final IR, then generate code ---
+        if self.config.verify_ir:
+            verify_result = self._verify_ir(
+                program, "before code generation",
+            )
+            warnings.extend(verify_result.warnings)
+            if not verify_result.success:
+                return CompileResult(
+                    success=False,
+                    errors=[verify_result.message],
+                    warnings=warnings,
+                    ir_dump=ir_dump,
+                )
+
         try:
             asm_text = self._generate_code(program)
         except Exception as e:
             return CompileResult(
                 success=False, errors=[f"Codegen error: {e}"],
                 ir_dump=ir_dump,
+                warnings=warnings,
             )
 
         # --- 5. Post-codegen passes ---
@@ -347,17 +378,9 @@ class CompilerDriver:
 
     # ── Internal: verify IR ─────────────────────────────────────────────────
 
-    def _verify_ir(self, program, warnings: list[str]) -> None:
-        """Run IR verifier and collect warnings."""
-        from scratchv.analysis.ir_verifier import IRVerifier
-        verifier = IRVerifier(program)
-        issues = verifier.verify()
-        for issue in issues:
-            msg = str(issue)
-            if issue.level.value == "error":
-                warnings.append(f"IR: {msg}")
-            else:
-                warnings.append(f"IR(warning): {msg}")
+    def _verify_ir(self, program, phase: str) -> PassResult:
+        """Run the same verifier pass used between optimizations."""
+        return _IRVerificationPass(phase).run(program)
 
     # ── Internal: optimizations ─────────────────────────────────────────────
 
@@ -367,17 +390,23 @@ class CompilerDriver:
         from scratchv.optimizer.dead_code import DeadCodeEliminator
 
         pm = PassManager("optimizer")
-        pm.add(_PassAdapter("constant-folding", ConstantFolder(program)))
-        pm.add(_PassAdapter("dead-code-elim", DeadCodeEliminator(program)))
+
+        def add_optimizer(name: str, legacy_pass: Any) -> None:
+            pm.add(_PassAdapter(name, legacy_pass))
+            if self.config.verify_ir:
+                pm.add(_IRVerificationPass(f"after pass '{name}'"))
+
+        add_optimizer("constant-folding", ConstantFolder(program))
+        add_optimizer("dead-code-elim", DeadCodeEliminator(program))
 
         if self.config.optimize_level == "all":
             from scratchv.optimizer.peephole import IRPeepholeOptimizer
             from scratchv.optimizer.muladd_fusion import MulAddFusion
             from scratchv.optimizer.licm import LICM
 
-            pm.add(_PassAdapter("ir-peephole", IRPeepholeOptimizer(program)))
-            pm.add(_PassAdapter("muladd-fusion", MulAddFusion(program)))
-            pm.add(_PassAdapter("licm", LICM(program)))
+            add_optimizer("ir-peephole", IRPeepholeOptimizer(program))
+            add_optimizer("muladd-fusion", MulAddFusion(program))
+            add_optimizer("licm", LICM(program))
 
         return pm.run(program)
 
@@ -485,6 +514,38 @@ class CompilerDriver:
 # ═══════════════════════════════════════════════════════════════════════════════
 # _PassAdapter — wraps legacy passes that don't implement CompilerPass
 # ═══════════════════════════════════════════════════════════════════════════════
+
+class _IRVerificationPass(CompilerPass):
+    """Validate IR at a named pipeline boundary."""
+
+    def __init__(self, phase: str):
+        self._phase = phase
+
+    @property
+    def name(self) -> str:
+        return f"verify-ir {self._phase}"
+
+    def run(self, input_data: Any) -> PassResult:
+        from scratchv.analysis.ir_verifier import ErrorLevel, IRVerifier
+
+        issues = IRVerifier(input_data).verify()
+        errors = [issue for issue in issues if issue.level == ErrorLevel.ERROR]
+        warnings = [
+            f"IR verification {self._phase}: {issue}"
+            for issue in issues
+            if issue.level == ErrorLevel.WARNING
+        ]
+        if errors:
+            details = "\n".join(str(error) for error in errors)
+            return PassResult(
+                data=None,
+                message=(
+                    f"IR verification failed {self._phase}:\n{details}"
+                ),
+                warnings=warnings,
+            )
+        return PassResult(data=input_data, warnings=warnings)
+
 
 class _PassAdapter(CompilerPass):
     """Adapter that wraps a legacy pass object into the ``CompilerPass`` API.

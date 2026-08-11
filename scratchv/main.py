@@ -74,7 +74,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--verify-ir", action="store_true",
-        help="Run IR verifier before and after optimization (Topic 21)",
+        help="Run IR verifier throughout the compiler pipeline (Topic 21)",
     )
     parser.add_argument(
         "--beautify", action="store_true",
@@ -153,6 +153,7 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         cycle_stats=args.cycle_stats,
         enable_forwarding=not args.no_forwarding,
         branch_predictor=args.branch_predictor,
+        verify_ir=args.verify_ir,
     )
 
 

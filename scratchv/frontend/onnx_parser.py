@@ -56,6 +56,7 @@ class ONNXParser:
                 # Multi-element tensor: store pointer info in attrs
                 val.is_constant = False
                 val.shape = tuple(arr.shape)
+            self.builder.program.global_values.append(val)
             self._value_map[init.name] = val
 
         # Map graph inputs to function params

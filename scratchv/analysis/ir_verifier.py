@@ -15,6 +15,7 @@ Verification rules:
        be unreachable. Conditional branches must have exactly two
        targets specified.
     6. SSA validity: Each value must be assigned exactly once (SSA).
+    7. Entry existence: Every function must contain a basic block.
 
 Usage::
 
@@ -39,6 +40,7 @@ from typing import Optional
 from scratchv.ir.types import (
     OpCode,
     Function,
+    Instruction,
     Program,
 )
 
@@ -136,6 +138,7 @@ class IRVerifier:
             the program passed all checks.
         """
         self._errors = []
+        self._check_global_ssa_validity()
 
         for func in self.program.functions:
             self._verify_function(func)
@@ -153,7 +156,17 @@ class IRVerifier:
             func: The function to verify.
         """
         # Collect all block names for label checks
-        block_names: set[str] = {b.name for b in func.blocks}
+        block_names: set[str] = set()
+        for block in func.blocks:
+            if block.name in block_names:
+                self._add_error(
+                    ErrorLevel.ERROR,
+                    f"duplicate block label '{block.name}'",
+                    func_name=func.name,
+                    block_name=block.name,
+                    rule="label-existence",
+                )
+            block_names.add(block.name)
 
         # Check 1: Def-before-use per function
         self._check_def_before_use(func)
@@ -189,46 +202,144 @@ class IRVerifier:
     def _check_def_before_use(self, func: Function) -> None:
         """Ensure all value operands are defined before use.
 
-        Uses a two-pass approach:
-        1. First pass: collect all values that are assigned (appear as
-           instruction destinations) across all blocks.
-        2. Second pass: flag operands that are never assigned and aren't
-           constants or function params.
-
-        Values that appear as operands but are never assigned are treated
-        as implicit input variables (not flagged as errors).
+        Function parameters, program globals, and constants are available at
+        function entry.  Instruction results are available only after their
+        defining instruction and only in blocks dominated by that definition.
 
         Args:
             func: The function to check.
         """
-        # Pass 1: collect all defined names (instruction destinations)
-        defined: set[str] = set()
+        entry_values = {param.name for param in func.params}
+        entry_values.update(value.name for value in self.program.global_values)
 
-        # Function parameters are pre-defined
-        for param in func.params:
-            defined.add(param.name)
-
+        definitions: dict[str, list[tuple[str, int]]] = {}
         for block in func.blocks:
-            for instr in block.instructions:
+            for i, instr in enumerate(block.instructions):
                 if instr.dest is not None:
-                    defined.add(instr.dest.name)
+                    definitions.setdefault(instr.dest.name, []).append(
+                        (block.name, i),
+                    )
 
-        # Pass 2: flag uses of undefined values
+        dominators = self._compute_dominators(func)
+
         for block in func.blocks:
-            for instr in block.instructions:
+            for i, instr in enumerate(block.instructions):
                 for op in instr.operands:
-                    if op.name not in defined:
-                        # Allow constants (auto-defined) and implicit inputs
-                        if op.is_constant:
-                            continue
-                        # Treat as implicit input (not an error)
-                        # Mark so it's not flagged again
-                        defined.add(op.name)
+                    if op.is_constant or op.name in entry_values:
                         continue
 
-                # Also track values created mid-block for intra-block checks
-                if instr.dest is not None:
-                    defined.add(instr.dest.name)
+                    sites = definitions.get(op.name, [])
+                    is_defined = any(
+                        (
+                            def_block == block.name
+                            and def_index < i
+                        )
+                        or (
+                            def_block != block.name
+                            and def_block in dominators.get(block.name, set())
+                        )
+                        for def_block, def_index in sites
+                    )
+                    if is_defined:
+                        continue
+
+                    self._add_error(
+                        ErrorLevel.ERROR,
+                        f"value '{op.name}' is used before a dominating "
+                        "definition",
+                        func_name=func.name,
+                        block_name=block.name,
+                        instruction_index=i,
+                        value_name=op.name,
+                        rule="def-before-use",
+                    )
+
+    def _compute_dominators(self, func: Function) -> dict[str, set[str]]:
+        """Compute block dominators for the reachable control-flow graph."""
+        if not func.blocks:
+            return {}
+
+        block_names = {block.name for block in func.blocks}
+        successors: dict[str, set[str]] = {
+            block.name: set() for block in func.blocks
+        }
+
+        for index, block in enumerate(func.blocks):
+            if not block.instructions:
+                if index + 1 < len(func.blocks):
+                    successors[block.name].add(func.blocks[index + 1].name)
+                continue
+            terminator = block.instructions[-1]
+            for target in self._branch_targets(terminator):
+                if target in block_names:
+                    successors[block.name].add(target)
+            if (
+                terminator.opcode not in {
+                    OpCode.BR, OpCode.BR_IF, OpCode.RETURN,
+                }
+                and index + 1 < len(func.blocks)
+            ):
+                successors[block.name].add(func.blocks[index + 1].name)
+
+        entry = func.blocks[0].name
+        reachable = {entry}
+        worklist = [entry]
+        while worklist:
+            current = worklist.pop()
+            for successor in successors[current]:
+                if successor not in reachable:
+                    reachable.add(successor)
+                    worklist.append(successor)
+
+        predecessors: dict[str, set[str]] = {
+            name: set() for name in block_names
+        }
+        for source, targets in successors.items():
+            for target in targets:
+                predecessors[target].add(source)
+
+        dominators = {
+            name: ({entry} if name == entry else set(reachable))
+            for name in reachable
+        }
+        changed = True
+        while changed:
+            changed = False
+            for name in reachable:
+                if name == entry:
+                    continue
+                reachable_predecessors = predecessors[name] & reachable
+                if reachable_predecessors:
+                    common = set.intersection(
+                        *(dominators[pred] for pred in reachable_predecessors)
+                    )
+                    updated = {name} | common
+                else:
+                    updated = {name}
+                if updated != dominators[name]:
+                    dominators[name] = updated
+                    changed = True
+
+        for name in block_names - reachable:
+            dominators[name] = {name}
+        return dominators
+
+    @staticmethod
+    def _branch_targets(instr: Instruction) -> list[str]:
+        """Return normalized targets for a branch instruction."""
+        if instr.opcode == OpCode.BR:
+            return [(instr.target or "").strip()]
+        if instr.opcode == OpCode.BR_IF:
+            return [
+                target.strip()
+                for target in (instr.target or "").split(",")
+            ]
+        return []
+
+    @staticmethod
+    def _has_two_branch_targets(targets: list[str]) -> bool:
+        """Return whether a conditional branch has two usable targets."""
+        return len(targets) == 2 and all(targets)
 
     # -------------------------------------------------------------------
     # Rule 2: Block termination
@@ -282,29 +393,37 @@ class IRVerifier:
         """
         for block in func.blocks:
             for i, instr in enumerate(block.instructions):
-                target = instr.target
-                if target is None:
+                if instr.opcode not in {OpCode.BR, OpCode.BR_IF}:
                     continue
 
-                # BR_IF has comma-separated targets
+                targets = self._branch_targets(instr)
                 if instr.opcode == OpCode.BR_IF:
-                    parts = target.split(",")
-                    for part in parts:
-                        part = part.strip()
-                        if part and part not in block_names:
+                    if not self._has_two_branch_targets(targets):
+                        self._add_error(
+                            ErrorLevel.ERROR,
+                            "conditional branch must specify two non-empty "
+                            "targets",
+                            func_name=func.name,
+                            block_name=block.name,
+                            instruction_index=i,
+                            rule="label-existence",
+                        )
+                for target in targets:
+                    if not target:
+                        if instr.opcode == OpCode.BR:
                             self._add_error(
                                 ErrorLevel.ERROR,
-                                f"branch target '{part}' does not exist",
+                                "branch target is missing",
                                 func_name=func.name,
                                 block_name=block.name,
                                 instruction_index=i,
                                 rule="label-existence",
                             )
-                else:
+                        continue
                     if target not in block_names:
                         self._add_error(
                             ErrorLevel.ERROR,
-                            f"jump target '{target}' does not exist",
+                            f"branch target '{target}' does not exist",
                             func_name=func.name,
                             block_name=block.name,
                             instruction_index=i,
@@ -330,28 +449,19 @@ class IRVerifier:
 
         for block in func.blocks:
             for i, instr in enumerate(block.instructions):
-                if instr.opcode in binary_ops and len(instr.operands) >= 2:
-                    lhs, rhs = instr.operands[0], instr.operands[1]
-                    if lhs.dtype != rhs.dtype:
+                if (
+                    instr.opcode in binary_ops | nn_ops
+                    and len(instr.operands) >= 2
+                ):
+                    expected = instr.operands[0]
+                    for operand in instr.operands[1:]:
+                        if expected.dtype == operand.dtype:
+                            continue
                         self._add_error(
                             ErrorLevel.WARNING,
-                            f"operand type mismatch: '{lhs.name}' is "
-                            f"{lhs.dtype.value}, '{rhs.name}' is "
-                            f"{rhs.dtype.value}",
-                            func_name=func.name,
-                            block_name=block.name,
-                            instruction_index=i,
-                            rule="type-consistency",
-                        )
-
-                if instr.opcode in nn_ops and len(instr.operands) >= 2:
-                    lhs, rhs = instr.operands[0], instr.operands[1]
-                    if lhs.dtype != rhs.dtype:
-                        self._add_error(
-                            ErrorLevel.WARNING,
-                            f"NN op operand type mismatch: '{lhs.name}' is "
-                            f"{lhs.dtype.value}, '{rhs.name}' is "
-                            f"{rhs.dtype.value}",
+                            f"operand type mismatch: '{expected.name}' is "
+                            f"{expected.dtype.value}, '{operand.name}' is "
+                            f"{operand.dtype.value}",
                             func_name=func.name,
                             block_name=block.name,
                             instruction_index=i,
@@ -376,43 +486,41 @@ class IRVerifier:
             func: The function to check.
             block_names: Valid block names.
         """
+        terminators = {OpCode.BR, OpCode.BR_IF, OpCode.RETURN}
+
         for block in func.blocks:
             for i, instr in enumerate(block.instructions):
-                if instr.opcode == OpCode.BR:
-                    # Cannot have instructions after unconditional jump
-                    if i < len(block.instructions) - 1:
-                        self._add_error(
-                            ErrorLevel.ERROR,
-                            "unreachable instructions after unconditional "
-                            "branch",
-                            func_name=func.name,
-                            block_name=block.name,
-                            instruction_index=i,
-                            rule="control-flow-integrity",
-                        )
+                if (
+                    instr.opcode in terminators
+                    and i < len(block.instructions) - 1
+                ):
+                    self._add_error(
+                        ErrorLevel.ERROR,
+                        f"unreachable instructions after "
+                        f"{instr.opcode.value}",
+                        func_name=func.name,
+                        block_name=block.name,
+                        instruction_index=i,
+                        rule="control-flow-integrity",
+                    )
 
-                elif instr.opcode == OpCode.BR_IF:
+                if instr.opcode == OpCode.BR_IF:
                     # Must have exactly two targets
-                    target = instr.target or ""
-                    targets = [
-                        t.strip() for t in target.split(",") if t.strip()
-                    ]
-                    if len(targets) != 2:
+                    targets = self._branch_targets(instr)
+                    if not self._has_two_branch_targets(targets):
                         self._add_error(
                             ErrorLevel.ERROR,
-                            f"conditional branch has {len(targets)} "
-                            f"targets, expected 2",
+                            "conditional branch must have exactly two "
+                            "non-empty targets",
                             func_name=func.name,
                             block_name=block.name,
                             instruction_index=i,
                             rule="control-flow-integrity",
                         )
-
-                elif instr.opcode == OpCode.RETURN:
-                    if i < len(block.instructions) - 1:
+                    if not instr.operands:
                         self._add_error(
                             ErrorLevel.ERROR,
-                            "unreachable instructions after return",
+                            "conditional branch has no condition operand",
                             func_name=func.name,
                             block_name=block.name,
                             instruction_index=i,
@@ -423,13 +531,41 @@ class IRVerifier:
     # Rule 6: SSA validity
     # -------------------------------------------------------------------
 
+    def _check_global_ssa_validity(self) -> None:
+        """Ensure program-global values have unique SSA names."""
+        assigned: set[str] = set()
+        for value in self.program.global_values:
+            if value.name in assigned:
+                self._add_error(
+                    ErrorLevel.ERROR,
+                    f"global value '{value.name}' assigned multiple times "
+                    "(SSA violation)",
+                    value_name=value.name,
+                    rule="ssa-validity",
+                )
+            else:
+                assigned.add(value.name)
+
     def _check_ssa_validity(self, func: Function) -> None:
         """Check SSA validity: each value must be assigned exactly once.
 
         Args:
             func: The function to check.
         """
-        assigned: dict[str, int] = {}  # value name -> first assignment index
+        assigned = {value.name for value in self.program.global_values}
+
+        for param in func.params:
+            if param.name in assigned:
+                self._add_error(
+                    ErrorLevel.ERROR,
+                    f"value '{param.name}' assigned multiple times "
+                    "(SSA violation)",
+                    func_name=func.name,
+                    value_name=param.name,
+                    rule="ssa-validity",
+                )
+            else:
+                assigned.add(param.name)
 
         for block in func.blocks:
             for i, instr in enumerate(block.instructions):
@@ -446,7 +582,7 @@ class IRVerifier:
                             rule="ssa-validity",
                         )
                     else:
-                        assigned[instr.dest.name] = i
+                        assigned.add(instr.dest.name)
 
     # -------------------------------------------------------------------
     # Helper

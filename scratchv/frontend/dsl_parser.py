@@ -102,9 +102,11 @@ class DSLParser:
             return self.builder.load_const(val)
         except ValueError:
             pass
-        # Create a variable on first access
+        # A name first seen as an operand is a function input.
         v = self.builder.make_value(name=name)
         self._vars[name] = v
+        if self.builder.current_func is not None:
+            self.builder.current_func.params.append(v)
         return v
 
     def _parse_kwargs(
