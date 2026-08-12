@@ -76,7 +76,7 @@ def test_optimize(model_name: str, benchmark_models: dict[str, str]):
     create_optimization_pass_manager("all").run(program)
 
     inst_after = sum(1 for f in program.functions for bb in f.blocks for _ in bb.instructions)
-    assert inst_after >= 0, f"Optimization failed for {model_name}"
+    assert 0 < inst_after <= inst_before, f"Optimization failed for {model_name}"
     print(f"\n    {model_name}: {inst_before} → {inst_after} instructions")
 
 

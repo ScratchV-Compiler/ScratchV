@@ -218,6 +218,9 @@ lli model.ll                       # LLVM JIT execution
 #    (before vs after optimization)
 ```
 
+`--optimize all` 仍是主 CLI 的兼容别名；新文档优先使用规范写法
+`--opt-level all`。
+
 ---
 
 ## LLVM IR Verification

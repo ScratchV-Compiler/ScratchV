@@ -13,6 +13,7 @@ from scratchv.compiler import (
     PassManager,
     create_optimization_pass_manager,
 )
+from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import Program
 from scratchv.main import args_to_config, build_arg_parser
 from scratchv.optimizer import (
@@ -220,6 +221,30 @@ class TestOptimizationLevels:
     def test_factory_rejects_unknown_level(self, level):
         with pytest.raises((TypeError, ValueError)):
             create_optimization_pass_manager(level)
+
+    def test_none_pipeline_is_noop_with_zero_elapsed_time(self):
+        from benchmarks.run_benchmark import _optimize
+
+        builder = IRBuilder()
+        builder.new_function("test")
+        block = builder.new_block("entry")
+        result = builder.add(
+            builder.make_value(name="lhs"),
+            builder.make_value(name="rhs"),
+        )
+        builder.ret(result)
+        instructions_before = tuple(block.instructions)
+
+        report = create_optimization_pass_manager("none").run(builder.program)
+
+        assert report == OptimizationReport("optimizer", (), 0, 0.0)
+        assert tuple(block.instructions) == instructions_before
+        assert tuple(map(id, block.instructions)) == tuple(
+            map(id, instructions_before)
+        )
+
+        assert _optimize(builder.program, "none") == 0.0
+        assert tuple(block.instructions) == instructions_before
 
 
 class TestOptimizationCli:

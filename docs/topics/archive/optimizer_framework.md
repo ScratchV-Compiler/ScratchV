@@ -108,7 +108,17 @@ report = manager.run(program)
 print(report.total_changes)
 ```
 
+编译器入口和 benchmark 共用该工厂：`none` 创建空管线，`basic` 创建常量折叠与
+死代码消除，`all` 按上表注册全部五个 pass。`manager.run()` 返回不可变的
+`OptimizationReport`；其 `executions` 按执行顺序记录 pass 名称、变更数和耗时，
+`total_changes` 与 `elapsed_seconds` 提供总计。
+
 主 CLI 使用 `--opt-level none|basic|all`，并保留 `--optimize` 兼容别名。
+
+```bash
+scratchv model.onnx --opt-level all
+scratchv model.onnx --optimize all
+```
 
 ## 相关 Topic
 

@@ -58,7 +58,11 @@ def main():
     print("\n[2/5] Optimizing IR...")
     from scratchv.compiler import create_optimization_pass_manager
     report = create_optimization_pass_manager("basic").run(program)
-    folded, eliminated = (item.changes for item in report.executions)
+    changes_by_name = {
+        execution.name: execution.changes for execution in report.executions
+    }
+    folded = changes_by_name["constant-folding"]
+    eliminated = changes_by_name["dead-code-elim"]
     print(f"  Folded: {folded}, Eliminated: {eliminated}")
 
     # Step 3: Generate LLVM IR

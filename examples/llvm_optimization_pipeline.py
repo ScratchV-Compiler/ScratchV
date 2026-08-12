@@ -48,7 +48,11 @@ return result
 
     from scratchv.compiler import create_optimization_pass_manager
     report = create_optimization_pass_manager("basic").run(program2)
-    folded, eliminated = (item.changes for item in report.executions)
+    changes_by_name = {
+        execution.name: execution.changes for execution in report.executions
+    }
+    folded = changes_by_name["constant-folding"]
+    eliminated = changes_by_name["dead-code-elim"]
     print(f"  Folded: {folded}, Eliminated: {eliminated}")
 
     codegen2 = LLVMCodegen(program2)
@@ -62,8 +66,7 @@ return result
     program3 = parser3.parse(dsl_source)
 
     report = create_optimization_pass_manager("all").run(program3)
-    peeped = report.executions[2].changes
-    print(f"  Folded+DCE+Peephole: {peeped} optimizations")
+    print(f"  Full pipeline: {report.total_changes} optimizations")
 
     codegen3 = LLVMCodegen(program3)
     opt_ir = codegen3.emit()

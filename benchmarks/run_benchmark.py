@@ -76,7 +76,10 @@ def _parse_onnx(path: str) -> Program:
 
 
 def _optimize(program: Program, level: str) -> float:
-    """Run optimizations. Returns elapsed time in seconds."""
+    """Run the selected unified pipeline and return its reported elapsed time.
+
+    The ``none`` pipeline is empty, so its report is exactly ``0.0`` seconds.
+    """
     from scratchv.compiler import create_optimization_pass_manager
 
     manager = create_optimization_pass_manager(level)

@@ -27,7 +27,12 @@ def compile_and_count(path: str, optimize: bool = False) -> tuple[str, int]:
 
     if optimize:
         report = create_optimization_pass_manager("basic").run(program)
-        folded, eliminated = (item.changes for item in report.executions)
+        changes_by_name = {
+            execution.name: execution.changes
+            for execution in report.executions
+        }
+        folded = changes_by_name["constant-folding"]
+        eliminated = changes_by_name["dead-code-elim"]
         print(f"  Optimization: {folded} folded, {eliminated} eliminated")
 
     selector = InstructionSelector(program)
