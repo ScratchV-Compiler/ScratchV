@@ -201,10 +201,10 @@ Add verification to your workflow:
 
 ```bash
 # 1. Compile with ScratchV (RISC-V backend)
-scratchv model.onnx -o output.s --optimize
+scratchv model.onnx -o output.s --opt-level all
 
 # 2. Compile with LLVM backend
-scratchv model.onnx --backend llvm -o model.ll --optimize
+scratchv model.onnx --backend llvm -o model.ll --opt-level all
 
 # 3. Verify against ONNX Runtime
 scratchv model.onnx --verify

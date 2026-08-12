@@ -77,26 +77,10 @@ def _parse_onnx(path: str) -> Program:
 
 def _optimize(program: Program, level: str) -> float:
     """Run optimizations. Returns elapsed time in seconds."""
-    if level == "none":
-        return 0.0
+    from scratchv.compiler import create_optimization_pass_manager
 
-    t0 = time.perf_counter()
-
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
-
-    ConstantFolder(program).run()
-    DeadCodeEliminator(program).run()
-
-    if level == "all":
-        from scratchv.optimizer.peephole import IRPeepholeOptimizer
-        from scratchv.optimizer.muladd_fusion import MulAddFusion
-        from scratchv.optimizer.licm import LICM
-        IRPeepholeOptimizer(program).run()
-        MulAddFusion(program).run()
-        LICM(program).run()
-
-    return time.perf_counter() - t0
+    manager = create_optimization_pass_manager(level)
+    return manager.run(program).elapsed_seconds
 
 
 def _codegen_riscv(program: Program) -> tuple[str, float]:

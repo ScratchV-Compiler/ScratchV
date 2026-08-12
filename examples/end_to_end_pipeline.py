@@ -110,10 +110,10 @@ def demo_matmul(backend: str):
     # Optimize
     from scratchv.optimizer.constant_folding import ConstantFolder
     from scratchv.optimizer.dead_code import DeadCodeEliminator
-    folder = ConstantFolder(program)
-    folded = folder.run()
-    elim = DeadCodeEliminator(program)
-    eliminated = elim.run()
+    folder = ConstantFolder()
+    folded = folder.optimize(program)
+    elim = DeadCodeEliminator()
+    eliminated = elim.optimize(program)
     print(f"  Optimizer: {folded} folded, {eliminated} eliminated")
 
     from scratchv.backend.llvm_codegen import LLVMCodegen
@@ -166,12 +166,12 @@ return z
     from scratchv.optimizer.constant_folding import ConstantFolder
     from scratchv.optimizer.dead_code import DeadCodeEliminator
     from scratchv.optimizer.peephole import IRPeepholeOptimizer
-    folder = ConstantFolder(program2)
-    folder.run()
-    elim = DeadCodeEliminator(program2)
-    elim.run()
-    peep = IRPeepholeOptimizer(program2)
-    peep.run()
+    folder = ConstantFolder()
+    folder.optimize(program2)
+    elim = DeadCodeEliminator()
+    elim.optimize(program2)
+    peep = IRPeepholeOptimizer()
+    peep.optimize(program2)
     codegen2 = LLVMCodegen(program2)
     print("After optimization (fold + dce + peephole):")
     print(codegen2.emit()[:400])

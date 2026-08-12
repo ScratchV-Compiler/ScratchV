@@ -98,7 +98,17 @@ if changes > 0:
     print(f"Folded {changes} constants")
 ```
 
-所有 pass 遵循相同接口，可在 `PassManager` 中链式调用。
+所有 pass 遵循相同接口。默认三级管线通过唯一工厂创建：
+
+```python
+from scratchv.compiler import create_optimization_pass_manager
+
+manager = create_optimization_pass_manager("all")
+report = manager.run(program)
+print(report.total_changes)
+```
+
+主 CLI 使用 `--opt-level none|basic|all`，并保留 `--optimize` 兼容别名。
 
 ## 相关 Topic
 

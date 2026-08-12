@@ -3,6 +3,21 @@
 Six beginner-friendly optimization passes for ScratchV, ordered by difficulty.
 Each pass can be implemented as a standalone task.
 
+All IR passes implement `OptimizationPass.optimize(program) -> int`. Use the
+canonical factory when selecting an optimization level:
+
+```python
+from scratchv.compiler import create_optimization_pass_manager
+
+manager = create_optimization_pass_manager("all")
+report = manager.run(program)
+print(report.total_changes)
+```
+
+The main CLI accepts `--opt-level none|basic|all`; `--optimize` remains a
+compatibility alias. The standalone LLVM tool has a separate numeric
+`--opt-level 0|1|2|3` option.
+
 ---
 
 ## 1. Constant Folding (⭐)
@@ -66,7 +81,7 @@ Scans assembly for redundant patterns and removes them:
 **Implementation** in `scratchv/optimizer/peephole.py`:
 ```python
 class PeepholeOptimizer:
-    def run(self, program: Program) -> int:
+    def optimize(self, program: Program) -> int:
         for func in program.functions:
             for block in func.blocks:
                 self._optimize_block(block)
@@ -109,7 +124,7 @@ for out_y in range(H_out):
 **Implementation** in `scratchv/optimizer/licm.py`:
 ```python
 class LICM:
-    def run(self, program: Program) -> int:
+    def optimize(self, program: Program) -> int:
         for func in program.functions:
             self._find_loops_and_hoist(func)
 

@@ -1,7 +1,8 @@
-"""Unified compiler pass interface for ScratchV.
+"""Unified compiler pass interfaces for ScratchV.
 
-All optimisation, analysis, and code-generation passes implement this
-protocol so they can be composed by ``PassManager`` and ``CompilerDriver``.
+IR optimization passes use the strongly typed ``OptimizationPass`` contract.
+The older generic ``CompilerPass`` and ``PassResult`` types remain available
+for compatibility with non-optimization callers.
 
 Usage::
 
@@ -25,6 +26,116 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+
+from scratchv.ir.types import Program
+
+
+class OptimizationPass(ABC):
+    """Abstract interface implemented by every IR optimization pass."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Return a stable, non-empty name for reports and diagnostics."""
+        ...
+
+    @abstractmethod
+    def optimize(self, program: Program) -> int:
+        """Optimize ``program`` in place and return this run's change count."""
+        ...
+
+
+@dataclass(frozen=True)
+class PassExecutionStats:
+    """Statistics for one execution in an optimization pipeline."""
+
+    index: int
+    name: str
+    changes: int
+    elapsed_seconds: float
+
+    def __post_init__(self) -> None:
+        if isinstance(self.index, bool) or not isinstance(self.index, int):
+            raise TypeError("pass execution index must be an integer")
+        if self.index < 0:
+            raise ValueError("pass execution index must be non-negative")
+        if not isinstance(self.name, str):
+            raise TypeError("pass execution name must be a string")
+        if not self.name.strip():
+            raise ValueError("pass execution name must not be empty")
+        if isinstance(self.changes, bool) or not isinstance(self.changes, int):
+            raise TypeError("pass changes must be an integer")
+        if self.changes < 0:
+            raise ValueError("pass changes must be non-negative")
+        if isinstance(self.elapsed_seconds, bool) or not isinstance(
+            self.elapsed_seconds, (int, float)
+        ):
+            raise TypeError("pass elapsed time must be numeric")
+        if self.elapsed_seconds < 0:
+            raise ValueError("pass elapsed time must be non-negative")
+
+
+@dataclass(frozen=True)
+class OptimizationReport:
+    """Ordered statistics produced by one optimization pipeline run."""
+
+    pipeline_name: str
+    executions: tuple[PassExecutionStats, ...]
+    total_changes: int
+    elapsed_seconds: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.pipeline_name, str):
+            raise TypeError("pipeline name must be a string")
+        if not self.pipeline_name.strip():
+            raise ValueError("pipeline name must not be empty")
+        if not isinstance(self.executions, tuple):
+            raise TypeError("pipeline executions must be a tuple")
+        if [item.index for item in self.executions] != list(
+            range(len(self.executions))
+        ):
+            raise ValueError("pass execution indexes must be consecutive")
+        if isinstance(self.total_changes, bool) or not isinstance(
+            self.total_changes, int
+        ):
+            raise TypeError("total changes must be an integer")
+        if self.total_changes < 0:
+            raise ValueError("total changes must be non-negative")
+        if self.total_changes != sum(item.changes for item in self.executions):
+            raise ValueError("total changes must equal the execution sum")
+        if isinstance(self.elapsed_seconds, bool) or not isinstance(
+            self.elapsed_seconds, (int, float)
+        ):
+            raise TypeError("pipeline elapsed time must be numeric")
+        if self.elapsed_seconds < 0:
+            raise ValueError("pipeline elapsed time must be non-negative")
+
+
+class OptimizationPassError(RuntimeError):
+    """A pass failed or returned a value that violates its contract."""
+
+    def __init__(
+        self,
+        pass_index: int,
+        pass_name: str,
+        elapsed_seconds: float,
+        completed_report: OptimizationReport,
+        cause: Exception,
+    ):
+        self.pass_index = pass_index
+        self.pass_name = pass_name
+        self.elapsed_seconds = elapsed_seconds
+        self.completed_report = completed_report
+        self.cause = cause
+
+        # Descriptive aliases make the failure fields unambiguous to callers.
+        self.failed_index = pass_index
+        self.failed_name = pass_name
+        self.failed_elapsed_seconds = elapsed_seconds
+
+        super().__init__(
+            f"optimization pass #{pass_index} '{pass_name}' failed: {cause}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -64,8 +175,8 @@ class CompilerPass(ABC):
     Subclasses must implement ``name`` and ``run``.  ``stats`` is optional
     and defaults to an empty dict.
 
-    The ``run`` method accepts and returns arbitrary data — passes are
-    composed by ``PassManager`` which chains their inputs and outputs.
+    The legacy ``run`` method accepts and returns arbitrary data. IR
+    optimization pipelines instead use the typed ``OptimizationPass``.
     """
 
     @property

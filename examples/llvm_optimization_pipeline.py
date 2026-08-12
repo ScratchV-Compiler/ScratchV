@@ -48,10 +48,10 @@ return result
 
     from scratchv.optimizer.constant_folding import ConstantFolder
     from scratchv.optimizer.dead_code import DeadCodeEliminator
-    folder = ConstantFolder(program2)
-    folded = folder.run()
-    elim = DeadCodeEliminator(program2)
-    eliminated = elim.run()
+    folder = ConstantFolder()
+    folded = folder.optimize(program2)
+    elim = DeadCodeEliminator()
+    eliminated = elim.optimize(program2)
     print(f"  Folded: {folded}, Eliminated: {eliminated}")
 
     codegen2 = LLVMCodegen(program2)
@@ -64,13 +64,13 @@ return result
     parser3 = DSLParser()
     program3 = parser3.parse(dsl_source)
 
-    folder3 = ConstantFolder(program3)
-    folder3.run()
-    elim3 = DeadCodeEliminator(program3)
-    elim3.run()
+    folder3 = ConstantFolder()
+    folder3.optimize(program3)
+    elim3 = DeadCodeEliminator()
+    elim3.optimize(program3)
     from scratchv.optimizer.peephole import IRPeepholeOptimizer
-    peep = IRPeepholeOptimizer(program3)
-    peeped = peep.run()
+    peep = IRPeepholeOptimizer()
+    peeped = peep.optimize(program3)
     print(f"  Folded+DCE+Peephole: {peeped} optimizations")
 
     codegen3 = LLVMCodegen(program3)

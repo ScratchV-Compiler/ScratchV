@@ -27,10 +27,10 @@ def compile_and_count(path: str, optimize: bool = False) -> tuple[str, int]:
     program = parser.parse(source)
 
     if optimize:
-        folder = ConstantFolder(program)
-        folded = folder.run()
-        elim = DeadCodeEliminator(program)
-        eliminated = elim.run()
+        folder = ConstantFolder()
+        folded = folder.optimize(program)
+        elim = DeadCodeEliminator()
+        eliminated = elim.optimize(program)
         print(f"  Optimization: {folded} folded, {eliminated} eliminated")
 
     selector = InstructionSelector(program)
