@@ -108,12 +108,9 @@ def demo_matmul(backend: str):
     program = parser.parse(dsl_source)
 
     # Optimize
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
-    folder = ConstantFolder()
-    folded = folder.optimize(program)
-    elim = DeadCodeEliminator()
-    eliminated = elim.optimize(program)
+    from scratchv.compiler import create_optimization_pass_manager
+    report = create_optimization_pass_manager("basic").run(program)
+    folded, eliminated = (item.changes for item in report.executions)
     print(f"  Optimizer: {folded} folded, {eliminated} eliminated")
 
     from scratchv.backend.llvm_codegen import LLVMCodegen
@@ -163,15 +160,8 @@ return z
     # With optimization
     parser2 = DSLParser()
     program2 = parser2.parse(dsl_source)
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
-    from scratchv.optimizer.peephole import IRPeepholeOptimizer
-    folder = ConstantFolder()
-    folder.optimize(program2)
-    elim = DeadCodeEliminator()
-    elim.optimize(program2)
-    peep = IRPeepholeOptimizer()
-    peep.optimize(program2)
+    from scratchv.compiler import create_optimization_pass_manager
+    create_optimization_pass_manager("all").run(program2)
     codegen2 = LLVMCodegen(program2)
     print("After optimization (fold + dce + peephole):")
     print(codegen2.emit()[:400])

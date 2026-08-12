@@ -121,17 +121,12 @@ class OptimizationPassError(RuntimeError):
         elapsed_seconds: float,
         completed_report: OptimizationReport,
         cause: Exception,
-    ):
+    ) -> None:
         self.pass_index = pass_index
         self.pass_name = pass_name
         self.elapsed_seconds = elapsed_seconds
         self.completed_report = completed_report
         self.cause = cause
-
-        # Descriptive aliases make the failure fields unambiguous to callers.
-        self.failed_index = pass_index
-        self.failed_name = pass_name
-        self.failed_elapsed_seconds = elapsed_seconds
 
         super().__init__(
             f"optimization pass #{pass_index} '{pass_name}' failed: {cause}"

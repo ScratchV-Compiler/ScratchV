@@ -56,12 +56,9 @@ def main():
 
     # Step 2: Optimize
     print("\n[2/5] Optimizing IR...")
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
-    folder = ConstantFolder()
-    folded = folder.optimize(program)
-    elim = DeadCodeEliminator()
-    eliminated = elim.optimize(program)
+    from scratchv.compiler import create_optimization_pass_manager
+    report = create_optimization_pass_manager("basic").run(program)
+    folded, eliminated = (item.changes for item in report.executions)
     print(f"  Folded: {folded}, Eliminated: {eliminated}")
 
     # Step 3: Generate LLVM IR

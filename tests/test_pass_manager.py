@@ -236,6 +236,11 @@ class TestOptimizationCli:
 
         assert args.optimize_level == "none"
 
+    @pytest.mark.parametrize("flag", ["--opt-level", "--optimize"])
+    def test_rejects_unknown_level(self, flag):
+        with pytest.raises(SystemExit):
+            build_arg_parser().parse_args(["model.onnx", flag, "fast"])
+
 
 class _ProgramDriver(CompilerDriver):
     """Compiler driver test seam that avoids parser and backend dependencies."""
@@ -266,6 +271,42 @@ class TestCompilerOptimizationIntegration:
             item["name"] for item in result.stats["optimization"]["passes"]
         ] == ["constant-folding", "dead-code-elim"]
         assert result.stats["opt_message"]
+
+    def test_invalid_driver_level_stops_before_codegen_and_output(self, tmp_path):
+        output_path = tmp_path / "must-not-exist.s"
+        driver = _ProgramDriver(CompilerConfig(optimize_level="fast"))
+
+        result = driver.compile("input.dsl", str(output_path))
+
+        assert not result.success
+        assert "optimization level" in result.errors[0]
+        assert not driver.codegen_called
+        assert not output_path.exists()
+
+    @pytest.mark.parametrize("level", ["none", "basic", "all"])
+    def test_driver_and_benchmark_use_the_same_factory(
+        self, monkeypatch, level
+    ):
+        from benchmarks.run_benchmark import _optimize
+
+        requested_levels: list[str] = []
+        real_factory = compiler_module.create_optimization_pass_manager
+
+        def recording_factory(requested_level: str) -> PassManager:
+            requested_levels.append(requested_level)
+            return real_factory(requested_level)
+
+        monkeypatch.setattr(
+            compiler_module,
+            "create_optimization_pass_manager",
+            recording_factory,
+        )
+        driver = _ProgramDriver(CompilerConfig(optimize_level=level))
+
+        driver._run_optimizations(Program())
+        _optimize(Program(), level)
+
+        assert requested_levels == [level, level]
 
     def test_pass_failure_stops_codegen_and_output(self, monkeypatch, tmp_path):
         class _FailingPass(_RecordingPass):
