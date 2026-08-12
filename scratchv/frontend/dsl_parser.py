@@ -22,10 +22,8 @@ from __future__ import annotations
 import re
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import Value, Program
-
-
-class DSLParseError(Exception):
-    pass
+from scratchv.frontend.dsl_errors import DSLParseError, ErrorCollector
+from scratchv.frontend.dsl_validator import DSLValidator
 
 
 class DSLParser:
@@ -36,7 +34,29 @@ class DSLParser:
         self._vars: dict[str, Value] = {}
         self._loop_stack: list[str] = []
 
-    def parse(self, text: str) -> Program:
+    def validate(
+        self, text: str, *, filename: str | None = None,
+        max_errors: int = 20,
+    ) -> ErrorCollector:
+        return DSLValidator().validate(
+            text, filename=filename, max_errors=max_errors,
+        )
+
+    @staticmethod
+    def supported_operations() -> set[str]:
+        return {
+            "add", "sub", "mul", "div", "neg", "exp", "relu", "gelu",
+            "dot", "matmul", "softmax", "maxpool",
+        }
+
+    def parse(self, text: str, *, filename: str | None = None) -> Program:
+        collector = self.validate(text, filename=filename)
+        if collector.has_errors:
+            raise collector.errors[0]
+
+        self.builder = IRBuilder()
+        self._vars = {}
+        self._loop_stack = []
         lines = text.strip().split("\n")
         self.builder.new_function("main")
         self.builder.new_block("entry")
@@ -162,6 +182,7 @@ class DSLParser:
                 kwargs.get("stride", 2),
             ),
         }
+        assert set(handlers) == self.supported_operations()
         handler = handlers.get(op)
         if handler is None:
             raise DSLParseError(f"Unsupported op: {op}")
