@@ -146,11 +146,8 @@ def run_benchmark(model_name: str, model_path: str, *,
         result.ir_inst_count, result.ir_bb_count = _count_ir(program)
 
         # 2. Optimize
-        if optimize_level != "none":
-            result.optimize_time_s = _optimize(program, optimize_level)
-            result.ir_opt_inst_count, _ = _count_ir(program)
-        else:
-            result.ir_opt_inst_count = result.ir_inst_count
+        result.optimize_time_s = _optimize(program, optimize_level)
+        result.ir_opt_inst_count, _ = _count_ir(program)
 
         # 3. Codegen
         if backend == "llvm":
