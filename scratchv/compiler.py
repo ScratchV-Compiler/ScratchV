@@ -450,10 +450,14 @@ class CompilerDriver:
                 warnings.append(f"Asm peephole: {changes} changes")
 
         if self.config.const_merge:
-            from scratchv.backend.const_merge import merge_constants
-            asm_text, changes = merge_constants(asm_text)
-            if changes:
-                warnings.append(f"Const merge: {changes} changes")
+            from scratchv.backend.const_merge import merge_constants_detailed
+            asm_text, stats = merge_constants_detailed(asm_text)
+            if stats.total_changes:
+                warnings.append(
+                    f"Const merge: {stats.total_changes} changes "
+                    f"({stats.merged_pairs} pairs, "
+                    f"{stats.redundant_lui_removed} redundant lui)"
+                )
 
         if self.config.schedule:
             from scratchv.backend.inst_scheduler import (

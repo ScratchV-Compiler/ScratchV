@@ -318,6 +318,28 @@ class TestCli:
         from scratchv.backend.const_merge import main
         assert callable(main)
 
+    def test_cli_writes_output_and_verbose_stats(
+        self, tmp_path, capsys, monkeypatch,
+    ):
+        from scratchv.backend.const_merge import main
+
+        source = tmp_path / "input.s"
+        output = tmp_path / "output.s"
+        source.write_text("  lui t0, 1\n  addi t0, t0, 2\n")
+        monkeypatch.setattr(
+            "sys.argv",
+            ["const_merge", str(source), "-o", str(output), "-v"],
+        )
+
+        main()
+
+        captured = capsys.readouterr()
+        assert "candidate pairs: 1" in captured.err
+        assert "merged lui+addi pairs: 1" in captured.err
+        assert "redundant lui removed: 0" in captured.err
+        assert "total transformations: 1" in captured.err
+        assert "li t0, 4098" in output.read_text()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

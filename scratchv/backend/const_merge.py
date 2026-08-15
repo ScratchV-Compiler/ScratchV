@@ -396,11 +396,16 @@ def main() -> None:
     with open(args.input, "r") as f:
         asm_text = f.read()
 
-    result, changes = merge_constants(asm_text)
+    result, stats = merge_constants_detailed(asm_text)
 
     if args.verbose:
         print(
-            f"Constant merge: {changes} change(s) applied",
+            "Constant merge:\n"
+            f"  candidate pairs: {stats.candidate_pairs}\n"
+            f"  merged lui+addi pairs: {stats.merged_pairs}\n"
+            f"  redundant lui removed: {stats.redundant_lui_removed}\n"
+            f"  total transformations: {stats.total_changes}\n"
+            f"  iterations: {stats.iterations}",
             file=sys.stderr,
         )
 
