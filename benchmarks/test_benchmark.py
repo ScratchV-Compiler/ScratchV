@@ -23,6 +23,7 @@ sys.path.insert(0, PROJ_DIR)
 
 from benchmarks.generate_models import ensure_all_models
 from benchmarks.run_benchmark import run_benchmark
+from benchmarks.run_benchmark import _count_asm_instructions
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +37,11 @@ def benchmark_models() -> dict[str, str]:
 
 MODEL_PARAMS = ["add", "mixed_ops", "deep_relu", "matmul", "maxpool_relu"]
 BACKEND_PARAMS = ["riscv"]
+
+
+def test_effective_asm_instruction_count():
+    asm = ".text\nmain:\n  li t0, 1\n# comment\n  add t1, t0, t0\n"
+    assert _count_asm_instructions(asm) == 2
 
 
 def _model_id(name: str) -> str:
@@ -151,6 +157,17 @@ def test_perf_pipeline(model_name: str, benchmark_models: dict[str, str]):
 
     assert result.error is None, f"Benchmark failed: {result.error}"
     assert result.ir_inst_count > 0
+    assert isinstance(result.asm_instructions_before, int)
+    assert isinstance(result.asm_instructions_after, int)
+    reduction = (
+        result.asm_instructions_before - result.asm_instructions_after
+    )
+    tracked_changes = result.merged_pairs + result.redundant_lui_removed
+    assert reduction == tracked_changes, (
+        f"instruction reduction {reduction} != tracked changes "
+        f"{tracked_changes}"
+    )
+    assert result.pass_time_ms >= 0
 
     print(f"\n    {model_name}:")
     print(f"      parse:  {result.parse_time_s:.4f}s")
