@@ -283,6 +283,26 @@ def print_summary(results: list[BenchResult]):
         for r in errors:
             print(f"  - {r.model_name}: {r.error}")
 
+    riscv_results = [r for r in results if r.backend == "riscv"]
+    if riscv_results:
+        print("\nCONST-MERGE A/B")
+        print("-" * 90)
+        print(
+            f"{'Model':<16} {'LUI':>6} {'Candidates':>10} {'Pairs':>8} "
+            f"{'RedLUI':>8} {'Asm before→after':>18} {'Pass(ms)':>10}"
+        )
+        for r in riscv_results:
+            asm_counts = (
+                f"{r.asm_instructions_before}→{r.asm_instructions_after}"
+            )
+            print(
+                f"{r.model_name:<16} {r.lui_count_before:>6} "
+                f"{r.candidate_pairs:>10} {r.merged_pairs:>8} "
+                f"{r.redundant_lui_removed:>8} {asm_counts:>18} "
+                f"{r.pass_time_ms:>10.3f}"
+            )
+        print("Machine instructions/code size/output equality: N/A without toolchain")
+
 
 def save_results(results: list[BenchResult], output_path: str):
     data = [asdict(r) for r in results]

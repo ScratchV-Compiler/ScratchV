@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import json
 import sys
 import time
 
@@ -22,7 +23,8 @@ PROJ_DIR = os.path.dirname(BENCH_DIR)
 sys.path.insert(0, PROJ_DIR)
 
 from benchmarks.generate_models import ensure_all_models
-from benchmarks.run_benchmark import run_benchmark
+from benchmarks.bench_const_merge import _gen_synthetic_asm, bench_merge
+from benchmarks.run_benchmark import BenchResult, print_summary, run_benchmark, save_results
 from benchmarks.run_benchmark import _count_asm_instructions
 
 
@@ -42,6 +44,86 @@ BACKEND_PARAMS = ["riscv"]
 def test_effective_asm_instruction_count():
     asm = ".text\nmain:\n  li t0, 1\n# comment\n  add t1, t0, t0\n"
     assert _count_asm_instructions(asm) == 2
+
+
+def test_synthetic_benchmark_covers_both_rules():
+    asm = _gen_synthetic_asm(
+        200,
+        seed=42,
+        pair_density=0.3,
+        redundant_lui_density=0.2,
+    )
+    stats = bench_merge(asm, repeats=2)
+    assert stats["benchmark_type"] == "synthetic"
+    assert stats["merged_pairs"] > 0
+    assert stats["redundant_lui_removed"] > 0
+    assert stats["instruction_reduction"] == (
+        stats["merged_pairs"] + stats["redundant_lui_removed"]
+    )
+    assert stats["input_instructions"] == 200
+
+
+@pytest.mark.parametrize(
+    "pair_density,redundant_density",
+    [(-0.1, 0.1), (0.1, -0.1), (1.1, 0.0), (0.6, 0.5)],
+)
+def test_synthetic_density_validation(pair_density, redundant_density):
+    with pytest.raises(ValueError):
+        _gen_synthetic_asm(
+            10,
+            pair_density=pair_density,
+            redundant_lui_density=redundant_density,
+        )
+
+
+def test_synthetic_seed_is_reproducible():
+    kwargs = {
+        "num_instructions": 100,
+        "seed": 7,
+        "pair_density": 0.2,
+        "redundant_lui_density": 0.1,
+    }
+    assert _gen_synthetic_asm(**kwargs) == _gen_synthetic_asm(**kwargs)
+
+
+def test_synthetic_repeats_validation():
+    with pytest.raises(ValueError, match="repeats"):
+        bench_merge("  nop\n", repeats=0)
+
+
+def _zero_hit_result() -> BenchResult:
+    return BenchResult(
+        model_name="zero_hit",
+        model_path="model.onnx",
+        backend="riscv",
+        optimize_level="all",
+        parse_time_s=0.0,
+        ir_inst_count=1,
+        ir_bb_count=1,
+        asm_instructions_before=3,
+        asm_instructions_after=3,
+    )
+
+
+def test_summary_keeps_zero_hit_case(capsys):
+    print_summary([_zero_hit_result()])
+    output = capsys.readouterr().out
+    assert "CONST-MERGE A/B" in output
+    assert "zero_hit" in output
+    assert "3→3" in output
+    assert "N/A without toolchain" in output
+
+
+def test_json_keeps_zero_and_na_fields(tmp_path, capsys):
+    output = tmp_path / "results.json"
+    save_results([_zero_hit_result()], str(output))
+    capsys.readouterr()
+    data = json.loads(output.read_text())[0]
+    assert data["candidate_pairs"] == 0
+    assert data["merged_pairs"] == 0
+    assert data["redundant_lui_removed"] == 0
+    assert data["machine_instructions_before"] is None
+    assert data["output_equal"] is None
 
 
 def _model_id(name: str) -> str:
