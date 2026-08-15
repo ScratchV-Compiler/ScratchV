@@ -63,12 +63,14 @@ def _insts_to_asm(insts: list[ParsedAsmLine]) -> str:
 
 
 def _parse_imm(s: str) -> Optional[int]:
-    """Parse an immediate value string to int."""
+    """Parse a decimal or prefixed numeric immediate."""
     try:
-        s = s.strip()
-        if s.startswith("0x") or s.startswith("0X"):
-            return int(s, 16)
-        return int(s)
+        text = s.strip()
+        try:
+            return int(text, 0)
+        except ValueError:
+            # Python rejects decimal strings such as ``010`` with base 0.
+            return int(text, 10)
     except ValueError:
         return None
 
@@ -89,6 +91,107 @@ def _u20(val: int) -> int:
 def _l12(val: int) -> int:
     """Extract lower 12 bits (sign-extended) for ADDI."""
     return _sign_extend_12(val & 0xFFF)
+
+
+def _parse_lui_imm(text: str) -> Optional[int]:
+    """Parse a representable 20-bit LUI immediate.
+
+    Both signed 20-bit spelling and the unsigned encoded field are accepted.
+    Values outside that range are rejected instead of silently truncated.
+    """
+    value = _parse_imm(text)
+    if value is None or not -(1 << 19) <= value <= 0xFFFFF:
+        return None
+    return value & 0xFFFFF
+
+
+def _parse_addi_imm(text: str) -> Optional[int]:
+    """Parse a 12-bit ADDI immediate in signed or encoded-field spelling."""
+    value = _parse_imm(text)
+    if value is None or not -(1 << 11) <= value <= 0xFFF:
+        return None
+    return value
+
+
+def _signed_rv32(value: int) -> int:
+    """Normalize an integer to its signed RV32 representation."""
+    value &= 0xFFFFFFFF
+    return value if value < 0x80000000 else value - 0x100000000
+
+
+def _is_separator(line: ParsedAsmLine) -> bool:
+    """Return whether a line is only whitespace or a comment."""
+    return line.opcode is None and line.label is None
+
+
+def _merge_lui_addi_once(
+    insts: list[ParsedAsmLine],
+) -> tuple[list[ParsedAsmLine], int]:
+    """Safely merge one scan's eligible LUI+ADDI sequences."""
+    result: list[ParsedAsmLine] = []
+    changes = 0
+    i = 0
+
+    while i < len(insts):
+        lui = insts[i]
+        if lui.opcode != "lui" or len(lui.operands) != 2:
+            result.append(lui)
+            i += 1
+            continue
+
+        j = i + 1
+        while j < len(insts) and _is_separator(insts[j]):
+            j += 1
+        if j >= len(insts):
+            result.append(lui)
+            i += 1
+            continue
+
+        addi = insts[j]
+        if (
+            addi.opcode != "addi"
+            or addi.label is not None
+            or len(addi.operands) != 3
+        ):
+            result.append(lui)
+            i += 1
+            continue
+
+        rd = canonical_reg(lui.operands[0])
+        if (
+            rd != canonical_reg(addi.operands[0])
+            or rd != canonical_reg(addi.operands[1])
+        ):
+            result.append(lui)
+            i += 1
+            continue
+
+        imm_hi = _parse_lui_imm(lui.operands[1])
+        imm_lo = _parse_addi_imm(addi.operands[2])
+        if imm_hi is None or imm_lo is None:
+            result.append(lui)
+            i += 1
+            continue
+
+        final_value = _signed_rv32(
+            (imm_hi << 12) + _sign_extend_12(imm_lo),
+        )
+        comments = [comment for comment in (lui.comment, addi.comment) if comment]
+        comments.append(f"merged lui+addi -> {final_value}")
+        result.append(ParsedAsmLine(
+            raw="",
+            label=lui.label,
+            opcode="li",
+            operands=[lui.operands[0], str(final_value)],
+            comment="; ".join(comments),
+            lineno=lui.lineno,
+        ))
+        # Comments and blank lines are not instructions, so retain them.
+        result.extend(insts[i + 1:j])
+        changes += 1
+        i = j + 1
+
+    return result, changes
 
 
 # ---------------------------------------------------------------------------
@@ -152,53 +255,9 @@ def merge_constants(asm_text: str) -> tuple[str, int]:
     insts = _parse_asm(asm_text)
     total_changes = 0
 
-    # --- Pass 1: Merge adjacent lui+addi pairs into li ---
-    new_insts: list[AsmInst] = []
-    i = 0
-    while i < len(insts):
-        inst = insts[i]
-
-        # Check for lui followed by addi
-        if inst.opcode == "lui" and i + 1 < len(insts):
-            next_inst = insts[i + 1]
-            if (next_inst.opcode == "addi"
-                    and inst.operands and next_inst.operands):
-                # Check: rd of lui == rd of addi, and rd == rs1 of addi
-                lui_rd = inst.operands[0]
-                if (len(next_inst.operands) >= 3
-                        and canonical_reg(next_inst.operands[0])
-                        == canonical_reg(lui_rd)
-                        and canonical_reg(next_inst.operands[1])
-                        == canonical_reg(lui_rd)):
-                    # Merge
-                    imm_hi = (
-                        _parse_imm(inst.operands[1])
-                        if len(inst.operands) > 1 else None
-                    )
-                    imm_lo = (
-                        _parse_imm(next_inst.operands[2])
-                        if len(next_inst.operands) > 2 else None
-                    )
-
-                    if imm_hi is not None and imm_lo is not None:
-                        # Compute final constant
-                        final_val = (imm_hi << 12) + _sign_extend_12(imm_lo)
-                        # Replace with li
-                        new_inst = AsmInst("")
-                        new_inst.opcode = "li"
-                        new_inst.operands = [lui_rd, str(final_val)]
-                        new_inst.comment = (
-                            f"merged lui+addi -> {final_val}"
-                        )
-                        new_insts.append(new_inst)
-                        total_changes += 1
-                        i += 2
-                        continue
-
-        new_insts.append(inst)
-        i += 1
-
-    insts = new_insts
+    # --- Pass 1: Merge safe lui+addi pairs into li ---
+    insts, merged = _merge_lui_addi_once(insts)
+    total_changes += merged
 
     # --- Pass 2: Eliminate redundant lui ---
     # Track the last upper-immediate value loaded into each register

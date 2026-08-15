@@ -122,6 +122,66 @@ class TestMergeConstants:
         result, changes = merge_constants(asm)
         assert changes >= 1
         assert "li" in result
+        assert "2048" in result
+
+    def test_rv32_result_is_normalized_to_signed_value(self):
+        asm = "  lui t0, 0x80000\n  addi t0, t0, 0\n"
+        result, changes = merge_constants(asm)
+        assert changes == 1
+        assert "li t0, -2147483648" in result
+
+    def test_negative_hex_immediates(self):
+        asm = "  lui t0, -0x1\n  addi t0, t0, -0x1\n"
+        result, changes = merge_constants(asm)
+        assert changes == 1
+        assert "li t0, -4097" in result
+
+    @pytest.mark.parametrize("imm", ["0x100000", "-0x80001"])
+    def test_out_of_range_lui_is_not_truncated(self, imm):
+        asm = f"  lui t0, {imm}\n  addi t0, t0, 1\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert imm in result
+
+    @pytest.mark.parametrize("imm", ["0x1000", "-2049"])
+    def test_out_of_range_addi_is_not_truncated(self, imm):
+        asm = f"  lui t0, 1\n  addi t0, t0, {imm}\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert imm in result
+
+    def test_relocation_expression_is_not_merged(self):
+        asm = "  lui t0, %hi(symbol)\n  addi t0, t0, %lo(symbol)\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert "%hi(symbol)" in result
+        assert "%lo(symbol)" in result
+
+    def test_different_addi_source_is_not_merged(self):
+        asm = "  lui t0, 1\n  addi t0, t1, 2\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert "lui" in result and "addi" in result
+
+    def test_comment_and_blank_between_pair_are_preserved(self):
+        asm = "  lui t0, 1 # upper\n# keep me\n\n  addi t0, t0, 2 # lower\n"
+        result, changes = merge_constants(asm)
+        assert changes == 1
+        assert "li t0, 4098" in result
+        assert "# keep me" in result
+        assert "upper" in result and "lower" in result
+
+    def test_intervening_label_prevents_merge(self):
+        asm = "  lui t0, 1\nL1:\n  addi t0, t0, 2\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert "lui" in result and "addi" in result
+
+    def test_label_on_lui_is_preserved(self):
+        asm = "L0: lui t0, 1\n  addi t0, t0, 2\n"
+        result, changes = merge_constants(asm)
+        assert changes == 1
+        assert "L0:  li t0, 4098" in result
 
     def test_merge_with_abi_and_x_register_aliases(self):
         asm = "  lui t0, 1\n  addi x5, t0, 2\n"
