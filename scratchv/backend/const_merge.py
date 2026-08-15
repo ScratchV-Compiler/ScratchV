@@ -18,6 +18,7 @@ from typing import Optional
 
 from scratchv.backend._asm_parser import (
     ParsedAsmLine,
+    canonical_reg,
     lines_to_asm,
     parse_asm,
     parse_line,
@@ -114,7 +115,7 @@ def _is_reg(s: str) -> bool:
     return s.strip() in _STANDARD_REGS
 
 
-def _is_clobbered(inst: AsmInst, reg: str) -> bool:
+def _is_clobbered(inst: ParsedAsmLine, reg: str) -> bool:
     """Check if an instruction writes to the given register."""
     if inst.opcode is None:
         return False
@@ -130,7 +131,7 @@ def _is_clobbered(inst: AsmInst, reg: str) -> bool:
         "slti", "sltiu",
     }
     if inst.opcode in dst_clobbers:
-        return inst.operands[0] == reg
+        return canonical_reg(inst.operands[0]) == canonical_reg(reg)
     # For stores, the first operand is the value (doesn't clobber dest reg)
     # For branches, no destination
     return False
@@ -165,8 +166,10 @@ def merge_constants(asm_text: str) -> tuple[str, int]:
                 # Check: rd of lui == rd of addi, and rd == rs1 of addi
                 lui_rd = inst.operands[0]
                 if (len(next_inst.operands) >= 3
-                        and next_inst.operands[0] == lui_rd
-                        and next_inst.operands[1] == lui_rd):
+                        and canonical_reg(next_inst.operands[0])
+                        == canonical_reg(lui_rd)
+                        and canonical_reg(next_inst.operands[1])
+                        == canonical_reg(lui_rd)):
                     # Merge
                     imm_hi = (
                         _parse_imm(inst.operands[1])
@@ -206,7 +209,7 @@ def merge_constants(asm_text: str) -> tuple[str, int]:
 
     for inst in insts:
         if inst.opcode == "lui" and inst.operands:
-            rd = inst.operands[0]
+            rd = canonical_reg(inst.operands[0])
             imm = (
                 _parse_imm(inst.operands[1])
                 if len(inst.operands) > 1 else None

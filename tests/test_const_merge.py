@@ -1,7 +1,7 @@
 """Tests for Constant Load Merge Optimizer."""
 
 import pytest
-from scratchv.backend._asm_parser import ParsedAsmLine
+from scratchv.backend._asm_parser import ParsedAsmLine, canonical_reg
 from scratchv.backend.const_merge import (
     merge_constants, AsmInst, _parse_asm, _insts_to_asm,
 )
@@ -122,6 +122,31 @@ class TestMergeConstants:
         result, changes = merge_constants(asm)
         assert changes >= 1
         assert "li" in result
+
+    def test_merge_with_abi_and_x_register_aliases(self):
+        asm = "  lui t0, 1\n  addi x5, t0, 2\n"
+        result, changes = merge_constants(asm)
+        assert changes == 1
+        assert "li t0, 4098" in result
+
+    def test_alias_clobber_prevents_redundant_lui_removal(self):
+        asm = "  lui t0, 1\n  add x5, a0, a1\n  lui t0, 1\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert result.count("lui") == 2
+
+    def test_redundant_lui_recognizes_aliases(self):
+        asm = "  lui t0, 1\n  add a0, a1, a2\n  lui x5, 1\n"
+        result, changes = merge_constants(asm)
+        assert changes == 1
+        assert sum(inst.opcode == "lui" for inst in _parse_asm(result)) == 1
+
+    def test_register_canonicalization(self):
+        assert canonical_reg("t0") == "x5"
+        assert canonical_reg("fp") == "x8"
+        assert canonical_reg("s0") == "x8"
+        assert canonical_reg("a0") == "x10"
+        assert canonical_reg("X31") == "x31"
 
 
 class TestCli:
