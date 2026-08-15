@@ -57,7 +57,7 @@ class ParsedAsmLine:
         """Reconstruct the assembly line."""
         # Empty lines
         if self.opcode is None and self.label is None and not self.raw.strip():
-            return ""
+            return self.raw
         # Comment-only lines
         if self.opcode is None and self.label is None and self.comment:
             return self.raw
@@ -159,6 +159,20 @@ def canonical_reg(reg: str) -> str:
     if re.fullmatch(r"x([0-9]|[12][0-9]|3[01])", name):
         return name
     return _INTEGER_REGISTER_ALIASES.get(name, name)
+
+
+def is_integer_reg(reg: str) -> bool:
+    """Return whether *reg* names one of the 32 integer registers.
+
+    Both canonical ``xN`` names and psABI aliases are accepted.  Keeping this
+    check separate from :func:`canonical_reg` lets conservative optimization
+    passes reject unknown operands instead of treating matching typos or
+    extension-specific names as registers.
+    """
+    return (
+        re.fullmatch(r"x([0-9]|[12][0-9]|3[01])", canonical_reg(reg))
+        is not None
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

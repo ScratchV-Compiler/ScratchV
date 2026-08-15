@@ -215,13 +215,17 @@ class StubProfiledMachine(ProfiledMachine):
     """Always-available stub for testing without TinyFive installed."""
 
     def __init__(self):
-        super().__init__()
+        # Do not initialize and then discard a real TinyFive machine.  The
+        # stub owns simple Python state and must remain independent of whether
+        # the optional dependency happens to be installed.
         self._available = True
         self._m = None
+        self.mem_size = 4096
         self.regs = [0] * 32
         self.memory: dict[int, int] = {}
         self._pc = 0
         self.instr_count = 0
+        self._code_words: list[int] = []
 
     def load_binary(self, words: list[int], origin: int = 0):
         self._pc = origin
@@ -231,25 +235,38 @@ class StubProfiledMachine(ProfiledMachine):
         for i, b in enumerate(data):
             self.memory[addr + i] = b
 
+    def load_asm(self, asm_lines: list[str], origin: int = 0x200):
+        """Record executable source lines for deterministic stub counting."""
+        self._pc = origin
+        self._code_words = [
+            0
+            for source in asm_lines
+            if (line := source.split("#", 1)[0].strip())
+            and not line.endswith(":")
+        ]
+
     def run(self, instructions=None, start=0):
         # Count words as executed instructions
         words = getattr(self, '_code_words', [])
-        self.instr_count = min(len(words), instructions or len(words))
+        limit = len(words) if instructions is None else max(0, instructions)
+        self.instr_count = min(len(words), limit)
 
     def get_reg(self, idx: int) -> int:
-        return self.regs[idx] if idx < len(self.regs) else 0
+        return self.regs[idx] if 0 <= idx < len(self.regs) else 0
 
     def set_reg(self, idx: int, value: int):
-        if idx < len(self.regs):
+        if 0 <= idx < len(self.regs):
             self.regs[idx] = value
 
     def write_mem_i32(self, addr: int, value: int):
-        b = np.uint32(value).tobytes()
+        b = (value & 0xFFFFFFFF).to_bytes(4, "little")
         for i, byte in enumerate(b):
             self.memory[addr + i] = byte
 
     def read_mem_i32(self, addr: int) -> int:
-        return self.memory.get(addr, 0)
+        raw = bytes(self.memory.get(addr + i, 0) for i in range(4))
+        value = int.from_bytes(raw, "little")
+        return value if value < 0x80000000 else value - 0x100000000
 
     @property
     def pc(self) -> int:

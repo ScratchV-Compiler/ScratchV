@@ -1,7 +1,9 @@
 """Tests for Constant Load Merge Optimizer."""
 
 import pytest
-from scratchv.backend._asm_parser import ParsedAsmLine, canonical_reg
+from scratchv.backend._asm_parser import (
+    ParsedAsmLine, canonical_reg, is_integer_reg,
+)
 from scratchv.backend.const_merge import (
     AsmInst, ConstantMergeStats, _insts_to_asm, _parse_asm,
     merge_constants, merge_constants_detailed,
@@ -107,6 +109,20 @@ class TestMergeConstants:
         asm = "  add t0, t1, t2\n  sub t3, t4, t5\n  ret\n"
         result, changes = merge_constants(asm)
         assert changes == 0
+        assert result == asm
+
+    @pytest.mark.parametrize(
+        "asm",
+        [
+            "\n\n  add t0, t1, t2\n\n",
+            "   \n\t\n",
+            "   # indented comment\n",
+        ],
+    )
+    def test_no_change_preserves_whitespace_exactly(self, asm):
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert result == asm
 
     def test_preserves_non_lui_addi(self):
         asm = "main:\n  addi sp, sp, -16\n  sw ra, 12(sp)\n  ret\n"
@@ -190,6 +206,15 @@ class TestMergeConstants:
         assert changes == 1
         assert "li t0, 4098" in result
 
+    @pytest.mark.parametrize("register", ["foo", "x32", "v0", "f0"])
+    def test_invalid_or_non_integer_register_is_not_merged(self, register):
+        asm = f"  lui {register}, 1\n  addi {register}, {register}, 2\n"
+        result, stats = merge_constants_detailed(asm)
+        assert result == asm
+        assert stats.candidate_pairs == 1
+        assert stats.merged_pairs == 0
+        assert stats.total_changes == 0
+
     def test_alias_clobber_prevents_redundant_lui_removal(self):
         asm = "  lui t0, 1\n  add x5, a0, a1\n  lui t0, 1\n"
         result, changes = merge_constants(asm)
@@ -261,6 +286,16 @@ class TestMergeConstants:
         assert canonical_reg("s0") == "x8"
         assert canonical_reg("a0") == "x10"
         assert canonical_reg("X31") == "x31"
+        assert is_integer_reg("t0")
+        assert is_integer_reg("X31")
+        assert not is_integer_reg("x32")
+        assert not is_integer_reg("foo")
+
+    def test_invalid_register_lui_is_not_tracked_as_redundant(self):
+        asm = "  lui foo, 1\n  lui foo, 1\n"
+        result, changes = merge_constants(asm)
+        assert result == asm
+        assert changes == 0
 
     def test_fixed_point_exposes_pair_after_redundant_lui(self):
         asm = "  lui t0, 1\n  lui x5, 1\n  addi t0, x5, 2\n"
@@ -302,6 +337,28 @@ class TestMergeConstants:
         assert first_stats.total_changes == 2
         assert twice == once
         assert second_stats.total_changes == 0
+
+    def test_optimization_is_textually_idempotent_with_trailing_separator(self):
+        asm = "  lui t0, 1\n# between\n\n  addi t0, t0, 2\n"
+        once, first_stats = merge_constants_detailed(asm)
+        twice, second_stats = merge_constants_detailed(once)
+        assert first_stats.total_changes == 1
+        assert twice == once
+        assert second_stats.total_changes == 0
+
+    @pytest.mark.parametrize(
+        "asm",
+        [
+            "  lui t0, 1\n  addi t1, t0, 2\n",
+            "  lui t0, %hi(symbol)\n  addi t0, t0, %lo(symbol)\n",
+            "  lui t0, 0x100000\n  addi t0, t0, 1\n",
+        ],
+    )
+    def test_candidates_include_structural_pairs_rejected_for_safety(self, asm):
+        result, stats = merge_constants_detailed(asm)
+        assert result == asm
+        assert stats.candidate_pairs == 1
+        assert stats.merged_pairs == 0
 
     def test_max_iterations_zero_disables_transformations(self):
         asm = "  lui t0, 1\n  addi t0, t0, 2\n"

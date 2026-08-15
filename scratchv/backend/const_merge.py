@@ -2,7 +2,7 @@
 
 Detects and merges lui+addi instruction pairs into single li
 pseudo-instructions, and eliminates redundant lui instructions
-across basic blocks.
+within basic blocks.
 
 Usage::
 
@@ -21,6 +21,7 @@ from scratchv.backend._asm_parser import (
     ParsedAsmLine,
     canonical_reg,
     classify_def_use,
+    is_integer_reg,
     lines_to_asm,
     parse_asm,
     parse_line,
@@ -56,7 +57,7 @@ class AsmInst(ParsedAsmLine):
 
 def _parse_asm(asm_text: str) -> list[ParsedAsmLine]:
     """Compatibility wrapper around the shared assembly parser."""
-    return parse_asm(asm_text.strip())
+    return parse_asm(asm_text)
 
 
 def _insts_to_asm(insts: list[ParsedAsmLine]) -> str:
@@ -161,7 +162,10 @@ def _merge_lui_addi_once(
 
         rd = canonical_reg(lui.operands[0])
         if (
-            rd != canonical_reg(addi.operands[0])
+            not is_integer_reg(lui.operands[0])
+            or not is_integer_reg(addi.operands[0])
+            or not is_integer_reg(addi.operands[1])
+            or rd != canonical_reg(addi.operands[0])
             or rd != canonical_reg(addi.operands[1])
         ):
             result.append(lui)
@@ -232,7 +236,14 @@ _KNOWN_OPCODES = {
 
 
 def _count_merge_candidates(insts: list[ParsedAsmLine]) -> int:
-    """Count initially mergeable LUI+ADDI sequences."""
+    """Count structural LUI+ADDI candidates before safety checks.
+
+    A candidate has the expected opcodes and operand counts in one basic
+    block, with only comments or blank lines between the instructions.
+    Register equality, register validity, and immediate representability are
+    deliberately checked by the transformation and reflected in
+    ``merged_pairs`` instead.
+    """
     candidates = 0
     for i, lui in enumerate(insts):
         if lui.opcode != "lui" or len(lui.operands) != 2:
@@ -249,14 +260,7 @@ def _count_merge_candidates(insts: list[ParsedAsmLine]) -> int:
             or len(addi.operands) != 3
         ):
             continue
-        rd = canonical_reg(lui.operands[0])
-        if (
-            rd == canonical_reg(addi.operands[0])
-            and rd == canonical_reg(addi.operands[1])
-            and _parse_lui_imm(lui.operands[1]) is not None
-            and _parse_addi_imm(addi.operands[2]) is not None
-        ):
-            candidates += 1
+        candidates += 1
     return candidates
 
 
@@ -286,6 +290,10 @@ def _remove_redundant_lui_once(
 
         opcode = inst.opcode
         if opcode == "lui" and len(inst.operands) == 2:
+            if not is_integer_reg(inst.operands[0]):
+                lui_state.clear()
+                result.append(inst)
+                continue
             rd = canonical_reg(inst.operands[0])
             imm = _parse_lui_imm(inst.operands[1])
             if imm is not None:
