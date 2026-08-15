@@ -19,6 +19,7 @@ from typing import Optional
 from scratchv.backend._asm_parser import (
     ParsedAsmLine,
     canonical_reg,
+    classify_def_use,
     lines_to_asm,
     parse_asm,
     parse_line,
@@ -198,46 +199,86 @@ def _merge_lui_addi_once(
 # Constant merge optimization
 # ---------------------------------------------------------------------------
 
-# Standard register names
-_STANDARD_REGS = {
-    "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7",
-    "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15",
-    "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
-    "x24", "x25", "x26", "x27", "x28", "x29", "x30", "x31",
-    "zero", "ra", "sp", "gp", "tp",
-    "t0", "t1", "t2", "t3", "t4", "t5", "t6",
-    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
-    "s9", "s10", "s11",
-    "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
-    "fp",
+_CONTROL_FLOW_OPCODES = {
+    "beq", "bne", "blt", "bge", "bltu", "bgeu",
+    "beqz", "bnez", "blez", "bgtz", "bltz", "bgez",
+    "j", "jr", "jal", "jalr", "call", "tail", "ret",
 }
 
+_KNOWN_OPCODES = {
+    "add", "addi", "sub", "mul", "div", "divu", "rem", "remu",
+    "sll", "slli", "srl", "srli", "sra", "srai",
+    "xor", "xori", "or", "ori", "and", "andi",
+    "slt", "slti", "sltu", "sltiu",
+    "lui", "auipc", "li", "mv", "neg", "not", "seqz", "snez",
+    "lw", "lh", "lb", "lbu", "lhu", "sw", "sh", "sb", "nop",
+    "max", "min", "maxu", "minu",
+} | _CONTROL_FLOW_OPCODES
 
-def _is_reg(s: str) -> bool:
-    """Check if a string is a known register name."""
-    return s.strip() in _STANDARD_REGS
 
+def _remove_redundant_lui_once(
+    insts: list[ParsedAsmLine],
+) -> tuple[list[ParsedAsmLine], int]:
+    """Delete provably redundant LUI instructions within basic blocks."""
+    result: list[ParsedAsmLine] = []
+    lui_state: dict[str, int] = {}
+    changes = 0
 
-def _is_clobbered(inst: ParsedAsmLine, reg: str) -> bool:
-    """Check if an instruction writes to the given register."""
-    if inst.opcode is None:
-        return False
-    if not inst.operands:
-        return False
-    # For most instructions, the first operand is the destination
-    dst_clobbers = {
-        "add", "addi", "sub", "mul", "div", "rem", "sll", "srl", "sra",
-        "xor", "or", "and", "slt", "sltu",
-        "lui", "li", "mv", "lw", "lh", "lb", "lbu", "lhu",
-        "auipc", "jal", "jalr",
-        "xori", "ori", "andi", "slli", "srli", "srai",
-        "slti", "sltiu",
-    }
-    if inst.opcode in dst_clobbers:
-        return canonical_reg(inst.operands[0]) == canonical_reg(reg)
-    # For stores, the first operand is the value (doesn't clobber dest reg)
-    # For branches, no destination
-    return False
+    for inst in insts:
+        # A label starts a new basic block, including ``label: instruction``.
+        if inst.label is not None:
+            lui_state.clear()
+
+        if inst.opcode is None:
+            result.append(inst)
+            continue
+
+        # Directives can change sections or assembler state.  Do not carry
+        # register facts through a directive whose semantics are not modeled.
+        if inst.is_directive:
+            lui_state.clear()
+            result.append(inst)
+            continue
+
+        opcode = inst.opcode
+        if opcode == "lui" and len(inst.operands) == 2:
+            rd = canonical_reg(inst.operands[0])
+            imm = _parse_lui_imm(inst.operands[1])
+            if imm is not None:
+                if lui_state.get(rd) == imm:
+                    comment = (
+                        f"peephole: removed redundant lui "
+                        f"{inst.operands[0]}, {inst.operands[1]}"
+                    )
+                    if inst.comment:
+                        comment += f"; {inst.comment}"
+                    result.append(ParsedAsmLine(
+                        raw=f"  # {comment}",
+                        comment=comment,
+                        lineno=inst.lineno,
+                    ))
+                    changes += 1
+                    # The earlier LUI still defines the same value, so state
+                    # deliberately remains unchanged after deleting this one.
+                    continue
+                lui_state[rd] = imm
+                result.append(inst)
+                continue
+
+        if opcode in _CONTROL_FLOW_OPCODES:
+            lui_state.clear()
+        elif opcode not in _KNOWN_OPCODES:
+            # An unknown instruction may write any register.  Clearing all
+            # facts loses an optimization opportunity but preserves safety.
+            lui_state.clear()
+        else:
+            defines, _ = classify_def_use(inst)
+            for reg in defines:
+                lui_state.pop(canonical_reg(reg), None)
+
+        result.append(inst)
+
+    return result, changes
 
 
 def merge_constants(asm_text: str) -> tuple[str, int]:
@@ -259,41 +300,11 @@ def merge_constants(asm_text: str) -> tuple[str, int]:
     insts, merged = _merge_lui_addi_once(insts)
     total_changes += merged
 
-    # --- Pass 2: Eliminate redundant lui ---
-    # Track the last upper-immediate value loaded into each register
-    # If a new lui loads the same value into the same register (and the
-    # register hasn't been clobbered in between), the second lui is redundant.
-    new_insts = []
-    lui_state: dict[str, Optional[int]] = {}  # reg -> upper imm value
+    # --- Pass 2: Eliminate redundant lui within basic blocks ---
+    insts, removed = _remove_redundant_lui_once(insts)
+    total_changes += removed
 
-    for inst in insts:
-        if inst.opcode == "lui" and inst.operands:
-            rd = canonical_reg(inst.operands[0])
-            imm = (
-                _parse_imm(inst.operands[1])
-                if len(inst.operands) > 1 else None
-            )
-            if rd in lui_state and lui_state[rd] == imm:
-                # Redundant: skip it, add a comment to the next instruction
-                total_changes += 1
-                # Replace with a comment
-                comment_inst = AsmInst("")
-                comment_inst.comment = (
-                    f"peephole: removed redundant lui {rd}, {imm}"
-                )
-                new_insts.append(comment_inst)
-                continue
-            else:
-                lui_state[rd] = imm
-        else:
-            # If this instruction writes to a tracked register, clear tracking
-            for reg in list(lui_state.keys()):
-                if _is_clobbered(inst, reg):
-                    lui_state[reg] = None
-
-        new_insts.append(inst)
-
-    return _insts_to_asm(new_insts), total_changes
+    return _insts_to_asm(insts), total_changes
 
 
 # ---------------------------------------------------------------------------

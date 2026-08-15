@@ -195,6 +195,59 @@ class TestMergeConstants:
         assert changes == 0
         assert result.count("lui") == 2
 
+    def test_different_lui_value_is_not_redundant(self):
+        asm = "  lui t0, 1\n  add a0, a1, a2\n  lui t0, 2\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert sum(inst.opcode == "lui" for inst in _parse_asm(result)) == 2
+
+    def test_redundant_lui_does_not_cross_label(self):
+        asm = "  lui t0, 1\nL1:\n  lui t0, 1\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert sum(inst.opcode == "lui" for inst in _parse_asm(result)) == 2
+
+    @pytest.mark.parametrize(
+        "boundary",
+        [
+            "  beq a0, zero, L1",
+            "  j L1",
+            "  call helper",
+            "  jal ra, helper",
+            "  jalr ra, 0(t1)",
+            "  ret",
+            "  jr ra",
+        ],
+    )
+    def test_redundant_lui_does_not_cross_control_flow(self, boundary):
+        asm = f"  lui t0, 1\n{boundary}\n  lui t0, 1\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert sum(inst.opcode == "lui" for inst in _parse_asm(result)) == 2
+
+    def test_unknown_instruction_clears_lui_state(self):
+        asm = "  lui t0, 1\n  custom.op a0, a1\n  lui t0, 1\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert sum(inst.opcode == "lui" for inst in _parse_asm(result)) == 2
+
+    def test_directive_clears_lui_state(self):
+        asm = "  lui t0, 1\n.section .text\n  lui t0, 1\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert sum(inst.opcode == "lui" for inst in _parse_asm(result)) == 2
+
+    def test_removed_redundant_lui_preserves_comment(self):
+        asm = (
+            "  lui t0, 1\n"
+            "  add a0, a1, a2\n"
+            "  lui t0, 1 # duplicate high bits\n"
+        )
+        result, changes = merge_constants(asm)
+        assert changes == 1
+        assert "duplicate high bits" in result
+        assert sum(inst.opcode == "lui" for inst in _parse_asm(result)) == 1
+
     def test_redundant_lui_recognizes_aliases(self):
         asm = "  lui t0, 1\n  add a0, a1, a2\n  lui x5, 1\n"
         result, changes = merge_constants(asm)
