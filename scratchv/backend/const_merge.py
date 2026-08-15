@@ -13,75 +13,35 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from typing import Optional
+
+from scratchv.backend._asm_parser import (
+    ParsedAsmLine,
+    lines_to_asm,
+    parse_asm,
+    parse_line,
+)
 
 
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
 
-class AsmInst:
-    """Represents one parsed assembly instruction."""
+class AsmInst(ParsedAsmLine):
+    """Backward-compatible parsed instruction using the shared parser."""
 
     def __init__(self, raw: str, lineno: int = 0):
-        self.raw = raw
-        self.lineno = lineno
-        self.label: Optional[str] = None
-        self.opcode: Optional[str] = None
-        self.operands: list[str] = []
-        self.comment: Optional[str] = None
-        self._parse()
-
-    def _parse(self) -> None:
-        """Parse the raw line into components."""
-        stripped = self.raw.strip()
-
-        # Empty line or pure comment
-        if not stripped or stripped.startswith("#"):
-            self.comment = stripped.lstrip("#").strip()
-            return
-
-        # Separate code from comment
-        code = stripped
-        if "#" in stripped:
-            idx = stripped.find("#")
-            code = stripped[:idx].strip()
-            self.comment = stripped[idx + 1:].strip()
-
-        # Check for label
-        label_match = re.match(r'^([A-Za-z_.][A-Za-z0-9_.]*):\s*(.*)', code)
-        if label_match:
-            self.label = label_match.group(1)
-            code = label_match.group(2).strip()
-
-        if not code:
-            return
-
-        # Extract opcode and operands
-        tokens = code.replace(",", " ").split()
-        if not tokens:
-            return
-
-        self.opcode = tokens[0].lower().lstrip(".")
-        self.operands = tokens[1:] if len(tokens) > 1 else []
-
-    def to_asm(self) -> str:
-        """Reconstruct the assembly line."""
-        parts = []
-        if self.label:
-            parts.append(f"{self.label}:")
-        if self.opcode:
-            parts.append(f"  {self.opcode}")
-            if self.operands:
-                parts.append(" " + ", ".join(self.operands))
-        if self.comment:
-            parts.append(f"  # {self.comment}")
-        result = "".join(parts)
-        if not result.strip() and self.raw.strip() == "":
-            return ""
-        return result
+        parsed = parse_line(raw, lineno=lineno)
+        super().__init__(
+            raw=parsed.raw,
+            label=parsed.label,
+            opcode=parsed.opcode,
+            operands=parsed.operands,
+            comment=parsed.comment,
+            lineno=parsed.lineno,
+            is_directive=parsed.is_directive,
+        )
 
     def __repr__(self) -> str:
         return f"AsmInst({self.opcode}, {self.operands})"
@@ -91,15 +51,14 @@ class AsmInst:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _parse_asm(asm_text: str) -> list[AsmInst]:
-    """Parse assembly text into AsmInst objects."""
-    lines = asm_text.strip().split("\n")
-    return [AsmInst(line, lineno=i) for i, line in enumerate(lines)]
+def _parse_asm(asm_text: str) -> list[ParsedAsmLine]:
+    """Compatibility wrapper around the shared assembly parser."""
+    return parse_asm(asm_text.strip())
 
 
-def _insts_to_asm(insts: list[AsmInst]) -> str:
-    """Convert AsmInst list back to assembly string."""
-    return "\n".join(inst.to_asm() for inst in insts)
+def _insts_to_asm(insts: list[ParsedAsmLine]) -> str:
+    """Compatibility wrapper around the shared assembly serializer."""
+    return lines_to_asm(insts)
 
 
 def _parse_imm(s: str) -> Optional[int]:

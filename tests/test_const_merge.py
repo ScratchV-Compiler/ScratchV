@@ -1,6 +1,7 @@
 """Tests for Constant Load Merge Optimizer."""
 
 import pytest
+from scratchv.backend._asm_parser import ParsedAsmLine
 from scratchv.backend.const_merge import (
     merge_constants, AsmInst, _parse_asm, _insts_to_asm,
 )
@@ -47,6 +48,13 @@ class TestAsmInst:
         result = _insts_to_asm(insts)
         assert "lui" in result
         assert "addi" in result
+
+    def test_uses_shared_parser_representation(self):
+        insts = _parse_asm(".text\n  lw t0, 16(sp) # load")
+        assert all(isinstance(inst, ParsedAsmLine) for inst in insts)
+        assert insts[0].is_directive
+        assert insts[1].operands == ["t0", "16(sp)"]
+        assert insts[1].comment == "load"
 
 
 class TestMergeConstants:
