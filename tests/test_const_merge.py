@@ -3,7 +3,8 @@
 import pytest
 from scratchv.backend._asm_parser import ParsedAsmLine, canonical_reg
 from scratchv.backend.const_merge import (
-    merge_constants, AsmInst, _parse_asm, _insts_to_asm,
+    AsmInst, ConstantMergeStats, _insts_to_asm, _parse_asm,
+    merge_constants, merge_constants_detailed,
 )
 
 
@@ -260,6 +261,54 @@ class TestMergeConstants:
         assert canonical_reg("s0") == "x8"
         assert canonical_reg("a0") == "x10"
         assert canonical_reg("X31") == "x31"
+
+    def test_fixed_point_exposes_pair_after_redundant_lui(self):
+        asm = "  lui t0, 1\n  lui x5, 1\n  addi t0, x5, 2\n"
+        result, stats = merge_constants_detailed(asm)
+        assert isinstance(stats, ConstantMergeStats)
+        assert stats.candidate_pairs == 1
+        assert stats.redundant_lui_removed == 1
+        assert stats.merged_pairs == 1
+        assert stats.total_changes == 2
+        assert stats.iterations == 2
+        assert "li t0, 4098" in result
+        assert not any(inst.opcode == "lui" for inst in _parse_asm(result))
+
+    def test_detailed_statistics_distinguish_rule_types(self):
+        asm = (
+            "  lui t0, 1\n"
+            "  addi t0, t0, 2\n"
+            "  lui t1, 3\n"
+            "  add a0, a1, a2\n"
+            "  lui x6, 3\n"
+        )
+        _, stats = merge_constants_detailed(asm)
+        assert stats.candidate_pairs == 1
+        assert stats.merged_pairs == 1
+        assert stats.redundant_lui_removed == 1
+        assert stats.total_changes == 2
+
+    def test_legacy_api_returns_detailed_total(self):
+        asm = "  lui t0, 1\n  lui x5, 1\n  addi t0, x5, 2\n"
+        detailed_result, stats = merge_constants_detailed(asm)
+        legacy_result, changes = merge_constants(asm)
+        assert legacy_result == detailed_result
+        assert changes == stats.total_changes == 2
+
+    def test_optimization_is_idempotent(self):
+        asm = "  lui t0, 1\n  lui x5, 1\n  addi t0, x5, 2\n"
+        once, first_stats = merge_constants_detailed(asm)
+        twice, second_stats = merge_constants_detailed(once)
+        assert first_stats.total_changes == 2
+        assert twice == once
+        assert second_stats.total_changes == 0
+
+    def test_max_iterations_zero_disables_transformations(self):
+        asm = "  lui t0, 1\n  addi t0, t0, 2\n"
+        result, stats = merge_constants_detailed(asm, max_iterations=0)
+        assert stats.iterations == 0
+        assert stats.total_changes == 0
+        assert "lui" in result and "addi" in result
 
 
 class TestCli:

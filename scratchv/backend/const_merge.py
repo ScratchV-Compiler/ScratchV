@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from typing import Optional
 
 from scratchv.backend._asm_parser import (
@@ -199,6 +200,20 @@ def _merge_lui_addi_once(
 # Constant merge optimization
 # ---------------------------------------------------------------------------
 
+@dataclass
+class ConstantMergeStats:
+    """Categorized results from one constant-merge optimization run."""
+
+    candidate_pairs: int = 0
+    merged_pairs: int = 0
+    redundant_lui_removed: int = 0
+    iterations: int = 0
+
+    @property
+    def total_changes(self) -> int:
+        """Return all transformations while preserving the legacy count."""
+        return self.merged_pairs + self.redundant_lui_removed
+
 _CONTROL_FLOW_OPCODES = {
     "beq", "bne", "blt", "bge", "bltu", "bgeu",
     "beqz", "bnez", "blez", "bgtz", "bltz", "bgez",
@@ -214,6 +229,35 @@ _KNOWN_OPCODES = {
     "lw", "lh", "lb", "lbu", "lhu", "sw", "sh", "sb", "nop",
     "max", "min", "maxu", "minu",
 } | _CONTROL_FLOW_OPCODES
+
+
+def _count_merge_candidates(insts: list[ParsedAsmLine]) -> int:
+    """Count initially mergeable LUI+ADDI sequences."""
+    candidates = 0
+    for i, lui in enumerate(insts):
+        if lui.opcode != "lui" or len(lui.operands) != 2:
+            continue
+        j = i + 1
+        while j < len(insts) and _is_separator(insts[j]):
+            j += 1
+        if j >= len(insts):
+            continue
+        addi = insts[j]
+        if (
+            addi.opcode != "addi"
+            or addi.label is not None
+            or len(addi.operands) != 3
+        ):
+            continue
+        rd = canonical_reg(lui.operands[0])
+        if (
+            rd == canonical_reg(addi.operands[0])
+            and rd == canonical_reg(addi.operands[1])
+            and _parse_lui_imm(lui.operands[1]) is not None
+            and _parse_addi_imm(addi.operands[2]) is not None
+        ):
+            candidates += 1
+    return candidates
 
 
 def _remove_redundant_lui_once(
@@ -293,18 +337,36 @@ def merge_constants(asm_text: str) -> tuple[str, int]:
     -------
     Tuple of (optimized_assembly_string, number_of_changes_made).
     """
+    optimized, stats = merge_constants_detailed(asm_text)
+    return optimized, stats.total_changes
+
+
+def merge_constants_detailed(
+    asm_text: str,
+    *,
+    max_iterations: Optional[int] = None,
+) -> tuple[str, ConstantMergeStats]:
+    """Optimize assembly to a fixed point and return detailed statistics.
+
+    Redundant LUI removal runs before pair merging so deleting a duplicate can
+    expose the earlier LUI to a following ADDI in the same iteration.
+    """
     insts = _parse_asm(asm_text)
-    total_changes = 0
+    stats = ConstantMergeStats(
+        candidate_pairs=_count_merge_candidates(insts),
+    )
+    limit = max_iterations if max_iterations is not None else max(1, len(insts))
 
-    # --- Pass 1: Merge safe lui+addi pairs into li ---
-    insts, merged = _merge_lui_addi_once(insts)
-    total_changes += merged
+    for _ in range(max(0, limit)):
+        insts, removed = _remove_redundant_lui_once(insts)
+        insts, merged = _merge_lui_addi_once(insts)
+        stats.iterations += 1
+        stats.redundant_lui_removed += removed
+        stats.merged_pairs += merged
+        if removed == 0 and merged == 0:
+            break
 
-    # --- Pass 2: Eliminate redundant lui within basic blocks ---
-    insts, removed = _remove_redundant_lui_once(insts)
-    total_changes += removed
-
-    return _insts_to_asm(insts), total_changes
+    return _insts_to_asm(insts), stats
 
 
 # ---------------------------------------------------------------------------
