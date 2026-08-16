@@ -134,13 +134,13 @@ class ProfiledMachine:
 
     def get_reg(self, idx: int) -> int:
         """Read signed 32-bit register value."""
-        if not self._available:
+        if not self._available or not 0 <= idx < 32 or idx == 0:
             return 0
         return int(self._m.x[idx])
 
     def set_reg(self, idx: int, value: int):
         """Write signed 32-bit register value."""
-        if not self._available:
+        if not self._available or not 0 < idx < 32:
             return
         self._m.x[idx] = np.int32(value)
 
@@ -237,13 +237,14 @@ class StubProfiledMachine(ProfiledMachine):
 
     def load_asm(self, asm_lines: list[str], origin: int = 0x200):
         """Record executable source lines for deterministic stub counting."""
+        from scratchv.backend._asm_parser import parse_line
+
         self._pc = origin
-        self._code_words = [
-            0
-            for source in asm_lines
-            if (line := source.split("#", 1)[0].strip())
-            and not line.endswith(":")
-        ]
+        self._code_words = []
+        for source in asm_lines:
+            parsed = parse_line(source)
+            if parsed.opcode is not None and not parsed.is_directive:
+                self._code_words.append(0)
 
     def run(self, instructions=None, start=0):
         # Count words as executed instructions
@@ -252,10 +253,12 @@ class StubProfiledMachine(ProfiledMachine):
         self.instr_count = min(len(words), limit)
 
     def get_reg(self, idx: int) -> int:
+        if idx == 0:
+            return 0
         return self.regs[idx] if 0 <= idx < len(self.regs) else 0
 
     def set_reg(self, idx: int, value: int):
-        if 0 <= idx < len(self.regs):
+        if 0 < idx < len(self.regs):
             self.regs[idx] = value
 
     def write_mem_i32(self, addr: int, value: int):

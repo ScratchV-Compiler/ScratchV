@@ -108,7 +108,7 @@ class ParsedAsmLine:
 
 _LINE_RE = re.compile(
     r'^\s*'
-    r'(?P<label>[A-Za-z_.][A-Za-z0-9_.]*:)?\s*'
+    r'(?P<label>(?:[A-Za-z_.$][A-Za-z0-9_.$]*|[0-9]+):)?\s*'
     r'(?P<opcode>\.?\w[\w.]*)?\s*'
     r'(?P<operands>[^#]*?)'
     r'(?:\s*#\s*(?P<comment>.*))?'
@@ -322,17 +322,11 @@ def _looks_like_reg(s: str) -> bool:
     """Heuristic: does the string look like a RISC-V register name?"""
     if not s:
         return False
-    # ABI names
-    if s in ("zero", "ra", "sp", "gp", "tp", "fp"):
-        return True
-    # x0–x31
-    if re.match(r'^x([0-9]|[12][0-9]|3[01])$', s):
-        return True
-    # a0–a7, t0–t6, s0–s11
-    if re.match(r'^[ats]([0-9]|1[01])$', s):
+    name = s.strip().lower()
+    if is_integer_reg(name):
         return True
     # f0–f31
-    if re.match(r'^f([0-9]|[12][0-9]|3[01])$', s):
+    if re.fullmatch(r'f([0-9]|[12][0-9]|3[01])', name):
         return True
     return False
 

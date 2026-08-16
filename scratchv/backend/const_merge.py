@@ -22,7 +22,6 @@ from scratchv.backend._asm_parser import (
     canonical_reg,
     classify_def_use,
     is_integer_reg,
-    lines_to_asm,
     parse_asm,
     parse_line,
 )
@@ -61,8 +60,15 @@ def _parse_asm(asm_text: str) -> list[ParsedAsmLine]:
 
 
 def _insts_to_asm(insts: list[ParsedAsmLine]) -> str:
-    """Compatibility wrapper around the shared assembly serializer."""
-    return lines_to_asm(insts)
+    """Serialize transformed lines without rewriting untouched source text.
+
+    The shared parser intentionally has a lightweight operand grammar.  Using
+    its normalized serializer for every line can therefore change assembly
+    that this pass did not transform, such as commas inside string directives
+    or numeric local labels.  Original lines retain ``raw``; only synthesized
+    replacement instructions need reconstruction.
+    """
+    return "\n".join(inst.raw if inst.raw else inst.to_asm() for inst in insts)
 
 
 def _parse_imm(s: str) -> Optional[int]:
@@ -124,7 +130,7 @@ def _signed_rv32(value: int) -> int:
 
 def _is_separator(line: ParsedAsmLine) -> bool:
     """Return whether a line is only whitespace or a comment."""
-    return line.opcode is None and line.label is None
+    return line.is_empty or line.is_comment_only
 
 
 def _merge_lui_addi_once(
@@ -278,6 +284,12 @@ def _remove_redundant_lui_once(
             lui_state.clear()
 
         if inst.opcode is None:
+            # A non-empty line that the lightweight parser cannot classify may
+            # be a macro, an alternate label syntax, or another assembler
+            # construct with control-flow/register effects.  Treat it as a
+            # conservative state boundary rather than as whitespace.
+            if not _is_separator(inst):
+                lui_state.clear()
             result.append(inst)
             continue
 

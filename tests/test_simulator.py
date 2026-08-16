@@ -28,7 +28,14 @@ class TestStubProfiledMachine:
         assert self.m.instr_count == 0
 
     def test_asm_count_ignores_comments_labels_and_blank_lines(self):
-        self.m.load_asm(["entry:", "", "# note", "addi 10, 0, 42 # value"])
+        self.m.load_asm([
+            ".text",
+            "entry:",
+            "",
+            "# note",
+            "entry2: addi 10, 0, 42 # value",
+            '.ascii "not an instruction"',
+        ])
         self.m.run()
         assert self.m.instr_count == 1
         assert self.m.pc == 0x200
@@ -36,6 +43,8 @@ class TestStubProfiledMachine:
     def test_register_access(self):
         self.m.regs[10] = 42
         assert self.m.get_reg(10) == 42
+        self.m.set_reg(0, 99)
+        assert self.m.get_reg(0) == 0
         self.m.set_reg(-1, 99)
         assert self.m.get_reg(-1) == 0
         assert self.m.regs[-1] == 0

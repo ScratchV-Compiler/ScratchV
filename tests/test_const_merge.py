@@ -59,6 +59,12 @@ class TestAsmInst:
         assert insts[1].operands == ["t0", "16(sp)"]
         assert insts[1].comment == "load"
 
+    @pytest.mark.parametrize("label", ["1", "$local", "name$part"])
+    def test_shared_parser_recognizes_assembler_labels(self, label):
+        inst = _parse_asm(f"{label}: nop")[0]
+        assert inst.label == label
+        assert inst.opcode == "nop"
+
 
 class TestMergeConstants:
     """Tests for the merge_constants function."""
@@ -188,11 +194,42 @@ class TestMergeConstants:
         assert "# keep me" in result
         assert "upper" in result and "lower" in result
 
+    def test_transformation_preserves_unmodified_source_text(self):
+        asm = (
+            '.section .rodata\n'
+            'msg: .ascii "a,b"\n'
+            '.text\n'
+            '1: nop\n'
+            '  lui t0, 1\n'
+            '  addi t0, t0, 2\n'
+            '  j 1b\n'
+        )
+        result, changes = merge_constants(asm)
+        assert changes == 1
+        assert '.section .rodata' in result
+        assert 'msg: .ascii "a,b"' in result
+        assert '1: nop' in result
+        assert '  j 1b' in result
+        assert 'li t0, 4098' in result
+
     def test_intervening_label_prevents_merge(self):
         asm = "  lui t0, 1\nL1:\n  addi t0, t0, 2\n"
         result, changes = merge_constants(asm)
         assert changes == 0
         assert "lui" in result and "addi" in result
+
+    @pytest.mark.parametrize("label", ["1", "$local", "name$part"])
+    def test_alternate_intervening_label_prevents_merge(self, label):
+        asm = f"  lui t0, 1\n{label}:\n  addi t0, t0, 2\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert result == asm
+
+    def test_unparsed_nonempty_line_is_not_treated_as_separator(self):
+        asm = "  lui t0, 1\n@ opaque assembler syntax\n  addi t0, t0, 2\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert result == asm
 
     def test_label_on_lui_is_preserved(self):
         asm = "L0: lui t0, 1\n  addi t0, t0, 2\n"
@@ -217,6 +254,12 @@ class TestMergeConstants:
 
     def test_alias_clobber_prevents_redundant_lui_removal(self):
         asm = "  lui t0, 1\n  add x5, a0, a1\n  lui t0, 1\n"
+        result, changes = merge_constants(asm)
+        assert changes == 0
+        assert result.count("lui") == 2
+
+    def test_uppercase_alias_clobber_prevents_redundant_lui_removal(self):
+        asm = "  lui t0, 1\n  add X5, a0, a1\n  lui t0, 1\n"
         result, changes = merge_constants(asm)
         assert changes == 0
         assert result.count("lui") == 2
