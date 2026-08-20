@@ -37,6 +37,24 @@ b = 5
 c = add(a, b)  →  c = 8 (replaced with load_const)
 ```
 
+### W3 typed ADD/SUB semantics
+
+The first ConstantFolder milestone folds only structurally valid scalar
+`ADD`/`SUB` candidates whose two operands and destination have the same
+`FLOAT32` or `INT32` type:
+
+- `FLOAT32` inputs and results are rounded through IEEE-754 binary32. NaN,
+  infinity, and finite operations that overflow to infinity are left intact.
+- `INT32` accepts in-range Python integers and integer-valued finite floats.
+  Results wrap as signed 32-bit two's-complement values.
+- Mixed or unsupported types, malformed payloads, non-scalars, missing
+  destinations, and instructions with unknown attributes or targets are left
+  unchanged.
+
+The pass performs one forward scan and reports changes from that invocation.
+Existing simple `MUL`/`DIV` folding remains for compatibility; W4 will give
+those operations typed semantics and add fixed-point folding.
+
 ---
 
 ## 2. Dead Code Elimination (⭐⭐)

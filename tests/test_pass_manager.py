@@ -14,7 +14,7 @@ from scratchv.compiler import (
     create_optimization_pass_manager,
 )
 from scratchv.ir.builder import IRBuilder
-from scratchv.ir.types import Program
+from scratchv.ir.types import OpCode, Program
 from scratchv.main import args_to_config, build_arg_parser
 from scratchv.optimizer import (
     ConstantFolder,
@@ -245,6 +245,29 @@ class TestOptimizationLevels:
 
         assert _optimize(builder.program, "none") == 0.0
         assert tuple(block.instructions) == instructions_before
+
+    def test_basic_pipeline_reports_typed_constant_folding(self):
+        builder = IRBuilder()
+        builder.new_function("test")
+        block = builder.new_block("entry")
+        lhs = builder.load_const(16_777_216.0)
+        rhs = builder.load_const(1.0)
+        result = builder.add(lhs, rhs)
+        builder.ret(result)
+
+        report = create_optimization_pass_manager("basic").run(
+            builder.program
+        )
+
+        assert report.executions[0].name == "constant-folding"
+        assert report.executions[0].changes == 1
+        folded = next(
+            instruction
+            for instruction in block.instructions
+            if instruction.dest is result
+        )
+        assert folded.opcode is OpCode.LOAD_CONST
+        assert folded.attrs["value"] == 16_777_216.0
 
 
 class TestOptimizationCli:
