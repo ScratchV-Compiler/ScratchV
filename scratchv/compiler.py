@@ -173,7 +173,9 @@ class PassManager:
             pipeline_name=self._name,
             executions=records,
             total_changes=sum(item.changes for item in records),
-            elapsed_seconds=sum(item.elapsed_seconds for item in records),
+            elapsed_seconds=sum(
+                (item.elapsed_seconds for item in records), 0.0
+            ),
         )
 
     def report(self) -> str:

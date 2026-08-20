@@ -238,12 +238,15 @@ class TestOptimizationLevels:
         report = create_optimization_pass_manager("none").run(builder.program)
 
         assert report == OptimizationReport("optimizer", (), 0, 0.0)
+        assert type(report.elapsed_seconds) is float
         assert tuple(block.instructions) == instructions_before
         assert tuple(map(id, block.instructions)) == tuple(
             map(id, instructions_before)
         )
 
-        assert _optimize(builder.program, "none") == 0.0
+        benchmark_elapsed = _optimize(builder.program, "none")
+        assert benchmark_elapsed == 0.0
+        assert type(benchmark_elapsed) is float
         assert tuple(block.instructions) == instructions_before
 
     def test_basic_pipeline_reports_typed_constant_folding(self):
