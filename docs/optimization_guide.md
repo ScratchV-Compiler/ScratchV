@@ -20,8 +20,9 @@ print(report.total_changes)
 `executions` contain each pass name, change count, and elapsed time;
 `total_changes` and `elapsed_seconds` summarize the complete pipeline.
 
-The main CLI accepts `--opt-level none|basic|all`; `--optimize` remains a
-compatibility alias. The standalone LLVM tool has a separate numeric
+The main CLI accepts `--opt-level none|basic|all`; `--optimize` remains an
+alias for the option name and still requires one of those three values. A bare
+`--optimize` is invalid. The standalone LLVM tool has a separate numeric
 `--opt-level 0|1|2|3` option.
 
 ---

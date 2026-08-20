@@ -26,14 +26,20 @@ def compile_and_count(path: str, optimize: bool = False) -> tuple[str, int]:
     program = parser.parse(source)
 
     if optimize:
+        # "basic" is the stable constant-folding -> dead-code-elim pipeline.
+        # run() optimizes program in place and returns an immutable report.
         report = create_optimization_pass_manager("basic").run(program)
         changes_by_name = {
             execution.name: execution.changes
             for execution in report.executions
         }
-        folded = changes_by_name["constant-folding"]
-        eliminated = changes_by_name["dead-code-elim"]
-        print(f"  Optimization: {folded} folded, {eliminated} eliminated")
+        folded_changes = changes_by_name["constant-folding"]
+        eliminated_changes = changes_by_name["dead-code-elim"]
+        print(
+            "  Optimization: "
+            f"{folded_changes} constant fold(s), "
+            f"{eliminated_changes} dead-code elimination(s)"
+        )
 
     selector = InstructionSelector(program)
     instrs = selector.run()

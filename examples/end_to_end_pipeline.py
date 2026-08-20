@@ -107,15 +107,20 @@ def demo_matmul(backend: str):
     parser = DSLParser()
     program = parser.parse(dsl_source)
 
-    # Optimize
+    # "basic" is the stable constant-folding -> dead-code-elim pipeline.
+    # run() optimizes program in place and returns an immutable report.
     from scratchv.compiler import create_optimization_pass_manager
     report = create_optimization_pass_manager("basic").run(program)
     changes_by_name = {
         execution.name: execution.changes for execution in report.executions
     }
-    folded = changes_by_name["constant-folding"]
-    eliminated = changes_by_name["dead-code-elim"]
-    print(f"  Optimizer: {folded} folded, {eliminated} eliminated")
+    folded_changes = changes_by_name["constant-folding"]
+    eliminated_changes = changes_by_name["dead-code-elim"]
+    print(
+        "  Optimizer: "
+        f"{folded_changes} constant fold(s), "
+        f"{eliminated_changes} dead-code elimination(s)"
+    )
 
     from scratchv.backend.llvm_codegen import LLVMCodegen
     codegen = LLVMCodegen(program)
@@ -161,7 +166,8 @@ return z
     print(codegen1.emit()[:400])
     print("...")
 
-    # With optimization
+    # "all" runs the five canonical passes in registration order.
+    # run() optimizes program2 in place and returns an immutable report.
     parser2 = DSLParser()
     program2 = parser2.parse(dsl_source)
     from scratchv.compiler import create_optimization_pass_manager

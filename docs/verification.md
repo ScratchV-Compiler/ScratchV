@@ -218,8 +218,9 @@ lli model.ll                       # LLVM JIT execution
 #    (before vs after optimization)
 ```
 
-`--optimize all` 仍是主 CLI 的兼容别名；新文档优先使用规范写法
-`--opt-level all`。
+> **Note:** 核心 CLI 中 `--optimize` 只是 `--opt-level` 的参数名兼容别名，
+> 仍须显式提供 `none`、`basic` 或 `all`。例如 `--optimize all` 等价于
+> `--opt-level all`；裸 `--optimize` 不合法。新文档优先使用后者。
 
 ---
 
