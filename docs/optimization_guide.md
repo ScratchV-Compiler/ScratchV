@@ -43,12 +43,19 @@ c = add(a, b)  →  c = 8 (replaced with load_const)
 
 **Already implemented** in `scratchv/optimizer/dead_code.py`.
 
-Removes instructions whose results are never referenced:
+W5 traces local definitions backwards from observable roots and removes the
+entire unreachable dependency chain:
 ```
-t1 = mul(a, b)     # no subsequent read of t1 → DELETE
-t2 = add(t1, c)     # t2 is read by ret → KEEP
-ret t2
+dead_lhs = const 2       # DELETE: only feeds dead_result
+dead_rhs = const 3       # DELETE: only feeds dead_result
+dead_result = mul(dead_lhs, dead_rhs)  # DELETE
+live = add(a, b)         # KEEP: reached from RETURN
+ret live                 # KEEP: observable root
 ```
+
+The W5 analysis is intentionally limited to functions with exactly one basic
+block. Multi-block functions, duplicate SSA names, and non-empty `phi_nodes`
+remain unchanged until W6 adds safe cross-block analysis.
 
 ---
 

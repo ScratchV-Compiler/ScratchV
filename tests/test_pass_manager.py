@@ -246,6 +246,30 @@ class TestOptimizationLevels:
         assert _optimize(builder.program, "none") == 0.0
         assert tuple(block.instructions) == instructions_before
 
+    def test_basic_pipeline_reports_current_dce_changes(self):
+        builder = IRBuilder()
+        builder.new_function("test")
+        builder.new_block("entry")
+        builder.add(
+            builder.make_value(name="dead_lhs"),
+            builder.make_value(name="dead_rhs"),
+        )
+        live = builder.load_const(1.0)
+        builder.ret(live)
+        manager = create_optimization_pass_manager("basic")
+
+        first_report = manager.run(builder.program)
+        second_report = manager.run(builder.program)
+
+        assert [
+            (execution.name, execution.changes)
+            for execution in first_report.executions
+        ] == [("constant-folding", 0), ("dead-code-elim", 1)]
+        assert [
+            (execution.name, execution.changes)
+            for execution in second_report.executions
+        ] == [("constant-folding", 0), ("dead-code-elim", 0)]
+
 
 class TestOptimizationCli:
     @pytest.mark.parametrize("flag", ["--opt-level", "--optimize"])

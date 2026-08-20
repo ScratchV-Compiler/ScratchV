@@ -72,11 +72,14 @@ class TestDeadCodeEliminator:
 
         elim = DeadCodeEliminator()
         count = elim.optimize(builder.program)
-        assert count == 1  # the add should be eliminated
+        assert count == 3  # the add and its two dead inputs are eliminated
 
         block = builder.program.functions[0].blocks[0]
         instrs = block.instructions
-        assert all(i.opcode != OpCode.ADD for i in instrs)
+        assert [instr.opcode for instr in instrs] == [
+            OpCode.LOAD_CONST,
+            OpCode.RETURN,
+        ]
 
     def test_keep_used_value(self):
         builder = IRBuilder()
