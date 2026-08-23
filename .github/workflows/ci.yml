@@ -78,7 +78,7 @@ jobs:
             --junit-xml=benchmark_reports/test_results.xml \
             --ignore=tests/test_simulator.py
 
-      - name: Run PR #35 constant-merge regressions
+      - name: Run constant-merge regressions
         run: |
           python3.12 -m pytest \
             tests/test_const_merge.py \
@@ -165,6 +165,14 @@ jobs:
       - name: ONNX model pipeline benchmarks
         run: python3.12 -m pytest benchmarks/test_benchmark.py -v --tb=short
 
+      # ── 3.1.1 课题14：固定 case + 真实 TinyFive A/B 报告 ─────────────
+      - name: Topic 14 constant-merge case report
+        run: |
+          python3.12 benchmarks/run_const_merge_case.py \
+            benchmarks/cases/const_merge_feature.asm \
+            --json benchmark_reports/const_merge_report.json \
+            --markdown benchmark_reports/const_merge_report.md
+
       # ── 3.2 DSL 用例编译 + 模拟基准 ────────────────────────────────────
       - name: DSL case compilation benchmarks
         run: |
@@ -229,6 +237,7 @@ jobs:
 
       # ── 上报 ──────────────────────────────────────────────────────────
       - name: Upload benchmark reports
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: benchmark-reports
@@ -279,7 +288,12 @@ jobs:
           path: benchmark_reports/
 
       - name: Write job summary
+        if: always()
         run: |
+          if [ -f benchmark_reports/const_merge_report.md ]; then
+            cat benchmark_reports/const_merge_report.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/github_summary.md ]; then
             cat benchmark_reports/github_summary.md >> $GITHUB_STEP_SUMMARY
           fi
