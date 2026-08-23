@@ -13,7 +13,7 @@ import statistics
 import sys
 import time
 
-from scratchv.backend.regalloc_linear import (
+from scratchv.backend.regalloc_linear_v1_5 import (
     LinearScanAllocator,
     block_from_machine_instrs,
     _INT_REGS,
@@ -56,7 +56,7 @@ def _compile_onnx(onnx_path: str) -> tuple:
 # ---------------------------------------------------------------------------
 # Assembly validation
 # ---------------------------------------------------------------------------
-from .bench_utils import _KNOWN_OPS
+from benchmarks.test_regalloc.bench_utils import _KNOWN_OPS
 
 
 def _validate_asm(asm: str) -> list[str]:
@@ -128,7 +128,7 @@ def _run_emulator(cnn_path: str) -> dict:
 # Instruction category buckets used to compare opcode mixes between the
 # ScratchV backend and the LLVM backend. `sd`/`ld` are ABI stack
 # save/restore pairs — the classic LLVM frame-management cost.
-from .bench_utils import (
+from benchmarks.test_regalloc.bench_utils import (
     _CAT_ALU,
     _CAT_LOAD,
     _CAT_STORE,
@@ -136,11 +136,11 @@ from .bench_utils import (
     _CAT_MUL,
     _CAT_STACK,
 )
-from .bench_utils import _op_categories
+from benchmarks.test_regalloc.bench_utils import _op_categories
 
 # RV64 ABI callee-saved registers — `sd`/`ld` to these at sp offsets are
 # prologue/epilogue frame save/restore, not spills.
-from .bench_utils import _CALLEE_SAVED
+from benchmarks.test_regalloc.bench_utils import _CALLEE_SAVED
 
 
 def _llvm_spill_stats(asm: str) -> dict:

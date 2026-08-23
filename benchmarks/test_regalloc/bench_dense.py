@@ -12,7 +12,7 @@ import statistics
 import sys
 import time
 
-from scratchv.backend.regalloc_linear import LinearScanAllocator, LsInstruction
+from scratchv.backend.regalloc_linear_v1_5 import LinearScanAllocator, LsInstruction
 
 
 def _gen_block(

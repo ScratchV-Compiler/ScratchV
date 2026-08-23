@@ -276,9 +276,9 @@ python -m benchmarks.test_regalloc.bench_regalloc_linear \
     --output-md report.md
 
 # 单独运行某项
-python -m benchmarks.test_regalloc.bench_simple --repeats 100
-python -m benchmarks.test_regalloc.bench_dense --repeats 50
-python -m benchmarks.test_regalloc.bench_cnn \
+python benchmarks/test_regalloc/bench_simple.py --repeats 100
+python benchmarks/test_regalloc/bench_dense.py --repeats 50
+python benchmarks/test_regalloc/bench_cnn.py \
     --cnn-path models/graph/cnn.onnx --repeats 30
 ```
 
