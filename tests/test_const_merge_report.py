@@ -2,7 +2,7 @@
 
 import pytest
 
-from benchmarks.run_const_merge_case import DEFAULT_CASE, run_case
+from benchmarks.run_const_merge_case import DEFAULT_CASE, _markdown, run_case
 
 
 def test_const_merge_case_uses_feature_and_real_tinyfive():
@@ -29,3 +29,11 @@ def test_const_merge_case_uses_feature_and_real_tinyfive():
         report["simulation"]["before"]["registers"]
         == report["simulation"]["after"]["registers"]
     )
+
+    markdown = _markdown(report)
+    assert markdown.count("<details>") == 2
+    assert markdown.count("</details>") == 2
+    assert "<summary>Assembly before (click to expand)</summary>" in markdown
+    assert "<summary>Assembly after (click to expand)</summary>" in markdown
+    assert report["assembly"]["before"].rstrip() in markdown
+    assert report["assembly"]["after"].rstrip() in markdown
