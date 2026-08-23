@@ -86,6 +86,9 @@ jobs:
             tests/test_simulator.py::TestStubProfiledMachine \
             -v --tb=short
 
+      - name: Run PR #37 register-allocation regressions
+        run: python3.12 -m pytest tests/test_pr37_regression.py -v --tb=short
+
       - name: Generate test visualization page
         if: github.ref == 'refs/heads/main'
         run: |
