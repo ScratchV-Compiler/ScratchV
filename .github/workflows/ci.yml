@@ -195,7 +195,7 @@ jobs:
             python3.12 scripts/gen_minimal_cnn.py 2>&1
           fi
           python3.12 scratchv/standalone/onnx_to_riscv_standalone.py \
-            "$MODEL" -o /tmp/cnn_riscv.bin --estimate --report
+            "$MODEL" -o /tmp/cnn_riscv.bin --estimate --report --const-merge
 
       # ── 3.4 LLVM vs ScratchV + TinyFive + Dashboard ──────────────────
       - name: LLVM vs ScratchV comparison
@@ -205,7 +205,8 @@ jobs:
           if [ ! -f benchmark_reports/cnn_scratchv.s ] && [ -f models/graph/cnn.onnx ]; then
             python3.12 scratchv/standalone/onnx_to_riscv_standalone.py \
               models/graph/cnn.onnx -o /tmp/cnn_riscv.bin \
-              --asm benchmark_reports/cnn_scratchv.s --estimate 2>&1 | tail -3
+              --asm benchmark_reports/cnn_scratchv.s --estimate \
+              --const-merge 2>&1 | tail -3
           fi
           python3.12 scratchv/standalone/llvm_cache_compare.py \
             --json-output benchmark_reports/llvm_vs_scratchv.json \
