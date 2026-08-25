@@ -1,9 +1,6 @@
 # flake8: noqa
 """Common used benchmark utils for all benchmarks"""
 
-from tabulate import tabulate
-
-
 # Common used constants
 _CALLEE_SAVED = {
     "ra",
