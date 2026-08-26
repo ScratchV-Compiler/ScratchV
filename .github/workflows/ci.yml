@@ -87,7 +87,8 @@ jobs:
             -v --tb=short
 
       - name: Run PR #37 register-allocation regressions
-        run: python3.12 -m pytest tests/test_pr37_regression.py -v --tb=short
+        run: |
+          python3.12 -m pytest tests/test_pr37_regression.py -v --tb=short
 
       - name: Generate test visualization page
         if: github.ref == 'refs/heads/main'
@@ -239,6 +240,15 @@ jobs:
             -o benchmark_reports/dashboard.html \
             || echo "WARNING: dashboard generation failed"
 
+      # ── 3.8 寄存器分配 benchmark(线性扫描:simple/dense/cnn + LLVM对比) ──
+      - name: Register allocation benchmarks
+        run: |
+          python3.12 -m benchmarks.test_regalloc.bench_regalloc_linear \
+            --repeats 30 \
+            --output-json benchmark_reports/regalloc_bench.json \
+            --output-html benchmark_reports/regalloc_bench.html \
+            --output-md benchmark_reports/regalloc_bench.md
+
       # ── 上报 ──────────────────────────────────────────────────────────
       - name: Upload benchmark reports
         if: always()
@@ -305,6 +315,11 @@ jobs:
           echo "### LLVM vs ScratchV" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/llvm_vs_scratchv.md ]; then
             tail -20 benchmark_reports/llvm_vs_scratchv.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Register Allocation Benchmarks" >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/regalloc_bench.md ]; then
+            cat benchmark_reports/regalloc_bench.md >> $GITHUB_STEP_SUMMARY
           fi
 
   # ═════════════════════════════════════════════════════════════════════════
