@@ -51,6 +51,8 @@ jobs:
             PR_NUMBER="${PR_NUMBER%/merge}"
             echo "Fetching PR #${PR_NUMBER} merge ref..."
             retry "git fetch PR #${PR_NUMBER}" git fetch origin "refs/pull/${PR_NUMBER}/merge" || exit 1
+            echo "Fetching PR #${PR_NUMBER} head ref..."
+            retry "git fetch PR #${PR_NUMBER} head" git fetch origin "refs/pull/${PR_NUMBER}/head" || exit 1
           fi
           echo "Checking out $GITHUB_SHA..."
           if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
@@ -128,6 +130,8 @@ jobs:
             PR_NUMBER="${PR_NUMBER%/merge}"
             echo "Fetching PR #${PR_NUMBER} merge ref..."
             retry "git fetch PR #${PR_NUMBER}" git fetch origin "refs/pull/${PR_NUMBER}/merge" || exit 1
+            echo "Fetching PR #${PR_NUMBER} head ref..."
+            retry "git fetch PR #${PR_NUMBER} head" git fetch origin "refs/pull/${PR_NUMBER}/head" || exit 1
           fi
           echo "Checking out $GITHUB_SHA..."
           if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
