@@ -43,6 +43,7 @@ import sys
 import os
 import argparse
 import math
+import copy
 from typing import Optional, Union
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1170,11 +1171,12 @@ class MemoryPlan:
 class RISCVEmitter:
     """Emits RISC-V instructions into a code buffer with label tracking."""
 
-    def __init__(self):
+    def __init__(self, compact_li32: bool = False):
         self.code: list[int] = []  # list of 32-bit instruction words
         self.labels: dict[str, int] = {}  # label name → instruction index
         self.pending_fixups: list[tuple[int, str, str]] = []  # (idx, kind, label)
         self.comments: dict[int, str] = {}  # instruction index → comment
+        self.compact_li32 = compact_li32
 
     def _emit(self, word: int, comment: str = "") -> int:
         """Emit one instruction word. Returns its index."""
@@ -1222,9 +1224,14 @@ class RISCVEmitter:
     def emit_li32(self, rd: int, imm: int, comment: str = "") -> None:
         """Emit a 32-bit immediate using LUI + ADDI sequence.
 
-        Always emits 2 instructions (even if imm fits in 12 bits),
-        for cases where we need the full 32-bit value.
+        The baseline form always emits two instructions.  With constant-load
+        compaction enabled, it uses the canonical one-or-two instruction
+        lowering used for a merged source-level ``li`` pseudo-instruction.
         """
+        if self.compact_li32:
+            self.emit_li(rd, imm, comment)
+            return
+
         # Split into upper 20 bits and lower 12 bits
         # ADDI sign-extends the 12-bit immediate, so we need to handle carry
         imm_u32 = imm & 0xFFFFFFFF
@@ -1424,10 +1431,15 @@ def _disasm_one(word: int) -> str:
 class CNNRISCVGenerator:
     """Generates complete RISC-V code for all CNN operators."""
 
-    def __init__(self, model: ONNXModel, memory: MemoryPlan):
+    def __init__(
+        self,
+        model: ONNXModel,
+        memory: MemoryPlan,
+        compact_constants: bool = False,
+    ):
         self.model = model
         self.mem = memory
-        self.emit = RISCVEmitter()
+        self.emit = RISCVEmitter(compact_li32=compact_constants)
 
         # Wide register aliases for readability
         # t0-t6: x5-x7, x28-x31 → temporaries
@@ -2603,6 +2615,7 @@ def convert_onnx_to_riscv(
     estimate: bool = False, report: bool = False,
     uarch: str = "basic",
     tinyfive_sim: bool = False, tinyfive_max_instr: int = 100_000_000,
+    const_merge: bool = False,
 ) -> int:
     """Full pipeline: ONNX model → RISC-V RV32IM binary.
 
@@ -2649,9 +2662,79 @@ def convert_onnx_to_riscv(
 
     # ── Step 3: Generate RISC-V code ───────────────────────────────────
     print(f"\n[3/5] Generating inline RISC-V RV32IM machine code...")
-    generator = CNNRISCVGenerator(model, memory)
-    code_bytes = generator.generate()
+    constant_merge_report = None
+    if const_merge:
+        # Generate both variants from identical pre-codegen memory plans.  The
+        # generator allocates layer workspaces, so sharing one plan would make
+        # the second run observe mutated offsets and invalidate the A/B result.
+        baseline_memory = copy.deepcopy(memory)
+        baseline_generator = CNNRISCVGenerator(model, baseline_memory)
+        baseline_code_bytes = baseline_generator.generate()
+
+        optimized_memory = copy.deepcopy(memory)
+        generator = CNNRISCVGenerator(
+            model, optimized_memory, compact_constants=True,
+        )
+        code_bytes = generator.generate()
+        memory = optimized_memory
+
+        if baseline_memory.workspace_offsets != memory.workspace_offsets:
+            raise AssertionError("constant-merge A/B changed workspace layout")
+
+        # Run the public assembly pass over the exact baseline listing.  Its
+        # categorized statistics describe the source transformation, while
+        # the two generated binaries provide the real machine-code metrics.
+        from scratchv.backend.const_merge import merge_constants_detailed
+
+        asm_before = baseline_generator.emit.disassemble()
+        asm_after, merge_stats = merge_constants_detailed(asm_before)
+
+        def count_listing_instructions(asm_text: str) -> int:
+            count = 0
+            for raw_line in asm_text.splitlines():
+                code = raw_line.split("#", 1)[0].strip()
+                if not code or code.endswith(":") or code.startswith("."):
+                    continue
+                count += 1
+            return count
+
+        source_before = count_listing_instructions(asm_before)
+        source_after = count_listing_instructions(asm_after)
+        if len(code_bytes) > len(baseline_code_bytes):
+            raise AssertionError("constant merge unexpectedly increased code size")
+
+        constant_merge_report = {
+            "enabled": True,
+            "used": merge_stats.total_changes > 0,
+            "candidate_pairs": merge_stats.candidate_pairs,
+            "merged_pairs": merge_stats.merged_pairs,
+            "redundant_lui_removed": merge_stats.redundant_lui_removed,
+            "iterations": merge_stats.iterations,
+            "source_instructions_before": source_before,
+            "source_instructions_after": source_after,
+            "source_instruction_reduction": source_before - source_after,
+            "machine_instructions_before": len(baseline_code_bytes) // 4,
+            "machine_instructions_after": len(code_bytes) // 4,
+            "machine_instruction_reduction": (
+                len(baseline_code_bytes) - len(code_bytes)
+            ) // 4,
+            "code_size_before": len(baseline_code_bytes),
+            "code_size_after": len(code_bytes),
+            "code_size_reduction": len(baseline_code_bytes) - len(code_bytes),
+        }
+    else:
+        generator = CNNRISCVGenerator(model, memory)
+        code_bytes = generator.generate()
+
     print(f"  Code size: {len(code_bytes):,} bytes ({len(code_bytes)//4} instructions)")
+    if constant_merge_report is not None:
+        cm = constant_merge_report
+        print(
+            "  Constant merge: "
+            f"{cm['code_size_before']:,} → {cm['code_size_after']:,} bytes; "
+            f"{cm['machine_instructions_before']} → "
+            f"{cm['machine_instructions_after']} machine instructions"
+        )
     print(f"  Workspace: {memory.workspace_size:,} bytes "
           f"({memory.workspace_size/1024/1024:.1f} MB)")
 
@@ -2772,6 +2855,7 @@ def convert_onnx_to_riscv(
                     static_insns=code_len // 4,
                     est_data=est_data,
                     model_name=model_name,
+                    optimization=constant_merge_report,
                 ))
             print(f"  HTML: benchmark_reports/benchmark.html")
 
@@ -2782,6 +2866,7 @@ def convert_onnx_to_riscv(
                     static_insns=code_len // 4,
                     est_data=est_data,
                     model_name=model_name,
+                    optimization=constant_merge_report,
                 ))
             print(f"  JSON: benchmark_reports/benchmark.json")
 
@@ -2791,6 +2876,7 @@ def convert_onnx_to_riscv(
                     code_size=code_len,
                     static_insns=code_len // 4,
                     est_data=est_data,
+                    optimization=constant_merge_report,
                 ))
             print(f"  Summary: benchmark_reports/github_summary.md")
         except ImportError as e:
@@ -2881,6 +2967,11 @@ def main() -> int:
              "in benchmark_reports/ directory"
     )
     parser.add_argument(
+        "--const-merge", action="store_true",
+        help="Enable constant-load merging and report real baseline/optimized "
+             "machine-code size differences"
+    )
+    parser.add_argument(
         "--uarch", default="basic", choices=["single", "fast", "basic", "slow"],
         help="Microarchitecture profile for cycle-accurate emulation: "
              "single (CPI=1), fast (mul=1 div=4), basic (mul=4 div=34), "
@@ -2918,6 +3009,7 @@ def main() -> int:
         uarch=args.uarch,
         tinyfive_sim=args.tinyfive,
         tinyfive_max_instr=args.tinyfive_max_instr,
+        const_merge=args.const_merge,
     )
 
 

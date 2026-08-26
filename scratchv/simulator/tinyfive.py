@@ -9,9 +9,27 @@ Requires: pip install tinyfive numpy
 
 from __future__ import annotations
 
-import re
 import numpy as np
+from types import MethodType
 from typing import Optional
+
+
+def _tinyfive_read_i32_compat(machine_obj, addr: int) -> np.int32:
+    """Read an i32 without relying on NumPy uint8 shift semantics.
+
+    TinyFive 1.0.0 builds a word by shifting ``numpy.uint8`` scalars.  With
+    current NumPy versions those shifts overflow at eight bits, so instruction
+    fetches lose bytes 1..3.  Bind this compatible implementation to the
+    TinyFive instance used by the adapter.
+    """
+    address = int(addr)
+    if address < 0 or address + 4 > len(machine_obj.mem):
+        raise IndexError(f"TinyFive i32 read out of bounds: {address}")
+    raw = bytes(machine_obj.mem[address:address + 4])
+    # Keep TinyFive's original signed-int32 contract.  Returning a Python
+    # negative int breaks ``np.uint32(inst)`` on NumPy 2.x, whereas np.int32
+    # preserves the same bit pattern when instruction decoding converts it.
+    return np.int32(int.from_bytes(raw, "little", signed=True))
 
 
 class ProfiledMachine:
@@ -36,6 +54,7 @@ class ProfiledMachine:
         self._m = None
         self.mem_size = mem_size
         self.instr_count = 0
+        self.last_error: Optional[str] = None
         self._available = False
         self._init_machine()
 
@@ -43,6 +62,10 @@ class ProfiledMachine:
         try:
             from tinyfive.machine import machine
             self._m = machine(mem_size=self.mem_size)
+            self._m.read_i32 = MethodType(
+                _tinyfive_read_i32_compat,
+                self._m,
+            )
             self._available = True
         except ImportError:
             self._available = False
@@ -50,6 +73,11 @@ class ProfiledMachine:
     @property
     def available(self) -> bool:
         return self._available
+
+    @property
+    def _machine(self):
+        """Compatibility view used by older standalone benchmark helpers."""
+        return self._m
 
     # ── Binary loading (primary path) ───────────────────────────────────
 
@@ -62,6 +90,11 @@ class ProfiledMachine:
         """
         if not self._available:
             return
+        if origin < 0 or origin + len(words) * 4 > self.mem_size:
+            raise ValueError(
+                f"binary does not fit TinyFive memory: origin={origin}, "
+                f"bytes={len(words) * 4}, mem_size={self.mem_size}"
+            )
         for i, word in enumerate(words):
             addr = origin + i * 4
             self._write_u32(addr, word)
@@ -71,78 +104,95 @@ class ProfiledMachine:
         """Load raw byte data into memory at *addr*."""
         if not self._available:
             return
+        if addr < 0 or addr + len(data) > self.mem_size:
+            raise ValueError(
+                f"data does not fit TinyFive memory: address={addr}, "
+                f"bytes={len(data)}, mem_size={self.mem_size}"
+            )
         self._m.mem[addr:addr + len(data)] = np.frombuffer(data, dtype=np.uint8)
 
     # ── Assembly loading (fallback for simple snippets) ─────────────────
 
     def load_asm(self, asm_lines: list[str], origin: int = 0x200):
-        """Load assembly text into memory via TinyFive's asm().
+        """Assemble source with ScratchV's encoder and load the binary.
 
-        NOTE: TinyFive's asm() has limitations — integer register numbers
-        only, no pseudo-instructions.  Prefer ``load_binary()`` for
-        production code.
+        TinyFive's text assembler only accepts numeric registers and silently
+        skipping unsupported source would make a simulation report invalid.
+        The shared encoder gives both production code and verification the
+        same explicit failure behavior.
         """
         if not self._available:
             return
-        self._set_pc(origin)
-        for line in asm_lines:
-            line = line.split("#")[0].strip()
-            if not line or line.endswith(":"):
-                if line.endswith(":"):
-                    label = line[:-1]
-                    self._m.label_dict[label] = self._m.pc[0]  # type: ignore[index]
-                continue
-            parts = re.split(r'[,\s]+', line)
-            op = parts[0].lower()
-            args = [self._parse_arg(a) for a in parts[1:] if a]
-            try:
-                self._m.asm(op, *args)
-            except Exception:
-                continue
+        from scratchv.backend.riscv_encoder import assemble_to_binary
 
-    def _parse_arg(self, arg: str):
-        try:
-            return int(arg)
-        except ValueError:
-            return arg
+        binary = assemble_to_binary("\n".join(asm_lines))
+        words = [
+            int.from_bytes(binary[i:i + 4], "little")
+            for i in range(0, len(binary), 4)
+        ]
+        self.load_binary(words, origin=origin)
 
     # ── Execution ───────────────────────────────────────────────────────
 
-    def run(self, instructions: Optional[int] = None, start: int = 0):
-        """Execute for *instructions* cycles, or until halt if None.
+    def run(
+        self,
+        instructions: Optional[int] = None,
+        start: Optional[int] = None,
+        *,
+        n: Optional[int] = None,
+        strict: bool = False,
+    ):
+        """Execute a bounded number of instructions with TinyFive.
 
         Uses TinyFive's ``exe(start, instructions=N)`` directly.
-        After execution, ``instr_count`` reflects the built-in ops counter.
-
-        NOTE: TinyFive's exe() mutates ``pc`` from numpy array to plain int.
-        We save/restore to keep the wrapper consistent.
+        ``n`` is retained as a compatibility alias for older benchmark code.
+        With ``strict=True`` execution errors propagate instead of being
+        converted to ``last_error``.
         """
         if not self._available:
             return
-        n = instructions if instructions is not None else 100_000_000
-        # Save PC before exe (which replaces pc array with int)
-        saved_pc = int(self._m.pc[0]) if hasattr(self._m.pc, '__getitem__') else int(self._m.pc)
+        if instructions is not None and n is not None:
+            raise ValueError("specify either instructions or n, not both")
+        limit = n if n is not None else instructions
+        limit = 100_000_000 if limit is None else max(0, limit)
+        start_pc = self.pc if start is None else start
+        before = int(self._m.ops.get('total', 0))
+        self.last_error = None
         try:
-            self._m.exe(start=start, instructions=n)
-        except Exception:
-            pass
-        # Restore pc as numpy array
-        self._m.pc = np.array([saved_pc], dtype=np.uint32) if not hasattr(self._m.pc, '__getitem__') else self._m.pc
-        self.instr_count = int(self._m.ops.get('total', 0))
+            # RV32 arithmetic intentionally wraps modulo 2^32; NumPy reports
+            # that architectural behavior as an overflow warning.
+            with np.errstate(over="ignore"):
+                self._m.exe(start=start_pc, instructions=limit)
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            if strict:
+                raise RuntimeError(self.last_error) from exc
+        finally:
+            # TinyFive does not enforce the architectural x0 invariant itself.
+            self._m.x[0] = 0
+            after = int(self._m.ops.get('total', 0))
+            self.instr_count = after - before
 
     # ── Register access ─────────────────────────────────────────────────
 
     def get_reg(self, idx: int) -> int:
-        """Read signed 32-bit register value."""
-        if not self._available:
+        """Read an RV32 register; x0 is hardwired and invalid indices are 0.
+
+        The bounds check fixes accidental NumPy negative indexing (for
+        example, ``x[-1]`` reading x31) at the adapter boundary.
+        """
+        if not self._available or not 0 <= idx < 32 or idx == 0:
             return 0
         return int(self._m.x[idx])
 
     def set_reg(self, idx: int, value: int):
-        """Write signed 32-bit register value."""
-        if not self._available:
+        """Write an RV32 register while preserving the architectural x0."""
+        if not self._available or not 0 < idx < 32:
             return
-        self._m.x[idx] = np.int32(value)
+        signed = value & 0xFFFFFFFF
+        if signed >= 0x80000000:
+            signed -= 0x100000000
+        self._m.x[idx] = np.int32(signed)
 
     # ── Memory I/O ──────────────────────────────────────────────────────
 
@@ -192,6 +242,8 @@ class ProfiledMachine:
         """Write uint32 as 4 little-endian bytes to mem."""
         if not self._available:
             return
+        if addr < 0 or addr + 4 > self.mem_size:
+            raise IndexError(f"TinyFive u32 write out of bounds: {addr}")
         self._m.mem[addr:addr + 4] = np.array(
             [value], dtype=np.uint32
         ).view(np.uint8)
@@ -199,7 +251,10 @@ class ProfiledMachine:
     def _set_pc(self, val: int):
         if not self._available:
             return
-        self._m.pc[0] = np.uint32(val)  # type: ignore[index]
+        if hasattr(self._m.pc, '__getitem__'):
+            self._m.pc[0] = np.uint32(val)  # type: ignore[index]
+        else:
+            self._m.pc = int(val)
 
     @property
     def pc(self) -> int:
@@ -212,16 +267,25 @@ class ProfiledMachine:
 
 
 class StubProfiledMachine(ProfiledMachine):
-    """Always-available stub for testing without TinyFive installed."""
+    """Non-executing test double used when unit tests do not need TinyFive.
+
+    This class only stores state and counts parsed source instructions.  It
+    must never be used as evidence of RISC-V execution or semantic equality.
+    """
 
     def __init__(self):
-        super().__init__()
+        # Do not initialize and then discard a real TinyFive machine.  The
+        # stub owns simple Python state and must remain independent of whether
+        # the optional dependency happens to be installed.
         self._available = True
         self._m = None
+        self.mem_size = 4096
         self.regs = [0] * 32
         self.memory: dict[int, int] = {}
         self._pc = 0
         self.instr_count = 0
+        self.last_error = None
+        self._code_words: list[int] = []
 
     def load_binary(self, words: list[int], origin: int = 0):
         self._pc = origin
@@ -231,25 +295,44 @@ class StubProfiledMachine(ProfiledMachine):
         for i, b in enumerate(data):
             self.memory[addr + i] = b
 
-    def run(self, instructions=None, start=0):
+    def load_asm(self, asm_lines: list[str], origin: int = 0x200):
+        """Record executable source lines for deterministic stub counting."""
+        from scratchv.backend._asm_parser import parse_line
+
+        self._pc = origin
+        self._code_words = []
+        for source in asm_lines:
+            parsed = parse_line(source)
+            if parsed.opcode is not None and not parsed.is_directive:
+                self._code_words.append(0)
+
+    def run(self, instructions=None, start=0, *, n=None, strict=False):
         # Count words as executed instructions
+        if instructions is not None and n is not None:
+            raise ValueError("specify either instructions or n, not both")
         words = getattr(self, '_code_words', [])
-        self.instr_count = min(len(words), instructions or len(words))
+        requested = n if n is not None else instructions
+        limit = len(words) if requested is None else max(0, requested)
+        self.instr_count = min(len(words), limit)
 
     def get_reg(self, idx: int) -> int:
-        return self.regs[idx] if idx < len(self.regs) else 0
+        if idx == 0:
+            return 0
+        return self.regs[idx] if 0 <= idx < len(self.regs) else 0
 
     def set_reg(self, idx: int, value: int):
-        if idx < len(self.regs):
+        if 0 < idx < len(self.regs):
             self.regs[idx] = value
 
     def write_mem_i32(self, addr: int, value: int):
-        b = np.uint32(value).tobytes()
+        b = (value & 0xFFFFFFFF).to_bytes(4, "little")
         for i, byte in enumerate(b):
             self.memory[addr + i] = byte
 
     def read_mem_i32(self, addr: int) -> int:
-        return self.memory.get(addr, 0)
+        raw = bytes(self.memory.get(addr + i, 0) for i in range(4))
+        value = int.from_bytes(raw, "little")
+        return value if value < 0x80000000 else value - 0x100000000
 
     @property
     def pc(self) -> int:
@@ -263,9 +346,9 @@ class StubProfiledMachine(ProfiledMachine):
 def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
     """Verify generated assembly by running it in TinyFive.
 
-    Uses ``RISCVAEncoder`` to assemble text → binary, then loads via
-    ``load_binary()`` for reliable execution.  Falls back to
-    ``load_asm()`` if encoding fails.
+    Uses ``RISCVAEncoder`` to assemble text → binary, then executes each
+    encoded instruction once.  Encoding and execution failures are reported;
+    this function never substitutes a static-analysis fallback for simulation.
 
     Args:
         asm_code: RISC-V assembly text.
@@ -282,32 +365,18 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
             "error": "tinyfive not installed",
         }
 
-    # Primary path: assemble to binary via our encoder, then load.
     try:
         from scratchv.backend.riscv_encoder import assemble_to_binary
 
         binary = assemble_to_binary(asm_code)
-        if len(binary) > 0:
-            words = [
-                int.from_bytes(binary[i:i + 4], "little")
-                for i in range(0, len(binary), 4)
-            ]
-            m.load_binary(words, origin=0)
-            # Point ra past the end of valid memory.  The compiler emits
-            # ``jalr zero, ra`` for ``ret``, but ra is 0 on startup.
-            # By setting ra to an out-of-bounds address, the instruction
-            # fetch after the jump triggers an IndexError that the
-            # ``except Exception`` in ``run()`` catches cleanly.
-            m.set_reg(1, m.mem_size)  # ra = x1 = out-of-bounds
-        else:
+        if not binary:
             raise ValueError("assembler produced empty binary")
-    except Exception as enc_err:
-        # Fallback: try TinyFive's limited asm() parser.
-        lines = asm_code.strip().split("\n")
-        m.load_asm(lines, origin=0)
-
-    try:
-        m.run(instructions=100_000_000)
+        words = [
+            int.from_bytes(binary[i:i + 4], "little")
+            for i in range(0, len(binary), 4)
+        ]
+        m.load_binary(words, origin=0)
+        m.run(instructions=len(words), start=0, strict=True)
     except Exception as e:
         return {
             "success": False,
@@ -315,4 +384,6 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
             "error": str(e),
         }
 
+    if verbose:
+        m.print_perf()
     return {"success": True, "instr_count": m.instr_count, "error": None}

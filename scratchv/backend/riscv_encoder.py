@@ -213,6 +213,15 @@ class RISCVAEncoder:
 
         op = tokens[0].lower()
 
+        # li rd, imm -> addi rd, x0, imm (small values), otherwise the
+        # canonical LUI/ADDI pair.  A single RISC-V instruction cannot encode
+        # an arbitrary 32-bit immediate; keeping a large ``li`` as one encoded
+        # word silently drops its low 12 bits.
+        if op == "li" and len(tokens) >= 3:
+            rd = tokens[1]
+            imm = self._parse_imm(tokens[2])
+            return self._expand_li(rd, imm)
+
         # max rd, rs1, rs2  →  4-instruction sequence
         if op == "max":
             rd = tokens[1] if len(tokens) > 1 else "x0"
@@ -242,12 +251,26 @@ class RISCVAEncoder:
                     else:
                         temp = f"x{self._temp_reg}"
                         label = tokens[3]
-                        return [
-                            f"li {temp}, {imm}",
+                        return self._expand_li(temp, imm) + [
                             f"{op} {tokens[1]}, {temp}, {label}",
                         ]
 
         return [line]
+
+    @staticmethod
+    def _expand_li(rd: str, imm: int) -> list[str]:
+        """Expand ``li`` into semantically equivalent RV32 instructions."""
+        if not -(1 << 31) <= imm <= (1 << 31) - 1:
+            raise ValueError(f"li immediate out of RV32 range: {imm}")
+        if -2048 <= imm <= 2047:
+            return [f"addi {rd}, x0, {imm}"]
+
+        upper = (imm + 0x800) >> 12
+        lower = imm - (upper << 12)
+        result = [f"lui {rd}, {upper}"]
+        if lower:
+            result.append(f"addi {rd}, {rd}, {lower}")
+        return result
 
     # ── Assembly pass ─────────────────────────────────────────────────
 
@@ -294,7 +317,9 @@ class RISCVAEncoder:
         for idx, (word, fixup) in enumerate(instructions):
             if fixup is not None:
                 word = self._apply_fixup(word, fixup, idx)
-            result.extend(struct.pack("<I", word))
+            # Some encoders intentionally build signed Python integers when
+            # bit 31 is set.  Machine words are always the low 32 bits.
+            result.extend(struct.pack("<I", word & 0xFFFFFFFF))
 
         return result
 
@@ -433,14 +458,7 @@ class RISCVAEncoder:
             offset = self._parse_imm(operands[2]) if len(operands) > 2 else 0
             word = _i_type(rd, rs1, offset, 0, RVOpcode.JALR)
         elif op == "li":
-            rd = _reg_num(operands[0])
-            imm = self._parse_imm(operands[1])
-            if -2048 <= imm <= 2047:
-                word = _i_type(rd, 0, imm, F3_ADD_SUB)
-            else:
-                upper = (imm + 0x800) >> 12
-                word = _u_type(rd, upper)
-                self._pending_li = (rd, imm & 0xFFF)
+            raise ValueError("li must be expanded before encoding")
         elif op == "mv":
             rd = _reg_num(operands[0])
             rs = _reg_num(operands[1])
