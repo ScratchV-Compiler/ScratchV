@@ -58,11 +58,17 @@ jobs:
           echo "Fetching origin main..."
           retry "git fetch origin main" git fetch origin main || exit 1
           echo "Checking out $GITHUB_SHA..."
-          if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
-            echo "::notice::Checkout successful: $(git log -1 --format='%h %ai %s')"
+          if ! git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+            echo "::warning::Checkout failed, fetching SHA directly from origin..."
+            git fetch origin "$GITHUB_SHA" || true
+            if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+              echo "::notice::Checkout successful after direct fetch: $(git log -1 --format='%h %ai %s')"
+            else
+              echo "::error::GITHUB_SHA ($GITHUB_SHA) not found — checkout failed"
+              exit 1
+            fi
           else
-            echo "::error::GITHUB_SHA ($GITHUB_SHA) not found in local repo — checkout failed"
-            exit 1
+            echo "::notice::Checkout successful: $(git log -1 --format='%h %ai %s')"
           fi
 
       - name: Install dependencies
@@ -152,11 +158,17 @@ jobs:
           echo "Fetching origin main..."
           retry "git fetch origin main" git fetch origin main || exit 1
           echo "Checking out $GITHUB_SHA..."
-          if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
-            echo "::notice::Checkout successful: $(git log -1 --format='%h %ai %s')"
+          if ! git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+            echo "::warning::Checkout failed, fetching SHA directly from origin..."
+            git fetch origin "$GITHUB_SHA" || true
+            if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+              echo "::notice::Checkout successful after direct fetch: $(git log -1 --format='%h %ai %s')"
+            else
+              echo "::error::GITHUB_SHA ($GITHUB_SHA) not found — checkout failed"
+              exit 1
+            fi
           else
-            echo "::error::GITHUB_SHA ($GITHUB_SHA) not found in local repo — checkout failed"
-            exit 1
+            echo "::notice::Checkout successful: $(git log -1 --format='%h %ai %s')"
           fi
 
       - name: Install dependencies
