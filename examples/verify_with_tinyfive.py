@@ -14,8 +14,7 @@ from scratchv.frontend.dsl_parser import DSLParser
 from scratchv.backend.instruction_select import InstructionSelector
 from scratchv.backend.register_alloc import RegisterAllocator
 from scratchv.backend.asm_emit import AsmEmitter
-from scratchv.optimizer.constant_folding import ConstantFolder
-from scratchv.optimizer.dead_code import DeadCodeEliminator
+from scratchv.compiler import create_optimization_pass_manager
 
 
 def compile_and_count(path: str, optimize: bool = False) -> tuple[str, int]:
@@ -27,11 +26,20 @@ def compile_and_count(path: str, optimize: bool = False) -> tuple[str, int]:
     program = parser.parse(source)
 
     if optimize:
-        folder = ConstantFolder(program)
-        folded = folder.run()
-        elim = DeadCodeEliminator(program)
-        eliminated = elim.run()
-        print(f"  Optimization: {folded} folded, {eliminated} eliminated")
+        # "basic" is the stable constant-folding -> dead-code-elim pipeline.
+        # run() optimizes program in place and returns an immutable report.
+        report = create_optimization_pass_manager("basic").run(program)
+        changes_by_name = {
+            execution.name: execution.changes
+            for execution in report.executions
+        }
+        folded_changes = changes_by_name["constant-folding"]
+        eliminated_changes = changes_by_name["dead-code-elim"]
+        print(
+            "  Optimization: "
+            f"{folded_changes} constant fold(s), "
+            f"{eliminated_changes} dead-code elimination(s)"
+        )
 
     selector = InstructionSelector(program)
     instrs = selector.run()
