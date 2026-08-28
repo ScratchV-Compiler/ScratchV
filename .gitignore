@@ -33,3 +33,7 @@ benchmark_reports/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+# CFG visualization artifacts (generated, never commit)
+*.dot
+*.png
+.idea/
