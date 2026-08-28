@@ -1,0 +1,10 @@
+{
+  "description": "Add a and b, then add c to the intermediate result.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "a": 2,
+    "b": 3,
+    "c": 4
+  },
+  "expected_return": 9
+}

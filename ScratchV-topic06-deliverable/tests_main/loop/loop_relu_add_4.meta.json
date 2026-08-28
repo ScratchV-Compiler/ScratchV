@@ -1,0 +1,9 @@
+{
+  "description": "Run a four-iteration loop whose body computes add followed by ReLU; final returned value is the last loop-body result.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "input": -4,
+    "bias": 6
+  },
+  "expected_return": 2
+}

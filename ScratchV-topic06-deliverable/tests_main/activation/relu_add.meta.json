@@ -1,0 +1,9 @@
+{
+  "description": "Add input and bias, then apply one ReLU.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "input": -2,
+    "bias": 5
+  },
+  "expected_return": 3
+}

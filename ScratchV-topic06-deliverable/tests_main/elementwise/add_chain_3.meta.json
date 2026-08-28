@@ -1,0 +1,11 @@
+{
+  "description": "Chain three add operations across four symbolic inputs.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "a": 2,
+    "b": 3,
+    "c": 4,
+    "d": 5
+  },
+  "expected_return": 14
+}
