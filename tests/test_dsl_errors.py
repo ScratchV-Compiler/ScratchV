@@ -1,12 +1,15 @@
 """Tests for the DSL error beautifier module."""
 
+import io
 import pytest
+from scratchv.frontend.dsl_parser import DSLParseError
 from scratchv.frontend.dsl_errors import (
     DSLSyntaxError,
     format_error,
     ErrorCollector,
     make_error,
     Color,
+    render_error,
 )
 
 
@@ -68,6 +71,14 @@ class TestDSLSyntaxError:
         err = DSLSyntaxError(1, 1, "msg")
         with pytest.raises(DSLSyntaxError):
             raise err
+
+    def test_error_is_compatible_with_dsl_parse_error(self):
+        err = DSLSyntaxError(1, 1, "msg")
+        assert isinstance(err, DSLParseError)
+
+    def test_str_never_contains_ansi(self):
+        err = DSLSyntaxError(1, 1, "msg", source_line="bad")
+        assert "\033[" not in str(err)
 
 
 class TestFormatError:
@@ -149,7 +160,51 @@ class TestFormatError:
             error_code="E001",
         )
         output = format_error(err, use_color=False)
-        assert "E001" in output
+        assert "error[E001]: test error" in output
+
+    def test_format_unknown_filename(self):
+        err = DSLSyntaxError(1, 1, "test error")
+        assert format_error(err, use_color=False).startswith(
+            "<dsl>:1:1: error:"
+        )
+
+    def test_format_uses_explicit_span(self):
+        err = DSLSyntaxError(
+            1, 5, "test error", source_line="x = retrun y", end_col=11,
+        )
+        marker = format_error(err, use_color=False).splitlines()[2]
+        assert "^~~~~~" in marker
+
+    def test_format_expands_tabs_for_marker(self):
+        err = DSLSyntaxError(
+            1, 2, "test error", source_line="\tbad", end_col=5,
+        )
+        output = format_error(err, use_color=False)
+        assert "  1 |     bad" in output
+        marker = output.splitlines()[2]
+        assert marker.index("^") == output.splitlines()[1].index("b")
+
+    def test_render_error_auto_color_uses_tty(self, monkeypatch):
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        output = render_error(
+            DSLSyntaxError(1, 1, "bad"), stream=TTY(), use_color=None,
+        )
+        assert "\033[" in output
+
+    def test_render_error_auto_color_honors_no_color(self, monkeypatch):
+        class TTY(io.StringIO):
+            def isatty(self):
+                return True
+
+        monkeypatch.setenv("NO_COLOR", "1")
+        output = render_error(
+            DSLSyntaxError(1, 1, "bad"), stream=TTY(), use_color=None,
+        )
+        assert "\033[" not in output
 
     def test_format_column_marker(self):
         err = DSLSyntaxError(
@@ -226,8 +281,35 @@ class TestErrorCollector:
         collector = ErrorCollector(max_errors=3)
         for i in range(10):
             collector.add(DSLSyntaxError(i + 1, 1, f"error {i}"))
-        # Should only have max_errors items
-        assert len(collector.errors) <= 4  # 3 real errors + 1 limit message
+        assert len(collector.errors) == 3
+        assert collector.error_count == 3
+        assert collector.limit_reached
+        assert "further errors suppressed" in collector.report()
+
+    def test_deduplicates_and_sorts_errors(self):
+        collector = ErrorCollector(use_color=False)
+        second = DSLSyntaxError(2, 3, "second", error_code="E200")
+        first = DSLSyntaxError(1, 2, "first", error_code="E100")
+        collector.add(second)
+        collector.add(first)
+        collector.add(first)
+        assert collector.errors == [first, second]
+
+    def test_clear_resets_limit_state(self):
+        collector = ErrorCollector(max_errors=1)
+        collector.add(DSLSyntaxError(1, 1, "first"))
+        collector.add(DSLSyntaxError(2, 1, "second"))
+        assert collector.limit_reached
+        collector.clear()
+        assert not collector.limit_reached
+
+    def test_duplicate_at_capacity_does_not_reach_limit(self):
+        collector = ErrorCollector(max_errors=1)
+        error = DSLSyntaxError(1, 1, "first")
+        collector.add(error)
+        collector.add(error)
+        assert collector.error_count == 1
+        assert not collector.limit_reached
 
     def test_clear_errors(self):
         collector = ErrorCollector()

@@ -17,9 +17,10 @@ Example output::
 from __future__ import annotations
 
 import enum
+import os
 import sys
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TextIO
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +91,12 @@ _COMMON_FIXES: dict[str, str] = {
 # DSLSyntaxError
 # ---------------------------------------------------------------------------
 
+class DSLParseError(Exception):
+    """Base exception retained for compatibility with existing callers."""
+
+
 @dataclass
-class DSLSyntaxError(Exception):
+class DSLSyntaxError(DSLParseError):
     """Enriched syntax error with precise location information.
 
     Attributes:
@@ -111,6 +116,7 @@ class DSLSyntaxError(Exception):
     filename: Optional[str] = None
     fix_hint: Optional[str] = None
     error_code: Optional[str] = None
+    end_col: Optional[int] = None
 
     def __str__(self) -> str:
         return format_error(self, use_color=False)
@@ -182,23 +188,18 @@ def format_error(
     parts: list[str] = []
 
     # Build location prefix
-    location = ""
-    if err.filename:
-        location += err.filename
-    location += f":{err.line}:{err.col}: "
+    location = f"{err.filename or '<dsl>'}:{err.line}:{err.col}: "
 
     # Error header
-    error_tag = "error"
+    error_label = (
+        f"error[{err.error_code}]" if err.error_code else "error"
+    )
     if use_color:
         location = _color(location, Color.BOLD)
-        error_tag = _color("error", Color.RED)
+        error_tag = _color(error_label, Color.RED)
         parts.append(f"{location}{error_tag}: {err.message}")
     else:
-        parts.append(f"{location}error: {err.message}")
-
-    # Error code
-    if err.error_code:
-        parts[-1] += f" [{err.error_code}]"
+        parts.append(f"{location}{error_label}: {err.message}")
 
     # Source line display
     if err.source_line:
@@ -215,19 +216,28 @@ def format_error(
         # Error line
         if use_color:
             line_prefix = _color(f"  {err.line} |", Color.GRAY)
-            parts.append(f"{line_prefix} {err.source_line}")
+            parts.append(f"{line_prefix} {err.source_line.expandtabs(4)}")
         else:
-            parts.append(f"  {err.line} | {err.source_line}")
+            parts.append(f"  {err.line} | {err.source_line.expandtabs(4)}")
 
         # Column marker
         if show_column_marker:
-            token_len = _estimate_token_length(
-                err.source_line, err.col - 1,
-            )
-            marker = " " * (err.col + 3) + "^"
+            raw_start = max(err.col - 1, 0)
+            display_start = len(err.source_line[:raw_start].expandtabs(4))
+            if err.end_col is not None:
+                raw_end = max(err.end_col - 1, raw_start + 1)
+                token_len = max(
+                    len(err.source_line[:raw_end].expandtabs(4))
+                    - display_start,
+                    1,
+                )
+            else:
+                token_len = _estimate_token_length(err.source_line, raw_start)
+            marker_padding = 6 + display_start
+            marker = " " * marker_padding + "^"
             if use_color:
                 marker = (
-                    " " * (err.col + 3)
+                    " " * marker_padding
                     + _color("^", Color.GREEN)
                 )
             # Add tildes to indicate token length
@@ -244,6 +254,19 @@ def format_error(
             parts.append(f"note: {hint}")
 
     return "\n".join(parts)
+
+
+def render_error(
+    err: DSLSyntaxError,
+    *,
+    stream: TextIO,
+    use_color: Optional[bool] = None,
+) -> str:
+    """Render an error, selecting color from the destination stream."""
+    if use_color is None:
+        is_tty = bool(getattr(stream, "isatty", lambda: False)())
+        use_color = is_tty and "NO_COLOR" not in os.environ
+    return format_error(err, use_color=use_color)
 
 
 def _estimate_token_length(source_line: str, col_start: int) -> int:
@@ -301,11 +324,16 @@ class ErrorCollector:
         self.use_color = use_color
         self.max_errors = max_errors
         self._errors: list[DSLSyntaxError] = []
+        self.limit_reached = False
+        self._keys: set[tuple[object, ...]] = set()
 
     @property
     def errors(self) -> list[DSLSyntaxError]:
         """Return the collected errors."""
-        return list(self._errors)
+        return sorted(
+            self._errors,
+            key=lambda err: (err.line, err.col, err.error_code or ""),
+        )
 
     @property
     def has_errors(self) -> bool:
@@ -323,20 +351,17 @@ class ErrorCollector:
         Args:
             err: A DSLSyntaxError instance.
         """
-        if len(self._errors) >= self.max_errors:
-            if not getattr(self, "_max_error_warned", False):
-                self._max_error_warned = True
-                msg = (
-                    f"error limit ({self.max_errors}) reached; "
-                    f"further errors suppressed"
-                )
-                self._errors.append(DSLSyntaxError(
-                    line=0, col=0, message=msg,
-                    filename=self.filename,
-                ))
-            return
         if err.filename is None and self.filename is not None:
             err.filename = self.filename
+        key = (
+            err.filename, err.line, err.col, err.error_code, err.message,
+        )
+        if key in self._keys:
+            return
+        if len(self._errors) >= self.max_errors:
+            self.limit_reached = True
+            return
+        self._keys.add(key)
         self._errors.append(err)
 
     def add_error(
@@ -347,6 +372,7 @@ class ErrorCollector:
         source_line: str = "",
         fix_hint: Optional[str] = None,
         error_code: Optional[str] = None,
+        end_col: Optional[int] = None,
     ) -> None:
         """Convenience method to add an error by components.
 
@@ -366,6 +392,7 @@ class ErrorCollector:
             filename=self.filename,
             fix_hint=fix_hint,
             error_code=error_code,
+            end_col=end_col,
         ))
 
     def report(self) -> str:
@@ -386,8 +413,14 @@ class ErrorCollector:
         else:
             parts.append(f"--- {len(self._errors)} error(s) found ---")
 
-        for err in self._errors:
+        for err in self.errors:
             parts.append(format_error(err, use_color=self.use_color))
+
+        if self.limit_reached:
+            parts.append(
+                f"note: error limit ({self.max_errors}) reached; "
+                "further errors suppressed"
+            )
 
         return "\n".join(parts)
 
@@ -404,6 +437,8 @@ class ErrorCollector:
     def clear(self) -> None:
         """Clear all collected errors."""
         self._errors.clear()
+        self._keys.clear()
+        self.limit_reached = False
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +453,7 @@ def make_error(
     filename: Optional[str] = None,
     fix_hint: Optional[str] = None,
     error_code: Optional[str] = None,
+    end_col: Optional[int] = None,
 ) -> DSLSyntaxError:
     """Factory function to create a DSLSyntaxError.
 
@@ -441,4 +477,5 @@ def make_error(
         filename=filename,
         fix_hint=fix_hint,
         error_code=error_code,
+        end_col=end_col,
     )

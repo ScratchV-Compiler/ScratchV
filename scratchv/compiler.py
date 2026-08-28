@@ -190,6 +190,9 @@ class CompileResult:
     stats: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    diagnostics: list[Any] = field(default_factory=list)
+    diagnostic_limit_reached: bool = False
+    diagnostic_limit: int = 20
 
     def summary(self) -> str:
         """Return a one-line summary."""
@@ -240,10 +243,44 @@ class CompilerDriver:
         if output_path is None:
             output_path = "output.ll" if self.config.backend == "llvm" else "output.s"
 
+        use_dsl = (
+            dsl_source is not None
+            or (input_path and input_path.endswith(".dsl"))
+        )
+
+        if use_dsl:
+            source = dsl_source
+            if source is None and input_path:
+                with open(input_path) as source_file:
+                    source = source_file.read()
+            from scratchv.frontend.dsl_extended import ExtendedDSLParser
+            parser = ExtendedDSLParser()
+            collector = parser.validate(
+                source or "", filename=input_path or "<dsl>",
+            )
+            if collector.has_errors:
+                diagnostics = collector.errors
+                return CompileResult(
+                    success=False,
+                    errors=[str(error) for error in diagnostics],
+                    diagnostics=diagnostics,
+                    diagnostic_limit_reached=collector.limit_reached,
+                    diagnostic_limit=collector.max_errors,
+                )
+
         # --- 1. Parse ---
         try:
             program = self._parse(input_path, dsl_source)
         except Exception as e:
+            if use_dsl:
+                from scratchv.frontend.dsl_errors import DSLSyntaxError
+                if isinstance(e, DSLSyntaxError):
+                    return CompileResult(
+                        success=False,
+                        errors=[str(e)],
+                        diagnostics=[e],
+                    )
+                raise
             return CompileResult(
                 success=False, errors=[f"Parse error: {e}"],
             )
@@ -334,13 +371,10 @@ class CompilerDriver:
             if source is None and input_path:
                 with open(input_path) as f:
                     source = f.read()
-            # Try extended DSL first
-            try:
-                from scratchv.frontend.dsl_extended import ExtendedDSLParser
-                return ExtendedDSLParser().parse(source)
-            except Exception:
-                from scratchv.frontend.dsl_parser import DSLParser
-                return DSLParser().parse(source)
+            from scratchv.frontend.dsl_extended import ExtendedDSLParser
+            return ExtendedDSLParser().parse(
+                source or "", filename=input_path or "<dsl>",
+            )
         else:
             from scratchv.frontend.onnx_parser import ONNXParser
             return ONNXParser().parse(input_path)

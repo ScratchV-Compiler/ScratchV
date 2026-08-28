@@ -234,13 +234,22 @@ def main(argv: list[str] | None = None) -> int:
     # Build config and driver
     config = args_to_config(args)
     driver = CompilerDriver(config)
+    use_dsl = args.dsl is not None or bool(
+        args.input and args.input.endswith(".dsl")
+    )
 
     # Compile
-    result: CompileResult = driver.compile(
-        input_path=args.input or "",
-        output_path=args.output,
-        dsl_source=args.dsl if hasattr(args, 'dsl') else None,
-    )
+    try:
+        result: CompileResult = driver.compile(
+            input_path=args.input or "",
+            output_path=args.output,
+            dsl_source=args.dsl if hasattr(args, 'dsl') else None,
+        )
+    except Exception as exc:
+        if not use_dsl:
+            raise
+        print(f"internal compiler error: {exc}", file=sys.stderr)
+        return 2
 
     # Report
     if result.ir_dump:
@@ -262,8 +271,21 @@ def main(argv: list[str] | None = None) -> int:
 
         return 0
     else:
-        for err in result.errors:
-            print(f"Error: {err}", file=sys.stderr)
+        if result.diagnostics:
+            from scratchv.frontend.dsl_errors import render_error
+            for diagnostic in result.diagnostics:
+                print(render_error(
+                    diagnostic, stream=sys.stderr, use_color=None,
+                ), file=sys.stderr)
+            if result.diagnostic_limit_reached:
+                print(
+                    f"note: error limit ({result.diagnostic_limit}) reached; "
+                    "further errors suppressed",
+                    file=sys.stderr,
+                )
+        else:
+            for err in result.errors:
+                print(f"Error: {err}", file=sys.stderr)
         return 1
 
 
