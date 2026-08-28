@@ -19,9 +19,17 @@ class OpCode(enum.Enum):
     SUB = "sub"
     MUL = "mul"
     DIV = "div"
+    IDIV = "idiv"    # 整数除法 (truncated toward zero)
+    REM = "rem"      # 整数取余
+    MOD = "mod"      # 取余别名
     # Arithmetic (unary)
     NEG = "neg"
     EXP = "exp"
+    SQRT = "sqrt"
+    ABS = "abs"
+    # Comparison / selection
+    MIN = "min"
+    MAX = "max"
     # Memory / data
     LOAD = "load"
     STORE = "store"
@@ -50,7 +58,10 @@ class OpCode(enum.Enum):
     CONCAT = "concat"
 
     def is_arith(self) -> bool:
-        return self in (OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV)
+        return self in (OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV,
+                        OpCode.IDIV, OpCode.REM, OpCode.MOD,
+                        OpCode.SQRT, OpCode.ABS, OpCode.MIN, OpCode.MAX,
+                        OpCode.NEG)
 
     def is_nn(self) -> bool:
         return self in (

@@ -96,9 +96,61 @@ class IRBuilder:
         self._emit(OpCode.DIV, dest, [lhs, rhs])
         return dest
 
+    def idiv(self, lhs: Value, rhs: Value) -> Value:
+        """整数除法 (truncated toward zero)."""
+        dest = self.make_value(dtype=DataType.INT32)
+        self._emit(OpCode.IDIV, dest, [lhs, rhs])
+        return dest
+
+    def rem(self, lhs: Value, rhs: Value) -> Value:
+        """整数取余 (结果符号与被除数相同)."""
+        dest = self.make_value(dtype=DataType.INT32)
+        self._emit(OpCode.REM, dest, [lhs, rhs])
+        return dest
+
+    def mod(self, lhs: Value, rhs: Value) -> Value:
+        """取余别名，同 rem."""
+        return self.rem(lhs, rhs)
+
     def neg(self, val: Value) -> Value:
-        dest = self.make_value()
+        dest = self.make_value(dtype=val.dtype)
         self._emit(OpCode.NEG, dest, [val])
+        return dest
+
+    def sqrt(self, val: Value) -> Value:
+        """平方根."""
+        dest = self.make_value(dtype=val.dtype)
+        self._emit(OpCode.SQRT, dest, [val])
+        return dest
+
+    def abs(self, val: Value) -> Value:
+        """绝对值."""
+        dest = self.make_value(dtype=val.dtype)
+        self._emit(OpCode.ABS, dest, [val])
+        return dest
+
+    def min(self, a: Value, b: Value) -> Value:
+        """最小值."""
+        dest = self.make_value(dtype=a.dtype)
+        self._emit(OpCode.MIN, dest, [a, b])
+        return dest
+
+    def max(self, a: Value, b: Value) -> Value:
+        """最大值."""
+        dest = self.make_value(dtype=a.dtype)
+        self._emit(OpCode.MAX, dest, [a, b])
+        return dest
+
+    def transpose(self, val: Value) -> Value:
+        """转置 (数据布局操作)."""
+        dest = self.make_value(dtype=val.dtype)
+        self._emit(OpCode.TRANSPOSE, dest, [val])
+        return dest
+
+    def concat(self, val: Value) -> Value:
+        """拼接 (缓冲区合并)."""
+        dest = self.make_value(dtype=val.dtype)
+        self._emit(OpCode.CONCAT, dest, [val])
         return dest
 
     def exp(self, val: Value) -> Value:

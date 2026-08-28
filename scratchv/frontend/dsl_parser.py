@@ -139,6 +139,8 @@ class DSLParser:
             "sub": lambda: self.builder.sub(resolved[0], resolved[1]),
             "mul": lambda: self.builder.mul(resolved[0], resolved[1]),
             "div": lambda: self.builder.div(resolved[0], resolved[1]),
+            "rem": lambda: self.builder.rem(resolved[0], resolved[1]),   # 新增
+            "mod": lambda: self.builder.mod(resolved[0], resolved[1]),   # 新增
             "neg": lambda: self.builder.neg(resolved[0]),
             "exp": lambda: self.builder.exp(resolved[0]),
             "relu": lambda: self.builder.relu(resolved[0]),
