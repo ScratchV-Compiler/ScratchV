@@ -102,27 +102,14 @@ def _parse_onnx(path: str) -> Program:
 
 
 def _optimize(program: Program, level: str) -> float:
-    """Run optimizations. Returns elapsed time in seconds."""
-    if level == "none":
-        return 0.0
+    """Run the selected unified pipeline and return its reported elapsed time.
 
-    t0 = time.perf_counter()
+    The ``none`` pipeline is empty, so its report is exactly ``0.0`` seconds.
+    """
+    from scratchv.compiler import create_optimization_pass_manager
 
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
-
-    ConstantFolder(program).run()
-    DeadCodeEliminator(program).run()
-
-    if level == "all":
-        from scratchv.optimizer.peephole import IRPeepholeOptimizer
-        from scratchv.optimizer.muladd_fusion import MulAddFusion
-        from scratchv.optimizer.licm import LICM
-        IRPeepholeOptimizer(program).run()
-        MulAddFusion(program).run()
-        LICM(program).run()
-
-    return time.perf_counter() - t0
+    manager = create_optimization_pass_manager(level)
+    return manager.run(program).elapsed_seconds
 
 
 def _codegen_riscv(program: Program) -> tuple[str, float]:
@@ -188,11 +175,8 @@ def run_benchmark(model_name: str, model_path: str, *,
         result.ir_inst_count, result.ir_bb_count = _count_ir(program)
 
         # 2. Optimize
-        if optimize_level != "none":
-            result.optimize_time_s = _optimize(program, optimize_level)
-            result.ir_opt_inst_count, _ = _count_ir(program)
-        else:
-            result.ir_opt_inst_count = result.ir_inst_count
+        result.optimize_time_s = _optimize(program, optimize_level)
+        result.ir_opt_inst_count, _ = _count_ir(program)
 
         # 3. Codegen
         if backend == "llvm":

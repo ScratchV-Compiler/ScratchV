@@ -14,23 +14,24 @@ The fused instruction is represented as MUL_ADD in IR:
 from __future__ import annotations
 
 from scratchv.ir.types import OpCode, Instruction, BasicBlock, Program
+from scratchv.pass_interface import OptimizationPass
 
 
-class MulAddFusion:
+class MulAddFusion(OptimizationPass):
     """Combine consecutive mul+add instruction pairs."""
 
-    def __init__(self, program: Program):
-        self.program = program
-        self._stats = {"fused": 0}
+    name = "muladd-fusion"
 
-    def run(self) -> int:
+    def optimize(self, program: Program) -> int:
         """Run mul-add fusion. Returns number of fusions performed."""
-        for func in self.program.functions:
-            for block in func.blocks:
-                self._fuse_block(block)
-        return self._stats["fused"]
+        return sum(
+            self._fuse_block(block)
+            for func in program.functions
+            for block in func.blocks
+        )
 
-    def _fuse_block(self, block: BasicBlock) -> None:
+    def _fuse_block(self, block: BasicBlock) -> int:
+        changes = 0
         instrs = block.instructions
         i = 0
         while i < len(instrs) - 1:
@@ -54,9 +55,11 @@ class MulAddFusion:
                 instrs[i] = fused
                 # Remove the original add
                 instrs.pop(i + 1)
-                self._stats["fused"] += 1
+                changes += 1
 
             i += 1
+
+        return changes
 
     def _matches_pattern(self, mul: Instruction, add: Instruction) -> bool:
         """Check if mul + add form a fusible pattern.
