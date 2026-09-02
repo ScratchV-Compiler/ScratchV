@@ -56,6 +56,14 @@ class InstructionSelector:
         self._instructions.append(
             MachineInstr(op, dst, src1, src2, comment))
 
+    def _emit_move(self, dst: MachineOperand, src: MachineOperand,
+                   comment: str = "") -> None:
+        """Emit a legal copy pseudo for either a register or an immediate."""
+        if src.kind == "imm":
+            self._emit(MachineOp.LI, dst, src, comment=comment)
+        else:
+            self._emit(MachineOp.MV, dst, src, comment=comment)
+
     def _emit_label(self, name: str) -> None:
         self._instructions.append(
             MachineInstr(MachineOp.LABEL, comment=name))
@@ -146,15 +154,14 @@ class InstructionSelector:
         src = self._op(instr, 0)
         dst = self._dst(instr)
         if dst and src:
-            self._emit(MachineOp.MV, dst, src,
-                       comment="softmax passthrough")
+            self._emit_move(dst, src, comment="softmax passthrough")
 
     def _select_reshape(self, instr: Instruction) -> None:
         # Reshape is a no-op: just copy the value
         src = self._op(instr, 0)
         dst = self._dst(instr)
         if dst and src:
-            self._emit(MachineOp.MV, dst, src, comment="reshape")
+            self._emit_move(dst, src, comment="reshape")
 
     def _select_load(self, instr: Instruction) -> None:
         self._emit(MachineOp.LW, self._dst(instr), self._op(instr, 0))
@@ -237,8 +244,11 @@ class InstructionSelector:
 
     def _select_return(self, instr: Instruction) -> None:
         if instr.operands:
-            self._emit(MachineOp.MV, MachineOperand.reg("a0"),
-                       self._op(instr, 0), comment="return value")
+            self._emit_move(
+                MachineOperand.reg("a0"),
+                self._op(instr, 0),
+                comment="return value",
+            )
         self._emit(MachineOp.JALR, MachineOperand.reg("zero"),
                    MachineOperand.reg("ra"), comment="ret")
 
@@ -289,8 +299,7 @@ class InstructionSelector:
         done_label = self._fresh_label("sig_done")
         self._emit(MachineOp.J, comment=done_label)
         self._emit_label(keep_label)
-        self._emit(MachineOp.MV, dst, src,
-                   comment="keep src")
+        self._emit_move(dst, src, comment="keep src")
         self._emit_label(done_label)
         # Now dst = min(src, 1). If src < 0, result = 0
         self._emit(MachineOp.SLT,
@@ -315,8 +324,7 @@ class InstructionSelector:
         b_reg = self._op(instr, 2)
         if dst:
             # acc = bias (mv bias to dest)
-            self._emit(MachineOp.MV, dst, b_reg,
-                       comment="acc = bias")
+            self._emit_move(dst, b_reg, comment="acc = bias")
             # tmp = x * w (MUL for MAC)
             tmp_vreg = MachineOperand.vreg("tmp_mac")
             self._emit(MachineOp.MUL, tmp_vreg, x_reg, w_reg,
@@ -332,8 +340,7 @@ class InstructionSelector:
         w_reg = self._op(instr, 1)
         b_reg = self._op(instr, 2)
         if dst:
-            self._emit(MachineOp.MV, dst, b_reg,
-                       comment="acc = bias")
+            self._emit_move(dst, b_reg, comment="acc = bias")
             tmp_vreg = MachineOperand.vreg("tmp_gemm")
             self._emit(MachineOp.MUL, tmp_vreg, a_reg, w_reg,
                        comment="tmp = a * w")
@@ -362,6 +369,5 @@ class InstructionSelector:
         done_label = self._fresh_label("mp_done")
         self._emit(MachineOp.J, comment=done_label)
         self._emit_label(gt_label)
-        self._emit(MachineOp.MV, dst, src,
-                   comment="result = x")
+        self._emit_move(dst, src, comment="result = x")
         self._emit_label(done_label)
