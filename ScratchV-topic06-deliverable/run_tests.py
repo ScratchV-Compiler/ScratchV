@@ -27,15 +27,12 @@ FAILURE_DIR = REPORT_DIR / "failures"
 REGRESSION_THRESHOLD_PCT = 5.0
 COMPILE_TIMEOUT_SEC = 30.0
 SIMULATION_TIMEOUT_SEC = 5.0
-INPUT_REGISTERS = [
-    "t0", "t1", "t2", "t3", "t4", "t5", "t6",
-    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
-    "s8", "s9", "s10", "s11",
-]
 
 
 def run_compile(dsl_file: Path, timeout: float = COMPILE_TIMEOUT_SEC):
     output_file = BUILD_DIR / (dsl_file.stem + ".s")
+    register_map_file = BUILD_DIR / (dsl_file.stem + ".registers.json")
+    register_map_file.unlink(missing_ok=True)
 
     cmd = [
         sys.executable,
@@ -46,7 +43,8 @@ def run_compile(dsl_file: Path, timeout: float = COMPILE_TIMEOUT_SEC):
         str(output_file),
         "--optimize",
         "all",
-        "--dump-ir",
+        "--emit-register-map",
+        str(register_map_file),
     ]
 
     try:
@@ -71,7 +69,7 @@ def run_compile(dsl_file: Path, timeout: float = COMPILE_TIMEOUT_SEC):
             stderr=stderr,
         )
 
-    return result, output_file
+    return result, output_file, register_map_file
 
 
 def _last_nonempty_line(text):
@@ -222,52 +220,28 @@ def load_metadata(dsl_file: Path):
         }
 
 
-def _optimized_ir_text(compiler_output: str) -> str:
-    marker = "; --- IR Dump (after"
-    marker_pos = compiler_output.find(marker)
-    if marker_pos == -1:
-        return compiler_output
-    return compiler_output[marker_pos:]
+def load_initial_registers(register_map_file: Path, inputs: dict) -> dict[str, int]:
+    """Load compiler-emitted register assignments for scalar DSL inputs."""
+    try:
+        payload = json.loads(register_map_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid compiler register map: {exc}") from exc
 
-
-def infer_initial_registers(compiler_output: str, inputs: dict) -> dict[str, int]:
-    """Infer scalar input registers from optimized IR first-use order."""
-    ir_text = _optimized_ir_text(compiler_output)
-    allocation_order: list[str] = []
-    seen: set[str] = set()
-
-    def remember(name: str):
-        if name not in seen:
-            seen.add(name)
-            allocation_order.append(name)
-
-    for raw_line in ir_text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith(";") or line.startswith("fun") or line.startswith("."):
-            continue
-        if line.startswith("return "):
-            continue
-
-        match = re.match(r"\$(?P<dst>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<rhs>.*)", line)
-        if not match:
-            continue
-
-        rhs_names = re.findall(r"\$([A-Za-z_][A-Za-z0-9_]*)", match.group("rhs"))
-        for name in rhs_names:
-            remember(name)
-        remember(match.group("dst"))
+    register_map = payload.get("register_map")
+    if not isinstance(register_map, dict):
+        raise ValueError("invalid compiler register map: missing register_map object")
 
     result: dict[str, int] = {}
-    for idx, name in enumerate(allocation_order):
-        if idx >= len(INPUT_REGISTERS):
-            break
-        value = inputs.get(name)
+    for name, value in inputs.items():
+        register = register_map.get(name)
+        if not isinstance(register, str):
+            continue
         if isinstance(value, bool):
-            result[INPUT_REGISTERS[idx]] = int(value)
+            result[register] = int(value)
         elif isinstance(value, int):
-            result[INPUT_REGISTERS[idx]] = value
+            result[register] = value
         elif isinstance(value, float) and value.is_integer():
-            result[INPUT_REGISTERS[idx]] = int(value)
+            result[register] = int(value)
     return result
 
 
@@ -415,452 +389,16 @@ def save_baseline(results, preserve_existing=False):
     BASELINE_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def generate_report_text(results, passed, failed):
-    lines = []
-    lines.append("# ScratchV DSL 编译器性能测试报告\n\n")
-
-    lines.append("## 测试概览\n\n")
-    lines.append(f"- 用例总数: {len(results)}\n")
-    lines.append(f"- 通过数量: {passed}\n")
-    lines.append(f"- 失败数量: {failed}\n\n")
-
-    benchmark_mode = any(r.get("benchmark_runs", 1) > 1 for r in results)
-    if benchmark_mode:
-        lines.append("## 性能基准概览\n\n")
-        lines.append("- 运行模式: benchmark\n")
-        lines.append(f"- 性能基线文件: `{BASELINE_FILE}`\n\n")
-
-    lines.append("## 测试结果\n\n")
-    if benchmark_mode:
-        lines.append("| 测试用例 | 类别 | 状态 | 模拟后端 | 平均指令数 | 最小值 | 最大值 | 基线 | 变化率 | 是否退化 | 预期输出 | 实际输出 | 是否匹配 | 汇编文件 |\n")
-        lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---|---|---|---|---|\n")
-    else:
-        lines.append("| 测试用例 | 类别 | 状态 | 模拟后端 | 指令数 | 预期输出 | 实际输出 | 是否匹配 | 汇编文件 |\n")
-        lines.append("|---|---|---|---|---:|---|---|---|---|\n")
-
-    for r in results:
-        expected = str(r["expected"]).replace("\n", " ").replace("|", "\\|")
-        actual = str(r["actual"]).replace("\n", " ").replace("|", "\\|")
-        if benchmark_mode:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['avg_instr_count']:.2f} | {r['min_instr_count']} | {r['max_instr_count']} | "
-                f"{r['baseline_instr_count']:.2f} | {r['delta_pct']:.2f} | {r['regressed']} | "
-                f"{expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-        else:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['instr_count']} | {expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-
-    lines.append("\n## 性能图表\n\n")
-    chart_cases = [r["name"] for r in results]
-    chart_instr = [str(round(r.get("avg_instr_count", r["instr_count"]), 2)) for r in results]
-    lines.append("### 各测试用例指令数\n\n")
-    lines.append("```mermaid\n")
-    lines.append("xychart-beta\n")
-    lines.append('    title "各测试用例指令数"\n')
-    lines.append("    x-axis [" + ", ".join(f'"{name}"' for name in chart_cases) + "]\n")
-    max_instr = max((r.get("avg_instr_count", r["instr_count"]) for r in results), default=0)
-    lines.append(f'    y-axis "指令数" 0 --> {max_instr + 2}\n')
-    lines.append("    bar [" + ", ".join(chart_instr) + "]\n")
-    lines.append("```\n\n")
-
-    category_totals = {}
-    for r in results:
-        category_totals[r["category"]] = category_totals.get(r["category"], 0) + r.get("avg_instr_count", r["instr_count"])
-    lines.append("### 各类别指令数占比\n\n")
-    lines.append("```mermaid\n")
-    lines.append("pie showData\n")
-    lines.append('    title 各类别指令数占比\n')
-    for category, total in sorted(category_totals.items()):
-        lines.append(f'    "{category}" : {total}\n')
-    lines.append("```\n")
-
-    lines.append("\n## 用例详情\n\n")
-    for r in results:
-        lines.append(f"### {r['name']}\n\n")
-        lines.append(f"- 类别: {r['category']}\n")
-        lines.append(f"- 描述: {r['description']}\n")
-        lines.append(f"- 预期输出 ({r['expected_type']}): {r['expected']}\n")
-        lines.append(f"- 实际输出: {r['actual']}\n")
-        lines.append(f"- 是否匹配: {r['matched']}\n")
-        lines.append(f"- 模拟后端: {r['backend']}\n")
-        if benchmark_mode:
-            lines.append(f"- Benchmark 重复次数: {r['benchmark_runs']}\n")
-            lines.append(f"- 平均指令数: {r['avg_instr_count']:.2f}\n")
-            lines.append(f"- 最小指令数: {r['min_instr_count']}\n")
-            lines.append(f"- 最大指令数: {r['max_instr_count']}\n")
-            lines.append(f"- 基线指令数: {r['baseline_instr_count']:.2f}\n")
-            lines.append(f"- 性能变化率 (%): {r['delta_pct']:.2f}\n")
-            lines.append(f"- 是否性能退化: {r['regressed']}\n")
-        else:
-            lines.append(f"- 指令数: {r['instr_count']}\n")
-        lines.append(f"- 汇编文件: {r['asm']}\n\n")
-
-    return "".join(lines)
-
-
-def write_html_report(results, passed, failed):
-    try:
-        from jinja2 import Template
-    except ImportError:
-        return None
-
-    pass_rate = 0.0 if not results else passed / len(results) * 100.0
-    template = Template("""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <title>ScratchV 课程版测试报告</title>
-  <style>
-    body { font-family: "Microsoft YaHei", sans-serif; margin: 32px; color: #1f2937; }
-    .summary { background: #f8fafc; border: 1px solid #e5e7eb; padding: 14px 18px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 18px; }
-    th, td { border: 1px solid #d1d5db; padding: 7px 9px; text-align: left; }
-    th { background: #f3f4f6; }
-    .pass { color: #047857; font-weight: 700; }
-    .fail { color: #b91c1c; font-weight: 700; }
-    img { max-width: 100%; margin-top: 18px; border: 1px solid #e5e7eb; }
-  </style>
-</head>
-<body>
-  <h1>ScratchV DSL 编译器性能测试报告</h1>
-  <div class="summary">
-    <p>用例总数：{{ total }}，通过：{{ passed }}，失败：{{ failed }}，通过率：{{ "%.1f"|format(pass_rate) }}%</p>
-    <p>测试目录：{{ test_dir }}，性能退化阈值：{{ threshold }}%</p>
-  </div>
-  <img src="{{ chart_name }}" alt="课程版指令数图表">
-  <table>
-    <thead>
-      <tr><th>用例</th><th>类别</th><th>状态</th><th>平均指令数</th><th>95%置信区间</th><th>变化率(%)</th><th>是否退化</th><th>描述</th></tr>
-    </thead>
-    <tbody>
-      {% for r in results %}
-      <tr>
-        <td>{{ r.name }}</td>
-        <td>{{ r.category }}</td>
-        <td class="{{ 'pass' if r.status == 'PASS' else 'fail' }}">{{ r.status }}</td>
-        <td>{{ "%.2f"|format(r.avg_instr_count) }}</td>
-        <td>±{{ "%.2f"|format(r.ci95_instr_count) }}</td>
-        <td>{{ "%.2f"|format(r.delta_pct) }}</td>
-        <td>{{ r.regressed }}</td>
-        <td>{{ r.description }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</body>
-</html>
-""")
-    HTML_REPORT_FILE.write_text(
-        template.render(
-            total=len(results),
-            passed=passed,
-            failed=failed,
-            pass_rate=pass_rate,
-            test_dir=str(TEST_DIR),
-            threshold=REGRESSION_THRESHOLD_PCT,
-            chart_name=CHART_FILE.name,
-            results=results,
-        ),
-        encoding="utf-8",
-    )
-    return HTML_REPORT_FILE
-
-
-def generate_report_text(results, passed, failed):
-    benchmark_mode = any(r.get("benchmark_runs", 1) > 1 for r in results)
-    pass_rate = 0.0 if not results else passed / len(results) * 100.0
-    lines = [
-        "# ScratchV DSL 编译器性能测试报告\n\n",
-        "## 测试概览\n\n",
-        f"- 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
-        f"- 用例总数: {len(results)}\n",
-        f"- 通过数量: {passed}\n",
-        f"- 失败数量: {failed}\n",
-        f"- 通过率: {pass_rate:.1f}%\n",
-        f"- 测试目录: `{TEST_DIR}`\n",
-        f"- 汇编输出目录: `{BUILD_DIR}`\n",
-        f"- 性能基线文件: `{BASELINE_FILE}`\n",
-        f"- 性能退化阈值: {REGRESSION_THRESHOLD_PCT:.1f}%\n\n",
-        "## 测试结果\n\n",
-    ]
-
-    if benchmark_mode:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 平均指令数 | 95%置信区间 | 最小 | 最大 | 基线 | 变化率(%) | 是否退化 | 预期输出 | 实际输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|\n",
-        ])
-    else:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 指令数 | 预期输出 | 实际输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---|---|---|---|\n",
-        ])
-
-    for r in results:
-        expected = _markdown_cell(r["expected"])
-        actual = _markdown_cell(r["actual"])
-        if benchmark_mode:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['avg_instr_count']:.2f} | ±{r['ci95_instr_count']:.2f} | "
-                f"{r['min_instr_count']} | {r['max_instr_count']} | "
-                f"{r['baseline_instr_count']:.2f} | {r['delta_pct']:.2f} | "
-                f"{r['regressed']} | {expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-        else:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['instr_count']} | {expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-
-    lines.extend([
-        "\n## 性能图表\n\n",
-        f"![课程版指令数图表]({CHART_FILE.name})\n\n",
-        "### Mermaid 图表\n\n",
-        "```mermaid\n",
-        "xychart-beta\n",
-        '    title "各测试用例指令数"\n',
-        "    x-axis [" + ", ".join(f'"{r["name"]}"' for r in results) + "]\n",
-    ])
-    max_instr = max((r.get("avg_instr_count", r["instr_count"]) for r in results), default=0)
-    chart_values = [str(round(r.get("avg_instr_count", r["instr_count"]), 2)) for r in results]
-    lines.extend([
-        f'    y-axis "指令数" 0 --> {max_instr + 2}\n',
-        "    bar [" + ", ".join(chart_values) + "]\n",
-        "```\n\n",
-        "## 用例详情\n\n",
-    ])
-
-    for r in results:
-        lines.extend([
-            f"### {r['name']}\n\n",
-            f"- 类别: {r['category']}\n",
-            f"- 描述: {r['description']}\n",
-            f"- 预期输出 ({r['expected_type']}): {r['expected']}\n",
-            f"- 实际输出: {r['actual']}\n",
-            f"- 输出是否匹配: {r['matched']}\n",
-            f"- 模拟后端: {r['backend']}\n",
-            f"- 汇编文件: {r['asm']}\n",
-        ])
-        if benchmark_mode:
-            lines.extend([
-                f"- Benchmark 重复次数: {r['benchmark_runs']}\n",
-                f"- 平均指令数: {r['avg_instr_count']:.2f}\n",
-                f"- 95% 置信区间: ±{r['ci95_instr_count']:.2f}\n",
-                f"- 最小指令数: {r['min_instr_count']}\n",
-                f"- 最大指令数: {r['max_instr_count']}\n",
-                f"- 基线指令数: {r['baseline_instr_count']:.2f}\n",
-                f"- 性能变化率: {r['delta_pct']:.2f}%\n",
-                f"- 性能退化阈值: {r['threshold_pct']:.2f}%\n",
-                f"- 是否性能退化: {r['regressed']}\n",
-            ])
-        else:
-            lines.append(f"- 指令数: {r['instr_count']}\n")
-        lines.append("\n")
-
-    return "".join(lines)
-
-
-def write_report(results, passed, failed):
-    REPORT_DIR.mkdir(exist_ok=True)
-
-    REPORT_FILE.write_text(generate_report_text(results, passed, failed), encoding="utf-8")
-    print(f"\nReport written to {REPORT_FILE}")
-
-
 def _markdown_cell(value):
     return str(value).replace("\n", " ").replace("|", "\\|")
 
 
-def generate_report_text(results, passed, failed):
-    benchmark_mode = any(r.get("benchmark_runs", 1) > 1 for r in results)
-    pass_rate = 0.0 if not results else passed / len(results) * 100.0
-    lines = [
-        "# ScratchV DSL 编译器性能测试报告\n\n",
-        "## 测试概览\n\n",
-        f"- 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
-        f"- 用例总数: {len(results)}\n",
-        f"- 通过数量: {passed}\n",
-        f"- 失败数量: {failed}\n",
-        f"- 通过率: {pass_rate:.1f}%\n",
-        f"- 测试目录: `{TEST_DIR}`\n",
-        f"- 汇编输出目录: `{BUILD_DIR}`\n",
-        f"- 性能基线文件: `{BASELINE_FILE}`\n",
-        f"- 性能退化阈值: {REGRESSION_THRESHOLD_PCT:.1f}%\n\n",
-        "## 测试结果\n\n",
-    ]
-
-    if benchmark_mode:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 平均指令数 | 95%置信区间 | 最小 | 最大 | 基线 | 变化率(%) | 是否退化 | 预期输出 | 实际输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|\n",
-        ])
-    else:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 指令数 | 预期输出 | 实际输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---|---|---|---|\n",
-        ])
-
-    for r in results:
-        expected = _markdown_cell(r["expected"])
-        actual = _markdown_cell(r["actual"])
-        if benchmark_mode:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['avg_instr_count']:.2f} | ±{r['ci95_instr_count']:.2f} | "
-                f"{r['min_instr_count']} | {r['max_instr_count']} | "
-                f"{r['baseline_instr_count']:.2f} | {r['delta_pct']:.2f} | "
-                f"{r['regressed']} | {expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-        else:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['instr_count']} | {expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-
-    lines.extend([
-        "\n## 性能图表\n\n",
-        f"![课程版指令数图表]({CHART_FILE.name})\n\n",
-        "### Mermaid 图表\n\n",
-        "```mermaid\n",
-        "xychart-beta\n",
-        '    title "各测试用例指令数"\n',
-        "    x-axis [" + ", ".join(f'"{r["name"]}"' for r in results) + "]\n",
-    ])
-    max_instr = max((r.get("avg_instr_count", r["instr_count"]) for r in results), default=0)
-    chart_values = [str(round(r.get("avg_instr_count", r["instr_count"]), 2)) for r in results]
-    lines.extend([
-        f'    y-axis "指令数" 0 --> {max_instr + 2}\n',
-        "    bar [" + ", ".join(chart_values) + "]\n",
-        "```\n\n",
-        "## 用例详情\n\n",
-    ])
-
-    for r in results:
-        lines.extend([
-            f"### {r['name']}\n\n",
-            f"- 类别: {r['category']}\n",
-            f"- 描述: {r['description']}\n",
-            f"- 预期输出 ({r['expected_type']}): {r['expected']}\n",
-            f"- 实际输出: {r['actual']}\n",
-            f"- 输出是否匹配: {r['matched']}\n",
-            f"- 模拟后端: {r['backend']}\n",
-            f"- 汇编文件: {r['asm']}\n",
-        ])
-        if benchmark_mode:
-            lines.extend([
-                f"- Benchmark 重复次数: {r['benchmark_runs']}\n",
-                f"- 平均指令数: {r['avg_instr_count']:.2f}\n",
-                f"- 95% 置信区间: ±{r['ci95_instr_count']:.2f}\n",
-                f"- 最小指令数: {r['min_instr_count']}\n",
-                f"- 最大指令数: {r['max_instr_count']}\n",
-                f"- 基线指令数: {r['baseline_instr_count']:.2f}\n",
-                f"- 性能变化率: {r['delta_pct']:.2f}%\n",
-                f"- 性能退化阈值: {r['threshold_pct']:.2f}%\n",
-                f"- 是否性能退化: {r['regressed']}\n",
-            ])
-        else:
-            lines.append(f"- 指令数: {r['instr_count']}\n")
-        lines.append("\n")
-
-    return "".join(lines)
-
-
-def generate_report_text(results, passed, failed):
-    benchmark_mode = any(r.get("benchmark_runs", 1) > 1 for r in results)
-    pass_rate = 0.0 if not results else passed / len(results) * 100.0
-    lines = [
-        "# ScratchV DSL 编译器性能测试报告\n\n",
-        "## 测试概览\n\n",
-        f"- 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
-        f"- 用例总数: {len(results)}\n",
-        f"- 通过数量: {passed}\n",
-        f"- 失败数量: {failed}\n",
-        f"- 通过率: {pass_rate:.1f}%\n",
-        f"- 测试目录: `{TEST_DIR}`\n",
-        f"- 汇编输出目录: `{BUILD_DIR}`\n",
-        f"- 性能基线文件: `{BASELINE_FILE}`\n",
-        f"- 性能退化阈值: {REGRESSION_THRESHOLD_PCT:.1f}%\n\n",
-        "## 测试结果\n\n",
-    ]
-
-    if benchmark_mode:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 平均指令数 | 95%置信区间 | 最小 | 最大 | 基线 | 变化率(%) | 是否退化 | 预期输出 | 实际输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|\n",
-        ])
-    else:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 指令数 | 预期输出 | 实际输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---|---|---|---|\n",
-        ])
-
-    for r in results:
-        expected = _markdown_cell(r["expected"])
-        actual = _markdown_cell(r["actual"])
-        if benchmark_mode:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['avg_instr_count']:.2f} | ±{r['ci95_instr_count']:.2f} | "
-                f"{r['min_instr_count']} | {r['max_instr_count']} | "
-                f"{r['baseline_instr_count']:.2f} | {r['delta_pct']:.2f} | "
-                f"{r['regressed']} | {expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-        else:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['instr_count']} | {expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-
-    lines.extend([
-        "\n## 性能图表\n\n",
-        f"![课程版指令数图表]({CHART_FILE.name})\n\n",
-        "### Mermaid 图表\n\n",
-        "```mermaid\n",
-        "xychart-beta\n",
-        '    title "各测试用例指令数"\n',
-        "    x-axis [" + ", ".join(f'"{r["name"]}"' for r in results) + "]\n",
-    ])
-    max_instr = max((r.get("avg_instr_count", r["instr_count"]) for r in results), default=0)
-    chart_values = [str(round(r.get("avg_instr_count", r["instr_count"]), 2)) for r in results]
-    lines.extend([
-        f'    y-axis "指令数" 0 --> {max_instr + 2}\n',
-        "    bar [" + ", ".join(chart_values) + "]\n",
-        "```\n\n",
-        "## 用例详情\n\n",
-    ])
-
-    for r in results:
-        lines.extend([
-            f"### {r['name']}\n\n",
-            f"- 类别: {r['category']}\n",
-            f"- 描述: {r['description']}\n",
-            f"- 预期输出 ({r['expected_type']}): {r['expected']}\n",
-            f"- 实际输出: {r['actual']}\n",
-            f"- 输出是否匹配: {r['matched']}\n",
-            f"- 模拟后端: {r['backend']}\n",
-            f"- 汇编文件: {r['asm']}\n",
-        ])
-        if benchmark_mode:
-            lines.extend([
-                f"- Benchmark 重复次数: {r['benchmark_runs']}\n",
-                f"- 平均指令数: {r['avg_instr_count']:.2f}\n",
-                f"- 95% 置信区间: ±{r['ci95_instr_count']:.2f}\n",
-                f"- 最小指令数: {r['min_instr_count']}\n",
-                f"- 最大指令数: {r['max_instr_count']}\n",
-                f"- 基线指令数: {r['baseline_instr_count']:.2f}\n",
-                f"- 性能变化率: {r['delta_pct']:.2f}%\n",
-                f"- 性能退化阈值: {r['threshold_pct']:.2f}%\n",
-                f"- 是否性能退化: {r['regressed']}\n",
-            ])
-        else:
-            lines.append(f"- 指令数: {r['instr_count']}\n")
-        lines.append("\n")
-
-    return "".join(lines)
+def _report_path(path):
+    path = Path(path)
+    try:
+        return path.resolve().relative_to(SUITE_DIR).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def write_chart(results):
@@ -874,8 +412,8 @@ def write_chart(results):
     except ImportError:
         return None
 
-    names = [r["name"] for r in results]
-    values = [_reported_instr_count(r) for r in results]
+    names = [result["name"] for result in results]
+    values = [_reported_instr_count(result) for result in results]
     width = max(10, len(names) * 0.45)
     fig, ax = plt.subplots(figsize=(width, 5))
     ax.bar(range(len(names)), values, color="#2563eb")
@@ -903,417 +441,6 @@ def _report_value(value, precision=None, prefix=""):
     return f"{prefix}{value}"
 
 
-def write_html_report(results, passed, failed):
-    try:
-        from jinja2 import Template
-    except ImportError:
-        return None
-
-    pass_rate = 0.0 if not results else passed / len(results) * 100.0
-    template = Template("""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <title>ScratchV 课程版测试报告</title>
-  <style>
-    body { font-family: "Microsoft YaHei", sans-serif; margin: 32px; color: #1f2937; }
-    .summary { background: #f8fafc; border: 1px solid #e5e7eb; padding: 14px 18px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 18px; }
-    th, td { border: 1px solid #d1d5db; padding: 7px 9px; text-align: left; }
-    th { background: #f3f4f6; }
-    .pass { color: #047857; font-weight: 700; }
-    .fail { color: #b91c1c; font-weight: 700; }
-    img { max-width: 100%; margin-top: 18px; border: 1px solid #e5e7eb; }
-  </style>
-</head>
-<body>
-  <h1>ScratchV DSL 编译器性能测试报告</h1>
-  <div class="summary">
-    <p>用例总数：{{ total }}，通过：{{ passed }}，失败：{{ failed }}，通过率：{{ "%.1f"|format(pass_rate) }}%</p>
-    <p>测试目录：{{ test_dir }}，性能退化阈值：{{ threshold }}%</p>
-  </div>
-  <img src="{{ chart_name }}" alt="课程版指令数图表">
-  <table>
-    <thead>
-      <tr><th>用例</th><th>类别</th><th>状态</th><th>平均指令数</th><th>95%置信区间</th><th>变化率(%)</th><th>是否退化</th><th>描述</th></tr>
-    </thead>
-    <tbody>
-      {% for r in results %}
-      <tr>
-        <td>{{ r.name }}</td>
-        <td>{{ r.category }}</td>
-        <td class="{{ 'pass' if r.status == 'PASS' else 'fail' }}">{{ r.status }}</td>
-        <td>{{ "%.2f"|format(r.avg_instr_count) }}</td>
-        <td>±{{ "%.2f"|format(r.ci95_instr_count) }}</td>
-        <td>{{ "%.2f"|format(r.delta_pct) }}</td>
-        <td>{{ r.regressed }}</td>
-        <td>{{ r.description }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</body>
-</html>
-""")
-    HTML_REPORT_FILE.write_text(
-        template.render(
-            total=len(results),
-            passed=passed,
-            failed=failed,
-            pass_rate=pass_rate,
-            test_dir=str(TEST_DIR),
-            threshold=REGRESSION_THRESHOLD_PCT,
-            chart_name=CHART_FILE.name,
-            results=results,
-        ),
-        encoding="utf-8",
-    )
-    return HTML_REPORT_FILE
-
-
-def generate_report_text_cn(results, passed, failed):
-    benchmark_mode = any(r.get("benchmark_runs", 1) > 1 for r in results)
-    pass_rate = 0.0 if not results else passed / len(results) * 100.0
-    lines = [
-        "# ScratchV DSL 编译器性能测试报告\n\n",
-        "## 测试概览\n\n",
-        f"- 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
-        f"- 用例总数: {len(results)}\n",
-        f"- 通过数量: {passed}\n",
-        f"- 失败数量: {failed}\n",
-        f"- 通过率: {pass_rate:.1f}%\n",
-        f"- 测试目录: `{TEST_DIR}`\n",
-        f"- 汇编输出目录: `{BUILD_DIR}`\n",
-        f"- 性能基线文件: `{BASELINE_FILE}`\n",
-        f"- 性能退化阈值: {REGRESSION_THRESHOLD_PCT:.1f}%\n\n",
-        "## 测试结果\n\n",
-    ]
-
-    if benchmark_mode:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 平均指令数 | 95%置信区间 | 最小 | 最大 | 基线 | 变化率(%) | 是否退化 | 预期输出 | 实际输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---|---|---|\n",
-        ])
-    else:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 指令数 | 预期输出 | 实际输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---|---|---|---|\n",
-        ])
-
-    for r in results:
-        expected = _markdown_cell(r["expected"])
-        actual = _markdown_cell(r["actual"])
-        if benchmark_mode:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['avg_instr_count']:.2f} | ±{r['ci95_instr_count']:.2f} | "
-                f"{r['min_instr_count']} | {r['max_instr_count']} | "
-                f"{r['baseline_instr_count']:.2f} | {r['delta_pct']:.2f} | "
-                f"{r['regressed']} | {expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-        else:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['instr_count']} | {expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-
-    lines.extend([
-        "\n## 性能图表\n\n",
-        f"![课程版指令数图表]({CHART_FILE.name})\n\n",
-        "### Mermaid 图表\n\n",
-        "```mermaid\n",
-        "xychart-beta\n",
-        '    title "各测试用例指令数"\n',
-        "    x-axis [" + ", ".join(f'"{r["name"]}"' for r in results) + "]\n",
-    ])
-    max_instr = max((r.get("avg_instr_count", r["instr_count"]) for r in results), default=0)
-    chart_values = [str(round(r.get("avg_instr_count", r["instr_count"]), 2)) for r in results]
-    lines.extend([
-        f'    y-axis "指令数" 0 --> {max_instr + 2}\n',
-        "    bar [" + ", ".join(chart_values) + "]\n",
-        "```\n\n",
-        "## 用例详情\n\n",
-    ])
-
-    for r in results:
-        lines.extend([
-            f"### {r['name']}\n\n",
-            f"- 类别: {r['category']}\n",
-            f"- 描述: {r['description']}\n",
-            f"- 预期输出 ({r['expected_type']}): {r['expected']}\n",
-            f"- 实际输出: {r['actual']}\n",
-            f"- 输出是否匹配: {r['matched']}\n",
-            f"- 模拟后端: {r['backend']}\n",
-            f"- 汇编文件: {r['asm']}\n",
-        ])
-        if benchmark_mode:
-            lines.extend([
-                f"- Benchmark 重复次数: {r['benchmark_runs']}\n",
-                f"- 平均指令数: {r['avg_instr_count']:.2f}\n",
-                f"- 95% 置信区间: ±{r['ci95_instr_count']:.2f}\n",
-                f"- 最小指令数: {r['min_instr_count']}\n",
-                f"- 最大指令数: {r['max_instr_count']}\n",
-                f"- 基线指令数: {r['baseline_instr_count']:.2f}\n",
-                f"- 性能变化率: {r['delta_pct']:.2f}%\n",
-                f"- 性能退化阈值: {r['threshold_pct']:.2f}%\n",
-                f"- 是否性能退化: {r['regressed']}\n",
-            ])
-        else:
-            lines.append(f"- 指令数: {r['instr_count']}\n")
-        lines.append("\n")
-
-    return "".join(lines)
-
-
-def write_html_report_cn(results, passed, failed):
-    try:
-        from jinja2 import Template
-    except ImportError:
-        return None
-
-    pass_rate = 0.0 if not results else passed / len(results) * 100.0
-    template = Template("""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <title>ScratchV 课程版测试报告</title>
-  <style>
-    body { font-family: "Microsoft YaHei", sans-serif; margin: 32px; color: #1f2937; }
-    .summary { background: #f8fafc; border: 1px solid #e5e7eb; padding: 14px 18px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 18px; }
-    th, td { border: 1px solid #d1d5db; padding: 7px 9px; text-align: left; }
-    th { background: #f3f4f6; }
-    .pass { color: #047857; font-weight: 700; }
-    .fail { color: #b91c1c; font-weight: 700; }
-    img { max-width: 100%; margin-top: 18px; border: 1px solid #e5e7eb; }
-  </style>
-</head>
-<body>
-  <h1>ScratchV DSL 编译器性能测试报告</h1>
-  <div class="summary">
-    <p>用例总数：{{ total }}，通过：{{ passed }}，失败：{{ failed }}，通过率：{{ "%.1f"|format(pass_rate) }}%</p>
-    <p>测试目录：{{ test_dir }}，性能退化阈值：{{ threshold }}%</p>
-  </div>
-  <img src="{{ chart_name }}" alt="课程版指令数图表">
-  <table>
-    <thead>
-      <tr><th>用例</th><th>类别</th><th>状态</th><th>平均指令数</th><th>95%置信区间</th><th>变化率(%)</th><th>是否退化</th><th>描述</th></tr>
-    </thead>
-    <tbody>
-      {% for r in results %}
-      <tr>
-        <td>{{ r.name }}</td>
-        <td>{{ r.category }}</td>
-        <td class="{{ 'pass' if r.status == 'PASS' else 'fail' }}">{{ r.status }}</td>
-        <td>{{ "%.2f"|format(r.avg_instr_count) }}</td>
-        <td>±{{ "%.2f"|format(r.ci95_instr_count) }}</td>
-        <td>{{ "%.2f"|format(r.delta_pct) }}</td>
-        <td>{{ r.regressed }}</td>
-        <td>{{ r.description }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</body>
-</html>
-""")
-    HTML_REPORT_FILE.write_text(
-        template.render(
-            total=len(results),
-            passed=passed,
-            failed=failed,
-            pass_rate=pass_rate,
-            test_dir=str(TEST_DIR),
-            threshold=REGRESSION_THRESHOLD_PCT,
-            chart_name=CHART_FILE.name,
-            results=results,
-        ),
-        encoding="utf-8",
-    )
-    return HTML_REPORT_FILE
-
-
-def generate_report_text_cn(results, passed, failed):
-    benchmark_mode = any(r.get("benchmark_runs", 1) > 1 for r in results)
-    pass_rate = 0.0 if not results else passed / len(results) * 100.0
-    lines = [
-        "# ScratchV DSL 编译器性能测试报告\n\n",
-        "## 测试概览\n\n",
-        f"- 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
-        f"- 用例总数: {len(results)}\n",
-        f"- 通过数量: {passed}\n",
-        f"- 失败数量: {failed}\n",
-        f"- 通过率: {pass_rate:.1f}%\n",
-        f"- 测试目录: `{TEST_DIR}`\n",
-        f"- 汇编输出目录: `{BUILD_DIR}`\n",
-        f"- 性能基线文件: `{BASELINE_FILE}`\n",
-        f"- 性能退化阈值: {REGRESSION_THRESHOLD_PCT:.1f}%\n",
-        f"- 单次模拟超时: {SIMULATION_TIMEOUT_SEC:.0f}s\n\n",
-        "## 测试结果\n\n",
-    ]
-
-    if benchmark_mode:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 平均指令数 | 95% 置信区间 | 最小 | 最大 | 编译耗时(s) | 模拟耗时(s) | 总耗时(s) | 基线 | 变化率(%) | 是否退化 | 预期输出 | TinyFive 输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---|\n",
-        ])
-    else:
-        lines.extend([
-            "| 用例 | 类别 | 状态 | 模拟后端 | 指令数 | 编译耗时(s) | 模拟耗时(s) | 总耗时(s) | 预期输出 | TinyFive 输出 | 输出匹配 | 汇编文件 |\n",
-            "|---|---|---|---|---:|---:|---:|---:|---|---|---|---|\n",
-        ])
-
-    for r in results:
-        expected = _markdown_cell(r["expected"])
-        actual = _markdown_cell(r["actual"])
-        if benchmark_mode:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['avg_instr_count']:.2f} | ±{r['ci95_instr_count']:.2f} | "
-                f"{r['min_instr_count']} | {r['max_instr_count']} | "
-                f"{r['compile_time_sec']:.4f} | {r['simulation_time_sec']:.4f} | "
-                f"{r['total_time_sec']:.4f} | {r['baseline_instr_count']:.2f} | "
-                f"{r['delta_pct']:.2f} | {r['regressed']} | {expected} | "
-                f"{actual} | {r['matched']} | {r['asm']} |\n"
-            )
-        else:
-            lines.append(
-                f"| {r['name']} | {r['category']} | {r['status']} | {r['backend']} | "
-                f"{r['instr_count']} | {r['compile_time_sec']:.4f} | "
-                f"{r['simulation_time_sec']:.4f} | {r['total_time_sec']:.4f} | "
-                f"{expected} | {actual} | {r['matched']} | {r['asm']} |\n"
-            )
-
-    lines.extend([
-        "\n## 性能图表\n\n",
-        f"![课程版指令数图表]({CHART_FILE.name})\n\n",
-        "### Mermaid 图表\n\n",
-        "```mermaid\n",
-        "xychart-beta\n",
-        '    title "各测试用例指令数"\n',
-        "    x-axis [" + ", ".join(f'"{r["name"]}"' for r in results) + "]\n",
-    ])
-    max_instr = max((r.get("avg_instr_count", r["instr_count"]) for r in results), default=0)
-    chart_values = [str(round(r.get("avg_instr_count", r["instr_count"]), 2)) for r in results]
-    lines.extend([
-        f'    y-axis "指令数" 0 --> {max_instr + 2}\n',
-        "    bar [" + ", ".join(chart_values) + "]\n",
-        "```\n\n",
-        "## 用例详情\n\n",
-    ])
-
-    for r in results:
-        lines.extend([
-            f"### {r['name']}\n\n",
-            f"- 类别: {r['category']}\n",
-            f"- 描述: {r['description']}\n",
-            f"- 预期输出 ({r['expected_type']}): {r['expected']}\n",
-            f"- TinyFive 输出: {r['actual']}\n",
-            f"- 输出是否匹配: {r['matched']}\n",
-            f"- TinyFive 初始寄存器: {r['initial_registers']}\n",
-            f"- 模拟后端: {r['backend']}\n",
-            f"- 编译耗时(s): {r['compile_time_sec']:.4f}\n",
-            f"- 模拟耗时(s): {r['simulation_time_sec']:.4f}\n",
-            f"- 总耗时(s): {r['total_time_sec']:.4f}\n",
-            f"- 汇编文件: {r['asm']}\n",
-        ])
-        if benchmark_mode:
-            lines.extend([
-                f"- Benchmark 重复次数: {r['benchmark_runs']}\n",
-                f"- 平均指令数: {r['avg_instr_count']:.2f}\n",
-                f"- 95% 置信区间: ±{r['ci95_instr_count']:.2f}\n",
-                f"- 最小指令数: {r['min_instr_count']}\n",
-                f"- 最大指令数: {r['max_instr_count']}\n",
-                f"- 基线指令数: {r['baseline_instr_count']:.2f}\n",
-                f"- 性能变化率: {r['delta_pct']:.2f}%\n",
-                f"- 性能退化阈值: {r['threshold_pct']:.2f}%\n",
-                f"- 是否性能退化: {r['regressed']}\n",
-            ])
-        else:
-            lines.append(f"- 指令数: {r['instr_count']}\n")
-        lines.append("\n")
-
-    return "".join(lines)
-
-
-def write_html_report_cn(results, passed, failed):
-    try:
-        from jinja2 import Template
-    except ImportError:
-        return None
-
-    pass_rate = 0.0 if not results else passed / len(results) * 100.0
-    template = Template("""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <title>ScratchV 测试报告</title>
-  <style>
-    body { font-family: "Microsoft YaHei", sans-serif; margin: 32px; color: #1f2937; }
-    .summary { background: #f8fafc; border: 1px solid #e5e7eb; padding: 14px 18px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 18px; font-size: 13px; }
-    th, td { border: 1px solid #d1d5db; padding: 7px 9px; text-align: left; }
-    th { background: #f3f4f6; }
-    .pass { color: #047857; font-weight: 700; }
-    .fail { color: #b91c1c; font-weight: 700; }
-    img { max-width: 100%; margin-top: 18px; border: 1px solid #e5e7eb; }
-  </style>
-</head>
-<body>
-  <h1>ScratchV DSL 编译器性能测试报告</h1>
-  <div class="summary">
-    <p>用例总数：{{ total }}，通过：{{ passed }}，失败：{{ failed }}，通过率：{{ "%.1f"|format(pass_rate) }}%</p>
-    <p>测试目录：{{ test_dir }}，性能退化阈值：{{ threshold }}%，单次模拟超时：{{ timeout }}s</p>
-  </div>
-  <img src="{{ chart_name }}" alt="课程版指令数图表">
-  <table>
-    <thead>
-      <tr>
-        <th>用例</th><th>类别</th><th>状态</th><th>模拟后端</th>
-        <th>平均指令数</th><th>95% 置信区间</th>
-        <th>编译耗时(s)</th><th>模拟耗时(s)</th><th>总耗时(s)</th>
-        <th>变化率(%)</th><th>是否退化</th><th>描述</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in results %}
-      <tr>
-        <td>{{ r.name }}</td>
-        <td>{{ r.category }}</td>
-        <td class="{{ 'pass' if r.status == 'PASS' else 'fail' }}">{{ r.status }}</td>
-        <td>{{ r.backend }}</td>
-        <td>{{ "%.2f"|format(r.avg_instr_count) }}</td>
-        <td>±{{ "%.2f"|format(r.ci95_instr_count) }}</td>
-        <td>{{ "%.4f"|format(r.compile_time_sec) }}</td>
-        <td>{{ "%.4f"|format(r.simulation_time_sec) }}</td>
-        <td>{{ "%.4f"|format(r.total_time_sec) }}</td>
-        <td>{{ "%.2f"|format(r.delta_pct) }}</td>
-        <td>{{ r.regressed }}</td>
-        <td>{{ r.description }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</body>
-</html>
-""")
-    HTML_REPORT_FILE.write_text(
-        template.render(
-            total=len(results),
-            passed=passed,
-            failed=failed,
-            pass_rate=pass_rate,
-            test_dir=str(TEST_DIR),
-            threshold=REGRESSION_THRESHOLD_PCT,
-            timeout=SIMULATION_TIMEOUT_SEC,
-            chart_name=CHART_FILE.name,
-            results=results,
-        ),
-        encoding="utf-8",
-    )
-    return HTML_REPORT_FILE
-
-
 def generate_unified_report_text_cn(
     results,
     passed,
@@ -1337,9 +464,9 @@ def generate_unified_report_text_cn(
         f"- 通过数量: {passed}\n",
         f"- 失败数量: {failed}\n",
         f"- 通过率: {pass_rate:.1f}%\n",
-        f"- 测试目录: `{TEST_DIR}`\n",
-        f"- 汇编输出目录: `{BUILD_DIR}`\n",
-        f"- 性能基线文件: `{BASELINE_FILE}`\n",
+        f"- 测试目录: `{_report_path(TEST_DIR)}`\n",
+        f"- 汇编输出目录: `{_report_path(BUILD_DIR)}`\n",
+        f"- 性能基线文件: `{_report_path(BASELINE_FILE)}`\n",
         f"- 性能退化阈值: {regression_threshold_pct:.2f}%\n",
         f"- 单次编译超时: {COMPILE_TIMEOUT_SEC:.0f}s\n",
         f"- 单次模拟超时: {SIMULATION_TIMEOUT_SEC:.0f}s\n\n",
@@ -1629,6 +756,11 @@ def parse_args(argv=None):
         dest="name_filter",
         help="Only run cases whose file name contains this text.",
     )
+    parser.add_argument(
+        "--fail-on-test-failure",
+        action="store_true",
+        help="Return exit code 1 when one or more selected cases fail.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1668,6 +800,7 @@ def main(argv=None):
         metadata_error = meta.get("_metadata_error")
         if metadata_error:
             output_file = BUILD_DIR / (dsl_file.stem + ".s")
+            register_map_file = BUILD_DIR / (dsl_file.stem + ".registers.json")
             result = subprocess.CompletedProcess(
                 args=[],
                 returncode=2,
@@ -1675,7 +808,7 @@ def main(argv=None):
                 stderr=f"metadata error: {metadata_error}",
             )
         else:
-            result, output_file = run_compile(dsl_file)
+            result, output_file, register_map_file = run_compile(dsl_file)
         compile_time_sec = time.perf_counter() - compile_start
         compile_log = None
         compile_error = None
@@ -1687,18 +820,35 @@ def main(argv=None):
                 compile_time_sec,
             )
             compile_error = _last_nonempty_line(result.stderr or result.stdout)
-        initial_registers = infer_initial_registers(
-            (result.stdout or "") + "\n" + (result.stderr or ""),
-            meta.get("inputs", {}),
-        )
+        register_map_error = None
+        initial_registers = {}
+        if result.returncode == 0:
+            try:
+                initial_registers = load_initial_registers(
+                    register_map_file,
+                    meta.get("inputs", {}),
+                )
+            except ValueError as exc:
+                register_map_error = str(exc)
         simulation_start = time.perf_counter()
-        sim_result = run_simulation(output_file, initial_registers) if result.returncode == 0 else {
-            "success": False,
-            "instr_count": 0,
-            "return_value": None,
-            "backend": "none",
-            "error": (result.stderr or result.stdout or "compile failed").strip(),
-        }
+        if result.returncode != 0:
+            sim_result = {
+                "success": False,
+                "instr_count": 0,
+                "return_value": None,
+                "backend": "none",
+                "error": (result.stderr or result.stdout or "compile failed").strip(),
+            }
+        elif register_map_error:
+            sim_result = {
+                "success": False,
+                "instr_count": 0,
+                "return_value": None,
+                "backend": "none",
+                "error": register_map_error,
+            }
+        else:
+            sim_result = run_simulation(output_file, initial_registers)
         simulation_time_sec = time.perf_counter() - simulation_start
         expected_value = meta.get("expected_return")
         actual_value = sim_result.get("return_value")
@@ -1793,7 +943,7 @@ def main(argv=None):
             "mode": "benchmark" if args.benchmark > 0 else "normal",
             "name": dsl_file.stem,
             "category": dsl_file.parent.name,
-            "path": str(dsl_file),
+            "path": _report_path(dsl_file),
             "status": status,
             "description": meta.get("description", ""),
             "expected_type": meta.get("expected_output_type", "scalar"),
@@ -1803,12 +953,13 @@ def main(argv=None):
             "actual": actual_value,
             "matched": matched,
             "initial_registers": initial_registers,
+            "register_map": _report_path(register_map_file),
             "backend": sim_result.get("backend", "none"),
             "instr_count": sim_result.get("instr_count", 0),
             "compile_returncode": result.returncode,
             "compile_timed_out": result.returncode == 124,
             "compile_error": compile_error,
-            "compile_log": str(compile_log) if compile_log else None,
+            "compile_log": _report_path(compile_log) if compile_log else None,
             "compile_time_sec": compile_time_sec,
             "simulation_time_sec": simulation_time_sec,
             "total_time_sec": total_time_sec,
@@ -1823,7 +974,7 @@ def main(argv=None):
             "delta_pct": regression["delta_pct"],
             "threshold_pct": regression["threshold_pct"],
             "regressed": regression["regressed"],
-            "asm": str(output_file),
+            "asm": _report_path(output_file),
         })
 
     print("\n" + "=" * 50)
@@ -1847,7 +998,7 @@ def main(argv=None):
         selection_filter=args.name_filter,
         full_report=args.full_report,
     )
-    return 0
+    return 1 if args.fail_on_test_failure and failed else 0
 
 
 if __name__ == "__main__":

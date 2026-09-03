@@ -12,7 +12,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
 from scratchv.compiler import CompilerConfig, CompilerDriver, CompileResult
 
@@ -54,6 +56,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dump-ir", action="store_true",
         help="Dump IR before and after optimization",
+    )
+    parser.add_argument(
+        "--emit-register-map",
+        metavar="PATH",
+        help="Write the virtual-to-physical register mapping as JSON",
     )
 
     # ── Verification ────────────────────────────────────────────────────
@@ -247,6 +254,24 @@ def main(argv: list[str] | None = None) -> int:
         print(result.ir_dump, file=sys.stderr)
 
     if result.success:
+        if args.emit_register_map:
+            register_map_path = Path(args.emit_register_map)
+            try:
+                register_map_path.parent.mkdir(parents=True, exist_ok=True)
+                register_map_path.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "register_map": result.stats.get("register_map", {}),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                print(f"Error: failed to write register map: {exc}", file=sys.stderr)
+                return 1
+
         print(f"OK {args.backend.upper()} output written to {result.output_path}",
               file=sys.stderr)
         for w in result.warnings:

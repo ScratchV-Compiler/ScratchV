@@ -64,6 +64,11 @@ class RegisterAllocator:
         else:
             return self._allocate_greedy()
 
+    @property
+    def register_map(self) -> dict[str, str]:
+        """Return the current virtual-to-physical register mapping."""
+        return dict(self._vreg_map)
+
     def _allocate_naive(self) -> list[MachineInstr]:
         """Spill every virtual register to the stack."""
         self._output = []

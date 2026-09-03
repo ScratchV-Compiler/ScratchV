@@ -5,6 +5,8 @@
 
 当前程序在原始自动编译、指令数统计、Benchmark、基线对比和报告功能上，进一步增加了真实 TinyFive 直通验证、元数据校验、编译与模拟超时、编译失败日志、统一 JSON schema、轻量/完整报告、可配置退化阈值和子集测试。测试套件不会在 TinyFive 不可用时回退到 stub，也不会使用测试套件内部的参考解释器代替真实编译结果。
 
+编译器通过 `--emit-register-map` 输出 JSON 格式的变量到物理寄存器映射，测试套件直接读取该文件注入标量输入，不再解析 `--dump-ir` 文本。
+
 真实验证路径为：
 
 ```text
@@ -17,10 +19,8 @@ DSL -> ScratchV 编译器 -> RISC-V 汇编 -> TinyFive -> a0/x10 返回值 -> �
 
 该交付目录需要放在 ScratchV 项目环境中运行。`run_tests.py` 会导入
 `scratchv` 包，并通过 ScratchV 编译器把每个 DSL 用例编译为 RISC-V 汇编。
-调用真实 TinyFive 所需的 ScratchV 适配修改可参考：
-
-- [ScratchV PR #15](https://github.com/ScratchV-Compiler/ScratchV/pull/15)
-- [ScratchV PR #17](https://github.com/ScratchV-Compiler/ScratchV/pull/17)
+调用真实 TinyFive 所需的配套接口位于 `scratchv/simulator/tinyfive.py`、
+`scratchv/backend/register_alloc.py`、`scratchv/compiler.py` 和 `scratchv/main.py`。
 
 安装基础测试依赖：
 
@@ -56,11 +56,17 @@ tests_main/
   tensor/
 reports/        # 测试报告，可重新生成
   failures/     # 编译失败和超时日志
-.github/
-  workflows/
-    benchmark.yml
 build/          # 编译输出的汇编文件，可重新生成
 ```
+
+仓库根目录另外包含：
+
+```text
+tests/test_topic06_integration.py
+.github/workflows/topic06-benchmark.yml
+```
+
+前者将用例清单和寄存器映射接口纳入项目 pytest，后者是 GitHub 能够实际执行的 CI workflow。
 
 `tests_main/` 下共有 23 个 DSL 用例。每个用例由 `.dsl` 文件和对应的
 `.meta.json` 文件组成，`.meta.json` 中定义输入、期望返回值和用例说明。
@@ -77,6 +83,7 @@ python run_tests.py
 
 - 遍历 `tests_main/` 下的所有 `.dsl` 文件
 - 调用 ScratchV 编译器生成 RISC-V 汇编
+- 读取编译器生成的 `build/*.registers.json`，按变量名注入真实物理寄存器
 - 编译单个用例超过 30 秒时终止该编译进程，并继续运行后续用例
 - 编译失败或超时时将命令、返回码、stdout 和 stderr 保存到 `reports/failures/*.compile.log`
 - 通过 ScratchV 的 TinyFive 适配层验证生成的汇编
@@ -136,6 +143,14 @@ python run_tests.py --category tensor --filter relu
 ```
 
 没有匹配用例时脚本返回退出码 2，并保留已有报告。对子集使用 `--update-baseline` 时，只更新匹配用例的基线，不会删除其他用例的基线。
+
+CI 或其他需要将失败传递给调用方的场景可以增加：
+
+```text
+python run_tests.py --category activation --fail-on-test-failure
+```
+
+默认模式仍会完成全部用例并生成报告；`--fail-on-test-failure` 会在存在 FAIL 时返回退出码 1。
 
 性能基线文件位于：
 
@@ -217,10 +232,10 @@ return result
 GitHub Actions 示例位于：
 
 ```text
-.github/workflows/benchmark.yml
+.github/workflows/topic06-benchmark.yml
 ```
 
-示例工作流会在 push 和 pull request 时安装基础依赖、运行测试并上传 Markdown、JSON、性能基线和编译失败日志。CI 默认使用轻量报告，不需要安装 `jinja2` 和 `matplotlib`。
+工作流位于仓库根目录。它会在 push 和 pull request 时运行 pytest 集成契约，对 activation、elementwise、loop 执行阻塞正确性检查，再运行全量诊断 Benchmark，并上传 Markdown、JSON、性能基线和失败日志。CI 默认使用轻量报告，不需要安装 `jinja2` 和 `matplotlib`。
 
 ## 详细设计
 
