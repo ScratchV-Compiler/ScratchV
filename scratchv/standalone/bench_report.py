@@ -110,6 +110,7 @@ def generate_html_report(
     emu_data: dict | None = None,
     binary_path: str = "",
     model_name: str = "cnn.onnx",
+    optimization: dict | None = None,
 ) -> str:
     """Generate a self-contained HTML benchmark report.
 
@@ -141,9 +142,18 @@ def generate_html_report(
 
     # Header
     parts.append(f"<h1>ScratchV CNN RISC-V Benchmark</h1>")
+    if optimization:
+        code_label = (
+            f"{optimization['code_size_before']:,} → "
+            f"{optimization['code_size_after']:,} B "
+            f"({optimization['machine_instructions_before']} → "
+            f"{optimization['machine_instructions_after']} static insns)"
+        )
+    else:
+        code_label = f"{code_size:,} B ({static_insns} static insns)"
     parts.append(
         f'<div class="subtitle">Model: <code>{model_name}</code> | '
-        f'Code: {code_size:,} B ({static_insns} static insns) | '
+        f'Code: {code_label} | '
         f'Generated: {time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())}</div>'
     )
 
@@ -171,6 +181,32 @@ def generate_html_report(
         f'<div class="value">{code_size / 1024:.1f}<span class="unit">KB code</span></div></div>'
     )
     parts.append('</div>')
+
+    if optimization:
+        size_before = optimization["code_size_before"]
+        size_reduction = optimization["code_size_reduction"]
+        reduction_pct = size_reduction / max(size_before, 1) * 100
+        parts.append("<section><h2>Constant-Merge A/B Result</h2>")
+        parts.append("<table>")
+        parts.append("<tr><th>Metric</th><th>Before</th><th>After</th><th>Reduction</th></tr>")
+        parts.append(
+            f"<tr><td>Machine instructions</td>"
+            f"<td>{optimization['machine_instructions_before']:,}</td>"
+            f"<td>{optimization['machine_instructions_after']:,}</td>"
+            f"<td>{optimization['machine_instruction_reduction']:,}</td></tr>"
+        )
+        parts.append(
+            f"<tr><td>Code size</td><td>{size_before:,} B</td>"
+            f"<td>{optimization['code_size_after']:,} B</td>"
+            f"<td>{size_reduction:,} B ({reduction_pct:.1f}%)</td></tr>"
+        )
+        parts.append(
+            f"<tr><td>Source instructions</td>"
+            f"<td>{optimization['source_instructions_before']:,}</td>"
+            f"<td>{optimization['source_instructions_after']:,}</td>"
+            f"<td>{optimization['source_instruction_reduction']:,}</td></tr>"
+        )
+        parts.append("</table></section>")
 
     # Instruction Mix section
     parts.append("<section><h2>Dynamic Instruction Mix (estimated)</h2>")
@@ -263,6 +299,7 @@ def generate_html_report(
 def generate_json_report(
     code_size: int, static_insns: int, est_data: dict,
     emu_data: dict | None = None, model_name: str = "cnn.onnx",
+    optimization: dict | None = None,
 ) -> str:
     """Generate machine-parseable JSON benchmark report."""
     report = {
@@ -298,11 +335,15 @@ def generate_json_report(
             if not isinstance(v, dict)
         }
 
+    if optimization:
+        report["constant_merge"] = optimization
+
     return json.dumps(report, indent=2)
 
 
 def generate_github_summary(
     code_size: int, static_insns: int, est_data: dict,
+    optimization: dict | None = None,
 ) -> str:
     """Generate GitHub Actions job summary markdown."""
     total_est = est_data.get("total_estimated", 0)
@@ -318,10 +359,67 @@ def generate_github_summary(
     lines.append(f"| C/M ratio | **{cm_ratio:.1f}** (compute-heavy) |")
     lines.append(f"| Est. HW time @ 50 MHz | **{est_data.get('est_hw_time_50mhz', 0):.1f} s** |")
     lines.append(f"| Est. HW time @ 100 MHz | **{est_data.get('est_hw_time_100mhz', 0):.1f} s** |")
-    lines.append(f"| Code size | {code_size:,} B ({static_insns} insns) |")
+    if optimization:
+        size_before = optimization["code_size_before"]
+        size_after = optimization["code_size_after"]
+        size_reduction = optimization["code_size_reduction"]
+        reduction_pct = size_reduction / max(size_before, 1) * 100
+        lines.append(
+            f"| Code size | {size_before:,} B → **{size_after:,} B** "
+            f"(-{size_reduction:,} B, {reduction_pct:.1f}%) |"
+        )
+        lines.append(
+            "| Static machine instructions | "
+            f"{optimization['machine_instructions_before']:,} → "
+            f"**{optimization['machine_instructions_after']:,}** "
+            f"(-{optimization['machine_instruction_reduction']:,}) |"
+        )
+    else:
+        lines.append(f"| Code size | {code_size:,} B ({static_insns} insns) |")
     lines.append(f"| Compute % | {est_data.get('compute_ratio', 0):.1f}% |")
     lines.append(f"| Memory % | {est_data.get('memory_ratio', 0):.1f}% |")
     lines.append("")
+
+    if optimization:
+        lines.append("## Constant-Merge Details")
+        lines.append("")
+        lines.append("| Metric | Before | After | Reduction |")
+        lines.append("|--------|-------:|------:|----------:|")
+        lines.append(
+            "| Source assembly instructions | "
+            f"{optimization['source_instructions_before']:,} | "
+            f"{optimization['source_instructions_after']:,} | "
+            f"{optimization['source_instruction_reduction']:,} |"
+        )
+        lines.append(
+            "| Encoded machine instructions | "
+            f"{optimization['machine_instructions_before']:,} | "
+            f"{optimization['machine_instructions_after']:,} | "
+            f"{optimization['machine_instruction_reduction']:,} |"
+        )
+        lines.append(
+            f"| Code size (bytes) | {size_before:,} | {size_after:,} | "
+            f"{size_reduction:,} ({reduction_pct:.1f}%) |"
+        )
+        lines.append("")
+        lines.append("| Pass metric | Value |")
+        lines.append("|-------------|------:|")
+        lines.append(
+            f"| Structural candidates | {optimization['candidate_pairs']:,} |"
+        )
+        lines.append(
+            f"| Merged `lui`/`addi` pairs | {optimization['merged_pairs']:,} |"
+        )
+        lines.append(
+            "| Redundant `lui` removed | "
+            f"{optimization['redundant_lui_removed']:,} |"
+        )
+        lines.append("")
+        lines.append(
+            "> Source-level merges can exceed machine-instruction reduction: "
+            "large `li` pseudo-instructions still encode as `lui` + `addi`."
+        )
+        lines.append("")
 
     lines.append("## Per-Layer Breakdown")
     lines.append("")

@@ -552,40 +552,37 @@ def run_tinyfive_sim(asm_code: list[str], name: str, n_instr: int = 100) -> dict
 
     Returns: Dict with TinyFive metrics.
     """
-    if not TINYFIVE_AVAILABLE:
-        return _simulate_tinyfive_output(asm_code, name, n_instr)
-
-    print(f"\n  [{name}] Analyzing (TinyFive {'available' if TINYFIVE_AVAILABLE else 'fallback'})...", file=sys.stderr)
-
     try:
-        m = ProfiledMachine(mem_size=8192)
+        m = ProfiledMachine(mem_size=65536)
+        if not TINYFIVE_AVAILABLE or not m.available:
+            print(f"\n  [{name}] Analyzing (fallback)...", file=sys.stderr)
+            return _simulate_tinyfive_output(asm_code, name, n_instr)
 
-        if m.available:
-            # Set up input data in memory
-            m.write_mem_i32(0x1000, 0x00018000)  # Q16.16: 1.5
-            m.write_mem_i32(0x1004, 0xFFFEC000)  # Q16.16: -1.25
-            m.write_mem_i32(0x2000, 0x00010000)  # Q16.16: 1.0
-            m.write_mem_i32(0x2004, 0x00020000)  # Q16.16: 2.0
+        print(f"\n  [{name}] Analyzing (real TinyFive)...", file=sys.stderr)
 
-            # Load assembly and set registers
-            m.load_asm(asm_code, origin=0x200)
-            m._machine.x[10] = 0x1000  # a0
-            m._machine.x[11] = 0x2000  # a1
-            m._machine.x[2] = 0x4000    # sp
+        # Set up input data in memory.
+        m.write_mem_i32(0x1000, 0x00018000)  # Q16.16: 1.5
+        m.write_mem_i32(0x1004, 0xFFFEC000)  # Q16.16: -1.25
+        m.write_mem_i32(0x2000, 0x00010000)  # Q16.16: 1.0
+        m.write_mem_i32(0x2004, 0x00020000)  # Q16.16: 2.0
 
-            m.run(n=n_instr)
+        # Load assembly and set registers.
+        m.load_asm(asm_code, origin=0x200)
+        m.set_reg(10, 0x1000)  # a0
+        m.set_reg(11, 0x2000)  # a1
+        m.set_reg(2, 0x4000)   # sp
+        m.run(n=n_instr, strict=True)
 
-            results = {
-                'name': name,
-                'instr_count': m.instr_count,
-                'ops': dict(m._machine.ops) if hasattr(m._machine, 'ops') else {},
-                'x_regs_used_count': int(sum(m._machine.x_usage)) if hasattr(m._machine, 'x_usage') else 0,
-                'f_regs_used_count': int(sum(m._machine.f_usage)) if hasattr(m._machine, 'f_usage') else 0,
-                'image_size': 0,
-            }
-        else:
-            # TinyFive not installed — use fallback
-            results = _simulate_tinyfive_output(asm_code, name, n_instr)
+        results = {
+            'name': name,
+            'backend': 'tinyfive',
+            '_fallback': False,
+            'instr_count': m.instr_count,
+            'ops': m.get_perf(),
+            'x_regs_used_count': int(sum(m._machine.x_usage)) if hasattr(m._machine, 'x_usage') else 0,
+            'f_regs_used_count': int(sum(m._machine.f_usage)) if hasattr(m._machine, 'f_usage') else 0,
+            'image_size': 0,
+        }
 
     except Exception as e:
         print(f"  ERROR: {e}", file=sys.stderr)
@@ -656,7 +653,9 @@ def _simulate_tinyfive_output(asm_code: list[str], name: str, n_instr: int) -> d
 
     return {
         'name': name,
-        'instr_count': n_instr,
+        'backend': 'static-analysis-fallback',
+        'instr_count': 0,
+        'requested_instruction_limit': n_instr,
         'ops': dict(ops),
         'x_regs_used_count': len(x_regs),
         'f_regs_used_count': len(f_regs),
@@ -680,6 +679,10 @@ def generate_tinyfive_report(
     """Generate TinyFive comparison report."""
     sep = "=" * 80
     lines = []
+    real_simulation = not (
+        llvm_tf.get('_fallback', True)
+        or scratchv_tf.get('_fallback', True)
+    )
     lines.append(sep)
     lines.append("  TinyFive Simulation — LLVM vs ScratchV RISC-V Code")
     lines.append("  RV32IM inner MAC loop kernel comparison")
@@ -717,16 +720,25 @@ def generate_tinyfive_report(
     lines.append("")
 
     # ── TinyFive kernel simulation ──
-    lines.append("  ── 2. TinyFive Inner Loop Kernel Simulation (100 iterations) ──")
-    lines.append(f"  Each kernel runs 100 MAC iterations through TinyFive ProfiledMachine.")
+    lines.append("  ── 2. Inner Loop Kernel Execution (100 iterations) ──")
+    if real_simulation:
+        lines.append("  Each kernel runs through the real TinyFive ProfiledMachine.")
+    else:
+        lines.append("  WARNING: at least one kernel uses static-analysis fallback;")
+        lines.append("  these numbers are not evidence of TinyFive execution.")
     lines.append("")
 
     for tf_data, label in [(llvm_tf, "LLVM-equivalent RV32IM"),
                             (scratchv_tf, "ScratchV RV32IM")]:
         lines.append(f"  ── {label} ──")
+        lines.append(f"  Backend: {tf_data.get('backend', 'unknown')}")
+        lines.append(f"  Fallback: {tf_data.get('_fallback', True)}")
         ops = tf_data.get('ops', {})
         lines.append(f"  Ops counters: {ops}")
-        lines.append(f"  Instructions executed: {tf_data['instr_count']}")
+        if tf_data.get('_fallback', True):
+            lines.append("  Instructions executed: N/A (not simulated)")
+        else:
+            lines.append(f"  Instructions executed: {tf_data['instr_count']}")
         lines.append(f"  x regfile: {tf_data['x_regs_used_count']} registers used")
         lines.append(f"  f regfile: {tf_data['f_regs_used_count']} registers used")
         lines.append(f"  Image size: {tf_data.get('image_size', 'N/A')} bytes")
@@ -735,7 +747,9 @@ def generate_tinyfive_report(
     # ── Comparison ──
     lines.append("  ── 3. Key Comparison ──")
 
-    if llvm_tf.get('ops', {}).get('total', 0) > 0 and scratchv_tf.get('ops', {}).get('total', 0) > 0:
+    if not real_simulation:
+        lines.append("  Dynamic comparison skipped because real TinyFive execution did not complete.")
+    elif llvm_tf.get('ops', {}).get('total', 0) > 0 and scratchv_tf.get('ops', {}).get('total', 0) > 0:
         lv_total = llvm_tf['ops'].get('total', 0)
         sv_total = scratchv_tf['ops'].get('total', 0)
         eff_ratio = sv_total / max(lv_total, 1)
@@ -773,7 +787,8 @@ def generate_tinyfive_report(
     lines.append("")
 
     # TinyFive-style static ops counter comparison
-    lines.append("  ── 5. TinyFive ops counters (static per-MAC iteration) ──")
+    counter_source = "TinyFive" if real_simulation else "Static fallback"
+    lines.append(f"  ── 5. {counter_source} ops counters (per kernel body) ──")
     lines.append("")
     lines.append(f"  {'Ops counter':<12s} {'LLVM RV32IM':>15s} {'ScratchV RV32IM':>16s}  {'Ratio':>8s}")
     lines.append(f"  {'─'*12} {'─'*15} {'─'*16}  {'─'*8}")

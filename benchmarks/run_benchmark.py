@@ -36,6 +36,7 @@ from scratchv.frontend.onnx_parser import ONNXParser
 from scratchv.frontend.dsl_parser import DSLParser
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import Program
+from scratchv.backend._asm_parser import ParsedAsmLine, parse_asm
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +56,18 @@ class BenchResult:
     ir_opt_inst_count: int = 0
     codegen_time_s: float = 0.0
     asm_line_count: int = 0
+    lui_count_before: int = 0
+    candidate_pairs: int = 0
+    merged_pairs: int = 0
+    redundant_lui_removed: int = 0
+    asm_instructions_before: int = 0
+    asm_instructions_after: int = 0
+    machine_instructions_before: Optional[int] = None
+    machine_instructions_after: Optional[int] = None
+    code_size_before: Optional[int] = None
+    code_size_after: Optional[int] = None
+    pass_time_ms: float = 0.0
+    output_equal: Optional[bool] = None
     total_time_s: float = 0.0
     verified: bool = False
     error: Optional[str] = None
@@ -68,6 +81,19 @@ def _count_ir(program: Program) -> tuple[int, int]:
     inst = sum(1 for f in program.functions for bb in f.blocks for _ in bb.instructions)
     bb = sum(len(f.blocks) for f in program.functions)
     return inst, bb
+
+
+def _count_parsed_asm_instructions(lines: list[ParsedAsmLine]) -> int:
+    """Count real assembly statements, excluding labels and directives."""
+    return sum(
+        line.opcode is not None and not line.is_directive
+        for line in lines
+    )
+
+
+def _count_asm_instructions(asm_text: str) -> int:
+    """Parse and count assembly instructions using the shared parser."""
+    return _count_parsed_asm_instructions(parse_asm(asm_text))
 
 
 def _parse_onnx(path: str) -> Program:
@@ -173,6 +199,24 @@ def run_benchmark(model_name: str, model_path: str, *,
             asm_str, result.codegen_time_s = _codegen_llvm(program)
         else:
             asm_str, result.codegen_time_s = _codegen_riscv(program)
+            from scratchv.backend.const_merge import merge_constants_detailed
+
+            # Single-variable A/B: both sides come from this exact codegen
+            # result, so frontend, optimization and allocation are identical.
+            parsed_before = parse_asm(asm_str)
+            result.lui_count_before = sum(
+                line.opcode == "lui" for line in parsed_before
+            )
+            result.asm_instructions_before = _count_parsed_asm_instructions(
+                parsed_before,
+            )
+            t0 = time.perf_counter()
+            asm_after, merge_stats = merge_constants_detailed(asm_str)
+            result.pass_time_ms = (time.perf_counter() - t0) * 1000
+            result.candidate_pairs = merge_stats.candidate_pairs
+            result.merged_pairs = merge_stats.merged_pairs
+            result.redundant_lui_removed = merge_stats.redundant_lui_removed
+            result.asm_instructions_after = _count_asm_instructions(asm_after)
         result.asm_line_count = len(asm_str.splitlines())
 
         # 4. Verify
@@ -199,7 +243,8 @@ def run_all_benchmarks(models: dict[str, str], backend: str = "riscv",
             print(f"ERROR: {r.error}")
         else:
             print(f"done ({r.total_time_s:.3f}s, {r.ir_inst_count} IR inst, "
-                  f"{r.asm_line_count} asm lines)")
+                  f"{r.asm_line_count} asm lines, "
+                  f"{r.merged_pairs + r.redundant_lui_removed} const changes)")
         results.append(r)
     return results
 
@@ -237,6 +282,26 @@ def print_summary(results: list[BenchResult]):
         print(f"Errors: {len(errors)}")
         for r in errors:
             print(f"  - {r.model_name}: {r.error}")
+
+    riscv_results = [r for r in results if r.backend == "riscv"]
+    if riscv_results:
+        print("\nCONST-MERGE A/B")
+        print("-" * 90)
+        print(
+            f"{'Model':<16} {'LUI':>6} {'Candidates':>10} {'Pairs':>8} "
+            f"{'RedLUI':>8} {'Asm before→after':>18} {'Pass(ms)':>10}"
+        )
+        for r in riscv_results:
+            asm_counts = (
+                f"{r.asm_instructions_before}→{r.asm_instructions_after}"
+            )
+            print(
+                f"{r.model_name:<16} {r.lui_count_before:>6} "
+                f"{r.candidate_pairs:>10} {r.merged_pairs:>8} "
+                f"{r.redundant_lui_removed:>8} {asm_counts:>18} "
+                f"{r.pass_time_ms:>10.3f}"
+            )
+        print("Machine instructions/code size/output equality: N/A without toolchain")
 
 
 def save_results(results: list[BenchResult], output_path: str):
