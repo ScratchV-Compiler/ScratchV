@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-SUITE_DIR = ROOT / "ScratchV-topic06-deliverable"
-RUNNER_PATH = SUITE_DIR / "run_tests.py"
+ROOT = Path(__file__).resolve().parents[2]
+CASE_DIR = ROOT / "tests" / "topic06" / "cases"
+RUNNER_PATH = ROOT / "scripts" / "run_topic06_benchmarks.py"
 
 
 def _load_runner():
@@ -21,8 +21,8 @@ def _load_runner():
 
 
 def test_topic06_case_manifest_is_complete():
-    dsl_files = sorted((SUITE_DIR / "tests_main").rglob("*.dsl"))
-    meta_files = sorted((SUITE_DIR / "tests_main").rglob("*.meta.json"))
+    dsl_files = sorted(CASE_DIR.rglob("*.dsl"))
+    meta_files = sorted(CASE_DIR.rglob("*.meta.json"))
 
     assert len(dsl_files) == 23
     assert len(meta_files) == 23
@@ -39,7 +39,7 @@ def test_compiler_emits_register_map_for_topic06_case(tmp_path):
         optimize_level="all",
         reg_alloc="greedy",
     ))
-    source = SUITE_DIR / "tests_main" / "activation" / "relu_add.dsl"
+    source = CASE_DIR / "activation" / "relu_add.dsl"
     result = driver.compile(str(source), str(tmp_path / "relu_add.s"))
 
     assert result.success
@@ -70,4 +70,14 @@ def test_topic06_report_paths_are_portable():
     runner = _load_runner()
     case = runner.TEST_DIR / "activation" / "relu_only.dsl"
 
-    assert runner._report_path(case) == "tests_main/activation/relu_only.dsl"
+    assert runner._report_path(case) == "tests/topic06/cases/activation/relu_only.dsl"
+
+
+def test_runner_uses_project_layout():
+    runner = _load_runner()
+
+    assert runner.PROJECT_ROOT == ROOT
+    assert runner.TEST_DIR == ROOT / "tests" / "topic06" / "cases"
+    assert runner.BUILD_DIR == ROOT / "build" / "topic06"
+    assert runner.REPORT_DIR == ROOT / "benchmark_reports" / "topic06"
+    assert runner.BASELINE_FILE == ROOT / "benchmarks" / "topic06" / "baseline.json"

@@ -14,11 +14,6 @@ venv/
 scratchv.egg-info/
 benchmark_reports/
 
-# Topic 06 optional/generated reports
-/ScratchV-topic06-deliverable/reports/report.html
-/ScratchV-topic06-deliverable/reports/course_report_instructions.png
-/ScratchV-topic06-deliverable/reports/failures/
-
 # Build artifacts at root (generated, never commit)
 /output.bin
 /output.ll

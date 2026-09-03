@@ -13,16 +13,15 @@ from pathlib import Path
 
 from scratchv.simulator.tinyfive import verify_assembly
 
-SUITE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SUITE_DIR.parent
-TEST_DIR = SUITE_DIR / "tests_main"
-BUILD_DIR = SUITE_DIR / "build"
-REPORT_DIR = SUITE_DIR / "reports"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TEST_DIR = PROJECT_ROOT / "tests" / "topic06" / "cases"
+BUILD_DIR = PROJECT_ROOT / "build" / "topic06"
+REPORT_DIR = PROJECT_ROOT / "benchmark_reports" / "topic06"
 REPORT_FILE = REPORT_DIR / "report.md"
 HTML_REPORT_FILE = REPORT_DIR / "report.html"
 JSON_REPORT_FILE = REPORT_DIR / "report.json"
 CHART_FILE = REPORT_DIR / "course_report_instructions.png"
-BASELINE_FILE = REPORT_DIR / "benchmark_baseline.json"
+BASELINE_FILE = PROJECT_ROOT / "benchmarks" / "topic06" / "baseline.json"
 FAILURE_DIR = REPORT_DIR / "failures"
 REGRESSION_THRESHOLD_PCT = 5.0
 COMPILE_TIMEOUT_SEC = 30.0
@@ -376,7 +375,7 @@ def load_baseline():
 
 
 def save_baseline(results, preserve_existing=False):
-    REPORT_DIR.mkdir(exist_ok=True)
+    BASELINE_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = load_baseline() if preserve_existing else {}
     for r in results:
         if r["avg_instr_count"] is None:
@@ -396,7 +395,7 @@ def _markdown_cell(value):
 def _report_path(path):
     path = Path(path)
     try:
-        return path.resolve().relative_to(SUITE_DIR).as_posix()
+        return path.resolve().relative_to(PROJECT_ROOT).as_posix()
     except ValueError:
         return path.as_posix()
 
@@ -661,7 +660,7 @@ def write_report(
     selection_filter=None,
     full_report=False,
 ):
-    REPORT_DIR.mkdir(exist_ok=True)
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
     chart_path = write_chart(results) if full_report else None
     REPORT_FILE.write_text(
         generate_unified_report_text_cn(
@@ -766,7 +765,7 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
-    BUILD_DIR.mkdir(exist_ok=True)
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
     baseline = load_baseline() if args.benchmark else {}
 
     all_dsl_files = list(TEST_DIR.rglob("*.dsl"))
