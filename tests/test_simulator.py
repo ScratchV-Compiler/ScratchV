@@ -122,6 +122,40 @@ class TestRealProfiledMachine:
             outputs.append(machine.get_reg(5))
         assert outputs == [4098, 4098]
 
+    def test_run_until_executes_loop_and_stops_at_return_address(self):
+        binary = assemble_to_binary(
+            "li x5, 0\n"
+            "li x6, 4\n"
+            "loop:\n"
+            "addi x5, x5, 1\n"
+            "blt x5, x6, loop\n"
+            "jalr x0, x1, 0\n"
+        )
+        words = [
+            int.from_bytes(binary[i:i + 4], "little")
+            for i in range(0, len(binary), 4)
+        ]
+        machine = ProfiledMachine(mem_size=4096)
+        machine.load_binary(words, origin=0)
+        machine.set_reg(1, len(binary))
+
+        machine.run_until(end=len(binary), start=0, strict=True)
+
+        assert machine.get_reg(5) == 4
+        assert machine.pc == len(binary)
+        assert machine.instr_count == 11
+
+    def test_verify_assembly_injects_inputs_and_returns_a0(self):
+        result = verify_assembly(
+            "add x10, x5, x6\njalr x0, x1, 0\n",
+            initial_registers={"t0": -2, "t1": 7},
+        )
+
+        assert result["success"] is True
+        assert result["backend"] == "tinyfive"
+        assert result["return_value"] == 5
+        assert result["instr_count"] == 2
+
     @pytest.mark.parametrize("value", [
         -(1 << 31), -4097, -2049, -2048, -1,
         0, 2047, 2048, 4096, 4098, (1 << 31) - 1,
