@@ -57,7 +57,7 @@ class CompilerConfig:
 
     backend: str = "riscv"
     optimize_level: str = "none"
-    reg_alloc: str = "linear"
+    reg_alloc: str = "greedy"
     dump_ir: bool = False
     verify: bool = False
     rtol: float = 1e-5
@@ -403,17 +403,21 @@ class CompilerDriver:
         selector = InstructionSelector(program)
         machine_instrs = selector.run()
 
-        # Linear-scan: skip greedy allocator, use liveness-driven allocator
+        alloc = RegisterAllocator(machine_instrs, mode=self.config.reg_alloc)
+        allocated = alloc.run()
+
+        # Optional: use linear-scan instead
         if self.config.reg_alloc == "linear":
             from scratchv.backend.regalloc_linear import (
                 LinearScanAllocator, block_from_machine_instrs,
             )
-            ls_insts = block_from_machine_instrs(machine_instrs)
+            ls_insts = block_from_machine_instrs(allocated)
             lsa = LinearScanAllocator()
-            return lsa.emit(ls_insts)
+            intervals = lsa.compute_live_intervals(ls_insts)
+            lsa.allocate(intervals)
+            # Use linear-scan allocated code as assembly directly
+            return lsa.get_allocated_code(ls_insts)
 
-        alloc = RegisterAllocator(machine_instrs, mode=self.config.reg_alloc)
-        allocated = alloc.run()
         emitter = AsmEmitter(allocated)
         return emitter.emit()
 
@@ -447,7 +451,11 @@ class CompilerDriver:
             opt = AsmPeepholeOptimizer()
             asm_text, changes = opt.optimize(asm_text)
             if changes:
-                warnings.append(f"Asm peephole: {changes} changes")
+                warnings.append(
+                    f"Asm peephole: {changes} changes, "
+                    f"{opt.instructions_saved} instr saved "
+                    f"({opt.instructions_before}->{opt.instructions_after})"
+                )
 
         if self.config.const_merge:
             from scratchv.backend.const_merge import merge_constants_detailed
