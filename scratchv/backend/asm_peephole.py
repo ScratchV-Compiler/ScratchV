@@ -64,10 +64,8 @@ class PeepholeRule:
         List of opcode strings for replacement. Use ``{0}``, ``{1}`` etc.
         to reference registers captured from the pattern.
     register_constraints:
-        Optional list of index-pair tuples ``(i, j)`` specifying that the
-        destination register of instruction i must equal some operand of
-        instruction j for the rule to fire.
-        Format: ``(dst_index, src_instruction_index, src_operand_index)``.
+        Optional list of tuples ``(dst_instr, src_instr, src_op)`` requiring
+        ``window[dst_instr].operands[0] == window[src_instr].operands[src_op]``.
     """
     name: str
     pattern: list[str]
@@ -187,14 +185,44 @@ def _lines_to_asm(lines: list[AsmLine]) -> str:
     return "\n".join(output)
 
 
+def _count_opcodes(lines: list[AsmLine]) -> int:
+    """Count real instruction opcodes (labels and ``.``-directives excluded)."""
+    return sum(
+        1 for al in lines
+        if al.opcode is not None and not al.opcode.startswith(".")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Immediate helpers (RISC-V I-type signed 12-bit)
+# ---------------------------------------------------------------------------
+
+_SIMM12_MIN = -2048
+_SIMM12_MAX = 2047
+
+
+def _fits_simm12(value: int) -> bool:
+    """Return True if *value* fits in a signed 12-bit immediate."""
+    return _SIMM12_MIN <= value <= _SIMM12_MAX
+
+
+def _parse_imm(text: str) -> Optional[int]:
+    """Parse an immediate operand; return None if not a plain integer."""
+    try:
+        return int(text, 0)  # accepts 10, 0x10, 0b10
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Default peephole rules
 # ---------------------------------------------------------------------------
 
 def _default_rules() -> list[PeepholeRule]:
-    """Return the set of five default peephole optimization rules."""
+    """Return the default peephole optimization rules."""
     return [
         # Rule 1: addi x, x, a; addi x, x, b -> addi x, x, a+b
+        # (only when a+b fits signed 12-bit immediate)
         PeepholeRule(
             name="addi+addi fusion",
             pattern=["addi", "addi"],
@@ -202,15 +230,11 @@ def _default_rules() -> list[PeepholeRule]:
             register_constraints=[(0, 1, 0), (0, 1, 1)],
         ),
 
-        # Rule 2: mv x, y; mv y, x -> deleted (redundant swap)
-        PeepholeRule(
-            name="redundant mv pair elimination",
-            pattern=["mv", "mv"],
-            replacement=[],  # deleted entirely
-            register_constraints=[(0, 1, 0), (1, 0, 0)],
-        ),
+        # NOTE: former "mv x,y; mv y,x -> delete" was unsound (not a true
+        # swap / no-op under RISC-V). Removed; Rule 5 still covers mv chains
+        # when the intermediate is unused by later code (best-effort).
 
-        # Rule 3: li x, a; addi x, x, b -> li x, a+b
+        # Rule 2: li x, a; addi x, x, b -> li x, a+b
         PeepholeRule(
             name="li+addi fusion",
             pattern=["li", "addi"],
@@ -218,7 +242,7 @@ def _default_rules() -> list[PeepholeRule]:
             register_constraints=[(0, 1, 0), (0, 1, 1)],
         ),
 
-        # Rule 4: beq x0, x0, label -> j label
+        # Rule 3: beq x0, x0, label -> j label
         PeepholeRule(
             name="beq zero-zero to jump",
             pattern=["beq"],
@@ -226,13 +250,46 @@ def _default_rules() -> list[PeepholeRule]:
             register_constraints=[],
         ),
 
-        # Rule 5: mv a, b; ... (a not used) mv c, a -> mv c, b
-        # (redundant move through intermediate)
+        # Rule 4: mv a, b; mv c, a -> mv c, b (skip intermediate register a)
+        # Unsound if `a` is live after the pair; callers/tests must treat as
+        # best-effort without liveness analysis.
         PeepholeRule(
             name="redundant mv elimination",
             pattern=["mv", "mv"],
             replacement=["mv {rd1} {rs2}"],
-            register_constraints=[(1, 0, 0)],
+            register_constraints=[(0, 1, 1)],
+        ),
+
+        # Rule 5: addi rd, rd, 0 -> deleted (no-op)
+        PeepholeRule(
+            name="addi-zero self elimination",
+            pattern=["addi"],
+            replacement=[],
+            register_constraints=[(0, 0, 1)],  # rd == rs1
+        ),
+
+        # Rule 6: addi rd, rs, 0 (rd != rs) -> mv rd, rs
+        PeepholeRule(
+            name="addi-zero to mv",
+            pattern=["addi"],
+            replacement=["mv {rd} {rs}"],
+            register_constraints=[],
+        ),
+
+        # Rule 7: nop -> deleted
+        PeepholeRule(
+            name="nop elimination",
+            pattern=["nop"],
+            replacement=[],
+            register_constraints=[],
+        ),
+
+        # Rule 8: mv x, x -> deleted
+        PeepholeRule(
+            name="mv-self elimination",
+            pattern=["mv"],
+            replacement=[],
+            register_constraints=[(0, 0, 1)],  # rd == rs
         ),
     ]
 
@@ -289,18 +346,12 @@ def _match_rule(
                 if not _operand_matches(expected_ops[j], actual, bindings):
                     return None
 
-    # Check register constraints
-    for dst_idx, src_instr_idx, src_op_idx in rule.register_constraints:
-        if dst_idx >= len(window) or src_instr_idx >= len(window):
-            return None
-        dst_line = window[dst_idx]
-        src_line = window[src_instr_idx]
-        if not dst_line.operands or not src_line.operands:
-            return None
-        if src_op_idx >= len(src_line.operands):
+    # Never match a window that would drop a mid-window label (jump target).
+    for i, line in enumerate(window):
+        if i > 0 and line.label:
             return None
 
-    # Apply actual constraints
+    # Apply register constraints
     for constraint in rule.register_constraints:
         dst_instr, src_instr, src_op = constraint
         if src_instr >= len(window) or dst_instr >= len(window):
@@ -326,6 +377,50 @@ def _match_rule(
         if ops[0] not in ("x0", "zero") or ops[1] not in ("x0", "zero"):
             return None
 
+    # mv-chain rule must not match swap-shaped pairs: mv x,y; mv y,x
+    # (that pattern is not a no-op and must be left untouched).
+    if rule.name == "redundant mv elimination":
+        if (
+            len(window) >= 2
+            and len(window[0].operands) >= 2
+            and window[1].operands
+            and window[1].operands[0] == window[0].operands[1]
+        ):
+            return None
+
+    # addi+addi: both immediates must parse and sum must fit simm12
+    if rule.name == "addi+addi fusion":
+        ops0, ops1 = window[0].operands, window[1].operands
+        if len(ops0) < 3 or len(ops1) < 3:
+            return None
+        imm1, imm2 = _parse_imm(ops0[2]), _parse_imm(ops1[2])
+        if imm1 is None or imm2 is None:
+            return None
+        if not _fits_simm12(imm1 + imm2):
+            return None
+
+    # li+addi: immediates must be integers (li can hold any 32-bit result)
+    if rule.name == "li+addi fusion":
+        ops0, ops1 = window[0].operands, window[1].operands
+        if len(ops0) < 2 or len(ops1) < 3:
+            return None
+        if _parse_imm(ops0[1]) is None or _parse_imm(ops1[2]) is None:
+            return None
+
+    # addi rd, rd, 0 -> delete
+    if rule.name == "addi-zero self elimination":
+        ops = window[0].operands
+        if len(ops) < 3 or _parse_imm(ops[2]) != 0:
+            return None
+
+    # addi rd, rs, 0 (rd != rs) -> mv rd, rs
+    if rule.name == "addi-zero to mv":
+        ops = window[0].operands
+        if len(ops) < 3 or _parse_imm(ops[2]) != 0:
+            return None
+        if ops[0] == ops[1]:
+            return None  # handled by addi-zero self elimination
+
     return bindings
 
 
@@ -339,7 +434,7 @@ class AsmPeepholeOptimizer:
     Parameters
     ----------
     rules:
-        List of peephole rules. If None, uses the five default rules.
+        List of peephole rules. If None, uses the built-in default rules.
 
     Usage::
 
@@ -351,14 +446,35 @@ class AsmPeepholeOptimizer:
         self.rules: list[PeepholeRule] = (
             rules if rules is not None else _default_rules()
         )
-        self._total_matches: dict[str, int] = (
-            {}  # rule_name -> match count
-        )
+        self._total_matches: dict[str, int] = {}
+        self._instr_before: int = 0
+        self._instr_after: int = 0
+        self._iterations: int = 0
 
     @property
     def total_matches(self) -> dict[str, int]:
         """Return per-rule match counts from the last ``optimize()`` call."""
         return dict(self._total_matches)
+
+    @property
+    def instructions_before(self) -> int:
+        """Opcode count in the input of the last ``optimize()`` call."""
+        return self._instr_before
+
+    @property
+    def instructions_after(self) -> int:
+        """Opcode count in the output of the last ``optimize()`` call."""
+        return self._instr_after
+
+    @property
+    def instructions_saved(self) -> int:
+        """Static instructions removed by the last ``optimize()`` call."""
+        return max(0, self._instr_before - self._instr_after)
+
+    @property
+    def iterations(self) -> int:
+        """Number of fixed-point passes performed by the last ``optimize()``."""
+        return self._iterations
 
     def optimize(self, asm_text: str) -> tuple[str, int]:
         """Apply peephole optimization to assembly text.
@@ -374,6 +490,7 @@ class AsmPeepholeOptimizer:
         """
         lines = _parse_asm(asm_text)
         self._total_matches = {r.name: 0 for r in self.rules}
+        self._instr_before = _count_opcodes(lines)
         total_changes = 0
 
         # Iterate until a fixed point is reached
@@ -415,6 +532,8 @@ class AsmPeepholeOptimizer:
 
             lines = new_lines
 
+        self._instr_after = _count_opcodes(lines)
+        self._iterations = iteration
         return _lines_to_asm(lines), total_changes
 
     def _apply_replacement(self, rule: PeepholeRule,
@@ -426,24 +545,30 @@ class AsmPeepholeOptimizer:
         folding (e.g., {imm_sum} for addi+addi fusion).
         """
         result: list[AsmLine] = []
+        lead_label = window[0].label if window else None
+
+        # Deletion: keep a bare label so jump targets are not lost.
+        if not rule.replacement:
+            if lead_label:
+                return [AsmLine(
+                    raw=f"{lead_label}:",
+                    label=lead_label,
+                    lineno=window[0].lineno,
+                )]
+            return []
 
         # Compute derived values
         derived: dict[str, str] = {}
         if rule.name == "addi+addi fusion":
-            # Try to compute imm1 + imm2
-            imm1_str = (
-                window[0].operands[2]
-                if len(window[0].operands) > 2 else "0"
+            imm1 = _parse_imm(
+                window[0].operands[2] if len(window[0].operands) > 2 else "0"
             )
-            imm2_str = (
-                window[1].operands[2]
-                if len(window[1].operands) > 2 else "0"
+            imm2 = _parse_imm(
+                window[1].operands[2] if len(window[1].operands) > 2 else "0"
             )
-            try:
-                imm_sum = int(imm1_str) + int(imm2_str)
-                derived["imm_sum"] = str(imm_sum)
-            except ValueError:
-                derived["imm_sum"] = f"({imm1_str}+{imm2_str})"
+            if imm1 is None or imm2 is None:
+                return list(window)
+            derived["imm_sum"] = str(imm1 + imm2)
             derived["rd"] = (
                 window[0].operands[0] if window[0].operands else "x0"
             )
@@ -453,19 +578,15 @@ class AsmPeepholeOptimizer:
             )
 
         elif rule.name == "li+addi fusion":
-            imm1_str = (
-                window[0].operands[1]
-                if len(window[0].operands) > 1 else "0"
+            imm1 = _parse_imm(
+                window[0].operands[1] if len(window[0].operands) > 1 else "0"
             )
-            imm2_str = (
-                window[1].operands[2]
-                if len(window[1].operands) > 2 else "0"
+            imm2 = _parse_imm(
+                window[1].operands[2] if len(window[1].operands) > 2 else "0"
             )
-            try:
-                imm_sum = int(imm1_str) + int(imm2_str)
-                derived["imm_sum"] = str(imm_sum)
-            except ValueError:
-                derived["imm_sum"] = f"({imm1_str}+{imm2_str})"
+            if imm1 is None or imm2 is None:
+                return list(window)
+            derived["imm_sum"] = str(imm1 + imm2)
             derived["rd"] = (
                 window[0].operands[0] if window[0].operands else "x0"
             )
@@ -485,8 +606,17 @@ class AsmPeepholeOptimizer:
                 if len(window[0].operands) > 1 else "x0"
             )
 
+        elif rule.name == "addi-zero to mv":
+            derived["rd"] = (
+                window[0].operands[0] if window[0].operands else "x0"
+            )
+            derived["rs"] = (
+                window[0].operands[1]
+                if len(window[0].operands) > 1 else "x0"
+            )
+
         # Generate replacement lines from template
-        for repl_op_str in rule.replacement:
+        for idx, repl_op_str in enumerate(rule.replacement):
             # Substitute template variables
             repl = repl_op_str
             for key, val in derived.items():
@@ -503,6 +633,7 @@ class AsmPeepholeOptimizer:
 
             result.append(AsmLine(
                 raw=repl,
+                label=lead_label if idx == 0 else None,
                 opcode=opcode,
                 operands=operands,
                 comment=comment,
@@ -511,11 +642,29 @@ class AsmPeepholeOptimizer:
         return result
 
     def report(self) -> str:
-        """Return a human-readable report of optimizations applied."""
+        """Return a human-readable report of the last ``optimize()`` call.
+
+        Includes rule match counts and static instruction savings
+        (opcode lines before/after).
+        """
         total = sum(self._total_matches.values())
-        lines = []
-        lines.append("Peephole Optimizer Report")
-        lines.append(f"  Total changes: {total}")
+        before = self._instr_before
+        after = self._instr_after
+        saved = self.instructions_saved
+        if before > 0:
+            pct = 100.0 * saved / before
+            saved_str = f"{saved} ({pct:.1f}%)"
+        else:
+            saved_str = str(saved)
+
+        lines = [
+            "Peephole Optimizer Report",
+            f"  Instructions before: {before}",
+            f"  Instructions after:  {after}",
+            f"  Instructions saved:  {saved_str}",
+            f"  Rule applications:   {total}",
+            f"  Fixed-point passes:  {self._iterations}",
+        ]
         if total > 0:
             lines.append("  Rules applied:")
             for name, count in self._total_matches.items():
@@ -523,6 +672,8 @@ class AsmPeepholeOptimizer:
                     lines.append(f"    {name}: {count} time(s)")
         else:
             lines.append("  No optimization opportunities found.")
+        # Keep legacy key for scripts/tests that grep "Total changes"
+        lines.append(f"  Total changes: {total}")
         return "\n".join(lines)
 
 
@@ -569,7 +720,12 @@ def main() -> None:
 
     if args.report:
         print(opt.report(), file=sys.stderr)
-        print(f"Total changes: {changes}", file=sys.stderr)
+        print(
+            f"Summary: {changes} rule application(s), "
+            f"{opt.instructions_saved} instruction(s) saved "
+            f"({opt.instructions_before} -> {opt.instructions_after})",
+            file=sys.stderr,
+        )
 
     if args.output:
         with open(args.output, "w") as f:
