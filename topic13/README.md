@@ -17,7 +17,7 @@
 | **新手教程** | 入门学习 | [`docs/topics/13-窥孔优化器.md`](../docs/topics/13-窥孔优化器.md) |
 | **课题提案（归档）** | 原始任务说明 | [`docs/topics/archive/课题13：窥孔优化器.md`](../docs/topics/archive/课题13：窥孔优化器.md) |
 | **课程 HTML** | 浏览器阅读 | [`docs/topics/html/13-窥孔优化器.html`](../docs/topics/html/13-窥孔优化器.html) |
-| **前后对比报告** | 效果数据 | [`benchmark_reports/peephole_compare.md`](../benchmark_reports/peephole_compare.md) |
+| **前后对比报告** | 效果数据 | [`benchmark_reports/peephole_compare.html`](../benchmark_reports/peephole_compare.html) |
 | **课题索引入口** | 全课题地图 | [`docs/topics/INDEX.md`](../docs/topics/INDEX.md)（第 13 项） |
 
 ---
@@ -41,8 +41,8 @@
 ## 交付摘要
 
 - 默认规则：**8 条**（已移除不健全的「假交换删除」）
-- 测试：**84 / 84 PASSED**
-- 效果：DSL 基准约 -0.43%；合成高冗余约 -25%；综合样例约 -46%
+- 测试：**94 / 94 PASSED**（84 个优化器回归 + 10 个 benchmark 测试）
+- 效果：默认覆盖套件 31→22 条有效指令（-29.032%，本地冒烟数据）
 
 ### 一键复验
 
@@ -50,7 +50,8 @@
 cd /home/z/ScratchV-main   # 或你的仓库根目录
 source .venv/bin/activate
 python -m pytest tests/test_asm_peephole*.py -q
-python benchmarks/compare_peephole.py --markdown benchmark_reports/peephole_compare.md
+python benchmarks/bench_asm_peephole.py --repeats 5 --output benchmark_reports/peephole_raw.json
+python benchmarks/compare_peephole.py --repeats 5 --output-dir benchmark_reports
 ```
 
 ---
@@ -60,5 +61,5 @@ python benchmarks/compare_peephole.py --markdown benchmark_reports/peephole_comp
 1. 本页（定位课题与路径）  
 2. [新手教程](../docs/topics/13-窥孔优化器.md)  
 3. [设计文档](../docs/topics/13-窥孔优化器-设计文档.md)  
-4. [对比报告](../benchmark_reports/peephole_compare.md)  
+4. [对比报告](../benchmark_reports/peephole_compare.html)
 5. 改代码时再看 [AI 开发文档](../docs/topics/archive/topic13_asm_peephole_guide.md)  
