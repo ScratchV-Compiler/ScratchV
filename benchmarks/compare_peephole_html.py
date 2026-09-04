@@ -407,7 +407,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     report = compare_cases(repeats=args.repeats)
-    json_path = args.output_dir / "peephole_compare.json"
+    json_path = args.output_dir / "peephole_compare_html.json"
     html_path = args.output_dir / "peephole_compare.html"
     save_comparison(report, json_path, html_path)
     _print_summary(report, json_path, html_path)

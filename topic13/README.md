@@ -18,6 +18,7 @@
 | **课题提案（归档）** | 原始任务说明 | [`docs/topics/archive/课题13：窥孔优化器.md`](../docs/topics/archive/课题13：窥孔优化器.md) |
 | **课程 HTML** | 浏览器阅读 | [`docs/topics/html/13-窥孔优化器.html`](../docs/topics/html/13-窥孔优化器.html) |
 | **前后对比报告** | 效果数据 | [`benchmark_reports/peephole_compare.md`](../benchmark_reports/peephole_compare.md) |
+| **HTML 对比报告** | Benchmark 数据 | [`benchmark_reports/peephole_compare.html`](../benchmark_reports/peephole_compare.html) |
 | **课题索引入口** | 全课题地图 | [`docs/topics/INDEX.md`](../docs/topics/INDEX.md)（第 13 项） |
 
 ---
@@ -34,7 +35,8 @@
 | 黑盒测试 | `tests/test_asm_peephole_blackbox.py` |
 | 黑盒样例 | `tests/fixtures/asm_peephole/` |
 | 性能基准 | `benchmarks/bench_asm_peephole.py` |
-| 前后对比脚本 | `benchmarks/compare_peephole.py` |
+| DSL/Markdown 对比 | `benchmarks/compare_peephole.py` |
+| JSON/HTML 对比 | `benchmarks/compare_peephole_html.py` |
 | CI | `.github/workflows/ci.yml` → job **`topic13-peephole`**（`ubuntu-latest`） |
 
 ---
@@ -42,8 +44,8 @@
 ## 交付摘要
 
 - 默认规则：**8 条**（假交换删除已移除；mv 链仅在中间寄存器局部死时应用）
-- 测试：**89 / 89 PASSED**（含 CLI / mv 链活跃性）
-- 效果：DSL 基准约 -0.43%；合成高冗余约 -25%；综合样例约 -46%
+- 测试：优化器、CLI 和 benchmark 工具均有对应测试；运行方式见下。
+- 效果：历史 DSL 基准约 -0.43%；benchmark 覆盖套件本地冒烟 31→22 条有效指令（-29.032%）。
 - PR：[#39](https://github.com/ScratchV-Compiler/ScratchV/pull/39)
 
 ### CLI
@@ -63,7 +65,9 @@ source .venv/bin/activate
 make ci-peephole
 # 或：
 python -m pytest tests/test_asm_peephole*.py -q
-python benchmarks/compare_peephole.py --markdown benchmark_reports/peephole_compare.md
+python -m pytest tests/test_bench_asm_peephole.py tests/test_compare_peephole.py -q
+python benchmarks/compare_peephole.py --json benchmark_reports/peephole_compare.json --markdown benchmark_reports/peephole_compare.md
+python benchmarks/compare_peephole_html.py --repeats 5 --output-dir benchmark_reports
 ```
 
 GitHub Actions：PR 到 `main` 会跑 job **`topic13-peephole`**（不依赖 self-hosted mirror）。
@@ -82,5 +86,5 @@ GitHub Actions：PR 到 `main` 会跑 job **`topic13-peephole`**（不依赖 sel
 1. 本页（定位课题与路径）  
 2. [新手教程](../docs/topics/13-窥孔优化器.md)  
 3. [设计文档](../docs/topics/13-窥孔优化器-设计文档.md)  
-4. [对比报告](../benchmark_reports/peephole_compare.md)  
+4. [DSL 对比报告](../benchmark_reports/peephole_compare.md) / [HTML 对比报告](../benchmark_reports/peephole_compare.html)
 5. 改代码时再看 [AI 开发文档](../docs/topics/archive/topic13_asm_peephole_guide.md)  
