@@ -104,6 +104,21 @@ class TestRealProfiledMachine:
         assert machine.instr_count == 2
         assert machine.last_error is None
 
+    def test_lw_preserves_all_four_bytes(self):
+        binary = assemble_to_binary(
+            "li sp, 2048\nli x5, 0x12345678\nsw x5, -4(sp)\nlw x6, -4(sp)\n"
+        )
+        words = [
+            int.from_bytes(binary[i:i + 4], "little")
+            for i in range(0, len(binary), 4)
+        ]
+        machine = ProfiledMachine(mem_size=4096)
+        machine.load_binary(words, origin=0)
+        machine.run(instructions=len(words), start=0, strict=True)
+
+        assert machine.read_mem_i32(2044) == 0x12345678
+        assert machine.get_reg(6) == 0x12345678
+
     def test_large_li_expands_and_simulates_equivalently(self):
         before = assemble_to_binary("lui x5, 1\naddi x5, x5, 2\n")
         after = assemble_to_binary("li x5, 4098\n")

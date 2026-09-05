@@ -123,7 +123,7 @@ convert_onnx_to_llvm(model)     → LLVM IR (866K lines, 183MB)
 |------|-----|
 | 模型 | `models/graph/cnn.onnx`（可 CLI 覆盖） |
 | IR 指令 | 17 条（3×conv + 3×relu + 3×maxpool + 2×gemm + sigmoid + 2×reshape） |
-| 物理寄存器 | `_INT_REGS`（28 个） |
+| 物理寄存器 | `_INT_REGS`（19 个：`t0`–`t6`、`s0`–`s11`） |
 | ScratchV 输出 | ~57 条伪指令（mv/mul/add/slt/bnez…） |
 | LLVM 输出 | ~1099 条（RV64FD O2，真实循环展开） |
 | 断言 | `asm_valid == True` |
@@ -141,19 +141,20 @@ convert_onnx_to_llvm(model)     → LLVM IR (866K lines, 183MB)
 | `mean_s` | `float` | `perf_counter` 均值 | 单次分配耗时（秒） |
 | `stdev_s` | `float` | `stdev` | 耗时标准差 |
 | `vreg_count` | `int` | `len(alloc.alloc_map)` | 已分配的虚拟寄存器数 |
-| `spills` | `int` | `len(alloc._spill_slots)` | 溢出 slot 数（别名） |
-| `reg_spill_count` | `int` | 同上 | **统一溢出指标键**（接口规范） |
-| `peak_active` | `int` | `alloc.peak_active` | 峰值同时活跃的物理寄存器数 |
+| `spills` | `int` | `alloc.spill_store_count` | 静态 spill store 数（兼容键） |
+| `spill_slots` | `int` | `len(alloc._spill_slots)` | 分配的唯一栈槽数 |
+| `spill_stores` | `int` | `alloc.spill_store_count` | 生成汇编中的静态 spill store 数 |
+| `reg_spill_count` | `int` | 同上 | **统一溢出事件指标键**（接口规范） |
+| `reloads` | `int` | `alloc.reload_load_count` | 生成汇编中的静态 reload load 数 |
+| `peak_active` | `int` | `alloc.peak_active` | 分配过程中映射到物理寄存器的峰值数 |
+| `pressure_peak` | `int` | live interval 精确重叠扫描 | 峰值同时活跃的虚拟寄存器数 |
+| `pressure_excess_peak` | `int` | `max(0, pressure_peak - 物理寄存器数)` | 峰值理论超额压力 |
 | `asm_lines` | `int` | `len(code.splitlines())` | 汇编输出行数 |
 | `valid` | `bool` | 由 `run_bench()` 设置 | 该项是否通过断言 |
 
 ### 4.2 Benchmark 特有键
 
-**bench_dense**：
-
-| 键 | 说明 |
-|----|------|
-| `reloads` | `lw ... # reload` 注释行数 |
+**bench_dense**：使用上述通用的 `spill_slots`、`spill_stores`、`reloads` 和压力指标，不再把栈槽数与静态溢出事件混为一谈。
 
 **bench_cnn (ScratchV 侧)**：
 
@@ -185,9 +186,11 @@ convert_onnx_to_llvm(model)     → LLVM IR (866K lines, 183MB)
 
 ### 4.3 `reg_spill_count` 规范
 
-- **经过 regalloc 的路径**：直接取自 `alloc._spill_slots` 长度 → 精确值
+- **经过 regalloc 的路径**：取生成汇编中的静态 spill store 数；`spill_slots` 与 `reloads` 分开报告
 - **不经过 regalloc 的路径**：LLVM 侧 `reg_spill_count` 是本路径的 ScratchV 精确值（0）；LLVM 近似溢出独立为 `llvm_spill_slots`，不污染统一键
 - **降级路径**：当 libLLVM 不可用时，`llvm_fd_instrs`/`llvm_spill_slots` 等键不存在于 dict 中，报告渲染 fallback 到 `"-"`
+
+`reg_spill_count` 是静态代码中的 store site 数，不是运行时执行次数。循环内一次静态 spill 可能动态执行多次；要得到动态计数，需要在可执行仿真器中按运行轨迹统计。
 
 ---
 

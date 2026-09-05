@@ -104,11 +104,17 @@ def _reg_num(name: str) -> int:
     name = name.strip().lstrip("%")
     if name in REG_MAP:
         return REG_MAP[name]
+    # Some legacy selectors spell the architectural zero register as the
+    # integer literal 0 in a register position.  Accept only that numeric
+    # alias; every other unknown name is an unresolved/invalid register.
+    if name == "0":
+        return 0
     # Handle stack-pointer offset syntax: "16(sp)", "-4(sp)"
     if "(" in name and ")" in name:
         base = name[name.index("(") + 1:name.index(")")]
-        return REG_MAP.get(base, 0)
-    return 0
+        if base in REG_MAP:
+            return REG_MAP[base]
+    raise ValueError(f"unknown register: {name}")
 
 
 def _sext(val: int, bits: int) -> int:
@@ -177,11 +183,12 @@ class RISCVAEncoder:
         self.labels: dict[str, int] = {}  # label -> instruction index
         self.pending_fixups: list[tuple[int, str, str]] = []
         self._max_counter = 0
-        self._temp_reg = 0
+        self._temp_reg: int | None = None
+        self._reserved_labels: set[str] = set()
 
     # ── Pseudo-instruction expansion ──────────────────────────────────
 
-    def _find_free_temp(self, asm_text: str) -> int:
+    def _find_free_temp(self, asm_text: str) -> int | None:
         """Scan assembly text for used registers; return first free temp.
 
         Preference order: t6, t5, t4, t3, t2, t1, t0 (x31 down to x5).
@@ -197,7 +204,7 @@ class RISCVAEncoder:
         for r in [31, 30, 29, 28, 7, 6, 5]:
             if r not in used:
                 return r
-        return 31  # fallback
+        return None
 
     def _expand_pseudo(self, line: str) -> list[str]:
         """Expand one possibly-pseudo line into standard RISC-V lines.
@@ -213,6 +220,15 @@ class RISCVAEncoder:
 
         op = tokens[0].lower()
 
+        # A local ``call`` can be represented exactly by ``jal ra, label``.
+        # This produces a real executable instruction and uses the same strict
+        # label fixup/undefined-target checks as ordinary jumps.  A future ELF
+        # relocator may choose the wider AUIPC/JALR sequence for far symbols.
+        if op == "call":
+            if len(tokens) != 2:
+                raise ValueError("call expects exactly one target label")
+            return [f"jal ra, {tokens[1]}"]
+
         # li rd, imm -> addi rd, x0, imm (small values), otherwise the
         # canonical LUI/ADDI pair.  A single RISC-V instruction cannot encode
         # an arbitrary 32-bit immediate; keeping a large ``li`` as one encoded
@@ -222,20 +238,40 @@ class RISCVAEncoder:
             imm = self._parse_imm(tokens[2])
             return self._expand_li(rd, imm)
 
-        # max rd, rs1, rs2  →  4-instruction sequence
+        # max rd, rs1, rs2  →  branch-and-copy sequence.  ``rs2`` may be
+        # an immediate in ScratchV IR; materialize it in the encoder's free
+        # temporary so both the comparison and false arm use the same value.
         if op == "max":
-            rd = tokens[1] if len(tokens) > 1 else "x0"
-            rs1 = tokens[2] if len(tokens) > 2 else "x0"
-            rs2 = tokens[3] if len(tokens) > 3 else "x0"
-            n = self._max_counter
-            self._max_counter += 1
+            if len(tokens) != 4:
+                raise ValueError("max expects exactly 3 operands")
+            rd = tokens[1]
+            rs1 = tokens[2]
+            rs2 = tokens[3]
+            rhs = rs2
+            if rs2 not in REG_MAP and not rs2.startswith("x") \
+                    and not rs2.startswith("%"):
+                immediate = self._parse_imm(rs2)
+                if immediate == 0:
+                    rhs = "x0"
+                else:
+                    raise ValueError(
+                        "max immediate rhs currently supports only zero"
+                    )
+            while True:
+                n = self._max_counter
+                self._max_counter += 1
+                then_label = f".__max_then_{n}"
+                end_label = f".__max_end_{n}"
+                if not {then_label, end_label} & self._reserved_labels:
+                    self._reserved_labels.update({then_label, end_label})
+                    break
             return [
-                f"bge {rs1}, {rs2}, .__max_then_{n}",
-                f"addi {rd}, x0, 0",
-                f"j .__max_end_{n}",
-                f".__max_then_{n}:",
+                f"bge {rs1}, {rhs}, {then_label}",
+                f"addi {rd}, {rhs}, 0",
+                f"j {end_label}",
+                f"{then_label}:",
                 f"addi {rd}, {rs1}, 0",
-                f".__max_end_{n}:",
+                f"{end_label}:",
             ]
 
         # Branch-with-immediate:  beq/bne/blt/bge rs1, imm, label
@@ -249,6 +285,11 @@ class RISCVAEncoder:
                     except ValueError:
                         pass
                     else:
+                        if self._temp_reg is None:
+                            raise ValueError(
+                                "branch-immediate expansion needs a free "
+                                "temporary register; t0-t6 are all in use"
+                            )
                         temp = f"x{self._temp_reg}"
                         label = tokens[3]
                         return self._expand_li(temp, imm) + [
@@ -276,10 +317,18 @@ class RISCVAEncoder:
 
     def assemble(self, asm_text: str) -> bytearray:
         """Assemble RISC-V assembly text to flat binary."""
+        self.labels.clear()
+        self.pending_fixups.clear()
+        self._max_counter = 0
         # Pre-scan: find a free temp register for pseudo expansion
         clean_text = "\n".join(
             line.split("#")[0] for line in asm_text.split("\n")
         )
+        self._reserved_labels = {
+            line.strip()[:-1].strip()
+            for line in clean_text.splitlines()
+            if line.strip().endswith(":")
+        }
         self._temp_reg = self._find_free_temp(clean_text)
 
         lines = asm_text.strip().split("\n")
@@ -444,14 +493,31 @@ class RISCVAEncoder:
             fixup = ("b", label)
             word = _b_type(rs1, rs2, 0, F3_BGE)
         elif op == "bnez":
+            if len(operands) != 2:
+                raise ValueError(
+                    "bnez expects exactly 2 operands: register and label"
+                )
             rs1 = _reg_num(operands[0])
             label = operands[1]
             fixup = ("b", label)
             word = _b_type(rs1, 0, 0, F3_BNE)
-        elif op == "j" or op == "jal":
+        elif op == "j":
+            if len(operands) != 1:
+                raise ValueError("j expects exactly 1 operand: label")
             label = operands[0]
             fixup = ("j", label)
             word = _j_type(0, 0)
+        elif op == "jal":
+            if len(operands) == 1:
+                rd = 1
+                label = operands[0]
+            elif len(operands) == 2:
+                rd = _reg_num(operands[0])
+                label = operands[1]
+            else:
+                raise ValueError("jal expects a label or rd, label")
+            fixup = ("j", label)
+            word = _j_type(rd, 0)
         elif op == "jalr":
             rd = _reg_num(operands[0])
             rs1 = _reg_num(operands[1])
@@ -499,6 +565,9 @@ class RISCVAEncoder:
         if kind == "runtime_call":
             return word
 
+        if kind in ("b", "j") and label not in self.labels:
+            raise ValueError(f"undefined branch target: {label}")
+
         target_idx = self.labels.get(label, current_idx)
         offset = target_idx - current_idx
 
@@ -510,7 +579,8 @@ class RISCVAEncoder:
             return _b_type(rs1, rs2, byte_offset, funct3)
         elif kind == "j":
             byte_offset = offset * 4
-            return _j_type(0, byte_offset)
+            rd = (word >> 7) & 0x1F
+            return _j_type(rd, byte_offset)
         elif kind == "call":
             byte_offset = offset * 4
             return _u_type(1, byte_offset >> 12)

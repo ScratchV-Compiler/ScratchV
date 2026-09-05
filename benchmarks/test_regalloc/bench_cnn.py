@@ -16,8 +16,9 @@ import time
 from scratchv.backend.regalloc_linear_v1_5 import (
     LinearScanAllocator,
     block_from_machine_instrs,
-    _INT_REGS,
 )
+from scratchv.backend.machine_types import ALL_REGS
+from scratchv.backend.riscv_encoder import RISCVAEncoder
 from scratchv.backend.register_alloc import RegisterAllocator
 from scratchv.standalone.compare_codegen import count_riscv_instrs
 
@@ -56,30 +57,13 @@ def _compile_onnx(onnx_path: str) -> tuple:
 # ---------------------------------------------------------------------------
 # Assembly validation
 # ---------------------------------------------------------------------------
-from benchmarks.test_regalloc.bench_utils import _KNOWN_OPS
-
-
 def _validate_asm(asm: str) -> list[str]:
-    """Check no unresolved vregs, valid opcodes."""
-    errors: list[str] = []
-    for lineno, line in enumerate(asm.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        content = stripped.lstrip()
-        if content.endswith(":") or not content:
-            continue
-        if "#" in content:
-            content = content[: content.index("#")].strip()
-        parts = content.split()
-        if not parts:
-            continue
-        if parts[0] not in _KNOWN_OPS:
-            errors.append(f"Line {lineno}: unknown opcode '{parts[0]}'")
-        for token in parts:
-            if token.startswith("v") and token[1:].isdigit():
-                errors.append(f"Line {lineno}: unresolved vreg '{token}'")
-    return errors
+    """Run the emitted program through the real RV32IM encoder."""
+    try:
+        RISCVAEncoder().assemble(asm)
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        return [f"RISCVAEncoder: {type(exc).__name__}: {exc}"]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +169,7 @@ def _llvm_compare(cnn_path: str) -> dict:
     """
     from scratchv.standalone.compare_codegen import _load_llvm, llvm_ir_to_riscv
     from scratchv.standalone.onnx_to_llvm_standalone import convert_onnx_to_llvm
-    from .bench_utils import llvmlite_ir_to_riscv
+    from benchmarks.test_regalloc.bench_utils import llvmlite_ir_to_riscv
 
     # lib = _load_llvm()
     ir = convert_onnx_to_llvm(cnn_path)
@@ -215,8 +199,6 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
     block = block_from_machine_instrs(machine)
 
     times = []
-    spill_counts = []
-
     # Warm up
     for _ in range(repeats):
         alloc = LinearScanAllocator(phys_regs=phys_regs)
@@ -224,7 +206,6 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         alloc.allocate(alloc.compute_live_intervals(block))
         t1 = time.perf_counter()
         times.append(t1 - t0)
-        spill_counts.append(len(alloc._spill_slots))
 
     # Final run for stable stats + assembly validation
     alloc = LinearScanAllocator(phys_regs=phys_regs)
@@ -246,8 +227,13 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         "ir_inst_count": ir_count,
         "machine_instrs": len(machine),
         "vreg_count": len(alloc.alloc_map),
-        "reg_spill_count": spill_counts[-1],
+        "spill_slots": len(alloc._spill_slots),
+        "spill_stores": alloc.spill_store_count,
+        "reg_spill_count": alloc.spill_store_count,
+        "reloads": alloc.reload_load_count,
         "peak_active": alloc.peak_active,
+        "pressure_peak": alloc.pressure_peak,
+        "pressure_excess_peak": alloc.pressure_excess_peak,
         "asm_lines": len(code.splitlines()),
         "sv_static_instrs": sv_cnt,
         "sv_cats": sv_cats,
@@ -266,7 +252,7 @@ def run_bench(
 ) -> dict:
     """Entry point for the test suite runner."""
     if phys_regs is None:
-        phys_regs = list(_INT_REGS)
+        phys_regs = list(ALL_REGS)
     stats = bench_allocate(cnn_path, phys_regs, repeats=repeats)
 
     # Emulator verification (non-fatal)
@@ -313,7 +299,7 @@ def main():
             "cnn.onnx",
         )
 
-    phys_regs = list(_INT_REGS)
+    phys_regs = list(ALL_REGS)
 
     print("=" * 60)
     print("Benchmark 3 — CNN Model Integration And Comparation With LLVM Backend")
@@ -343,11 +329,11 @@ def main():
 
     if not stats["asm_valid"]:
         for e in stats["asm_errors"][:3]:
-            print(f"  ✗ {e}")
+            print(f"  FAIL {e}")
     if not stats["emu_passed"]:
-        print(f"  Emulator: ✗ {stats['emu_error']}")
+        print(f"  Emulator: FAIL {stats['emu_error']}")
     else:
-        print(f"  Emulator: ✓ passed")
+        print("  Emulator: PASS")
 
     # LLVM comparison output
     print()
@@ -359,17 +345,25 @@ def main():
         f"  ScratchV LinearScan: {stats['sv_static_instrs']} instrs "
         f"{stats['sv_cat_buckets']}"
     )
-    print(f"  LLVM RV64IM:         {stats['llvm_im_instrs']} instrs")
+    if stats["llvm_available"]:
+        print(f"  LLVM RV64IM:         {stats['llvm_im_instrs']} instrs")
+        print(
+            f"  LLVM RV64FD:         {stats['llvm_fd_instrs']} instrs "
+            f"({stats['instr_ratio_fd']}x vs ScratchV) "
+            f"{stats['llvm_fd_cat_buckets']}"
+        )
+        print(
+            f"  Spill (LLVM approx): {stats['llvm_spill_slots']} slots "
+            f"(frame save/restore {stats['llvm_frame_save']}/"
+            f"{stats['llvm_frame_restore']})"
+        )
+    else:
+        print(f"  LLVM: unavailable ({stats['llvm_error']})")
     print(
-        f"  LLVM RV64FD:         {stats['llvm_fd_instrs']} instrs "
-        f"({stats['instr_ratio_fd']}x vs ScratchV) "
-        f"{stats['llvm_fd_cat_buckets']}"
-    )
-    print(
-        f"  Spill (LLVM approx): {stats['llvm_spill_slots']} slots "
-        f"(frame save/restore {stats['llvm_frame_save']}/"
-        f"{stats['llvm_frame_restore']}); "
-        f"ScratchV (exact): reg_spill_count={stats['reg_spill_count']}"
+        "  ScratchV regalloc: "
+        f"spill_slots={stats['spill_slots']}, "
+        f"spill_stores={stats['spill_stores']}, "
+        f"reloads={stats['reloads']}"
     )
 
     asm_ok = "PASS" if stats["asm_valid"] else "FAIL"

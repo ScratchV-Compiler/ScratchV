@@ -60,15 +60,12 @@ def bench_allocate(
 ) -> dict:
     """Benchmark the full allocation pipeline."""
     times = []
-    spill_counts = []
-
     for _ in range(repeats):
         alloc = LinearScanAllocator(phys_regs=phys_regs)
         t0 = time.perf_counter()
         alloc.allocate(alloc.compute_live_intervals(block))
         t1 = time.perf_counter()
         times.append(t1 - t0)
-        spill_counts.append(len(alloc._spill_slots))
 
     # One final run for stable stats
     alloc = LinearScanAllocator(phys_regs=phys_regs)
@@ -79,9 +76,14 @@ def bench_allocate(
         "mean_s": statistics.mean(times),
         "stdev_s": statistics.stdev(times) if len(times) > 1 else 0,
         "vreg_count": len(alloc.alloc_map),
-        "spills": spill_counts[-1],
-        "reg_spill_count": spill_counts[-1],
+        "spills": alloc.spill_store_count,
+        "spill_slots": len(alloc._spill_slots),
+        "spill_stores": alloc.spill_store_count,
+        "reg_spill_count": alloc.spill_store_count,
+        "reloads": alloc.reload_load_count,
         "peak_active": alloc.peak_active,
+        "pressure_peak": alloc.pressure_peak,
+        "pressure_excess_peak": alloc.pressure_excess_peak,
         "asm_lines": len(code.splitlines()),
         "_report": alloc.report(),
         "_alloc": alloc,

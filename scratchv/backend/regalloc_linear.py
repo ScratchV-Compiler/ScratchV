@@ -17,20 +17,31 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from scratchv.backend.machine_semantics import (
+    get_machine_semantics,
+    linear_scan_operands,
+    virtual_register_defs_uses,
+)
+from scratchv.backend.machine_types import ALL_REGS
+from scratchv.backend.regalloc_metrics import (
+    count_spill_reload_sites,
+    peak_live_intervals,
+)
+from scratchv.backend.regalloc_cfg import (
+    MachineCFG,
+    analyze_control_flow,
+    apply_cfg_liveness,
+)
+from scratchv.backend.regalloc_rewrite import rewrite_with_spills
+
 
 # ---------------------------------------------------------------------------
 # RISC-V register definitions
 # ---------------------------------------------------------------------------
 
-# Allocatable integer registers (excludes x0/zero, sp, gp, tp, ra)
-_INT_REGS = [
-    # Argument/temp registers (caller-saved)
-    "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",   # x10-x17
-    "t0", "t1", "t2", "t3", "t4", "t5", "t6",          # x5-x7, x28-x31
-    # Saved registers (callee-saved)
-    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",    # x8-x9, x18-x23
-    "s8", "s9", "s10", "s11",                           # x24-x27
-]
+# Canonical 19-register bank shared with the greedy allocator.  Keep the
+# private alias for compatibility with existing benchmark imports.
+_INT_REGS = list(ALL_REGS)
 
 _FP_REGS = [
     "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7",
@@ -115,6 +126,12 @@ class LsInstruction:
 
     def to_asm(self, rename: Optional[dict[str, str]] = None) -> str:
         """Emit this instruction as assembly after register renaming."""
+        if self.opcode == ".label":
+            label = self.operands[0] if self.operands else self.comment
+            if not label:
+                raise ValueError("machine label must have a name")
+            return f"{label}:"
+
         ops = self.operands[:]
         if rename:
             ops = [rename.get(o, o) for o in ops]
@@ -201,6 +218,12 @@ class LinearScanAllocator:
         self._intervals: list[LiveInterval] = []
         self._vreg_interval: dict[str, LiveInterval] = {}
         self._evictions: dict[int, list[str]] = {}  # pos -> sw lines emitted before reload
+        self.peak_active: int = 0
+        self.pressure_peak: int = 0
+        self.pressure_excess_peak: int = 0
+        self.spill_store_count: int = 0
+        self.reload_load_count: int = 0
+        self.cfg: MachineCFG = MachineCFG([], {}, {})
 
     # ------------------------------------------------------------------
     # Live interval computation
@@ -257,7 +280,8 @@ class LinearScanAllocator:
                 vreg=vreg, start=start, end=end, uses=uses,
             ))
 
-        return sorted(intervals, key=lambda iv: iv.start)
+        self.cfg = analyze_control_flow(block)
+        return apply_cfg_liveness(intervals, self.cfg)
 
     # ------------------------------------------------------------------
     # Linear scan allocation
@@ -281,8 +305,16 @@ class LinearScanAllocator:
         self._reloads.clear()
         self._spilled.clear()
         self._evictions.clear()
+        self.stack_slot = 0
         self._intervals = intervals
         self._vreg_interval = {iv.vreg: iv for iv in intervals}
+        self.peak_active = 0
+        self.pressure_peak = peak_live_intervals(intervals)
+        self.pressure_excess_peak = max(
+            0, self.pressure_peak - len(self.phys_regs)
+        )
+        self.spill_store_count = 0
+        self.reload_load_count = 0
 
         # Active list: (interval, phys_reg) sorted by increasing end
         active: list[tuple[LiveInterval, str]] = []
@@ -308,6 +340,8 @@ class LinearScanAllocator:
                     )
                     self.alloc_map[interval.vreg] = reg
                     active.append((interval, reg))
+
+            self.peak_active = max(self.peak_active, len(active))
 
         return dict(self.alloc_map)
 
@@ -407,7 +441,7 @@ class LinearScanAllocator:
         self.allocate(intervals)
         return self.get_allocated_code(block)
 
-    def get_allocated_code(self, block: list[LsInstruction]) -> str:
+    def _get_allocated_code_legacy(self, block: list[LsInstruction]) -> str:
         """Generate allocated assembly with spill stores and reloads.
 
         Walks the instruction block in order.  Before each instruction
@@ -443,7 +477,12 @@ class LinearScanAllocator:
             if inst.id in self.spill_code:
                 lines.extend(self.spill_code[inst.id])
 
-        return "\n".join(lines)
+        assembly = "\n".join(lines)
+        (
+            self.spill_store_count,
+            self.reload_load_count,
+        ) = count_spill_reload_sites(assembly)
+        return assembly
 
     def _pick_reload_reg(self, rename: dict[str, str], current_pos: int,
                           protected_vregs: set[str] | None = None) -> str:
@@ -519,6 +558,16 @@ class LinearScanAllocator:
         del rename[farthest_vreg]
         return evicted_reg
 
+    def get_allocated_code(self, block: list[LsInstruction]) -> str:
+        """Emit allocated code through the CFG-aware spill rewriter."""
+
+        assembly = rewrite_with_spills(self, block)
+        (
+            self.spill_store_count,
+            self.reload_load_count,
+        ) = count_spill_reload_sites(assembly)
+        return assembly
+
     # ------------------------------------------------------------------
     # Report
     # ------------------------------------------------------------------
@@ -531,6 +580,12 @@ class LinearScanAllocator:
         parts.append("Linear Scan Register Allocation Report")
         parts.append(f"  Virtual registers allocated: {total}")
         parts.append(f"  Stack spill slots used: {spilled}")
+        parts.append(f"  Static spill stores: {self.spill_store_count}")
+        parts.append(f"  Static reload loads: {self.reload_load_count}")
+        parts.append(f"  Peak live-register pressure: {self.pressure_peak}")
+        parts.append(
+            f"  Peak pressure above register bank: {self.pressure_excess_peak}"
+        )
         parts.append(
             f"  Physical registers available: {len(self.phys_regs)}"
         )
@@ -561,24 +616,8 @@ def block_from_machine_instrs(
     """
     result = []
     for i, mi in enumerate(instrs):
-        defines: set[str] = set()
-        uses: set[str] = set()
-        operands: list[str] = []
-
-        for op in (mi.dst, mi.src1, mi.src2):
-            if op is None:
-                continue
-            op_str = str(op).lstrip("%")
-            if op.kind == "vreg":
-                # For the destination operand position
-                if op is mi.dst:
-                    defines.add(op_str)
-                    operands.append(op_str)
-                else:
-                    uses.add(op_str)
-                    operands.append(op_str)
-            else:
-                operands.append(op_str)
+        defines, uses = virtual_register_defs_uses(mi)
+        operands, comment = linear_scan_operands(mi)
 
         if mi.op.value == ".label":
             result.append(LsInstruction(
@@ -592,7 +631,7 @@ def block_from_machine_instrs(
                 operands=operands,
                 defines=defines,
                 uses=uses,
-                comment=mi.comment,
+                comment=comment,
             ))
 
     return result
@@ -620,21 +659,29 @@ def machine_instrs_from_block(
     result = []
     for inst in block:
         if inst.opcode == ".label":
+            label = inst.operands[0] if inst.operands else inst.comment
             result.append(MachineInstr(
-                MachineOp.LABEL, comment=inst.comment,
+                MachineOp.LABEL, comment=label,
             ))
             continue
 
         # Resolve opcode
-        try:
-            mop = MachineOp(inst.opcode)
-        except ValueError:
-            mop = MachineOp.MV  # fallback
+        mop = MachineOp(inst.opcode)
 
-        # Build operands
+        # Move semantic branch/jump targets back to MachineInstr.comment,
+        # preserving the legacy MachineInstr representation on round-trip.
+        operand_strings = list(inst.operands)
+        comment = inst.comment
+        semantics = get_machine_semantics(mop)
+        if semantics.target_from_comment:
+            if semantics.target_required and not operand_strings:
+                raise ValueError(f"{mop.value} requires a target label")
+            if operand_strings:
+                comment = operand_strings.pop()
+
+        # Build register/immediate operands.
         def _to_mop(s: str) -> MachineOperand:
-            if s.startswith("x") or s.startswith("a") or s.startswith("t") or \
-               s.startswith("s") or s.startswith("f") or s in ("zero", "ra", "sp", "gp", "tp", "fp"):
+            if s in _REG_NUMS:
                 return MachineOperand.reg(s)
             try:
                 return MachineOperand.immediate(int(s))
@@ -644,7 +691,7 @@ def machine_instrs_from_block(
         dst = None
         src1 = None
         src2 = None
-        ops = [_to_mop(o) for o in inst.operands]
+        ops = [_to_mop(o) for o in operand_strings]
         if len(ops) >= 1:
             dst = ops[0]
         if len(ops) >= 2:
@@ -652,6 +699,6 @@ def machine_instrs_from_block(
         if len(ops) >= 3:
             src2 = ops[2]
 
-        result.append(MachineInstr(mop, dst, src1, src2, inst.comment))
+        result.append(MachineInstr(mop, dst, src1, src2, comment))
 
     return result
