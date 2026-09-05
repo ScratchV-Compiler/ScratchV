@@ -46,13 +46,19 @@ return result
     parser2 = DSLParser()
     program2 = parser2.parse(dsl_source)
 
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
-    folder = ConstantFolder(program2)
-    folded = folder.run()
-    elim = DeadCodeEliminator(program2)
-    eliminated = elim.run()
-    print(f"  Folded: {folded}, Eliminated: {eliminated}")
+    # "basic" is the stable constant-folding -> dead-code-elim pipeline.
+    # run() optimizes program2 in place and returns an immutable report.
+    from scratchv.compiler import create_optimization_pass_manager
+    report = create_optimization_pass_manager("basic").run(program2)
+    changes_by_name = {
+        execution.name: execution.changes for execution in report.executions
+    }
+    folded_changes = changes_by_name["constant-folding"]
+    eliminated_changes = changes_by_name["dead-code-elim"]
+    print(
+        f"  Constant folds: {folded_changes}, "
+        f"dead-code eliminations: {eliminated_changes}"
+    )
 
     codegen2 = LLVMCodegen(program2)
     basic_ir = codegen2.emit()
@@ -64,14 +70,9 @@ return result
     parser3 = DSLParser()
     program3 = parser3.parse(dsl_source)
 
-    folder3 = ConstantFolder(program3)
-    folder3.run()
-    elim3 = DeadCodeEliminator(program3)
-    elim3.run()
-    from scratchv.optimizer.peephole import IRPeepholeOptimizer
-    peep = IRPeepholeOptimizer(program3)
-    peeped = peep.run()
-    print(f"  Folded+DCE+Peephole: {peeped} optimizations")
+    # "all" runs the five canonical passes in registration order and mutates program3.
+    report = create_optimization_pass_manager("all").run(program3)
+    print(f"  Full pipeline total changes: {report.total_changes}")
 
     codegen3 = LLVMCodegen(program3)
     opt_ir = codegen3.emit()

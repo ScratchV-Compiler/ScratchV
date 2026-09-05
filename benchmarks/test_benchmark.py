@@ -153,22 +153,18 @@ def test_parse_onnx(model_name: str, benchmark_models: dict[str, str]):
 @pytest.mark.parametrize("model_name", MODEL_PARAMS, ids=_model_id)
 def test_optimize(model_name: str, benchmark_models: dict[str, str]):
     """Parse + optimize, check IR is not empty."""
+    from scratchv.compiler import create_optimization_pass_manager
     from scratchv.frontend.onnx_parser import ONNXParser
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
-    from scratchv.optimizer.peephole import IRPeepholeOptimizer
 
     path = benchmark_models[model_name]
     program = ONNXParser().parse(path)
 
     inst_before = sum(1 for f in program.functions for bb in f.blocks for _ in bb.instructions)
 
-    ConstantFolder(program).run()
-    DeadCodeEliminator(program).run()
-    IRPeepholeOptimizer(program).run()
+    create_optimization_pass_manager("all").run(program)
 
     inst_after = sum(1 for f in program.functions for bb in f.blocks for _ in bb.instructions)
-    assert inst_after >= 0, f"Optimization failed for {model_name}"
+    assert 0 < inst_after <= inst_before, f"Optimization failed for {model_name}"
     print(f"\n    {model_name}: {inst_before} → {inst_after} instructions")
 
 
@@ -180,9 +176,8 @@ def test_optimize(model_name: str, benchmark_models: dict[str, str]):
 @pytest.mark.parametrize("backend", BACKEND_PARAMS)
 def test_codegen_riscv(model_name: str, backend: str, benchmark_models: dict[str, str]):
     """Parse + codegen → RISC-V assembly, check output is non-empty."""
+    from scratchv.compiler import create_optimization_pass_manager
     from scratchv.frontend.onnx_parser import ONNXParser
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
     from scratchv.backend.instruction_select import InstructionSelector
     from scratchv.backend.register_alloc import RegisterAllocator
     from scratchv.backend.asm_emit import AsmEmitter
@@ -190,8 +185,7 @@ def test_codegen_riscv(model_name: str, backend: str, benchmark_models: dict[str
     path = benchmark_models[model_name]
     program = ONNXParser().parse(path)
 
-    ConstantFolder(program).run()
-    DeadCodeEliminator(program).run()
+    create_optimization_pass_manager("basic").run(program)
 
     selector = InstructionSelector(program)
     machine = selector.run()

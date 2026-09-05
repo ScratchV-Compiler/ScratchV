@@ -1,6 +1,6 @@
 """Compiler driver and pass manager for ScratchV.
 
-Provides a ``PassManager`` that chains compiler passes together and a
+Provides a ``PassManager`` that runs IR optimization passes and a
 ``CompilerDriver`` that orchestrates the full compilation pipeline:
 parse → optimise → codegen → verify → emit.
 
@@ -21,9 +21,15 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
-from scratchv.pass_interface import CompilerPass, PassResult
+from scratchv.ir.types import Program
+from scratchv.pass_interface import (
+    OptimizationPass,
+    OptimizationPassError,
+    OptimizationReport,
+    PassExecutionStats,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -80,81 +86,96 @@ class CompilerConfig:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class PassManager:
-    """Manages a sequence of compiler passes and runs them in order.
-
-    Each pass receives the output of the previous pass as its input. The
-    first pass receives the initial ``input_data`` provided to ``run()``.
+    """Register and run IR optimization passes in a deterministic order.
 
     Usage::
 
         pm = PassManager()
-        pm.add(ConstantFolder(program))
-        pm.add(DeadCodeEliminator(program))
-        result = pm.run(program)
+        pm.register(ConstantFolder())
+        pm.register(DeadCodeEliminator())
+        report = pm.run(program)
     """
 
     def __init__(self, name: str = "pipeline"):
+        if not isinstance(name, str):
+            raise TypeError("pipeline name must be a string")
+        if not name.strip():
+            raise ValueError("pipeline name must not be empty")
         self._name = name
-        self._passes: list[CompilerPass] = []
+        self._passes: list[OptimizationPass] = []
 
     @property
     def name(self) -> str:
         return self._name
 
     @property
-    def passes(self) -> list[CompilerPass]:
+    def passes(self) -> list[OptimizationPass]:
         return list(self._passes)
 
-    def add(self, pass_: CompilerPass) -> "PassManager":
-        """Add a pass to the end of the pipeline.  Returns self for chaining."""
+    def register(self, pass_: OptimizationPass) -> "PassManager":
+        """Append an optimization pass and return ``self`` for chaining."""
+        if not isinstance(pass_, OptimizationPass):
+            raise TypeError("registered pass must implement OptimizationPass")
+        if not isinstance(pass_.name, str):
+            raise TypeError("optimization pass name must be a string")
+        if not pass_.name.strip():
+            raise ValueError("optimization pass name must not be empty")
         self._passes.append(pass_)
         return self
 
-    def run(self, input_data: Any) -> PassResult:
-        """Run all passes sequentially.
+    def add(self, pass_: OptimizationPass) -> "PassManager":
+        """Compatibility alias for :meth:`register`."""
+        return self.register(pass_)
 
-        Returns the final ``PassResult``.  If any pass returns ``None``
-        data the pipeline stops early and returns the last result.
-        """
-        data = input_data
-        total_changes = 0
-        messages: list[str] = []
-        all_warnings: list[str] = []
-        timings: dict[str, float] = {}
+    def run(self, program: Program) -> OptimizationReport:
+        """Optimize ``program`` in place and return ordered execution stats."""
+        if not isinstance(program, Program):
+            raise TypeError("PassManager.run() requires a Program")
 
-        for p in self._passes:
+        executions: list[PassExecutionStats] = []
+        for index, pass_ in enumerate(self._passes):
             t0 = time.perf_counter()
             try:
-                result = p.run(data)
+                changes = pass_.optimize(program)
+                self._validate_change_count(changes)
             except Exception as exc:
-                return PassResult(
-                    data=None,
-                    changes=total_changes,
-                    message=f"Pass '{p.name}' failed: {exc}",
-                    warnings=all_warnings,
-                )
+                elapsed = time.perf_counter() - t0
+                completed_report = self._make_report(executions)
+                raise OptimizationPassError(
+                    pass_index=index,
+                    pass_name=pass_.name,
+                    elapsed_seconds=elapsed,
+                    completed_report=completed_report,
+                    cause=exc,
+                ) from exc
             elapsed = time.perf_counter() - t0
-            timings[p.name] = elapsed
-
-            if result.data is None:
-                return PassResult(
-                    data=None,
-                    changes=total_changes,
-                    message=f"Pipeline stopped after '{p.name}': {result.message}",
-                    warnings=all_warnings + result.warnings,
+            executions.append(
+                PassExecutionStats(
+                    index=index,
+                    name=pass_.name,
+                    changes=changes,
+                    elapsed_seconds=elapsed,
                 )
+            )
 
-            data = result.data
-            total_changes += result.changes
-            if result.message:
-                messages.append(f"[{p.name}] {result.message}")
-            all_warnings.extend(result.warnings)
+        return self._make_report(executions)
 
-        return PassResult(
-            data=data,
-            changes=total_changes,
-            message="; ".join(messages) if messages else "pipeline complete",
-            warnings=all_warnings,
+    @staticmethod
+    def _validate_change_count(changes: int) -> None:
+        if isinstance(changes, bool) or not isinstance(changes, int):
+            raise TypeError("optimization pass must return an integer change count")
+        if changes < 0:
+            raise ValueError("optimization pass change count must be non-negative")
+
+    def _make_report(self, executions: list[PassExecutionStats]) -> OptimizationReport:
+        records = tuple(executions)
+        return OptimizationReport(
+            pipeline_name=self._name,
+            executions=records,
+            total_changes=sum(item.changes for item in records),
+            elapsed_seconds=sum(
+                (item.elapsed_seconds for item in records), 0.0
+            ),
         )
 
     def report(self) -> str:
@@ -163,6 +184,35 @@ class PassManager:
         for p in self._passes:
             lines.append(f"  {p.name}")
         return "\n".join(lines)
+
+
+def create_optimization_pass_manager(level: str) -> PassManager:
+    """Build the canonical ``none``/``basic``/``all`` IR pipeline."""
+    if not isinstance(level, str):
+        raise TypeError("optimization level must be a string")
+    if level not in {"none", "basic", "all"}:
+        raise ValueError("optimization level must be one of: none, basic, all")
+
+    manager = PassManager("optimizer")
+    if level == "none":
+        return manager
+
+    from scratchv.optimizer.constant_folding import ConstantFolder
+    from scratchv.optimizer.dead_code import DeadCodeEliminator
+
+    manager.register(ConstantFolder())
+    manager.register(DeadCodeEliminator())
+
+    if level == "all":
+        from scratchv.optimizer.licm import LICM
+        from scratchv.optimizer.muladd_fusion import MulAddFusion
+        from scratchv.optimizer.peephole import IRPeepholeOptimizer
+
+        manager.register(IRPeepholeOptimizer())
+        manager.register(MulAddFusion())
+        manager.register(LICM())
+
+    return manager
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -233,7 +283,6 @@ class CompilerDriver:
         Returns:
             A ``CompileResult`` with output text and statistics.
         """
-        errors: list[str] = []
         warnings: list[str] = []
 
         # Resolve output path
@@ -259,9 +308,24 @@ class CompilerDriver:
 
         # --- 3. Optimize ---
         opt_message = ""
-        if self.config.optimize_level != "none":
-            opt_result = self._run_optimizations(program)
-            opt_message = opt_result.message
+        try:
+            optimization_report = self._run_optimizations(program)
+        except (OptimizationPassError, TypeError, ValueError) as exc:
+            if isinstance(exc, OptimizationPassError):
+                completed_report = exc.completed_report
+            else:
+                completed_report = OptimizationReport("optimizer", (), 0, 0.0)
+            optimization_stats = self._optimization_stats(completed_report)
+            return CompileResult(
+                success=False,
+                errors=[f"Optimization error: {exc}"],
+                stats={
+                    "optimization": optimization_stats,
+                    "opt_message": opt_message,
+                    "cycle_report": "",
+                },
+            )
+        opt_message = self._optimization_message(optimization_report)
 
         ir_dump_after = ""
         if self.config.dump_ir:
@@ -316,7 +380,11 @@ class CompilerDriver:
             output_text=asm_text,
             output_path=output_path,
             ir_dump=ir_dump,
-            stats={"opt_message": opt_message, "cycle_report": cycle_report},
+            stats={
+                "optimization": self._optimization_stats(optimization_report),
+                "opt_message": opt_message,
+                "cycle_report": cycle_report,
+            },
             warnings=warnings,
         )
 
@@ -361,25 +429,35 @@ class CompilerDriver:
 
     # ── Internal: optimizations ─────────────────────────────────────────────
 
-    def _run_optimizations(self, program) -> PassResult:
+    def _run_optimizations(self, program: Program) -> OptimizationReport:
         """Run all configured optimization passes."""
-        from scratchv.optimizer.constant_folding import ConstantFolder
-        from scratchv.optimizer.dead_code import DeadCodeEliminator
+        manager = create_optimization_pass_manager(self.config.optimize_level)
+        return manager.run(program)
 
-        pm = PassManager("optimizer")
-        pm.add(_PassAdapter("constant-folding", ConstantFolder(program)))
-        pm.add(_PassAdapter("dead-code-elim", DeadCodeEliminator(program)))
+    def _optimization_stats(self, report: OptimizationReport) -> dict[str, Any]:
+        """Convert an immutable report to the CompileResult stats schema."""
+        return {
+            "level": self.config.optimize_level,
+            "total_changes": report.total_changes,
+            "elapsed_seconds": report.elapsed_seconds,
+            "passes": [
+                {
+                    "index": item.index,
+                    "name": item.name,
+                    "changes": item.changes,
+                    "elapsed_seconds": item.elapsed_seconds,
+                }
+                for item in report.executions
+            ],
+        }
 
-        if self.config.optimize_level == "all":
-            from scratchv.optimizer.peephole import IRPeepholeOptimizer
-            from scratchv.optimizer.muladd_fusion import MulAddFusion
-            from scratchv.optimizer.licm import LICM
-
-            pm.add(_PassAdapter("ir-peephole", IRPeepholeOptimizer(program)))
-            pm.add(_PassAdapter("muladd-fusion", MulAddFusion(program)))
-            pm.add(_PassAdapter("licm", LICM(program)))
-
-        return pm.run(program)
+    @staticmethod
+    def _optimization_message(report: OptimizationReport) -> str:
+        """Build the legacy human-readable optimization summary."""
+        return "; ".join(
+            f"[{item.name}] {item.changes} change(s)"
+            for item in report.executions
+        )
 
     # ── Internal: code generation ───────────────────────────────────────────
 
@@ -484,31 +562,3 @@ class CompilerDriver:
             warnings.append(f"Instruction count: {total}")
 
         return asm_text
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# _PassAdapter — wraps legacy passes that don't implement CompilerPass
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class _PassAdapter(CompilerPass):
-    """Adapter that wraps a legacy pass object into the ``CompilerPass`` API.
-
-    Legacy passes are expected to have a ``run()`` method that returns an
-    integer (number of changes) and mutate the data in place.
-    """
-
-    def __init__(self, name: str, legacy_pass: Any):
-        self._name = name
-        self._legacy = legacy_pass
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def run(self, input_data: Any) -> PassResult:
-        changes = self._legacy.run()
-        return PassResult(
-            data=input_data,
-            changes=changes,
-            message=f"{changes} change(s)",
-        )
