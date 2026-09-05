@@ -201,6 +201,55 @@ def test_max_tracks_register_and_immediate_operands(allocator_module):
     assert immediate_inst.uses == {"left"}
 
 
+def test_max_helper_keeps_supported_zero_immediate():
+    selector = InstructionSelector(Program())
+
+    selector._emit_max(
+        MachineOperand.vreg("result"),
+        MachineOperand.vreg("left"),
+        MachineOperand.immediate(0),
+        comment="relu",
+    )
+
+    assert selector._instructions == [
+        MachineInstr(
+            MachineOp.MAX,
+            MachineOperand.vreg("result"),
+            MachineOperand.vreg("left"),
+            MachineOperand.immediate(0),
+            comment="relu",
+        )
+    ]
+
+
+def test_max_helper_materializes_nonzero_immediate():
+    selector = InstructionSelector(Program())
+
+    selector._emit_max(
+        MachineOperand.vreg("result"),
+        MachineOperand.vreg("left"),
+        MachineOperand.immediate(7),
+        comment="max",
+    )
+
+    temp = MachineOperand.vreg("__scratchv_max_rhs_1")
+    assert selector._instructions == [
+        MachineInstr(
+            MachineOp.LI,
+            temp,
+            MachineOperand.immediate(7),
+            comment="materialize max rhs",
+        ),
+        MachineInstr(
+            MachineOp.MAX,
+            MachineOperand.vreg("result"),
+            MachineOperand.vreg("left"),
+            temp,
+            comment="max",
+        ),
+    ]
+
+
 @pytest.mark.parametrize("allocator_module", ALLOCATOR_MODULES)
 def test_max_pseudo_and_expansion_have_equal_spill_pressure(allocator_module):
     pseudo = [

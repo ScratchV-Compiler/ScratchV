@@ -20,6 +20,7 @@ class InstructionSelector:
         self.program = program
         self._instructions: list[MachineInstr] = []
         self._label_counter = 0
+        self._max_temp_counter = 0
 
     def run(self) -> list[MachineInstr]:
         """Select instructions for all functions.
@@ -63,6 +64,47 @@ class InstructionSelector:
             self._emit(MachineOp.LI, dst, src, comment=comment)
         else:
             self._emit(MachineOp.MV, dst, src, comment=comment)
+
+    def _emit_max(self, dst: MachineOperand | None,
+                  lhs: MachineOperand, rhs: MachineOperand,
+                  comment: str = "") -> None:
+        """Emit a MAX pseudo in the canonical form accepted by the encoder.
+
+        ``MAX`` is commutative, so an immediate left operand is first moved
+        to the right.  The encoder accepts an immediate right operand only
+        when it is zero; other immediates are materialized in a fresh virtual
+        register before emitting the pseudo.
+        """
+        if dst is None:
+            return
+
+        if lhs.kind == "imm" and rhs.kind == "imm":
+            value = max(int(lhs.value), int(rhs.value))
+            self._emit(
+                MachineOp.LI,
+                dst,
+                MachineOperand.immediate(value),
+                comment=comment,
+            )
+            return
+
+        if lhs.kind == "imm":
+            lhs, rhs = rhs, lhs
+
+        if rhs.kind == "imm" and int(rhs.value) != 0:
+            self._max_temp_counter += 1
+            rhs_reg = MachineOperand.vreg(
+                f"__scratchv_max_rhs_{self._max_temp_counter}"
+            )
+            self._emit(
+                MachineOp.LI,
+                rhs_reg,
+                rhs,
+                comment="materialize max rhs",
+            )
+            rhs = rhs_reg
+
+        self._emit(MachineOp.MAX, dst, lhs, rhs, comment=comment)
 
     def _emit_label(self, name: str) -> None:
         self._instructions.append(
@@ -123,15 +165,14 @@ class InstructionSelector:
         self._emit(MachineOp.ADDI, dst, src,
                    MachineOperand.immediate(1),
                    comment="exp approx: 1+x")
-        self._emit(MachineOp.MAX, dst, dst,
-                   MachineOperand.immediate(0),
-                   comment="relu clamp")
+        self._emit_max(dst, dst, MachineOperand.immediate(0),
+                       comment="relu clamp")
 
     def _select_relu(self, instr: Instruction) -> None:
         """ReLU(x) = max(x, 0).  Use:  max rd, rs, x0"""
         src = self._op(instr, 0)
         dst = self._dst(instr)
-        self._emit(MachineOp.MAX, dst, src, MachineOperand.immediate(0))
+        self._emit_max(dst, src, MachineOperand.immediate(0))
 
     def _select_gelu(self, instr: Instruction) -> None:
         # GELU approx: x * relu(x) / 2 (simplified, pure RV32IM)
@@ -140,9 +181,8 @@ class InstructionSelector:
         if dst is None:
             return
         tmp = MachineOperand.vreg("tmp_gelu")
-        self._emit(MachineOp.MAX, tmp, src,
-                   MachineOperand.immediate(0),
-                   comment="relu(x)")
+        self._emit_max(tmp, src, MachineOperand.immediate(0),
+                       comment="relu(x)")
         self._emit(MachineOp.MUL, dst, src, tmp,
                    comment="x * relu(x)")
         self._emit(MachineOp.DIV, dst, dst,

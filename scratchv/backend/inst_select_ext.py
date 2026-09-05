@@ -148,7 +148,7 @@ class ExtendedInstructionSelector(InstructionSelector):
             self._emit(MachineOp.FMAX_D, dst, a, b, comment="fmax.d")
         else:
             # Use existing MAX pseudo (base selector has this)
-            self._emit(MachineOp.MAX, dst, a, b, comment="max")
+            self._emit_max(dst, a, b, comment="max")
 
     # ------------------------------------------------------------------
     # abs
