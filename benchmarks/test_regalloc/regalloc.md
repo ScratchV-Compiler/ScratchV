@@ -6,13 +6,13 @@
 
 **设计目标**：
 
-- **正确性**：验证无溢出 / 有溢出两种场景的分配结果合法（无未解析 vreg、有效 opcode）
+- **正确性**：验证无溢出 / 有溢出场景及每条受支持伪指令的分配、编码和执行结果
 - **性能**：测量分配耗时（均值 / 标准差）、活跃区间峰值压力
 - **可对比**：每项输出统一的 `reg_spill_count` 指标，支持回归对比和筛选
 - **跨后端对比**：同一 ONNX 模型经 ScratchV 和 LLVM 两条路径编译，对比静态指令数、opcode 类别分布、溢出/帧操作数量
 
 入口：`benchmarks/test_regalloc/bench_regalloc_linear.py`  
-单文件运行：直接执行 `bench_simple.py` / `bench_dense.py` / `bench_cnn.py`
+单文件运行：直接执行 `bench_simple.py` / `bench_dense.py` / `bench_cnn.py` / `bench_pseudo.py`
 
 ---
 
@@ -25,7 +25,8 @@ benchmarks/test_regalloc/
 ├── bench_simple.py       Benchmark 1 — 无溢出正确性
 ├── bench_dense.py        Benchmark 2 — 溢出正确性
 ├── bench_cnn.py          Benchmark 3 — CNN 集成 + LLVM 对比
-└── bench_regalloc_linear.py      运行器：汇总 3 路输出 → JSON / HTML / Markdown 报告
+├── bench_pseudo.py       Benchmark 4 — 每条伪指令的分配、编码与模拟器执行
+└── bench_regalloc_linear.py      运行器：汇总 4 路输出 → JSON / HTML / Markdown 报告
 ```
 
 ### 2.1 统一接口
@@ -37,7 +38,7 @@ def run_bench(...) -> dict:
     """返回统一结构的统计 dict，必需键见 §4。"""
 ```
 
-运行器遍历三个 `run_bench()`，收集 dict 生成报告。
+运行器遍历四个 `run_bench()`，收集 dict 生成报告。
 
 ### 2.2 数据流
 
@@ -66,7 +67,7 @@ def run_bench(...) -> dict:
 
 ---
 
-## 3. 三项 Benchmark
+## 3. 四项 Benchmark
 
 ### 3.1 Benchmark 1 — 简单算术（无溢出）
 
@@ -126,9 +127,21 @@ convert_onnx_to_llvm(model)     → LLVM IR (866K lines, 183MB)
 | 物理寄存器 | `_INT_REGS`（19 个：`t0`–`t6`、`s0`–`s11`） |
 | ScratchV 输出 | ~57 条伪指令（mv/mul/add/slt/bnez…） |
 | LLVM 输出 | ~1099 条（RV64FD O2，真实循环展开） |
-| 断言 | `asm_valid == True` |
+| 断言 | `asm_valid == True` 且 `emu_passed == True` |
 
 > **注意**：ScratchV 侧输出 57 条**伪指令**（conv/maxpool 等语义级操作由仿真器实现），LLVM 侧输出 1099 条**自包含机器指令**（每个 conv 展开为 5 重嵌套循环的完整 RISC-V 指令序列）。`instr_ratio_fd ≈ 23.89x` 反映的是抽象层级差异而非优化能力差距，因此还提供 opcode **类别分布**作为跨层级可比指标。
+
+### 3.4 Benchmark 4 — 伪指令端到端覆盖
+
+**文件**：`bench_pseudo.py`
+**目的**：为每条当前支持的 RV32IM 伪指令建立独立 case，并验证寄存器分配、伪指令展开、编码及 TinyFive 执行结果。
+
+| 层级 | 覆盖指令 | 校验 |
+|------|----------|------|
+| Machine IR | `mv/li/max/bnez/j/call/label` | 分配后无 vreg，编码成功，执行结果符合预期，无意外 spill/reload |
+| Encoder | `nop/ret` | 展开、编码成功，执行结果符合预期 |
+
+浮点扩展伪指令 `fabs.d/fneg.d/li.d/fmv.s` 当前不属于 RV32IM 编码器支持范围，单测验证其会被明确拒绝。
 
 ---
 
@@ -142,7 +155,7 @@ convert_onnx_to_llvm(model)     → LLVM IR (866K lines, 183MB)
 | `stdev_s` | `float` | `stdev` | 耗时标准差 |
 | `vreg_count` | `int` | `len(alloc.alloc_map)` | 已分配的虚拟寄存器数 |
 | `spills` | `int` | `alloc.spill_store_count` | 静态 spill store 数（兼容键） |
-| `spill_slots` | `int` | `len(alloc._spill_slots)` | 分配的唯一栈槽数 |
+| `spill_slots` | `int` | `alloc.spill_slot_count` | 分配的唯一栈槽数（公共只读接口） |
 | `spill_stores` | `int` | `alloc.spill_store_count` | 生成汇编中的静态 spill store 数 |
 | `reg_spill_count` | `int` | 同上 | **统一溢出事件指标键**（接口规范） |
 | `reloads` | `int` | `alloc.reload_load_count` | 生成汇编中的静态 reload load 数 |
@@ -168,6 +181,7 @@ convert_onnx_to_llvm(model)     → LLVM IR (866K lines, 183MB)
 | `sv_cat_buckets` | `_op_categories()` | 6 类汇总（ALU/Load/Store/Branch/Mul/Other） |
 | `asm_errors` | `_validate_asm()` | 未解析 vreg / 未知 opcode 列表 |
 | `asm_valid` | `len(asm_errors) == 0` | 汇编合法性 |
+| `emu_passed` | `_run_emulator()` | RV32 模拟器是否完整执行成功 |
 | `greedy_time_s` | Greedy allocator | Greedy分配器耗时（baseline） |
 | `greedy_out_instrs` | — | Greedy分配器输出指令数 |
 
@@ -271,18 +285,19 @@ convert_onnx_to_llvm(model)     → LLVM IR (866K lines, 183MB)
 ## 7. 使用方式
 
 ```bash
-# 运行全部 3 项 benchmark，生成三格式报告
-python -m benchmarks.test_regalloc.bench_regalloc_linear \
-    --repeats 30 \
-    --output-json report.json \
-    --output-html report.html \
+# 运行全部 4 项 benchmark，生成三格式报告（Windows PowerShell）
+& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_regalloc_linear `
+    --repeats 30 `
+    --output-json report.json `
+    --output-html report.html `
     --output-md report.md
 
 # 单独运行某项
-python -m benchmarks.test_regalloc.bench_simple --repeats 100
-python -m benchmarks.test_regalloc.bench_dense --repeats 50
-python -m benchmarks.test_regalloc.bench_cnn \
+& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_simple --repeats 100
+& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_dense --repeats 50
+& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_cnn `
     --cnn-path models/graph/cnn.onnx --repeats 30
+& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_pseudo --repeats 30
 ```
 
 ---

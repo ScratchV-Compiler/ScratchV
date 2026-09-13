@@ -64,6 +64,12 @@ class RegisterAllocator:
         self._output: list[MachineInstr] = []
         self._remaining_uses: dict[str, int] = {}
 
+    @property
+    def spill_slot_count(self) -> int:
+        """Return the number of unique stack slots reserved for spills."""
+
+        return len(self._spill_slots)
+
     def run(self) -> list[MachineInstr]:
         if self.mode == "naive":
             return self._allocate_naive()

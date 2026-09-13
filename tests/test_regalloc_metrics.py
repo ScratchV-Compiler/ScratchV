@@ -3,6 +3,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from benchmarks.test_regalloc import bench_cnn, bench_dense
 from scratchv.backend.machine_types import ALL_REGS
 from scratchv.backend.regalloc_metrics import (
@@ -65,3 +67,37 @@ def test_real_assembly_validation_rejects_unresolved_named_vreg():
 
     assert errors
     assert "unknown register" in errors[0]
+
+
+@pytest.mark.parametrize(
+    ("asm_valid", "emu_passed", "expected"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+def test_cnn_benchmark_requires_assembly_and_emulator_validity(
+    monkeypatch: pytest.MonkeyPatch,
+    asm_valid: bool,
+    emu_passed: bool,
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(
+        bench_cnn,
+        "bench_allocate",
+        lambda *_args, **_kwargs: {
+            "asm_valid": asm_valid,
+            "sv_static_instrs": 1,
+        },
+    )
+    monkeypatch.setattr(
+        bench_cnn,
+        "_run_emulator",
+        lambda *_args, **_kwargs: {"passed": emu_passed},
+    )
+    monkeypatch.setattr(
+        bench_cnn,
+        "_llvm_compare",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    stats = bench_cnn.run_bench("unused.onnx", repeats=1)
+
+    assert stats["valid"] is expected

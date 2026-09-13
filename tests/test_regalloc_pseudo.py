@@ -330,7 +330,7 @@ def test_mv_allocates_like_addi(allocator_module):
     assert "%" not in pseudo_asm
     assert "source" not in pseudo_asm
     assert "copy" not in pseudo_asm
-    assert len(pseudo_alloc._spill_slots) == len(expanded_alloc._spill_slots)
+    assert pseudo_alloc.spill_slot_count == expanded_alloc.spill_slot_count
     assert RISCVAEncoder().assemble(pseudo_asm) == RISCVAEncoder().assemble(
         expanded_asm
     )
@@ -405,7 +405,7 @@ def test_li_small_immediate_matches_addi_pressure_and_encoding(allocator_module)
         allocator_module.block_from_machine_instrs(expanded)
     )
 
-    assert len(pseudo_alloc._spill_slots) == len(expanded_alloc._spill_slots)
+    assert pseudo_alloc.spill_slot_count == expanded_alloc.spill_slot_count
     assert RISCVAEncoder().assemble(pseudo_asm) == RISCVAEncoder().assemble(
         expanded_asm
     )
@@ -563,7 +563,7 @@ def test_max_pseudo_and_expansion_have_equal_spill_pressure(allocator_module):
     expanded_alloc = allocator_module.LinearScanAllocator(["t0", "t1"])
     expanded_alloc.allocate(expanded_alloc.compute_live_intervals(expanded))
 
-    assert len(pseudo_alloc._spill_slots) == len(expanded_alloc._spill_slots)
+    assert pseudo_alloc.spill_slot_count == expanded_alloc.spill_slot_count
 
 
 def test_max_register_rhs_expands_to_copy_the_rhs_not_zero():

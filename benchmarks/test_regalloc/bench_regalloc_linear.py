@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run all 3 register allocation benchmarks and produce a report."""
+"""Run all register allocation benchmarks and produce a report."""
 
 import argparse
 import datetime
@@ -9,7 +9,7 @@ import sys
 import time
 
 
-from benchmarks.test_regalloc import bench_simple, bench_dense, bench_cnn
+from benchmarks.test_regalloc import bench_cnn, bench_dense, bench_pseudo, bench_simple
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ def _make_html(results: dict, total_time: float) -> str:
     for name, r in results.items():
         if not isinstance(r, dict):
             continue
-        v = "✓" if r.get("valid", True) else "✗"
+        v = "PASS" if r.get("valid", True) else "FAIL"
         c = "#22863a" if r.get("valid", True) else "#cb2431"
         ms = f"{r.get('mean_s', 0) * 1000:.3f}"
         sd = f"{r.get('stdev_s', 0) * 1000:.3f}"
@@ -80,7 +80,7 @@ def _make_markdown(results: dict) -> str:
             continue
         ms = f"{r.get('mean_s', 0) * 1000:.3f}"
         sd = f"{r.get('stdev_s', 0) * 1000:.3f}"
-        v = "✓" if r.get("valid", True) else "✗"
+        v = "PASS" if r.get("valid", True) else "FAIL"
         lines.append(
             f"| {name} | {ms} | {sd} | {r.get('vreg_count', '-')} | "
             f"{r.get('reg_spill_count', r.get('spills', '-'))} | "
@@ -105,7 +105,7 @@ def main():
     args = parser.parse_args()
 
     print("=" * 60)
-    print("  ScratchV — Register Allocation Benchmark Suite")
+    print("  ScratchV - Register Allocation Benchmark Suite")
     print("=" * 60)
 
     t0 = time.perf_counter()
@@ -117,7 +117,7 @@ def main():
     print(
         f"  1. Simple:  reg_spill_count={r1['reg_spill_count']}, "
         f"mean={r1['mean_s'] * 1000:.3f}ms  "
-        f"{'✓' if r1.get('valid') else '✗'}"
+        f"{'PASS' if r1.get('valid') else 'FAIL'}"
     )
 
     # Benchmark 2 — Dense (spill)
@@ -126,7 +126,7 @@ def main():
     print(
         f"  2. Dense:   reg_spill_count={r2['reg_spill_count']}, "
         f"mean={r2['mean_s'] * 1000:.3f}ms  "
-        f"{'✓' if r2.get('valid') else '✗'}"
+        f"{'PASS' if r2.get('valid') else 'FAIL'}"
     )
 
     # Benchmark 3 — CNN Integration And Comparation With LLVM
@@ -136,7 +136,15 @@ def main():
     print(
         f"  3. CNN:     reg_spill_count={r3['reg_spill_count']}, "
         f"mean={r3['mean_s'] * 1000:.3f}ms  "
-        f"{'✓' if r3.get('valid') else '✗'}"
+        f"{'PASS' if r3.get('valid') else 'FAIL'}"
+    )
+
+    r4 = bench_pseudo.run_bench(repeats=args.repeats)
+    results["4. Pseudo Instructions"] = r4
+    print(
+        f"  4. Pseudo:  cases={r4['case_count']}, "
+        f"mean={r4['mean_s'] * 1000:.3f}ms  "
+        f"{'PASS' if r4.get('valid') else 'FAIL'}"
     )
 
     total_time = time.perf_counter() - t0
@@ -161,17 +169,17 @@ def main():
                 if isinstance(r, dict)
             },
         }
-        with open(args.output_json, "w") as f:
-            json.dump(report, f, indent=2)
+        with open(args.output_json, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
         print(f"\n  JSON report: {args.output_json}")
 
     if args.output_html:
-        with open(args.output_html, "w") as f:
+        with open(args.output_html, "w", encoding="utf-8") as f:
             f.write(_make_html(results, total_time))
         print(f"  HTML report: {args.output_html}")
 
     if args.output_md:
-        with open(args.output_md, "w") as f:
+        with open(args.output_md, "w", encoding="utf-8") as f:
             f.write(_make_markdown(results))
         print(f"  Markdown:    {args.output_md}")
 

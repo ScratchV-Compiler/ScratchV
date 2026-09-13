@@ -77,7 +77,7 @@ def bench_allocate(
         "stdev_s": statistics.stdev(times) if len(times) > 1 else 0,
         "vreg_count": len(alloc.alloc_map),
         "spills": alloc.spill_store_count,
-        "spill_slots": len(alloc._spill_slots),
+        "spill_slots": alloc.spill_slot_count,
         "spill_stores": alloc.spill_store_count,
         "reg_spill_count": alloc.spill_store_count,
         "reloads": alloc.reload_load_count,

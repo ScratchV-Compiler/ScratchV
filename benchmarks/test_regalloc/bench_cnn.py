@@ -227,7 +227,7 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         "ir_inst_count": ir_count,
         "machine_instrs": len(machine),
         "vreg_count": len(alloc.alloc_map),
-        "spill_slots": len(alloc._spill_slots),
+        "spill_slots": alloc.spill_slot_count,
         "spill_stores": alloc.spill_store_count,
         "reg_spill_count": alloc.spill_store_count,
         "reloads": alloc.reload_load_count,
@@ -255,11 +255,11 @@ def run_bench(
         phys_regs = list(ALL_REGS)
     stats = bench_allocate(cnn_path, phys_regs, repeats=repeats)
 
-    # Emulator verification (non-fatal)
+    # Emulator verification is part of the end-to-end validity contract.
     emu = _run_emulator(cnn_path)
     stats["emu_passed"] = emu["passed"]
     stats["emu_error"] = emu.get("error", "")
-    stats["valid"] = stats["asm_valid"]
+    stats["valid"] = stats["asm_valid"] and stats["emu_passed"]
 
     # LLVM comparison (non-fatal)
     try:
@@ -302,7 +302,7 @@ def main():
     phys_regs = list(ALL_REGS)
 
     print("=" * 60)
-    print("Benchmark 3 — CNN Model Integration And Comparation With LLVM Backend")
+    print("Benchmark 3 - CNN Model Integration And Comparison With LLVM Backend")
     print(f"  Model: {os.path.basename(args.cnn_path)}")
     print("=" * 60)
 
@@ -366,12 +366,12 @@ def main():
         f"reloads={stats['reloads']}"
     )
 
-    asm_ok = "PASS" if stats["asm_valid"] else "FAIL"
+    benchmark_ok = "PASS" if stats["valid"] else "FAIL"
     print(
         f"\n  asm_valid={stats['asm_valid']}, "
-        f"reg_spill_count={stats['reg_spill_count']}  [{asm_ok}]"
+        f"reg_spill_count={stats['reg_spill_count']}  [{benchmark_ok}]"
     )
-    return 0 if stats["asm_valid"] else 1
+    return 0 if stats["valid"] else 1
 
 
 if __name__ == "__main__":

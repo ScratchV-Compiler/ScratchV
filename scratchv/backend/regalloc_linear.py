@@ -225,6 +225,12 @@ class LinearScanAllocator:
         self.reload_load_count: int = 0
         self.cfg: MachineCFG = MachineCFG([], {}, {})
 
+    @property
+    def spill_slot_count(self) -> int:
+        """Return the number of unique stack slots reserved for spills."""
+
+        return len(self._spill_slots)
+
     # ------------------------------------------------------------------
     # Live interval computation
     # ------------------------------------------------------------------
@@ -575,7 +581,7 @@ class LinearScanAllocator:
     def report(self) -> str:
         """Return a string summary of the allocation result."""
         total = len(self.alloc_map)
-        spilled = len(self._spill_slots)
+        spilled = self.spill_slot_count
         parts = []
         parts.append("Linear Scan Register Allocation Report")
         parts.append(f"  Virtual registers allocated: {total}")

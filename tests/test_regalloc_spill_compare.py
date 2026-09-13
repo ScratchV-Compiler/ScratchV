@@ -6,8 +6,10 @@ import pytest
 
 from benchmarks.bench_regalloc_spill_compare import (
     CASE_DIR,
+    EXPECTED_SCRATCHV_SPILL,
     StackAccessStats,
     classify_llvm_stack_accesses,
+    classify_scratchv_stack_accesses,
     compile_scratchv,
     discover_cases,
 )
@@ -46,6 +48,27 @@ def test_llvm_stack_classifier_excludes_abi_frame_saves() -> None:
     )
 
 
+def test_scratchv_stack_classifier_covers_all_supported_widths() -> None:
+    asm = """
+        sw t0, -4(sp)
+        lw t0, -4(sp)
+        fsw ft0, -8(sp)
+        flw ft0, -8(sp)
+        sd t1, -16(sp)
+        ld t1, -16(sp)
+        fsd ft1, -24(sp)
+        fld ft1, -24(sp)
+        # sw t2, -28(sp)
+        addi t0, t0, 1  # lw t3, -32(sp)
+    """
+
+    assert classify_scratchv_stack_accesses(asm) == StackAccessStats(
+        spill_slots=4,
+        spill_stores=4,
+        reloads=4,
+    )
+
+
 @pytest.mark.parametrize(
     ("case_name", "expects_spill"),
     [
@@ -68,6 +91,12 @@ def test_cases_straddle_the_scratchv_spill_boundary(
     assert result.peak_live is not None and result.peak_live > 0
     assert result.virtual_registers is not None and result.virtual_registers > 0
     assert result.physical_registers == 19
+
+
+def test_expected_spill_metadata_covers_every_case() -> None:
+    assert set(EXPECTED_SCRATCHV_SPILL) == {
+        case.stem for case in discover_cases(CASE_DIR)
+    }
 
 
 def test_discover_cases_rejects_an_empty_directory(tmp_path: Path) -> None:

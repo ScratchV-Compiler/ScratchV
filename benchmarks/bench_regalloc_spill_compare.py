@@ -18,6 +18,14 @@ from typing import Any
 
 CASE_DIR = Path(__file__).with_name("regalloc_spill_cases")
 
+EXPECTED_SCRATCHV_SPILL: dict[str, bool] = {
+    "00_low_pressure_chain": False,
+    "01_wide_fanout_32": True,
+    "02_double_use_40": True,
+    "03_lifetime_holes_36": True,
+    "04_hot_cold_48": True,
+}
+
 _STACK_ACCESS_RE = re.compile(
     r"^\s*(?P<op>sd|ld|sw|lw|fsd|fld|fsw|flw)\s+"
     r"(?P<reg>[^,]+),\s*(?P<offset>-?\d+)\(sp\)"
@@ -27,9 +35,6 @@ _SAVED_REGS = frozenset(
 )
 _STORE_OPS = frozenset({"sd", "sw", "fsd", "fsw"})
 _LOAD_OPS = frozenset({"ld", "lw", "fld", "flw"})
-
-_llvm_lib: Any | None = None
-
 
 @dataclass(frozen=True)
 class StackAccessStats:
@@ -75,6 +80,16 @@ class ComparisonResult:
     scratchv: BackendStats
     llvm: BackendStats | None = None
     llvm_error: str = ""
+    expect_scratchv_spill: bool | None = None
+
+    @property
+    def scratchv_expectation_met(self) -> bool | None:
+        """Return whether ScratchV crossed the expected spill boundary."""
+
+        if self.expect_scratchv_spill is None:
+            return None
+        spilled = self.scratchv.stack.spill_stores > 0
+        return spilled is self.expect_scratchv_spill
 
     @property
     def spill_traffic_ratio(self) -> float | None:
@@ -96,6 +111,8 @@ class ComparisonResult:
             "scratchv": self.scratchv.to_dict(),
             "llvm": self.llvm.to_dict() if self.llvm is not None else None,
             "llvm_error": self.llvm_error,
+            "expect_scratchv_spill": self.expect_scratchv_spill,
+            "scratchv_expectation_met": self.scratchv_expectation_met,
             "spill_traffic_ratio": "inf" if ratio == float("inf") else ratio,
         }
 
@@ -108,13 +125,16 @@ def discover_cases(case_dir: Path = CASE_DIR) -> list[Path]:
     return cases
 
 
-def classify_llvm_stack_accesses(assembly: str) -> StackAccessStats:
-    """Classify LLVM stack accesses for the suite's straight-line f32 DSL.
+def _classify_stack_accesses(
+    assembly: str,
+    *,
+    exclude_abi_frame: bool,
+) -> StackAccessStats:
+    """Classify anchored scalar stack accesses for either backend.
 
-    Saves/restores of ABI callee-saved registers are frame-management cost,
-    not spills.  Other stack-relative scalar loads/stores are counted as
-    spill traffic.  The benchmark cases intentionally avoid stack arguments
-    and explicit memory operations so those cannot contaminate this proxy.
+    The benchmark cases intentionally avoid stack arguments and explicit
+    memory operations, so remaining stack-relative scalar accesses are spill
+    traffic.  LLVM frame saves/restores can be excluded explicitly.
     """
     spill_offsets: set[int] = set()
     spill_stores = reloads = frame_saves = frame_restores = 0
@@ -127,7 +147,11 @@ def classify_llvm_stack_accesses(assembly: str) -> StackAccessStats:
         reg = match.group("reg").strip()
         offset = int(match.group("offset"))
 
-        is_frame_access = op in {"sd", "ld", "fsd", "fld"} and reg in _SAVED_REGS
+        is_frame_access = (
+            exclude_abi_frame
+            and op in {"sd", "ld", "fsd", "fld"}
+            and reg in _SAVED_REGS
+        )
         if is_frame_access:
             if op in _STORE_OPS:
                 frame_saves += 1
@@ -148,6 +172,18 @@ def classify_llvm_stack_accesses(assembly: str) -> StackAccessStats:
         frame_saves=frame_saves,
         frame_restores=frame_restores,
     )
+
+
+def classify_scratchv_stack_accesses(assembly: str) -> StackAccessStats:
+    """Count ScratchV integer, floating-point, and wide spill traffic."""
+
+    return _classify_stack_accesses(assembly, exclude_abi_frame=False)
+
+
+def classify_llvm_stack_accesses(assembly: str) -> StackAccessStats:
+    """Count LLVM spill traffic while excluding ABI frame management."""
+
+    return _classify_stack_accesses(assembly, exclude_abi_frame=True)
 
 
 def _peak_live(intervals: Sequence[Any]) -> int:
@@ -190,19 +226,12 @@ def compile_scratchv(
     allocator.allocate(intervals)
     assembly = allocator.get_allocated_code(block)
 
-    spill_stores = sum(
-        line.strip().startswith("sw ") and "(sp)" in line
-        for line in assembly.splitlines()
-    )
-    reloads = sum(
-        line.strip().startswith("lw ") and "(sp)" in line
-        for line in assembly.splitlines()
-    )
-    stack = StackAccessStats(
-        spill_slots=len(allocator._spill_slots),
-        spill_stores=spill_stores,
-        reloads=reloads,
-    )
+    stack = classify_scratchv_stack_accesses(assembly)
+    if stack.spill_slots != allocator.spill_slot_count:
+        raise RuntimeError(
+            "ScratchV spill metric mismatch: "
+            f"allocator={allocator.spill_slot_count}, assembly={stack.spill_slots}"
+        )
     return BackendStats(
         instructions=_instruction_count(assembly),
         virtual_registers=len(intervals),
@@ -213,26 +242,15 @@ def compile_scratchv(
     )
 
 
-def _get_llvm_library() -> Any:
-    """Load and cache the system LLVM C API handle."""
-    global _llvm_lib
-    if _llvm_lib is None:
-        from scratchv.standalone.compare_codegen import _load_llvm
-
-        _llvm_lib = _load_llvm()
-    return _llvm_lib
-
-
 def compile_llvm(source: str, opt_level: int = 2) -> BackendStats:
     """Compile the same DSL source through LLVM's RISC-V backend."""
+    from benchmarks.test_regalloc.bench_utils import llvmlite_ir_to_riscv
     from scratchv.backend.llvm_codegen import LLVMCodegen
     from scratchv.frontend.dsl_parser import DSLParser
-    from scratchv.standalone.compare_codegen import llvm_ir_to_riscv
 
     program = DSLParser().parse(source)
     ir_text = LLVMCodegen(program).emit()
-    count, assembly, _ = llvm_ir_to_riscv(
-        _get_llvm_library(),
+    count, assembly, _ = llvmlite_ir_to_riscv(
         ir_text,
         features="+m,+f,+d",
         opt_level=opt_level,
@@ -267,6 +285,7 @@ def run_case(
     """Compile one DSL case with both backends."""
     source = path.read_text()
     scratchv = compile_scratchv(source, phys_regs=phys_regs)
+    expected_spill = EXPECTED_SCRATCHV_SPILL.get(path.stem)
     try:
         llvm = compile_llvm(source, opt_level=llvm_opt_level)
     except (ImportError, OSError, RuntimeError, ValueError) as exc:
@@ -275,12 +294,14 @@ def run_case(
             description=_description(source),
             scratchv=scratchv,
             llvm_error=f"{type(exc).__name__}: {exc}",
+            expect_scratchv_spill=expected_spill,
         )
     return ComparisonResult(
         name=path.stem,
         description=_description(source),
         scratchv=scratchv,
         llvm=llvm,
+        expect_scratchv_spill=expected_spill,
     )
 
 
@@ -308,8 +329,9 @@ def _format_ratio(ratio: float | None) -> str:
 def format_table(results: Sequence[ComparisonResult]) -> str:
     """Render a compact console comparison table."""
     rows = [
-        "Case                     Peak | ScratchV slots S/R/T | LLVM slots S/R/T | Ratio",
-        "-" * 86,
+        "Case                     Peak | ScratchV slots S/R/T | "
+        "LLVM slots S/R/T | Ratio | Expect",
+        "-" * 95,
     ]
     for result in results:
         sv = result.scratchv.stack
@@ -317,11 +339,20 @@ def format_table(results: Sequence[ComparisonResult]) -> str:
             llvm_text = " unavailable "
         else:
             ll = result.llvm.stack
-            llvm_text = f"{ll.spill_slots:>3} {ll.spill_stores:>3}/{ll.reloads:<3}/{ll.spill_traffic:<3}"
+            llvm_text = (
+                f"{ll.spill_slots:>3} {ll.spill_stores:>3}/"
+                f"{ll.reloads:<3}/{ll.spill_traffic:<3}"
+            )
+        expectation = result.scratchv_expectation_met
+        expectation_text = (
+            "n/a" if expectation is None else ("PASS" if expectation else "FAIL")
+        )
         rows.append(
             f"{result.name:<24} {result.scratchv.peak_live or 0:>4} | "
-            f"{sv.spill_slots:>3} {sv.spill_stores:>3}/{sv.reloads:<3}/{sv.spill_traffic:<3} | "
-            f"{llvm_text:<19} | {_format_ratio(result.spill_traffic_ratio):>6}"
+            f"{sv.spill_slots:>3} {sv.spill_stores:>3}/"
+            f"{sv.reloads:<3}/{sv.spill_traffic:<3} | "
+            f"{llvm_text:<19} | {_format_ratio(result.spill_traffic_ratio):>6} | "
+            f"{expectation_text}"
         )
     return "\n".join(rows)
 
@@ -339,9 +370,9 @@ def format_markdown(
         "",
         (
             "| Case | Peak live | ScratchV slots | ScratchV store/reload | "
-            "LLVM slots | LLVM store/reload | Traffic ratio |"
+            "LLVM slots | LLVM store/reload | Traffic ratio | Expected boundary |"
         ),
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for result in results:
         sv = result.scratchv.stack
@@ -351,11 +382,15 @@ def format_markdown(
             ll = result.llvm.stack
             llvm_slots = str(ll.spill_slots)
             llvm_traffic = f"{ll.spill_stores}/{ll.reloads}"
+        expectation = result.scratchv_expectation_met
+        expectation_text = (
+            "n/a" if expectation is None else ("PASS" if expectation else "FAIL")
+        )
         lines.append(
             f"| {result.name} | {result.scratchv.peak_live} | "
             f"{sv.spill_slots} | {sv.spill_stores}/{sv.reloads} | "
             f"{llvm_slots} | {llvm_traffic} | "
-            f"{_format_ratio(result.spill_traffic_ratio)} |"
+            f"{_format_ratio(result.spill_traffic_ratio)} | {expectation_text} |"
         )
     lines.extend(
         [
@@ -420,6 +455,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         llvm_opt_level=args.llvm_opt_level,
         phys_regs=phys_regs,
     )
+    if not results:
+        raise SystemExit("No benchmark cases matched")
     payload = {
         "llvm_opt_level": args.llvm_opt_level,
         "scratchv_phys_reg_count": results[0].scratchv.physical_registers,
@@ -440,7 +477,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.markdown is not None:
         args.markdown.write_text(format_markdown(results, args.llvm_opt_level))
 
-    return int(any(result.llvm is None for result in results))
+    llvm_failed = any(result.llvm is None for result in results)
+    expectation_failed = any(
+        result.scratchv_expectation_met is False for result in results
+    )
+    return int(llvm_failed or expectation_failed)
 
 
 if __name__ == "__main__":

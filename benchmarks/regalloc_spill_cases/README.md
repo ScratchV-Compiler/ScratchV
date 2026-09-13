@@ -21,13 +21,13 @@ LLVM allocation modes.
 
 ## Cases
 
-| Case | Pressure shape | Question answered |
-|---|---|---|
-| `00_low_pressure_chain` | Short sequential live ranges | Does either backend spill below capacity? |
-| `01_wide_fanout_32` | 32 values live before a balanced reduction | What happens just above ScratchV's register limit? |
-| `02_double_use_40` | 40 values consumed forward and in reverse | How much traffic remains when LLVM must also spill? |
-| `03_lifetime_holes_36` | Values used, idle for a region, then reused | Can live-range splitting avoid whole-interval spills? |
-| `04_hot_cold_48` | Cold values surround a frequently used hot chain | Do use frequency and scheduling reduce spill traffic? |
+| Case | Pressure shape | Expected ScratchV boundary | Question answered |
+|---|---|---:|---|
+| `00_low_pressure_chain` | Short sequential live ranges | no spill | Does either backend spill below capacity? |
+| `01_wide_fanout_32` | 32 values live before a balanced reduction | spill | What happens just above ScratchV's register limit? |
+| `02_double_use_40` | 40 values consumed forward and in reverse | spill | How much traffic remains when LLVM must also spill? |
+| `03_lifetime_holes_36` | Values used, idle for a region, then reused | spill | Can live-range splitting avoid whole-interval spills? |
+| `04_hot_cold_48` | Cold values surround a frequently used hot chain | spill | Do use frequency and scheduling reduce spill traffic? |
 
 ## Measurement rules
 
@@ -37,8 +37,9 @@ LLVM allocation modes.
   stack-relative scalar loads/stores can therefore be treated as spill traffic.
 - LLVM `sd`/`ld` and `fsd`/`fld` pairs for ABI callee-saved registers are
   reported as frame management and excluded from spill traffic.
-- ScratchV spill slots come from the allocator; its stack `sw`/`lw` instructions
-  are counted as spill stores/reloads.
+- ScratchV spill slots use the public `spill_slot_count` allocator property;
+  anchored `sw/lw/fsw/flw/sd/ld/fsd/fld` stack accesses are classified as
+  spill stores/reloads.
 - Exact counts may change when instruction selection, scheduling, register sets,
   LLVM versions, or allocation heuristics change. The suite asserts only the
   intended pressure boundary, not today's ratios.
