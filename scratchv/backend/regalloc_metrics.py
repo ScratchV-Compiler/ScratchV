@@ -25,20 +25,17 @@ def peak_live_intervals(intervals: Iterable[Any]) -> int:
 def count_spill_reload_sites(assembly: str) -> tuple[int, int]:
     """Count allocator-inserted static spill stores and reload loads.
 
-    Counts are based on the allocator's reserved comments, so ordinary model
-    loads/stores using ``sp`` are not conflated with register-allocation
-    events.  Dynamic execution counts are intentionally a separate metric.
+    Counts are based on allocator-only tags, so a user comment containing
+    words such as ``spill`` or ``reload`` cannot alter benchmark results.
+    Dynamic execution counts are intentionally a separate metric.
     """
 
     spill_stores = 0
     reload_loads = 0
     for line in assembly.splitlines():
         content = line.strip()
-        if content.startswith("sw ") and any(
-            marker in content
-            for marker in ("# spill ", "# evict ", "# store redefined ")
-        ):
+        if content.startswith("sw ") and "[regalloc:spill]" in content:
             spill_stores += 1
-        if content.startswith("lw ") and "# reload " in content:
+        if content.startswith("lw ") and "[regalloc:reload]" in content:
             reload_loads += 1
     return spill_stores, reload_loads

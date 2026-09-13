@@ -79,32 +79,93 @@ class RegisterAllocator:
     def _allocate_naive(self) -> list[MachineInstr]:
         """Spill every virtual register to the stack."""
         self._output = []
+        self._spill_slots.clear()
+        self._next_spill = 0
         for instr in self.instructions:
             if instr.op == MachineOp.LABEL:
                 self._emit(instr)
                 continue
 
-            # Before: spill src operands that are vregs
-            src1 = self._resolve_src(instr.src1)
-            src2 = self._resolve_src(instr.src2)
-            dst = self._resolve_dst(instr.dst)
+            semantics = get_machine_semantics(instr.op)
+            operands = [instr.dst, instr.src1, instr.src2]
+            resolved = list(operands)
+            explicit_regs = {
+                str(operand.value)
+                for operand in operands
+                if operand is not None
+                and operand.kind == "reg"
+                and operand.value in ALL_REGS
+            }
+            scratch_regs = [
+                reg for reg in ALL_REGS if reg not in explicit_regs
+            ]
+            scratch_by_vreg: dict[str, str] = {}
 
-            if instr.dst and instr.dst.kind == "vreg":
-                dst = self._spill_operand(instr.dst)
+            def scratch_for(vreg: str) -> str:
+                if vreg in scratch_by_vreg:
+                    return scratch_by_vreg[vreg]
+                used = set(scratch_by_vreg.values())
+                try:
+                    reg = next(reg for reg in scratch_regs if reg not in used)
+                except StopIteration as exc:
+                    raise RuntimeError(
+                        "naive regalloc: instruction needs more distinct "
+                        "scratch registers than are available"
+                    ) from exc
+                scratch_by_vreg[vreg] = reg
+                return reg
 
-            self._emit(MachineInstr(instr.op, dst, src1, src2, instr.comment))
+            # Materialize every distinct virtual source into its own scratch
+            # register.  Reusing one fixed temporary silently overwrites the
+            # first source of binary instructions.
+            for position in semantics.uses:
+                operand = operands[position]
+                if operand is None or operand.kind != "vreg":
+                    continue
+                vreg = str(operand.value)
+                reg = scratch_for(vreg)
+                slot = self._get_spill_slot(vreg)
+                self._emit(MachineInstr(
+                    MachineOp.LW,
+                    MachineOperand.reg(reg),
+                    MachineOperand.reg(f"{slot}({STACK_BASE})"),
+                    comment=f"reload {vreg} [regalloc:reload]",
+                ))
+                resolved[position] = MachineOperand.reg(reg)
 
-            # After: store dst back to stack if it's a vreg
-            if instr.dst and instr.dst.kind == "vreg":
-                v = instr.dst.value
-                assert isinstance(v, str)
-                slot = self._get_spill_slot(v)
-                mem = f"{slot}({STACK_BASE})"
+            # A destination never needs its old stack value unless the opcode
+            # also marks that same virtual register as a use.
+            for position in semantics.defs:
+                operand = operands[position]
+                if operand is None or operand.kind != "vreg":
+                    continue
+                vreg = str(operand.value)
+                resolved[position] = MachineOperand.reg(scratch_for(vreg))
+
+            self._emit(MachineInstr(
+                instr.op,
+                resolved[0],
+                resolved[1],
+                resolved[2],
+                instr.comment,
+            ))
+
+            stored: set[str] = set()
+            for position in semantics.defs:
+                operand = operands[position]
+                if operand is None or operand.kind != "vreg":
+                    continue
+                vreg = str(operand.value)
+                if vreg in stored:
+                    continue
+                stored.add(vreg)
+                reg = scratch_by_vreg[vreg]
+                slot = self._get_spill_slot(vreg)
                 self._emit(MachineInstr(
                     MachineOp.SW,
-                    dst if dst else MachineOperand.reg("zero"),
-                    MachineOperand.reg(mem),
-                    comment=f"spill {instr.dst.value}",
+                    MachineOperand.reg(reg),
+                    MachineOperand.reg(f"{slot}({STACK_BASE})"),
+                    comment=f"spill {vreg} [regalloc:spill]",
                 ))
 
         return self._output
@@ -122,15 +183,41 @@ class RegisterAllocator:
             for vreg in uses:
                 self._remaining_uses[vreg] = self._remaining_uses.get(vreg, 0) + 1
 
-        for instr in self.instructions:
+        fallthrough_boundaries = {
+            index - 1
+            for index, instr in enumerate(self.instructions)
+            if index > 0 and instr.op == MachineOp.LABEL
+        }
+
+        for index, instr in enumerate(self.instructions):
             if instr.op == MachineOp.LABEL:
+                self._vreg_map.clear()
+                self._reg_pool = {r: None for r in ALL_REGS}
                 self._emit(instr)
                 continue
 
             semantics = get_machine_semantics(instr.op)
             operands = [instr.dst, instr.src1, instr.src2]
             resolved = list(operands)
-            reserved: set[str] = set()
+            explicit_uses = {
+                str(operands[position].value)
+                for position in semantics.uses
+                if operands[position] is not None
+                and operands[position].kind == "reg"
+                and operands[position].value in ALL_REGS
+            }
+            explicit_defs = {
+                str(operands[position].value)
+                for position in semantics.defs
+                if operands[position] is not None
+                and operands[position].kind == "reg"
+                and operands[position].value in ALL_REGS
+            }
+            for phys_reg in explicit_defs:
+                owner = self._reg_pool[phys_reg]
+                if owner is not None and self._remaining_uses.get(owner, 0) > 0:
+                    self._emit_spill(owner, phys_reg)
+            reserved: set[str] = set(explicit_uses)
 
             # Resolve every use first so a destination can safely alias a
             # source whose last use is this instruction.
@@ -172,7 +259,23 @@ class RegisterAllocator:
             # peak pressure is below the register bank (the CNN case).
             if semantics.is_call:
                 self._flush_clobbered(semantics.clobbers)
+            elif semantics.is_terminator:
+                defines, _ = virtual_register_defs_uses(instr)
+                if defines:
+                    raise RuntimeError(
+                        "greedy regalloc does not support a control-flow "
+                        "terminator defining a virtual register"
+                    )
+                self._flush_regs()
             self._emit(allocated)
+
+            # A fixed physical destination overwrites any virtual value that
+            # happened to occupy that register.
+            for phys_reg in explicit_defs:
+                owner = self._reg_pool[phys_reg]
+                if owner is not None:
+                    self._vreg_map.pop(owner, None)
+                self._reg_pool[phys_reg] = None
 
             _, uses = virtual_register_defs_uses(instr)
             defines, _ = virtual_register_defs_uses(instr)
@@ -183,6 +286,12 @@ class RegisterAllocator:
             for vreg in defines:
                 if self._remaining_uses.get(vreg, 0) == 0:
                     self._release_vreg(vreg)
+
+            # A label may be reached either by fallthrough or by another CFG
+            # edge.  Canonicalize the fallthrough predecessor before the label
+            # so every incoming edge observes initialized spill slots.
+            if index in fallthrough_boundaries and not semantics.is_terminator:
+                self._flush_regs()
 
         return self._output
 
@@ -302,7 +411,7 @@ class RegisterAllocator:
             MachineOp.SW,
             MachineOperand.reg(phys_reg),
             MachineOperand.reg(mem),
-            comment=f"spill {vreg_name}",
+            comment=f"spill {vreg_name} [regalloc:spill]",
         ))
 
     def _emit_reload(self, vreg_name: str, phys_reg: str) -> None:
@@ -312,7 +421,7 @@ class RegisterAllocator:
             MachineOp.LW,
             MachineOperand.reg(phys_reg),
             MachineOperand.reg(mem),
-            comment=f"reload {vreg_name}",
+            comment=f"reload {vreg_name} [regalloc:reload]",
         ))
 
     def _get_spill_slot(self, vreg_name: str) -> int:

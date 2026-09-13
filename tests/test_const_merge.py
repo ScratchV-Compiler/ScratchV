@@ -1,13 +1,16 @@
 """Tests for Constant Load Merge Optimizer."""
 
+import random
+
 import pytest
 from scratchv.backend._asm_parser import (
     ParsedAsmLine, canonical_reg, is_integer_reg,
 )
 from scratchv.backend.const_merge import (
     AsmInst, ConstantMergeStats, _insts_to_asm, _parse_asm,
-    merge_constants, merge_constants_detailed,
+    main, merge_constants, merge_constants_detailed,
 )
+from scratchv.backend.riscv_encoder import RISCVAEncoder
 
 
 class TestAsmInst:
@@ -111,6 +114,25 @@ class TestMergeConstants:
         result, changes = merge_constants("")
         assert changes == 0
 
+    def test_cli_reads_and_writes_utf8_assembly(
+        self, tmp_path, monkeypatch
+    ):
+        source = tmp_path / "输入.s"
+        output = tmp_path / "输出.s"
+        source.write_text(
+            "# 中文注释\n  lui t0, 1\n  addi t0, t0, 2\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "sys.argv", ["const_merge", str(source), "-o", str(output)]
+        )
+
+        main()
+
+        result = output.read_text(encoding="utf-8")
+        assert "中文注释" in result
+        assert "li t0, 4098" in result
+
     def test_no_changes_without_lui(self):
         asm = "  add t0, t1, t2\n  sub t3, t4, t5\n  ret\n"
         result, changes = merge_constants(asm)
@@ -146,6 +168,32 @@ class TestMergeConstants:
         assert changes >= 1
         assert "li" in result
         assert "2048" in result
+
+    def test_random_legal_pairs_preserve_rv32_execution(self):
+        pytest.importorskip("tinyfive")
+        from scratchv.simulator.tinyfive import ProfiledMachine
+
+        def execute(assembly: str) -> int:
+            program = assembly + "\n.done:\nj .done"
+            binary = bytes(RISCVAEncoder().assemble(program))
+            words = [
+                int.from_bytes(binary[offset:offset + 4], "little")
+                for offset in range(0, len(binary), 4)
+            ]
+            machine = ProfiledMachine(mem_size=4096)
+            machine.load_binary(words, origin=0)
+            machine.run(instructions=len(words) + 2, start=0, strict=True)
+            return machine.get_reg(5) & 0xFFFFFFFF
+
+        rng = random.Random(17)
+        for _ in range(64):
+            upper = rng.randrange(0, 1 << 20)
+            lower = rng.randrange(-2048, 2048)
+            before = f"lui t0, {upper}\naddi t0, t0, {lower}"
+            after, changes = merge_constants(before)
+
+            assert changes == 1
+            assert execute(after) == execute(before)
 
     def test_rv32_result_is_normalized_to_signed_value(self):
         asm = "  lui t0, 0x80000\n  addi t0, t0, 0\n"

@@ -194,6 +194,67 @@ _CALLEE_SAVED = {
 _llvmlite_ready = False
 
 
+def validate_straight_line_allocation(block, assembly: str) -> dict:
+    """Encode and execute a generated straight-line allocator benchmark.
+
+    The input block is interpreted independently to obtain the expected
+    ``a0`` value.  This prevents a benchmark from reporting PASS merely
+    because spill counters happen to match expectations.
+    """
+    from scratchv.backend.riscv_encoder import RISCVAEncoder
+    from scratchv.simulator.tinyfive import ProfiledMachine
+
+    values: dict[str, int] = {"zero": 0, "x0": 0}
+
+    def value(name: str) -> int:
+        try:
+            return int(name, 0)
+        except ValueError:
+            if name not in values:
+                raise ValueError(f"undefined benchmark value: {name}")
+            return values[name]
+
+    for inst in block:
+        operands = inst.operands
+        if inst.opcode == "addi":
+            values[operands[0]] = value(operands[1]) + value(operands[2])
+        elif inst.opcode == "add":
+            values[operands[0]] = value(operands[1]) + value(operands[2])
+        elif inst.opcode == "sub":
+            values[operands[0]] = value(operands[1]) - value(operands[2])
+        elif inst.opcode == "mul":
+            values[operands[0]] = value(operands[1]) * value(operands[2])
+        elif inst.opcode == "and":
+            values[operands[0]] = value(operands[1]) & value(operands[2])
+        elif inst.opcode == "xor":
+            values[operands[0]] = value(operands[1]) ^ value(operands[2])
+        elif inst.opcode == "mv":
+            values[operands[0]] = value(operands[1])
+        else:
+            raise ValueError(f"unsupported benchmark opcode: {inst.opcode}")
+        values[operands[0]] &= 0xFFFFFFFF
+
+    program = "li sp, 8192\n" + assembly + "\n.done:\nj .done"
+    binary = bytes(RISCVAEncoder().assemble(program))
+    words = [
+        int.from_bytes(binary[offset:offset + 4], "little")
+        for offset in range(0, len(binary), 4)
+    ]
+    machine = ProfiledMachine(mem_size=16384)
+    if not machine.available:
+        raise RuntimeError("TinyFive is required for benchmark validation")
+    machine.load_binary(words, origin=0)
+    machine.run(instructions=len(words) + 2, start=0, strict=True)
+    expected = values.get("a0", 0) & 0xFFFFFFFF
+    actual = machine.get_reg(10) & 0xFFFFFFFF
+    return {
+        "execution_valid": actual == expected,
+        "expected_a0": expected,
+        "actual_a0": actual,
+        "encoded_instructions": len(binary) // 4,
+    }
+
+
 def llvmlite_ir_to_riscv(
     ir_text: str,
     features: str = "",

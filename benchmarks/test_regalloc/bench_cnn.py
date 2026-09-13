@@ -13,13 +13,21 @@ import statistics
 import sys
 import time
 
-from scratchv.backend.regalloc_linear_v1_5 import (
+from scratchv.backend.regalloc_linear import (
     LinearScanAllocator,
     block_from_machine_instrs,
 )
-from scratchv.backend.machine_types import ALL_REGS
+from scratchv.backend.machine_semantics import virtual_register_defs_uses
+from scratchv.backend.machine_types import (
+    ALL_REGS,
+    MachineInstr,
+    MachineOp,
+    MachineOperand,
+)
 from scratchv.backend.riscv_encoder import RISCVAEncoder
+from scratchv.backend.abi_frame import apply_abi_frames
 from scratchv.backend.register_alloc import RegisterAllocator
+from scratchv.backend.asm_emit import AsmEmitter
 from scratchv.standalone.compare_codegen import count_riscv_instrs
 
 
@@ -46,6 +54,31 @@ def _compile_onnx(onnx_path: str) -> tuple:
     DeadCodeEliminator(program).run()
     machine = InstructionSelector(program).run()
 
+    # The scalarized CNN Machine IR names model inputs and initializers as
+    # live-ins.  Materialize deterministic values so the allocator output is
+    # an executable benchmark program instead of assembly with undefined
+    # entry-register contents.
+    defined: set[str] = set()
+    used: set[str] = set()
+    for instruction in machine:
+        defs, uses = virtual_register_defs_uses(instruction)
+        defined.update(defs)
+        used.update(uses)
+    live_ins = sorted(used - defined)
+    initializers = [
+        MachineInstr(
+            MachineOp.LI,
+            MachineOperand.vreg(name),
+            MachineOperand.immediate(1 + sum(map(ord, name)) % 5),
+            comment=f"benchmark live-in {name}",
+        )
+        for name in live_ins
+    ]
+    insertion = 0
+    while insertion < len(machine) and machine[insertion].op == MachineOp.LABEL:
+        insertion += 1
+    machine[insertion:insertion] = initializers
+
     vregs: set[str] = set()
     for mi in machine:
         for op in (mi.dst, mi.src1, mi.src2):
@@ -71,36 +104,146 @@ def _validate_asm(asm: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _run_emulator(cnn_path: str) -> dict:
-    """Compile *cnn_path* via standalone pipeline, run through RV32Emulator."""
+def _interpret_machine(machine: list[MachineInstr]) -> int:
+    """Independently interpret the integer Machine IR and return ``a0``."""
+    labels = {
+        instruction.comment: index
+        for index, instruction in enumerate(machine)
+        if instruction.op == MachineOp.LABEL
+    }
+    values: dict[str, int] = {"zero": 0, "x0": 0, "ra": len(machine)}
+
+    def unsigned(value: int) -> int:
+        return value & 0xFFFFFFFF
+
+    def signed(value: int) -> int:
+        value = unsigned(value)
+        return value if value < 0x80000000 else value - 0x100000000
+
+    def read(operand: MachineOperand | None) -> int:
+        if operand is None:
+            return 0
+        if operand.kind == "imm":
+            return int(operand.value)
+        name = str(operand.value)
+        if name not in values:
+            raise ValueError(f"undefined Machine IR value: {name}")
+        return values[name]
+
+    def write(operand: MachineOperand | None, value: int) -> None:
+        if operand is None or str(operand.value) in {"zero", "x0"}:
+            return
+        values[str(operand.value)] = unsigned(value)
+
+    pc = 0
+    steps = 0
+    while 0 <= pc < len(machine) and steps < 10_000:
+        instruction = machine[pc]
+        steps += 1
+        next_pc = pc + 1
+        left = read(instruction.src1)
+        right = read(instruction.src2)
+        op = instruction.op
+        if op == MachineOp.LABEL:
+            pass
+        elif op in {MachineOp.LI, MachineOp.MV}:
+            write(instruction.dst, left)
+        elif op in {MachineOp.ADD, MachineOp.ADDI}:
+            write(instruction.dst, left + right)
+        elif op == MachineOp.SUB:
+            write(instruction.dst, left - right)
+        elif op == MachineOp.MUL:
+            write(instruction.dst, signed(left) * signed(right))
+        elif op == MachineOp.DIV:
+            divisor = signed(right)
+            dividend = signed(left)
+            write(instruction.dst, -1 if divisor == 0 else int(dividend / divisor))
+        elif op == MachineOp.REM:
+            divisor = signed(right)
+            dividend = signed(left)
+            quotient = 0 if divisor == 0 else int(dividend / divisor)
+            result = (
+                dividend if divisor == 0
+                else dividend - quotient * divisor
+            )
+            write(instruction.dst, result)
+        elif op == MachineOp.MAX:
+            write(instruction.dst, max(signed(left), signed(right)))
+        elif op == MachineOp.SLT:
+            write(instruction.dst, int(signed(left) < signed(right)))
+        elif op == MachineOp.XOR:
+            write(instruction.dst, left ^ right)
+        elif op == MachineOp.AND:
+            write(instruction.dst, left & right)
+        elif op == MachineOp.SRAI:
+            write(instruction.dst, signed(left) >> (right & 31))
+        elif op == MachineOp.BNEZ:
+            if read(instruction.dst) != 0:
+                next_pc = labels[instruction.comment]
+        elif op in {MachineOp.BEQ, MachineOp.BNE, MachineOp.BLT, MachineOp.BGE}:
+            comparisons = {
+                MachineOp.BEQ: left == right,
+                MachineOp.BNE: left != right,
+                MachineOp.BLT: signed(left) < signed(right),
+                MachineOp.BGE: signed(left) >= signed(right),
+            }
+            if comparisons[op]:
+                next_pc = labels[instruction.comment]
+        elif op == MachineOp.J:
+            next_pc = labels[instruction.comment]
+        elif op in {MachineOp.JAL, MachineOp.CALL}:
+            write(instruction.dst or MachineOperand.reg("ra"), pc + 1)
+            next_pc = labels[instruction.comment]
+        elif op == MachineOp.JALR:
+            if str(instruction.dst.value) in {"zero", "x0"}:
+                break
+            next_pc = read(instruction.src1) + read(instruction.src2)
+        else:
+            raise ValueError(f"unsupported CNN benchmark opcode: {op.value}")
+        pc = next_pc
+    else:
+        if steps >= 10_000:
+            raise RuntimeError("Machine IR reference interpreter did not terminate")
+    return values.get("a0", 0) & 0xFFFFFFFF
+
+
+def _run_emulator(assembly: str, expected_a0: int) -> dict:
+    """Execute the allocated assembly itself and compare its return value."""
     try:
-        from scratchv.standalone.onnx_to_riscv_standalone import (
-            ONNXModel,
-            MemoryPlan,
-            CNNRISCVGenerator,
-        )
-        from scratchv.simulator.rv32_emulator import RV32Emulator
+        from scratchv.simulator.tinyfive import ProfiledMachine
     except ImportError as e:
         return {"passed": False, "error": f"import error: {e}"}
 
     try:
-        model = ONNXModel.from_file(cnn_path)
-        memory = MemoryPlan()
-        memory.layout_weights(model.initializers)
-        if model.inputs:
-            inp = model.inputs[0]
-            el = 1
-            for d in model.get_shape(inp.name):
-                el *= d
-            memory.alloc_workspace(inp.name, el)
-
-        generator = CNNRISCVGenerator(model, memory)
-        code_bytes = generator.generate()
-
-        emu = RV32Emulator()
-        emu.load_code(code_bytes)
-        emu.run(max_instr=100_000)
-        return {"passed": True, "error": ""}
+        harness = (
+            "li sp, 8192\n"
+            "jal ra, main_graph\n"
+            "li a7, 0x5a5\n"
+            "j .bench_done\n"
+            + assembly
+            + "\n.bench_done:\nj .bench_done"
+        )
+        binary = bytes(RISCVAEncoder().assemble(harness))
+        words = [
+            int.from_bytes(binary[offset:offset + 4], "little")
+            for offset in range(0, len(binary), 4)
+        ]
+        profile = ProfiledMachine(mem_size=16384)
+        if not profile.available:
+            raise RuntimeError("TinyFive is unavailable")
+        profile.load_binary(words, origin=0)
+        profile.run(instructions=len(words) + 16, start=0, strict=True)
+        actual = profile.get_reg(10) & 0xFFFFFFFF
+        returned = profile.get_reg(17) == 0x5A5
+        return {
+            "passed": returned and actual == expected_a0,
+            "error": "" if returned and actual == expected_a0 else (
+                f"allocated assembly returned={returned}, "
+                f"a0={actual}, expected={expected_a0}"
+            ),
+            "actual_a0": actual,
+            "expected_a0": expected_a0,
+        }
     except Exception as exc:
         return {"passed": False, "error": str(exc)[:120]}
 
@@ -210,8 +353,11 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
     # Final run for stable stats + assembly validation
     alloc = LinearScanAllocator(phys_regs=phys_regs)
     alloc.allocate(alloc.compute_live_intervals(block))
-    code = alloc.get_allocated_code(block)
+    code = apply_abi_frames(
+        alloc.get_allocated_code(block), alloc.spill_slot_count
+    )
     asm_errors = _validate_asm(code)
+    expected_a0 = _interpret_machine(machine)
     sv_cnt, sv_cats = count_riscv_instrs(code)
 
     # Greedy allocator baseline
@@ -219,6 +365,11 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
     greedy = RegisterAllocator(machine, mode="greedy")
     greedy_out = greedy.run()
     greedy_time = time.perf_counter() - t0
+    greedy_code = apply_abi_frames(
+        AsmEmitter(greedy_out).emit(), greedy.spill_slot_count
+    )
+    greedy_errors = _validate_asm(greedy_code)
+    greedy_emu = _run_emulator(greedy_code, expected_a0)
 
     return {
         "mean_s": statistics.mean(times),
@@ -242,8 +393,15 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         "asm_valid": len(asm_errors) == 0,
         "greedy_time_s": greedy_time,
         "greedy_out_instrs": len(greedy_out),
+        "greedy_spill_slots": greedy.spill_slot_count,
+        "greedy_asm_valid": not greedy_errors,
+        "greedy_asm_errors": greedy_errors,
+        "greedy_emu_passed": greedy_emu["passed"],
+        "greedy_emu_error": greedy_emu.get("error", ""),
         "_report": alloc.report(),
         "_alloc": alloc,
+        "_assembly": code,
+        "expected_a0": expected_a0,
     }
 
 
@@ -256,10 +414,18 @@ def run_bench(
     stats = bench_allocate(cnn_path, phys_regs, repeats=repeats)
 
     # Emulator verification is part of the end-to-end validity contract.
-    emu = _run_emulator(cnn_path)
+    emu = _run_emulator(
+        stats.get("_assembly", ""), stats.get("expected_a0", 0)
+    )
     stats["emu_passed"] = emu["passed"]
     stats["emu_error"] = emu.get("error", "")
-    stats["valid"] = stats["asm_valid"] and stats["emu_passed"]
+    stats["actual_a0"] = emu.get("actual_a0")
+    stats["valid"] = (
+        stats["asm_valid"]
+        and stats["emu_passed"]
+        and stats.get("greedy_asm_valid", True)
+        and stats.get("greedy_emu_passed", True)
+    )
 
     # LLVM comparison (non-fatal)
     try:

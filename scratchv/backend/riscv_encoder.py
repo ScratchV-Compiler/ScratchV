@@ -136,12 +136,16 @@ def _r_type(rd: int, rs1: int, rs2: int,
 
 def _i_type(rd: int, rs1: int, imm: int, funct3: int,
             opcode: RVOpcode = RVOpcode.OP_IMM) -> int:
+    if not -(1 << 11) <= imm <= (1 << 11) - 1:
+        raise ValueError(f"I-type immediate out of range: {imm}")
     return ((_sext(imm, 12) << 20) | (rs1 << 15)
             | (funct3 << 12) | (rd << 7) | opcode)
 
 
 def _s_type(rs1: int, rs2: int, imm: int,
             funct3: int) -> int:
+    if not -(1 << 11) <= imm <= (1 << 11) - 1:
+        raise ValueError(f"S-type immediate out of range: {imm}")
     imm = _sext(imm, 12)
     return ((imm >> 5) << 25) | (rs2 << 20) | (rs1 << 15) \
         | (funct3 << 12) | ((imm & 0x1F) << 7) | RVOpcode.STORE
@@ -149,6 +153,8 @@ def _s_type(rs1: int, rs2: int, imm: int,
 
 def _b_type(rs1: int, rs2: int, imm: int,
             funct3: int) -> int:
+    if imm % 2 or not -(1 << 12) <= imm <= (1 << 12) - 2:
+        raise ValueError(f"branch offset out of range or unaligned: {imm}")
     imm = _sext(imm, 13)
     b12 = (imm >> 12) & 1
     b10_5 = (imm >> 5) & 0x3F
@@ -160,11 +166,15 @@ def _b_type(rs1: int, rs2: int, imm: int,
 
 
 def _u_type(rd: int, imm: int) -> int:
+    if not -(1 << 19) <= imm <= (1 << 20) - 1:
+        raise ValueError(f"U-type immediate out of range: {imm}")
     return ((_sext(imm, 20) << 12) | (rd << 7)
             | RVOpcode.LUI)
 
 
 def _j_type(rd: int, imm: int) -> int:
+    if imm % 2 or not -(1 << 20) <= imm <= (1 << 20) - 2:
+        raise ValueError(f"jump offset out of range or unaligned: {imm}")
     imm = _sext(imm, 21)
     b20 = (imm >> 20) & 1
     b10_1 = (imm >> 1) & 0x3FF
@@ -331,7 +341,7 @@ class RISCVAEncoder:
                 op2 = tokens[2].rstrip(",")
                 if op2 not in REG_MAP and not op2.startswith("x") and not op2.startswith("%"):
                     try:
-                        imm = int(op2)
+                        imm = self._parse_imm(op2)
                     except ValueError:
                         pass
                     else:
@@ -469,8 +479,9 @@ class RISCVAEncoder:
         elif op == "srai":
             rd = _reg_num(operands[0])
             rs1 = _reg_num(operands[1])
-            shamt = self._parse_imm(operands[2]) & 0x1F
-            word = _i_type(rd, rs1, shamt | (0b0100000 << 5), F3_SRL_SRA)
+            shamt = self._parse_imm(operands[2])
+            if not 0 <= shamt <= 31:
+                raise ValueError(f"RV32 shift amount out of range: {shamt}")
             # Shamt is encoded in lower 5 bits of the 12-bit immediate;
             # the upper 7 bits are 0100000 for SRAI.
             imm12 = shamt | (0b0100000 << 5)
@@ -605,11 +616,11 @@ class RISCVAEncoder:
 
     def _parse_imm(self, s: str) -> int:
         s = s.strip()
-        if s.startswith("0x"):
-            return int(s, 16)
-        if s.startswith("-"):
-            return int(s)
-        return int(s)
+        try:
+            return int(s, 0)
+        except ValueError:
+            # Preserve support for decimal strings with leading zeroes.
+            return int(s, 10)
 
     def _parse_mem(self, s: str) -> tuple[int, int]:
         """Parse memory operand like '16(sp)' -> (offset, rs1)."""

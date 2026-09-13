@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from scratchv.backend.machine_types import (
-    ALL_REGS, MachineInstr, MachineOp, MachineOperand,
+    ALL_REGS, ARG_REGS, MachineInstr, MachineOp, MachineOperand,
 )
 from scratchv.backend.machine_semantics import (
     get_machine_semantics,
@@ -209,6 +209,15 @@ class LinearScanAllocator:
             phys_regs if phys_regs is not None
             else list(_DEFAULT_PHYS_REGS)
         )
+        valid_regs = set(ALL_REGS) | set(ARG_REGS)
+        invalid = [reg for reg in self.phys_regs if reg not in valid_regs]
+        if invalid:
+            raise ValueError(
+                "linear regalloc supports only RV32 integer allocatable "
+                f"registers; invalid: {', '.join(invalid)}"
+            )
+        if len(set(self.phys_regs)) != len(self.phys_regs):
+            raise ValueError("linear regalloc physical registers must be unique")
         self.stack_slot: int = 0
         self.alloc_map: dict[str, str] = {}
         self.spill_code: dict[int, list[str]] = {}  # pos -> [sw asm lines]

@@ -12,7 +12,9 @@ import statistics
 import sys
 import time
 
-from scratchv.backend.regalloc_linear_v1_5 import LinearScanAllocator, LsInstruction
+from scratchv.backend.regalloc_linear import LinearScanAllocator, LsInstruction
+from scratchv.backend.machine_types import TEMP_REGS
+from benchmarks.test_regalloc.bench_utils import validate_straight_line_allocation
 
 
 def _gen_block(
@@ -20,38 +22,33 @@ def _gen_block(
 ) -> list[LsInstruction]:
     """Generate a basic block with simple arithmetic using few vregs."""
     random.seed(seed)
-    ops = ["add", "sub", "mul", "and", "or"]
+    ops = ["add", "sub", "mul", "and", "xor"]
     vreg_names = [f"v{i}" for i in range(num_vregs)]
     insts = []
 
-    for i in range(num_insts):
-        if i < num_vregs:
-            dst = vreg_names[i]
-            pool = vreg_names[: max(i, 1)]
-            src1 = random.choice(pool)
-            src2 = random.choice(pool)
-            insts.append(
-                LsInstruction(
-                    id=i,
-                    opcode=random.choice(ops),
-                    operands=[dst, src1, src2],
-                    defines={dst},
-                    uses={src1, src2},
-                )
-            )
-        else:
-            dst = random.choice(vreg_names)
-            src1 = random.choice(vreg_names)
-            src2 = random.choice(vreg_names)
-            insts.append(
-                LsInstruction(
-                    id=i,
-                    opcode=random.choice(ops),
-                    operands=[dst, src1, src2],
-                    defines={dst},
-                    uses={src1, src2} - {dst},
-                )
-            )
+    for i, dst in enumerate(vreg_names):
+        insts.append(LsInstruction(
+            id=i,
+            opcode="addi",
+            operands=[dst, "zero", str(random.randint(1, 100))],
+            defines={dst},
+            uses=set(),
+        ))
+    for i in range(num_vregs, max(num_vregs, num_insts - 1)):
+        dst = random.choice(vreg_names)
+        src1 = random.choice(vreg_names)
+        src2 = random.choice(vreg_names)
+        insts.append(LsInstruction(
+            id=i,
+            opcode=random.choice(ops),
+            operands=[dst, src1, src2],
+            defines={dst},
+            uses={src1, src2},
+        ))
+    answer = vreg_names[-1]
+    insts.append(LsInstruction(
+        id=len(insts), opcode="mv", operands=["a0", answer], uses={answer}
+    ))
     return insts
 
 
@@ -71,6 +68,7 @@ def bench_allocate(
     alloc = LinearScanAllocator(phys_regs=phys_regs)
     alloc.allocate(alloc.compute_live_intervals(block))
     code = alloc.get_allocated_code(block)
+    validation = validate_straight_line_allocation(block, code)
 
     return {
         "mean_s": statistics.mean(times),
@@ -87,16 +85,17 @@ def bench_allocate(
         "asm_lines": len(code.splitlines()),
         "_report": alloc.report(),
         "_alloc": alloc,
+        **validation,
     }
 
 
 def run_bench(phys_regs: list[str] | None = None, repeats: int = 50) -> dict:
     """Entry point for the test suite runner."""
     if phys_regs is None:
-        phys_regs = [f"r{i}" for i in range(8)]
+        phys_regs = list(TEMP_REGS)
     block = _gen_block(num_insts=10, num_vregs=5)
     stats = bench_allocate(block, phys_regs, repeats=repeats)
-    stats["valid"] = stats["spills"] == 0
+    stats["valid"] = stats["spills"] == 0 and stats["execution_valid"]
     return stats
 
 
@@ -109,7 +108,7 @@ def main():
     )
     args = parser.parse_args()
 
-    phys_regs = [f"r{i}" for i in range(8)]
+    phys_regs = list(TEMP_REGS)
 
     print("=" * 60)
     print("Benchmark 1 — Simple Arithmetic (5 vregs / 8 phys regs)")

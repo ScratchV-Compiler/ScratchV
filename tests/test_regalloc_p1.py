@@ -17,6 +17,16 @@ from scratchv.backend.riscv_encoder import RISCVAEncoder
 ALLOCATOR_MODULES = (regalloc_linear, regalloc_linear_v1_5)
 
 
+@pytest.mark.parametrize("allocator_module", ALLOCATOR_MODULES)
+def test_linear_allocator_rejects_non_riscv_or_duplicate_registers(
+    allocator_module,
+):
+    with pytest.raises(ValueError, match="RV32 integer"):
+        allocator_module.LinearScanAllocator(["r0"])
+    with pytest.raises(ValueError, match="must be unique"):
+        allocator_module.LinearScanAllocator(["t0", "t0"])
+
+
 def _pressure_machine() -> list[MachineInstr]:
     v = MachineOperand.vreg
     imm = MachineOperand.immediate
@@ -328,3 +338,97 @@ def test_call_encodes_as_local_jal_and_rejects_missing_target():
     assert RISCVAEncoder().assemble(call) == RISCVAEncoder().assemble(direct)
     with pytest.raises(ValueError, match="undefined branch target"):
         RISCVAEncoder().assemble("call .missing")
+
+
+@pytest.mark.parametrize("allocator_module", ALLOCATOR_MODULES)
+def test_explicit_physical_definition_does_not_clobber_live_vreg(
+    allocator_module,
+):
+    pytest.importorskip("tinyfive")
+    from scratchv.simulator.tinyfive import ProfiledMachine
+
+    v = MachineOperand.vreg
+    reg = MachineOperand.reg
+    imm = MachineOperand.immediate
+    machine_ir = [
+        MachineInstr(MachineOp.LI, v("saved"), imm(5)),
+        MachineInstr(MachineOp.ADDI, reg("t0"), reg("zero"), imm(9)),
+        MachineInstr(MachineOp.MV, reg("a0"), v("saved")),
+    ]
+    allocator = allocator_module.LinearScanAllocator(["t0", "t1"])
+    assembly = allocator.emit(
+        allocator_module.block_from_machine_instrs(machine_ir)
+    )
+    binary = RISCVAEncoder().assemble(
+        "li sp, 2048\n" + assembly + "\n.done:\nj .done"
+    )
+    words = [
+        int.from_bytes(binary[offset:offset + 4], "little")
+        for offset in range(0, len(binary), 4)
+    ]
+    profile = ProfiledMachine(mem_size=4096)
+    profile.load_binary(words, origin=0)
+    profile.run(instructions=len(words) + 2, start=0, strict=True)
+
+    assert profile.get_reg(10) == 5
+
+
+@pytest.mark.parametrize("mode", ["naive", "greedy"])
+def test_legacy_allocators_execute_binary_operation_with_distinct_sources(mode):
+    pytest.importorskip("tinyfive")
+    from scratchv.simulator.tinyfive import ProfiledMachine
+
+    v = MachineOperand.vreg
+    reg = MachineOperand.reg
+    imm = MachineOperand.immediate
+    instructions = [
+        MachineInstr(MachineOp.LI, v("left"), imm(5)),
+        MachineInstr(MachineOp.LI, v("right"), imm(2)),
+        MachineInstr(MachineOp.SUB, v("answer"), v("left"), v("right")),
+        MachineInstr(MachineOp.MV, reg("a0"), v("answer")),
+    ]
+    assembly = AsmEmitter(RegisterAllocator(instructions, mode=mode).run()).emit()
+    binary = RISCVAEncoder().assemble(
+        "li sp, 2048\n" + assembly + "\n.done:\nj .done"
+    )
+    words = [
+        int.from_bytes(binary[offset:offset + 4], "little")
+        for offset in range(0, len(binary), 4)
+    ]
+    profile = ProfiledMachine(mem_size=4096)
+    profile.load_binary(words, origin=0)
+    profile.run(instructions=len(words) + 2, start=0, strict=True)
+
+    assert profile.get_reg(10) == 3
+
+
+def test_greedy_taken_branch_observes_initialized_spill_handoff():
+    pytest.importorskip("tinyfive")
+    from scratchv.simulator.tinyfive import ProfiledMachine
+
+    v = MachineOperand.vreg
+    reg = MachineOperand.reg
+    imm = MachineOperand.immediate
+    instructions = [
+        MachineInstr(MachineOp.LI, v("carried"), imm(10)),
+        MachineInstr(MachineOp.LI, v("condition"), imm(1)),
+        MachineInstr(MachineOp.BNEZ, v("condition"), comment=".join"),
+        MachineInstr(MachineOp.ADDI, v("unused"), v("carried"), imm(1)),
+        MachineInstr(MachineOp.LABEL, comment=".join"),
+        MachineInstr(MachineOp.MV, reg("a0"), v("carried")),
+    ]
+    assembly = AsmEmitter(
+        RegisterAllocator(instructions, mode="greedy").run()
+    ).emit()
+    binary = RISCVAEncoder().assemble(
+        "li sp, 2048\n" + assembly + "\n.done:\nj .done"
+    )
+    words = [
+        int.from_bytes(binary[offset:offset + 4], "little")
+        for offset in range(0, len(binary), 4)
+    ]
+    profile = ProfiledMachine(mem_size=4096)
+    profile.load_binary(words, origin=0)
+    profile.run(instructions=len(words) + 3, start=0, strict=True)
+
+    assert profile.get_reg(10) == 10

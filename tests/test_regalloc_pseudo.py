@@ -12,7 +12,7 @@ from scratchv.backend.machine_types import (
     MachineOperand,
 )
 from scratchv.backend.riscv_encoder import RISCVAEncoder
-from scratchv.ir.types import Program
+from scratchv.ir.types import Program, Value
 
 
 ALLOCATOR_MODULES = (regalloc_linear, regalloc_linear_v1_5)
@@ -353,6 +353,22 @@ def test_move_helper_uses_li_for_an_immediate_source():
             comment="constant copy",
         )
     ]
+
+
+def test_max_helper_temporary_never_collides_with_any_program_value():
+    program = Program()
+    program.global_values.append(Value("__scratchv_max_rhs_1"))
+    selector = InstructionSelector(program)
+
+    selector._emit_max(
+        MachineOperand.vreg("result"),
+        MachineOperand.vreg("left"),
+        MachineOperand.immediate(5),
+    )
+
+    assert selector._instructions[0].dst == MachineOperand.vreg(
+        "__scratchv_max_rhs_2"
+    )
 
 
 def test_mv_executes_as_a_register_copy():

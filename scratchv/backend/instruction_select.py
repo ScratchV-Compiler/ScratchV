@@ -23,6 +23,21 @@ class InstructionSelector:
         self._instructions: list[MachineInstr] = []
         self._label_counter = 0
         self._max_temp_counter = 0
+        self._reserved_vreg_names = self._collect_ir_value_names()
+
+    def _collect_ir_value_names(self) -> set[str]:
+        """Reserve every user-visible IR name before creating temporaries."""
+        names = {value.name for value in self.program.global_values}
+        for func in self.program.functions:
+            names.update(value.name for value in func.params)
+            names.update(value.name for value in func.returns)
+            names.update(value.name for value in func.locals)
+            for block in func.blocks:
+                for instr in (*block.phi_nodes, *block.instructions):
+                    if instr.dest is not None:
+                        names.add(instr.dest.name)
+                    names.update(value.name for value in instr.operands)
+        return names
 
     def run(self) -> list[MachineInstr]:
         """Select instructions for all functions.
@@ -93,10 +108,15 @@ class InstructionSelector:
             lhs, rhs = rhs, lhs
 
         if rhs.kind == "imm" and int(rhs.value) != 0:
-            self._max_temp_counter += 1
-            rhs_reg = MachineOperand.vreg(
-                f"__scratchv_max_rhs_{self._max_temp_counter}"
-            )
+            while True:
+                self._max_temp_counter += 1
+                temp_name = (
+                    f"__scratchv_max_rhs_{self._max_temp_counter}"
+                )
+                if temp_name not in self._reserved_vreg_names:
+                    break
+            self._reserved_vreg_names.add(temp_name)
+            rhs_reg = MachineOperand.vreg(temp_name)
             self._emit(
                 MachineOp.LI,
                 rhs_reg,

@@ -13,7 +13,7 @@ from scratchv.backend.machine_types import (
     MachineOp,
     MachineOperand,
 )
-from scratchv.backend.regalloc_linear_v1_5 import (
+from scratchv.backend.regalloc_linear import (
     LinearScanAllocator,
     block_from_machine_instrs,
 )

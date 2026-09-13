@@ -74,7 +74,9 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
             return
         slot = allocator._get_spill_slot(owner)
         allocator._spilled.add(owner)
-        lines.append(f"  sw {reg}, {slot}(sp)  # {reason} {owner}")
+        lines.append(
+            f"  sw {reg}, {slot}(sp)  # {reason} {owner} [regalloc:spill]"
+        )
         stack_current.add(owner)
 
     def claim_register(vreg: str, reg: str) -> None:
@@ -152,7 +154,8 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
             slot = allocator._get_spill_slot(vreg)
             allocator._spilled.add(vreg)
             lines.append(
-                f"  sw {reg}, {slot}(sp)  # spill {vreg} at block boundary"
+                f"  sw {reg}, {slot}(sp)  # spill {vreg} at block boundary "
+                "[regalloc:spill]"
             )
             stack_current.add(vreg)
 
@@ -181,6 +184,25 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
         except ValueError:
             pass
 
+        # Physical operands are fixed constraints, not values available to
+        # the allocator.  Preserve a live virtual value currently occupying
+        # an explicitly-written register before that instruction clobbers it.
+        physical_uses: set[str] = set()
+        physical_defs: set[str] = set()
+        if semantics is not None:
+            for position in semantics.uses:
+                if position < len(inst.operands):
+                    operand = inst.operands[position]
+                    if operand in allocator.phys_regs:
+                        physical_uses.add(operand)
+            for position in semantics.defs:
+                if position < len(inst.operands):
+                    operand = inst.operands[position]
+                    if operand in allocator.phys_regs:
+                        physical_defs.add(operand)
+            for reg in physical_defs:
+                store_owner(reg, inst.id, block, "spill before physical clobber")
+
         ordered_uses: list[str] = []
         for operand in inst.operands:
             if operand in inst.uses and operand not in ordered_uses:
@@ -203,6 +225,7 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
             for vreg in ordered_uses
             if vreg in locations and reg_owner.get(locations[vreg]) == vreg
         }
+        protected.update(physical_uses)
         for vreg in ordered_uses:
             resident = locations.get(vreg)
             if resident is not None and reg_owner.get(resident) == vreg:
@@ -219,7 +242,10 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
                 preferred = allocator.alloc_map.get(vreg)
                 reg = choose_register(vreg, inst.id, block, protected, preferred)
                 slot = allocator._get_spill_slot(vreg)
-                lines.append(f"  lw {reg}, {slot}(sp)  # reload {vreg}")
+                lines.append(
+                    f"  lw {reg}, {slot}(sp)  # reload {vreg} "
+                    "[regalloc:reload]"
+                )
             claim_register(vreg, reg)
             protected.add(reg)
 
@@ -234,7 +260,7 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
         # first writes its old value to the canonical spill slot; the already
         # materialized source operand still names the same register for this
         # instruction, and later uses reload the saved value.
-        definition_protected: set[str] = set()
+        definition_protected: set[str] = set(physical_uses)
         for vreg in ordered_defines:
             resident = locations.get(vreg)
             if resident is not None and reg_owner.get(resident) == vreg:
@@ -263,6 +289,11 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
 
         lines.append(inst.to_asm(rename))
 
+        # The instruction has now overwritten its explicit physical
+        # destinations; any old virtual ownership is stale.
+        for reg in physical_defs:
+            forget_register(reg)
+
         for vreg in ordered_defines:
             stack_current.discard(vreg)
 
@@ -275,7 +306,8 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
             reg = locations[vreg]
             slot = allocator._get_spill_slot(vreg)
             lines.append(
-                f"  sw {reg}, {slot}(sp)  # store redefined {vreg}"
+                f"  sw {reg}, {slot}(sp)  # store redefined {vreg} "
+                "[regalloc:spill]"
             )
             stack_current.add(vreg)
             forget_register(reg)
