@@ -149,3 +149,21 @@ def test_html_escapes_diagnostic_source(tmp_path):
     html = (tmp_path / "report.html").read_text(encoding="utf-8")
     assert "if (a &gt; b):" in html
     assert "if (a > b):" not in html
+
+
+def test_diagnostic_logs_are_collapsed_in_markdown_and_html(tmp_path):
+    result, report = run_report(tmp_path)
+    assert result.returncode == 0, result.stderr
+    count = len(report["diagnostics"]["cases"])
+    for extension in ("md", "html"):
+        content = (tmp_path / f"report.{extension}").read_text(encoding="utf-8")
+        assert content.count("<details>") == count
+        assert content.count("</details>") == count
+        assert "<details open" not in content
+        assert "<summary>error_limit: 20 error(s)" in content
+        for case in report["diagnostics"]["cases"]:
+            import html
+
+            expected = html.escape(case["rendered"]) if extension == "html" else case["rendered"]
+            assert expected in content
+        assert content.index("Diagnostic acceptance and timings") < content.index("<details>")

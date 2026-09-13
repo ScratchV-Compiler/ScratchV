@@ -70,4 +70,6 @@ HTML 使用标准库生成，不依赖外部样式、脚本或可视化库。报
 
 benchmark 结束后，Markdown 写入 Job Summary；JSON、Markdown 和 HTML 上传至
 原有 `benchmark-reports`。上传及汇总步骤使用 `always()`，功能失败仍保留诊断证据。
+Markdown 摘要和本地 HTML 中，每个用例的完整诊断日志默认折叠，点击用例名称展开。
+汇总表、失败检查和性能提示直接可见；JSON 保留完整诊断内容。
 这里不计算常量合并次数、TinyFive 指令减少量或 LLVM 指令数收益。

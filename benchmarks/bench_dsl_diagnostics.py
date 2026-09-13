@@ -247,7 +247,7 @@ def build_report(args: argparse.Namespace) -> dict:
     return report
 
 
-def markdown_report(report: dict) -> str:
+def markdown_report(report: dict, *, include_examples: bool = True) -> str:
     lines = ["# DSL diagnostics", "", f"Functional/report status: **{report['status']}**", ""]
     if "error" in report:
         lines += ["## Error", "", "```text", report["error"], "```", ""]
@@ -273,11 +273,15 @@ def markdown_report(report: dict) -> str:
         for case in report["diagnostics"]["cases"]:
             scale = 1000 / config["iterations"]
             lines.append(f"| {case['name']} | {case['passed']} | {case['actual_count']} | {case['validation']['median_s'] * scale:.4f} | {case['rendering']['median_s'] * scale:.4f} |")
-        lines += ["", "## Diagnostic examples", ""]
         for case in report["diagnostics"]["cases"]:
-            lines += [f"### {case['name']}", "", "```text", case["rendered"], "```", ""]
             if not case["passed"]:
-                lines.append("Failed checks: " + ", ".join(key for key, value in case["checks"].items() if not value))
+                lines += ["", f"{case['name']} failed checks: " + ", ".join(key for key, value in case["checks"].items() if not value), ""]
+        if include_examples:
+            lines += ["", "## Diagnostic examples", ""]
+            for case in report["diagnostics"]["cases"]:
+                label = f"{case['name']}: {case['actual_count']} error(s) - view diagnostic log"
+                lines += ["<details>", f"<summary>{html.escape(label)}</summary>", "",
+                          "```text", case["rendered"], "```", "", "</details>", ""]
     for warning in report["warnings"]:
         lines += [f"Warning: {warning}", ""]
     return "\n".join(lines)
@@ -330,12 +334,23 @@ def main(argv: list[str] | None = None) -> int:
     report = build_report(args)
     json_text = json.dumps(report, indent=2, ensure_ascii=True) + "\n"
     markdown = markdown_report(report)
+    html_examples = []
+    for case in report.get("diagnostics", {}).get("cases", []):
+        label = f"{case['name']}: {case['actual_count']} error(s) - view diagnostic log"
+        html_examples.append(
+            '<details><summary>' + html.escape(label) + '</summary><pre>'
+            + html.escape(case["rendered"]) + '</pre></details>'
+        )
     html_text = (
         '<!doctype html><html lang="en"><meta charset="utf-8">'
         '<title>DSL diagnostics</title><style>'
         'body{max-width:1100px;margin:32px auto;padding:0 20px;font:15px/1.6 system-ui}'
         'pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f7fa;padding:24px}'
-        '</style><body><pre>' + html.escape(markdown) + '</pre></body></html>\n'
+        'details{margin:12px 0;border:1px solid #d8dee6;border-radius:6px}'
+        'summary{padding:12px;cursor:pointer}details pre{margin:0}'
+        '</style><body><pre>' + html.escape(markdown_report(report, include_examples=False))
+        + '</pre>' + ('<h2>Diagnostic examples</h2>' if html_examples else '')
+        + ''.join(html_examples) + '</body></html>\n'
     )
     for path, content in [(args.json_output, json_text), (args.markdown, markdown), (args.html, html_text)]:
         if path:
