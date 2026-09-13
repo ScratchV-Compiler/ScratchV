@@ -70,29 +70,3 @@ HTML 使用标准库生成，不依赖外部样式、脚本或可视化库。报
 benchmark 结束后，Markdown 写入 Job Summary；JSON、Markdown 和 HTML 上传至
 原有 `benchmark-reports`。上传及汇总步骤使用 `always()`，功能失败仍保留诊断证据。
 这里不计算常量合并次数、TinyFive 指令减少量或 LLVM 指令数收益。
-
-## 本地验证与自审记录（2026-09-13）
-
-环境为 Windows、Python 3.13.3；CI runner 的 Python 3.12 运行结果需由 GitHub Actions 确认。
-
-- 专项测试：117 passed，包含 12 项 benchmark 回归测试。
-- 全量命令 `python -m pytest tests benchmarks/test_benchmark.py -q`：427 passed、3 failed。
-  三项失败均在独立的 `997d2aa` 基线 checkout 复现：
-  `TestCompareFiles.test_compare_two_files` 删除未关闭临时文件时遇到 Windows 文件锁；
-  `TestVerifyAssembly` 的两个测试调用到未定义的 `load_asm`。相关源码与基线无差异，
-  本次 CI 接入未修改这些模块，也未新增跳过规则。
-- 23 个正确 DSL 用例全部可解析，基线与当前 IR 摘要一致；12 个固定诊断用例全部通过。
-- 独立运行 benchmark、避免与 pytest 并行：基线组中位数 0.067008 秒，当前 0.117891 秒，
-  倍率 **1.759x**，未达到设计文档的 1.5x 目标。基线为 `997d2aa`，当前编译器实现为
-  `c9dd532`。这是当前机器的一次测量，不代表 Linux runner 的结果。
-- Python 3.12 语法解析、compileall、workflow YAML 和全部六段 Bash 脚本语法检查通过。
-- 已尝试 L2 命令，但本地 `.Codex/harness/verify/run.py` 不存在；不宣称 L2 通过。
-
-自审结论：新增检查只验收 DSL 诊断和解析；基线导入隔离、IR 差异失败传播、失败报告保留、
-HTML 源码转义及性能目标显式标记均有回归覆盖。原有全量测试失败和解析性能目标未达标
-作为已知问题保留，不包装成“全量通过”或性能提升。
-
-合并回原有 pipeline 后复验：117 项专项测试通过，benchmark 执行成功；原有 CI 测试入口
-`pytest tests/ --ignore=tests/test_simulator.py` 在本地为 398 passed、1 failed，失败仍为
-上述 Windows 临时文件锁问题。`ci.yml` 的 YAML 和所有 Bash 步骤语法检查通过；
-jobs 仍只有原来的 `test`、`benchmark`、`deploy-pages`，未增加独立 pipeline。
