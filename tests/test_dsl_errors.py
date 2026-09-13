@@ -357,6 +357,24 @@ class TestMakeError:
         assert err.error_code == "E001"
 
 
+@pytest.mark.parametrize("line", [1, 9, 10, 99, 100, 1000])
+@pytest.mark.parametrize("indent", ["", "    ", "\t", " \t"])
+@pytest.mark.parametrize("use_color", [False, True])
+def test_marker_aligns_with_token_across_line_number_widths(line, indent, use_color):
+    import re
+
+    source = indent + "x = ad(a, b)"
+    col = source.index("ad") + 1
+    error = DSLSyntaxError(
+        line, col, "unsupported operation", source_line=source,
+        error_code="E200", end_col=col + 2,
+    )
+    rendered = format_error(error, use_color=use_color)
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
+    source_display, marker = plain.splitlines()[1:3]
+    assert marker.index("^") == source_display.index("ad")
+
+
 class TestColor:
     """Tests for ANSI color definitions."""
 

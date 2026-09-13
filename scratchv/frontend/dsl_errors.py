@@ -233,7 +233,7 @@ def format_error(
                 )
             else:
                 token_len = _estimate_token_length(err.source_line, raw_start)
-            marker_padding = 6 + display_start
+            marker_padding = len(f"  {err.line} | ") + display_start
             marker = " " * marker_padding + "^"
             if use_color:
                 marker = (
