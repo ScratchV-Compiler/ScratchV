@@ -1,8 +1,9 @@
 # 课题 9：DSL 诊断 CI 与 benchmark
 
-`.github/workflows/dsl-diagnostics.yml` 提供两个检查项：`Topic 9 tests` 和
-`Topic 9 benchmark`。它们使用 GitHub 托管 Linux runner 和 Python 3.12，运行于
-指向 main 的 PR、main 的 push，也支持手动触发。现有全项目 CI 继续保留。
+课题 9 接入原有 `.github/workflows/ci.yml`，不新增 workflow 或 job。
+现有 `test` job 运行 DSL 测试，现有 `benchmark` job 增加
+`Topic 9 DSL diagnostics benchmark` 步骤。沿用原有 self-hosted runner、Python 3.12
+和触发条件：指向 main 的 PR，以及 main、wjy_dev、jzj_dev 的 push。
 
 ## 专项测试
 
@@ -12,9 +13,9 @@ python -m pytest tests/test_dsl_errors.py tests/test_dsl_validator.py tests/test
 ```
 
 测试覆盖错误模型、位置、提示、块恢复、多错误、颜色、CLI 和正常解析回归，
-以及 benchmark 的失败传播、基线导入隔离和报告产物。CI 上传 JUnit XML 到
-`dsl-test-reports`。既有全量 CI 也会发现这些测试；专项检查有意提供独立可见的
-课题 9 结果，不改变其他课题的测试范围。
+以及 benchmark 的失败传播、基线导入隔离和报告产物。原有 `pytest tests/` 会自动
+发现这些文件，不重复执行专项测试。结果合并到 `benchmark_reports/test_results.xml`，
+由原有 `test-reports` artifact 上传，PR 和失败运行也保留测试报告。
 
 ## 本地 benchmark
 
@@ -54,10 +55,12 @@ HTML 使用标准库生成，不依赖外部样式、脚本或可视化库。报
 
 ## 基线与结果判定
 
-- PR：基线为事件中的 `pull_request.base.sha`，当前为默认 checkout 的 PR 合并测试提交。
-- main push：基线为事件中的 `before`，当前为该 push 提交。
-- 手动：选择 workflow 的执行分支，并在 `baseline_ref` 指定基线，默认 main。
-- 基线不存在、无法 checkout 或 worker 超时均失败，不回退到另一个版本。
+- PR：基线为事件中的 `pull_request.base.sha`，当前为事件的 PR 合并测试提交。
+- push：基线为事件中的 `before`，当前为该 push 提交。新分支首次 push 的全零
+  `before` 无法用于对比，该步骤会明确失败；打开指向 main 的 PR 后使用 PR base。
+- 基线通过临时 Git worktree 准备，退出步骤时清理，不混入报告 artifact。
+- 两个 job 都必须 checkout 到事件的 `GITHUB_SHA`；获取提交、准备基线或 worker
+  执行失败均使相应步骤失败，不静默回退到 main。
 
 **诊断验收、IR 一致性及报告执行错误是硬门禁。** 设计文档的解析倍率目标是 1.5x，
 默认明确显示 `target_met` 和超标提示，但不因共享 runner 的计时波动阻止合并。
@@ -65,12 +68,12 @@ HTML 使用标准库生成，不依赖外部样式、脚本或可视化库。报
 `--enforce-performance`，阈值由 `--max-parse-ratio` 指定，默认 1.5。
 
 benchmark 结束后，Markdown 写入 Job Summary；JSON、Markdown 和 HTML 上传至
-`dsl-benchmark-reports`。上传及汇总步骤使用 `always()`，功能失败仍保留诊断证据。
+原有 `benchmark-reports`。上传及汇总步骤使用 `always()`，功能失败仍保留诊断证据。
 这里不计算常量合并次数、TinyFive 指令减少量或 LLVM 指令数收益。
 
 ## 本地验证与自审记录（2026-09-13）
 
-环境为 Windows、Python 3.13.3；workflow 指定的 Linux/Python 3.12 运行结果需由 GitHub Actions 确认。
+环境为 Windows、Python 3.13.3；CI runner 的 Python 3.12 运行结果需由 GitHub Actions 确认。
 
 - 专项测试：117 passed，包含 12 项 benchmark 回归测试。
 - 全量命令 `python -m pytest tests benchmarks/test_benchmark.py -q`：427 passed、3 failed。
@@ -88,3 +91,8 @@ benchmark 结束后，Markdown 写入 Job Summary；JSON、Markdown 和 HTML 上
 自审结论：新增检查只验收 DSL 诊断和解析；基线导入隔离、IR 差异失败传播、失败报告保留、
 HTML 源码转义及性能目标显式标记均有回归覆盖。原有全量测试失败和解析性能目标未达标
 作为已知问题保留，不包装成“全量通过”或性能提升。
+
+合并回原有 pipeline 后复验：117 项专项测试通过，benchmark 执行成功；原有 CI 测试入口
+`pytest tests/ --ignore=tests/test_simulator.py` 在本地为 398 passed、1 failed，失败仍为
+上述 Windows 临时文件锁问题。`ci.yml` 的 YAML 和所有 Bash 步骤语法检查通过；
+jobs 仍只有原来的 `test`、`benchmark`、`deploy-pages`，未增加独立 pipeline。

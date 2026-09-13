@@ -30,15 +30,17 @@ jobs:
           rm -rf "$WORKSPACE"
           cp -a "$MIRROR" "$WORKSPACE"
           cd "$WORKSPACE"
-          # Try to fetch latest; fallback to local copy if network fails
-          git fetch origin main --depth=1 2>/dev/null || echo "WARNING: git fetch failed, using local mirror"
-          git checkout -f "$GITHUB_SHA" 2>/dev/null || git checkout -f origin/main 2>/dev/null || true
+          # Test this event's commit; never silently substitute main.
+          git fetch origin "$GITHUB_REF" --depth=1
+          git checkout --detach -f "$GITHUB_SHA"
 
       - name: Install dependencies
         run: |
           python3.12 -m pip install --upgrade pip
           python3.12 -m pip install -e ".[all]"
+          python3.12 -m pip install "pytest>=7,<10"
 
+      # Includes Topic 9 parser, diagnostic, CLI and benchmark regression tests.
       - name: Run all topic tests
         run: |
           mkdir -p benchmark_reports
@@ -54,7 +56,7 @@ jobs:
             -o benchmark_reports/tests.html
 
       - name: Upload test reports
-        if: github.ref == 'refs/heads/main'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
@@ -78,15 +80,33 @@ jobs:
           rm -rf "$WORKSPACE"
           cp -a "$MIRROR" "$WORKSPACE"
           cd "$WORKSPACE"
-          # Try to fetch latest; fallback to local copy if network fails
-          git fetch origin main --depth=1 2>/dev/null || echo "WARNING: git fetch failed, using local mirror"
-          git checkout -f "$GITHUB_SHA" 2>/dev/null || git checkout -f origin/main 2>/dev/null || true
+          # Test this event's commit; never silently substitute main.
+          git fetch origin "$GITHUB_REF" --depth=1
+          git checkout --detach -f "$GITHUB_SHA"
 
       - name: Install dependencies
         run: |
           python3.12 -m pip install --upgrade pip
           python3.12 -m pip install -e ".[all]"
-          python3.12 -m pip install markdown
+          python3.12 -m pip install markdown "pytest>=7,<10"
+
+      - name: Topic 9 DSL diagnostics benchmark
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "::error::No baseline commit available for DSL comparison."
+            exit 1
+          fi
+          git fetch origin "$BASE_SHA" --depth=1
+          BASELINE=$(mktemp -d "$RUNNER_TEMP/dsl-baseline.XXXXXX")
+          git worktree add --detach "$BASELINE" "$BASE_SHA"
+          trap 'git worktree remove --force "$BASELINE"' EXIT
+          python3.12 -m benchmarks.bench_dsl_diagnostics \
+            --baseline-root "$BASELINE" \
+            --json-output benchmark_reports/dsl_diagnostics.json \
+            --markdown benchmark_reports/dsl_diagnostics.md \
+            --html benchmark_reports/dsl_diagnostics.html
 
       # ── 3.1 ONNX 模型管线基准测试 ──────────────────────────────────────
       - name: ONNX model pipeline benchmarks
@@ -156,6 +176,7 @@ jobs:
 
       # ── 上报 ──────────────────────────────────────────────────────────
       - name: Upload benchmark reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-reports
@@ -206,7 +227,11 @@ jobs:
           path: benchmark_reports/
 
       - name: Write job summary
+        if: always()
         run: |
+          if [ -f benchmark_reports/dsl_diagnostics.md ]; then
+            cat benchmark_reports/dsl_diagnostics.md >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f benchmark_reports/github_summary.md ]; then
             cat benchmark_reports/github_summary.md >> $GITHUB_STEP_SUMMARY
           fi
