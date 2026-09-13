@@ -10,6 +10,7 @@ models/
 venv/
 .venv/
 .claude/
+.omo/
 scratchv.egg-info/
 benchmark_reports/
 
@@ -33,3 +34,7 @@ benchmark_reports/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+# CFG visualization artifacts (generated, never commit)
+*.dot
+*.png
+.idea/

@@ -2,7 +2,8 @@
 
 课题 9 接入原有 `.github/workflows/ci.yml`，不新增 workflow 或 job。
 现有 `test` job 运行 DSL 测试，现有 `benchmark` job 增加
-`Topic 9 DSL diagnostics benchmark` 步骤。沿用原有 self-hosted runner、Python 3.12
+`Topic 9 DSL diagnostics benchmark` 步骤。沿用上游 runner 配置（PR 使用 ubuntu-latest，
+push 使用 self-hosted）、Python 3.12
 和触发条件：指向 main 的 PR，以及 main、wjy_dev、jzj_dev 的 push。
 
 ## 专项测试

@@ -11,28 +11,65 @@ env:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 jobs:
   # ═════════════════════════════════════════════════════════════════════════
   # 课题功能测试：所有14个模块的单元测试 + 集成测试
   # ═════════════════════════════════════════════════════════════════════════
   test:
-    runs-on: self-hosted
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 20
     steps:
+      - name: Checkout pull request on isolated runner
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python for pull request
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
       - name: Sync from local mirror (skip unstable GitHub checkout)
+        if: github.event_name != 'pull_request'
         run: |
+          echo "=== CI Sync ==="
+          retry() {
+            local desc="$1" rc=0; shift
+            for i in 1 2 3; do
+              if "$@" --depth=1; then rc=0; break; fi
+              rc=$?
+              if [ "$i" -lt 3 ]; then
+                echo "::warning::$desc failed, retry #$i in $((i*3))s"
+                sleep $((i * 3))
+              else
+                echo "::error::$desc failed after 3 attempts"
+              fi
+            done
+            return $rc
+          }
           MIRROR=/opt/ScratchV
           WORKSPACE=/opt/actions-runner/_work/ScratchV/ScratchV
-          # Copy pre-cloned repo to workspace (avoid GitHub network issues)
           rm -rf "$WORKSPACE"
           cp -a "$MIRROR" "$WORKSPACE"
           cd "$WORKSPACE"
-          # Test this event's commit; never silently substitute main.
-          git fetch origin "$GITHUB_REF" --depth=1
-          git checkout --detach -f "$GITHUB_SHA"
+          echo "Fetching origin main..."
+          retry "git fetch origin main" git fetch origin main || exit 1
+          echo "Checking out $GITHUB_SHA..."
+          if ! git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+            echo "::warning::Checkout failed, fetching SHA directly from origin..."
+            git fetch origin "$GITHUB_SHA" || true
+            if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+              echo "::notice::Checkout successful after direct fetch: $(git log -1 --format='%h %ai %s')"
+            else
+              echo "::error::GITHUB_SHA ($GITHUB_SHA) not found — checkout failed"
+              exit 1
+            fi
+          else
+            echo "::notice::Checkout successful: $(git log -1 --format='%h %ai %s')"
+          fi
 
       - name: Install dependencies
         run: |
@@ -48,6 +85,28 @@ jobs:
             --junit-xml=benchmark_reports/test_results.xml \
             --ignore=tests/test_simulator.py
 
+      - name: Run assembly-beautifier regressions
+        run: |
+          python3.12 -m pytest \
+            tests/test_parser_for_beautifier.py \
+            tests/test_asm_beautifier_comments.py \
+            tests/test_asm_beautifier_formatting.py \
+            tests/test_asm_beautifier_integration.py \
+            tests/test_asm_beautifier_blackbox.py \
+            -v --tb=short
+
+      - name: Run constant-merge regressions
+        run: |
+          python3.12 -m pytest \
+            tests/test_const_merge.py \
+            tests/test_backend.py::TestConstMergeIntegration \
+            tests/test_simulator.py::TestStubProfiledMachine \
+            -v --tb=short
+
+      - name: Run PR #37 register-allocation regressions
+        run: |
+          python3.12 -m pytest tests/test_pr37_regression.py -v --tb=short
+
       - name: Generate test visualization page
         if: github.ref == 'refs/heads/main'
         run: |
@@ -57,7 +116,7 @@ jobs:
 
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-reports
           path: |
@@ -69,20 +128,59 @@ jobs:
   # 模型性能测试：ONNX模型管线 + DSL用例 + CNN RISC-V编译
   # ═════════════════════════════════════════════════════════════════════════
   benchmark:
-    runs-on: self-hosted
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 30
     steps:
+      - name: Checkout pull request on isolated runner
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python for pull request
+        if: github.event_name == 'pull_request'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
       - name: Sync from local mirror (skip unstable GitHub checkout)
+        if: github.event_name != 'pull_request'
         run: |
+          echo "=== CI Sync ==="
+          retry() {
+            local desc="$1" rc=0; shift
+            for i in 1 2 3; do
+              if "$@" --depth=1; then rc=0; break; fi
+              rc=$?
+              if [ "$i" -lt 3 ]; then
+                echo "::warning::$desc failed, retry #$i in $((i*3))s"
+                sleep $((i * 3))
+              else
+                echo "::error::$desc failed after 3 attempts"
+              fi
+            done
+            return $rc
+          }
           MIRROR=/opt/ScratchV
           WORKSPACE=/opt/actions-runner/_work/ScratchV/ScratchV
-          # Copy pre-cloned repo to workspace (avoid GitHub network issues)
           rm -rf "$WORKSPACE"
           cp -a "$MIRROR" "$WORKSPACE"
           cd "$WORKSPACE"
-          # Test this event's commit; never silently substitute main.
-          git fetch origin "$GITHUB_REF" --depth=1
-          git checkout --detach -f "$GITHUB_SHA"
+          echo "Fetching origin main..."
+          retry "git fetch origin main" git fetch origin main || exit 1
+          echo "Checking out $GITHUB_SHA..."
+          if ! git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+            echo "::warning::Checkout failed, fetching SHA directly from origin..."
+            git fetch origin "$GITHUB_SHA" || true
+            if git -c advice.detachedHead=false checkout -f "$GITHUB_SHA"; then
+              echo "::notice::Checkout successful after direct fetch: $(git log -1 --format='%h %ai %s')"
+            else
+              echo "::error::GITHUB_SHA ($GITHUB_SHA) not found — checkout failed"
+              exit 1
+            fi
+          else
+            echo "::notice::Checkout successful: $(git log -1 --format='%h %ai %s')"
+          fi
 
       - name: Install dependencies
         run: |
@@ -112,6 +210,14 @@ jobs:
       - name: ONNX model pipeline benchmarks
         run: python3.12 -m pytest benchmarks/test_benchmark.py -v --tb=short
 
+      # ── 3.1.1 课题14：固定 case + 真实 TinyFive A/B 报告 ─────────────
+      - name: Topic 14 constant-merge case report
+        run: |
+          python3.12 benchmarks/run_const_merge_case.py \
+            benchmarks/cases/const_merge_feature.asm \
+            --json benchmark_reports/const_merge_report.json \
+            --markdown benchmark_reports/const_merge_report.md
+
       # ── 3.2 DSL 用例编译 + 模拟基准 ────────────────────────────────────
       - name: DSL case compilation benchmarks
         run: |
@@ -131,7 +237,19 @@ jobs:
             python3.12 scripts/gen_minimal_cnn.py 2>&1
           fi
           python3.12 scratchv/standalone/onnx_to_riscv_standalone.py \
-            "$MODEL" -o /tmp/cnn_riscv.bin --estimate --report
+            "$MODEL" -o /tmp/cnn_riscv.bin \
+            --asm benchmark_reports/cnn_scratchv.s \
+            --estimate --report --const-merge
+
+      # ── 3.3.1 汇编美化器：真实 CNN 输出 + Actions Summary ───────────
+      - name: CNN assembly beautifier benchmark
+        run: |
+          python3.12 -m benchmarks.bench_asm_beautifier \
+            --input benchmark_reports/cnn_scratchv.s \
+            --output-asm benchmark_reports/cnn_pretty.s \
+            --markdown benchmark_reports/asm_beautifier_summary.md \
+            --json benchmark_reports/asm_beautifier_summary.json \
+            --repeats 20
 
       # ── 3.4 LLVM vs ScratchV + TinyFive + Dashboard ──────────────────
       - name: LLVM vs ScratchV comparison
@@ -141,7 +259,8 @@ jobs:
           if [ ! -f benchmark_reports/cnn_scratchv.s ] && [ -f models/graph/cnn.onnx ]; then
             python3.12 scratchv/standalone/onnx_to_riscv_standalone.py \
               models/graph/cnn.onnx -o /tmp/cnn_riscv.bin \
-              --asm benchmark_reports/cnn_scratchv.s --estimate 2>&1 | tail -3
+              --asm benchmark_reports/cnn_scratchv.s --estimate \
+              --const-merge 2>&1 | tail -3
           fi
           python3.12 scratchv/standalone/llvm_cache_compare.py \
             --json-output benchmark_reports/llvm_vs_scratchv.json \
@@ -174,10 +293,19 @@ jobs:
             -o benchmark_reports/dashboard.html \
             || echo "WARNING: dashboard generation failed"
 
+      # ── 3.8 寄存器分配 benchmark(线性扫描:simple/dense/cnn + LLVM对比) ──
+      - name: Register allocation benchmarks
+        run: |
+          python3.12 -m benchmarks.test_regalloc.bench_regalloc_linear \
+            --repeats 30 \
+            --output-json benchmark_reports/regalloc_bench.json \
+            --output-html benchmark_reports/regalloc_bench.html \
+            --output-md benchmark_reports/regalloc_bench.md
+
       # ── 上报 ──────────────────────────────────────────────────────────
       - name: Upload benchmark reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: benchmark-reports
           path: benchmark_reports/
@@ -222,7 +350,7 @@ jobs:
       # ── 上传 Pages 产物 ──────────────────────────────────────────────
       - name: Upload Pages artifact
         if: github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
         with:
           path: benchmark_reports/
 
@@ -232,13 +360,26 @@ jobs:
           if [ -f benchmark_reports/dsl_diagnostics.md ]; then
             cat benchmark_reports/dsl_diagnostics.md >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -f benchmark_reports/const_merge_report.md ]; then
+            cat benchmark_reports/const_merge_report.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/github_summary.md ]; then
             cat benchmark_reports/github_summary.md >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/asm_beautifier_summary.md ]; then
+            cat benchmark_reports/asm_beautifier_summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### LLVM vs ScratchV" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/llvm_vs_scratchv.md ]; then
             tail -20 benchmark_reports/llvm_vs_scratchv.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Register Allocation Benchmarks" >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/regalloc_bench.md ]; then
+            cat benchmark_reports/regalloc_bench.md >> $GITHUB_STEP_SUMMARY
           fi
 
   # ═════════════════════════════════════════════════════════════════════════
@@ -257,4 +398,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

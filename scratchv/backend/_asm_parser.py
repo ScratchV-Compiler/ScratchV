@@ -57,7 +57,7 @@ class ParsedAsmLine:
         """Reconstruct the assembly line."""
         # Empty lines
         if self.opcode is None and self.label is None and not self.raw.strip():
-            return ""
+            return self.raw
         # Comment-only lines
         if self.opcode is None and self.label is None and self.comment:
             return self.raw
@@ -108,7 +108,7 @@ class ParsedAsmLine:
 
 _LINE_RE = re.compile(
     r'^\s*'
-    r'(?P<label>[A-Za-z_.][A-Za-z0-9_.]*:)?\s*'
+    r'(?P<label>(?:[A-Za-z_.$][A-Za-z0-9_.$]*|[0-9]+):)?\s*'
     r'(?P<opcode>\.?\w[\w.]*)?\s*'
     r'(?P<operands>[^#]*?)'
     r'(?:\s*#\s*(?P<comment>.*))?'
@@ -133,6 +133,46 @@ _NON_DEF_OPCODES: set[str] = {
     "beqz", "bnez", "blez", "bgtz", "bltz", "bgez",
     "j", "jal", "jalr", "ret", "jr",
 }
+
+# RISC-V integer-register aliases from the psABI.  Assembly passes should
+# track physical registers, not their textual spelling: for example ``t0``
+# and ``x5`` identify the same register.
+_INTEGER_REGISTER_ALIASES: dict[str, str] = {
+    "zero": "x0", "ra": "x1", "sp": "x2", "gp": "x3", "tp": "x4",
+    "t0": "x5", "t1": "x6", "t2": "x7", "s0": "x8", "fp": "x8",
+    "s1": "x9", "a0": "x10", "a1": "x11", "a2": "x12",
+    "a3": "x13", "a4": "x14", "a5": "x15", "a6": "x16",
+    "a7": "x17", "s2": "x18", "s3": "x19", "s4": "x20",
+    "s5": "x21", "s6": "x22", "s7": "x23", "s8": "x24",
+    "s9": "x25", "s10": "x26", "s11": "x27", "t3": "x28",
+    "t4": "x29", "t5": "x30", "t6": "x31",
+}
+
+
+def canonical_reg(reg: str) -> str:
+    """Return an integer register's canonical ``xN`` spelling.
+
+    Unknown operands are returned lower-cased unchanged.  This lets callers
+    normalize operands before comparing them without guessing aliases.
+    """
+    name = reg.strip().lower()
+    if re.fullmatch(r"x([0-9]|[12][0-9]|3[01])", name):
+        return name
+    return _INTEGER_REGISTER_ALIASES.get(name, name)
+
+
+def is_integer_reg(reg: str) -> bool:
+    """Return whether *reg* names one of the 32 integer registers.
+
+    Both canonical ``xN`` names and psABI aliases are accepted.  Keeping this
+    check separate from :func:`canonical_reg` lets conservative optimization
+    passes reject unknown operands instead of treating matching typos or
+    extension-specific names as registers.
+    """
+    return (
+        re.fullmatch(r"x([0-9]|[12][0-9]|3[01])", canonical_reg(reg))
+        is not None
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -282,17 +322,11 @@ def _looks_like_reg(s: str) -> bool:
     """Heuristic: does the string look like a RISC-V register name?"""
     if not s:
         return False
-    # ABI names
-    if s in ("zero", "ra", "sp", "gp", "tp", "fp"):
-        return True
-    # x0–x31
-    if re.match(r'^x([0-9]|[12][0-9]|3[01])$', s):
-        return True
-    # a0–a7, t0–t6, s0–s11
-    if re.match(r'^[ats]([0-9]|1[01])$', s):
+    name = s.strip().lower()
+    if is_integer_reg(name):
         return True
     # f0–f31
-    if re.match(r'^f([0-9]|[12][0-9]|3[01])$', s):
+    if re.fullmatch(r'f([0-9]|[12][0-9]|3[01])', name):
         return True
     return False
 
