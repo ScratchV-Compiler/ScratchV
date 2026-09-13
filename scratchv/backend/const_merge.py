@@ -413,7 +413,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    with open(args.input, "r") as f:
+    with open(args.input, "r", encoding="utf-8") as f:
         asm_text = f.read()
 
     result, stats = merge_constants_detailed(asm_text)
@@ -430,7 +430,7 @@ def main() -> None:
         )
 
     if args.output:
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             f.write(result)
     else:
         print(result)

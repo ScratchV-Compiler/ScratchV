@@ -13,12 +13,21 @@ import statistics
 import sys
 import time
 
-from scratchv.backend.regalloc_linear_v1_5 import (
+from scratchv.backend.regalloc_linear import (
     LinearScanAllocator,
     block_from_machine_instrs,
-    _INT_REGS,
 )
+from scratchv.backend.machine_semantics import virtual_register_defs_uses
+from scratchv.backend.machine_types import (
+    ALL_REGS,
+    MachineInstr,
+    MachineOp,
+    MachineOperand,
+)
+from scratchv.backend.riscv_encoder import RISCVAEncoder
+from scratchv.backend.abi_frame import apply_abi_frames
 from scratchv.backend.register_alloc import RegisterAllocator
+from scratchv.backend.asm_emit import AsmEmitter
 from scratchv.standalone.compare_codegen import count_riscv_instrs
 
 
@@ -45,6 +54,31 @@ def _compile_onnx(onnx_path: str) -> tuple:
     DeadCodeEliminator(program).run()
     machine = InstructionSelector(program).run()
 
+    # The scalarized CNN Machine IR names model inputs and initializers as
+    # live-ins.  Materialize deterministic values so the allocator output is
+    # an executable benchmark program instead of assembly with undefined
+    # entry-register contents.
+    defined: set[str] = set()
+    used: set[str] = set()
+    for instruction in machine:
+        defs, uses = virtual_register_defs_uses(instruction)
+        defined.update(defs)
+        used.update(uses)
+    live_ins = sorted(used - defined)
+    initializers = [
+        MachineInstr(
+            MachineOp.LI,
+            MachineOperand.vreg(name),
+            MachineOperand.immediate(1 + sum(map(ord, name)) % 5),
+            comment=f"benchmark live-in {name}",
+        )
+        for name in live_ins
+    ]
+    insertion = 0
+    while insertion < len(machine) and machine[insertion].op == MachineOp.LABEL:
+        insertion += 1
+    machine[insertion:insertion] = initializers
+
     vregs: set[str] = set()
     for mi in machine:
         for op in (mi.dst, mi.src1, mi.src2):
@@ -56,30 +90,13 @@ def _compile_onnx(onnx_path: str) -> tuple:
 # ---------------------------------------------------------------------------
 # Assembly validation
 # ---------------------------------------------------------------------------
-from benchmarks.test_regalloc.bench_utils import _KNOWN_OPS
-
-
 def _validate_asm(asm: str) -> list[str]:
-    """Check no unresolved vregs, valid opcodes."""
-    errors: list[str] = []
-    for lineno, line in enumerate(asm.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        content = stripped.lstrip()
-        if content.endswith(":") or not content:
-            continue
-        if "#" in content:
-            content = content[: content.index("#")].strip()
-        parts = content.split()
-        if not parts:
-            continue
-        if parts[0] not in _KNOWN_OPS:
-            errors.append(f"Line {lineno}: unknown opcode '{parts[0]}'")
-        for token in parts:
-            if token.startswith("v") and token[1:].isdigit():
-                errors.append(f"Line {lineno}: unresolved vreg '{token}'")
-    return errors
+    """Run the emitted program through the real RV32IM encoder."""
+    try:
+        RISCVAEncoder().assemble(asm)
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        return [f"RISCVAEncoder: {type(exc).__name__}: {exc}"]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -87,36 +104,146 @@ def _validate_asm(asm: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _run_emulator(cnn_path: str) -> dict:
-    """Compile *cnn_path* via standalone pipeline, run through RV32Emulator."""
+def _interpret_machine(machine: list[MachineInstr]) -> int:
+    """Independently interpret the integer Machine IR and return ``a0``."""
+    labels = {
+        instruction.comment: index
+        for index, instruction in enumerate(machine)
+        if instruction.op == MachineOp.LABEL
+    }
+    values: dict[str, int] = {"zero": 0, "x0": 0, "ra": len(machine)}
+
+    def unsigned(value: int) -> int:
+        return value & 0xFFFFFFFF
+
+    def signed(value: int) -> int:
+        value = unsigned(value)
+        return value if value < 0x80000000 else value - 0x100000000
+
+    def read(operand: MachineOperand | None) -> int:
+        if operand is None:
+            return 0
+        if operand.kind == "imm":
+            return int(operand.value)
+        name = str(operand.value)
+        if name not in values:
+            raise ValueError(f"undefined Machine IR value: {name}")
+        return values[name]
+
+    def write(operand: MachineOperand | None, value: int) -> None:
+        if operand is None or str(operand.value) in {"zero", "x0"}:
+            return
+        values[str(operand.value)] = unsigned(value)
+
+    pc = 0
+    steps = 0
+    while 0 <= pc < len(machine) and steps < 10_000:
+        instruction = machine[pc]
+        steps += 1
+        next_pc = pc + 1
+        left = read(instruction.src1)
+        right = read(instruction.src2)
+        op = instruction.op
+        if op == MachineOp.LABEL:
+            pass
+        elif op in {MachineOp.LI, MachineOp.MV}:
+            write(instruction.dst, left)
+        elif op in {MachineOp.ADD, MachineOp.ADDI}:
+            write(instruction.dst, left + right)
+        elif op == MachineOp.SUB:
+            write(instruction.dst, left - right)
+        elif op == MachineOp.MUL:
+            write(instruction.dst, signed(left) * signed(right))
+        elif op == MachineOp.DIV:
+            divisor = signed(right)
+            dividend = signed(left)
+            write(instruction.dst, -1 if divisor == 0 else int(dividend / divisor))
+        elif op == MachineOp.REM:
+            divisor = signed(right)
+            dividend = signed(left)
+            quotient = 0 if divisor == 0 else int(dividend / divisor)
+            result = (
+                dividend if divisor == 0
+                else dividend - quotient * divisor
+            )
+            write(instruction.dst, result)
+        elif op == MachineOp.MAX:
+            write(instruction.dst, max(signed(left), signed(right)))
+        elif op == MachineOp.SLT:
+            write(instruction.dst, int(signed(left) < signed(right)))
+        elif op == MachineOp.XOR:
+            write(instruction.dst, left ^ right)
+        elif op == MachineOp.AND:
+            write(instruction.dst, left & right)
+        elif op == MachineOp.SRAI:
+            write(instruction.dst, signed(left) >> (right & 31))
+        elif op == MachineOp.BNEZ:
+            if read(instruction.dst) != 0:
+                next_pc = labels[instruction.comment]
+        elif op in {MachineOp.BEQ, MachineOp.BNE, MachineOp.BLT, MachineOp.BGE}:
+            comparisons = {
+                MachineOp.BEQ: left == right,
+                MachineOp.BNE: left != right,
+                MachineOp.BLT: signed(left) < signed(right),
+                MachineOp.BGE: signed(left) >= signed(right),
+            }
+            if comparisons[op]:
+                next_pc = labels[instruction.comment]
+        elif op == MachineOp.J:
+            next_pc = labels[instruction.comment]
+        elif op in {MachineOp.JAL, MachineOp.CALL}:
+            write(instruction.dst or MachineOperand.reg("ra"), pc + 1)
+            next_pc = labels[instruction.comment]
+        elif op == MachineOp.JALR:
+            if str(instruction.dst.value) in {"zero", "x0"}:
+                break
+            next_pc = read(instruction.src1) + read(instruction.src2)
+        else:
+            raise ValueError(f"unsupported CNN benchmark opcode: {op.value}")
+        pc = next_pc
+    else:
+        if steps >= 10_000:
+            raise RuntimeError("Machine IR reference interpreter did not terminate")
+    return values.get("a0", 0) & 0xFFFFFFFF
+
+
+def _run_emulator(assembly: str, expected_a0: int) -> dict:
+    """Execute the allocated assembly itself and compare its return value."""
     try:
-        from scratchv.standalone.onnx_to_riscv_standalone import (
-            ONNXModel,
-            MemoryPlan,
-            CNNRISCVGenerator,
-        )
-        from scratchv.simulator.rv32_emulator import RV32Emulator
+        from scratchv.simulator.tinyfive import ProfiledMachine
     except ImportError as e:
         return {"passed": False, "error": f"import error: {e}"}
 
     try:
-        model = ONNXModel.from_file(cnn_path)
-        memory = MemoryPlan()
-        memory.layout_weights(model.initializers)
-        if model.inputs:
-            inp = model.inputs[0]
-            el = 1
-            for d in model.get_shape(inp.name):
-                el *= d
-            memory.alloc_workspace(inp.name, el)
-
-        generator = CNNRISCVGenerator(model, memory)
-        code_bytes = generator.generate()
-
-        emu = RV32Emulator()
-        emu.load_code(code_bytes)
-        emu.run(max_instr=100_000)
-        return {"passed": True, "error": ""}
+        harness = (
+            "li sp, 8192\n"
+            "jal ra, main_graph\n"
+            "li a7, 0x5a5\n"
+            "j .bench_done\n"
+            + assembly
+            + "\n.bench_done:\nj .bench_done"
+        )
+        binary = bytes(RISCVAEncoder().assemble(harness))
+        words = [
+            int.from_bytes(binary[offset:offset + 4], "little")
+            for offset in range(0, len(binary), 4)
+        ]
+        profile = ProfiledMachine(mem_size=16384)
+        if not profile.available:
+            raise RuntimeError("TinyFive is unavailable")
+        profile.load_binary(words, origin=0)
+        profile.run(instructions=len(words) + 16, start=0, strict=True)
+        actual = profile.get_reg(10) & 0xFFFFFFFF
+        returned = profile.get_reg(17) == 0x5A5
+        return {
+            "passed": returned and actual == expected_a0,
+            "error": "" if returned and actual == expected_a0 else (
+                f"allocated assembly returned={returned}, "
+                f"a0={actual}, expected={expected_a0}"
+            ),
+            "actual_a0": actual,
+            "expected_a0": expected_a0,
+        }
     except Exception as exc:
         return {"passed": False, "error": str(exc)[:120]}
 
@@ -185,7 +312,7 @@ def _llvm_compare(cnn_path: str) -> dict:
     """
     from scratchv.standalone.compare_codegen import _load_llvm, llvm_ir_to_riscv
     from scratchv.standalone.onnx_to_llvm_standalone import convert_onnx_to_llvm
-    from .bench_utils import llvmlite_ir_to_riscv
+    from benchmarks.test_regalloc.bench_utils import llvmlite_ir_to_riscv
 
     # lib = _load_llvm()
     ir = convert_onnx_to_llvm(cnn_path)
@@ -215,8 +342,6 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
     block = block_from_machine_instrs(machine)
 
     times = []
-    spill_counts = []
-
     # Warm up
     for _ in range(repeats):
         alloc = LinearScanAllocator(phys_regs=phys_regs)
@@ -224,13 +349,15 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         alloc.allocate(alloc.compute_live_intervals(block))
         t1 = time.perf_counter()
         times.append(t1 - t0)
-        spill_counts.append(len(alloc._spill_slots))
 
     # Final run for stable stats + assembly validation
     alloc = LinearScanAllocator(phys_regs=phys_regs)
     alloc.allocate(alloc.compute_live_intervals(block))
-    code = alloc.get_allocated_code(block)
+    code = apply_abi_frames(
+        alloc.get_allocated_code(block), alloc.spill_slot_count
+    )
     asm_errors = _validate_asm(code)
+    expected_a0 = _interpret_machine(machine)
     sv_cnt, sv_cats = count_riscv_instrs(code)
 
     # Greedy allocator baseline
@@ -238,6 +365,11 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
     greedy = RegisterAllocator(machine, mode="greedy")
     greedy_out = greedy.run()
     greedy_time = time.perf_counter() - t0
+    greedy_code = apply_abi_frames(
+        AsmEmitter(greedy_out).emit(), greedy.spill_slot_count
+    )
+    greedy_errors = _validate_asm(greedy_code)
+    greedy_emu = _run_emulator(greedy_code, expected_a0)
 
     return {
         "mean_s": statistics.mean(times),
@@ -246,8 +378,13 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         "ir_inst_count": ir_count,
         "machine_instrs": len(machine),
         "vreg_count": len(alloc.alloc_map),
-        "reg_spill_count": spill_counts[-1],
+        "spill_slots": alloc.spill_slot_count,
+        "spill_stores": alloc.spill_store_count,
+        "reg_spill_count": alloc.spill_store_count,
+        "reloads": alloc.reload_load_count,
         "peak_active": alloc.peak_active,
+        "pressure_peak": alloc.pressure_peak,
+        "pressure_excess_peak": alloc.pressure_excess_peak,
         "asm_lines": len(code.splitlines()),
         "sv_static_instrs": sv_cnt,
         "sv_cats": sv_cats,
@@ -256,8 +393,15 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         "asm_valid": len(asm_errors) == 0,
         "greedy_time_s": greedy_time,
         "greedy_out_instrs": len(greedy_out),
+        "greedy_spill_slots": greedy.spill_slot_count,
+        "greedy_asm_valid": not greedy_errors,
+        "greedy_asm_errors": greedy_errors,
+        "greedy_emu_passed": greedy_emu["passed"],
+        "greedy_emu_error": greedy_emu.get("error", ""),
         "_report": alloc.report(),
         "_alloc": alloc,
+        "_assembly": code,
+        "expected_a0": expected_a0,
     }
 
 
@@ -266,14 +410,22 @@ def run_bench(
 ) -> dict:
     """Entry point for the test suite runner."""
     if phys_regs is None:
-        phys_regs = list(_INT_REGS)
+        phys_regs = list(ALL_REGS)
     stats = bench_allocate(cnn_path, phys_regs, repeats=repeats)
 
-    # Emulator verification (non-fatal)
-    emu = _run_emulator(cnn_path)
+    # Emulator verification is part of the end-to-end validity contract.
+    emu = _run_emulator(
+        stats.get("_assembly", ""), stats.get("expected_a0", 0)
+    )
     stats["emu_passed"] = emu["passed"]
     stats["emu_error"] = emu.get("error", "")
-    stats["valid"] = stats["asm_valid"]
+    stats["actual_a0"] = emu.get("actual_a0")
+    stats["valid"] = (
+        stats["asm_valid"]
+        and stats["emu_passed"]
+        and stats.get("greedy_asm_valid", True)
+        and stats.get("greedy_emu_passed", True)
+    )
 
     # LLVM comparison (non-fatal)
     try:
@@ -313,10 +465,10 @@ def main():
             "cnn.onnx",
         )
 
-    phys_regs = list(_INT_REGS)
+    phys_regs = list(ALL_REGS)
 
     print("=" * 60)
-    print("Benchmark 3 — CNN Model Integration And Comparation With LLVM Backend")
+    print("Benchmark 3 - CNN Model Integration And Comparison With LLVM Backend")
     print(f"  Model: {os.path.basename(args.cnn_path)}")
     print("=" * 60)
 
@@ -343,11 +495,11 @@ def main():
 
     if not stats["asm_valid"]:
         for e in stats["asm_errors"][:3]:
-            print(f"  ✗ {e}")
+            print(f"  FAIL {e}")
     if not stats["emu_passed"]:
-        print(f"  Emulator: ✗ {stats['emu_error']}")
+        print(f"  Emulator: FAIL {stats['emu_error']}")
     else:
-        print(f"  Emulator: ✓ passed")
+        print("  Emulator: PASS")
 
     # LLVM comparison output
     print()
@@ -359,25 +511,33 @@ def main():
         f"  ScratchV LinearScan: {stats['sv_static_instrs']} instrs "
         f"{stats['sv_cat_buckets']}"
     )
-    print(f"  LLVM RV64IM:         {stats['llvm_im_instrs']} instrs")
+    if stats["llvm_available"]:
+        print(f"  LLVM RV64IM:         {stats['llvm_im_instrs']} instrs")
+        print(
+            f"  LLVM RV64FD:         {stats['llvm_fd_instrs']} instrs "
+            f"({stats['instr_ratio_fd']}x vs ScratchV) "
+            f"{stats['llvm_fd_cat_buckets']}"
+        )
+        print(
+            f"  Spill (LLVM approx): {stats['llvm_spill_slots']} slots "
+            f"(frame save/restore {stats['llvm_frame_save']}/"
+            f"{stats['llvm_frame_restore']})"
+        )
+    else:
+        print(f"  LLVM: unavailable ({stats['llvm_error']})")
     print(
-        f"  LLVM RV64FD:         {stats['llvm_fd_instrs']} instrs "
-        f"({stats['instr_ratio_fd']}x vs ScratchV) "
-        f"{stats['llvm_fd_cat_buckets']}"
-    )
-    print(
-        f"  Spill (LLVM approx): {stats['llvm_spill_slots']} slots "
-        f"(frame save/restore {stats['llvm_frame_save']}/"
-        f"{stats['llvm_frame_restore']}); "
-        f"ScratchV (exact): reg_spill_count={stats['reg_spill_count']}"
+        "  ScratchV regalloc: "
+        f"spill_slots={stats['spill_slots']}, "
+        f"spill_stores={stats['spill_stores']}, "
+        f"reloads={stats['reloads']}"
     )
 
-    asm_ok = "PASS" if stats["asm_valid"] else "FAIL"
+    benchmark_ok = "PASS" if stats["valid"] else "FAIL"
     print(
         f"\n  asm_valid={stats['asm_valid']}, "
-        f"reg_spill_count={stats['reg_spill_count']}  [{asm_ok}]"
+        f"reg_spill_count={stats['reg_spill_count']}  [{benchmark_ok}]"
     )
-    return 0 if stats["asm_valid"] else 1
+    return 0 if stats["valid"] else 1
 
 
 if __name__ == "__main__":

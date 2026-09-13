@@ -12,7 +12,9 @@ import statistics
 import sys
 import time
 
-from scratchv.backend.regalloc_linear_v1_5 import LinearScanAllocator, LsInstruction
+from scratchv.backend.regalloc_linear import LinearScanAllocator, LsInstruction
+from scratchv.backend.machine_types import TEMP_REGS
+from benchmarks.test_regalloc.bench_utils import validate_straight_line_allocation
 
 
 def _gen_block(
@@ -20,7 +22,7 @@ def _gen_block(
 ) -> list[LsInstruction]:
     """Generate a high-register-pressure block."""
     random.seed(seed)
-    ops = ["add", "sub", "mul", "and", "or", "xor", "sll", "srl"]
+    ops = ["add", "sub", "mul", "and", "xor"]
     vreg_names = [f"v{i}" for i in range(num_vregs)]
     insts = []
 
@@ -38,7 +40,7 @@ def _gen_block(
         )
 
     # Phase 2: cross-reference dense ops — keeps many vregs live
-    for i in range(num_vregs, num_insts):
+    for i in range(num_vregs, num_insts - 1):
         src1 = random.choice(vreg_names)
         src2 = random.choice(vreg_names)
         dst = random.choice(vreg_names)
@@ -52,6 +54,10 @@ def _gen_block(
                 comment=f"dense op {i}",
             )
         )
+    answer = vreg_names[-1]
+    insts.append(LsInstruction(
+        id=len(insts), opcode="mv", operands=["a0", answer], uses={answer}
+    ))
     return insts
 
 
@@ -60,45 +66,44 @@ def bench_allocate(
 ) -> dict:
     """Benchmark the full allocation pipeline under register pressure."""
     times = []
-    spill_counts = []
-
     for _ in range(repeats):
         alloc = LinearScanAllocator(phys_regs=phys_regs)
         t0 = time.perf_counter()
         alloc.allocate(alloc.compute_live_intervals(block))
         t1 = time.perf_counter()
         times.append(t1 - t0)
-        spill_counts.append(len(alloc._spill_slots))
 
     # Final run for stable stats
     alloc = LinearScanAllocator(phys_regs=phys_regs)
     alloc.allocate(alloc.compute_live_intervals(block))
     code = alloc.get_allocated_code(block)
-    reloads = sum(
-        1 for ln in code.splitlines() if ln.strip().startswith("lw ") and "reload" in ln
-    )
-
+    validation = validate_straight_line_allocation(block, code)
     return {
         "mean_s": statistics.mean(times),
         "stdev_s": statistics.stdev(times) if len(times) > 1 else 0,
         "vreg_count": len(alloc.alloc_map),
-        "spills": spill_counts[-1],
-        "reg_spill_count": spill_counts[-1],
+        "spills": alloc.spill_store_count,
+        "spill_slots": alloc.spill_slot_count,
+        "spill_stores": alloc.spill_store_count,
+        "reg_spill_count": alloc.spill_store_count,
         "peak_active": alloc.peak_active,
+        "pressure_peak": alloc.pressure_peak,
+        "pressure_excess_peak": alloc.pressure_excess_peak,
         "asm_lines": len(code.splitlines()),
-        "reloads": reloads,
+        "reloads": alloc.reload_load_count,
         "_report": alloc.report(),
         "_alloc": alloc,
+        **validation,
     }
 
 
 def run_bench(phys_regs: list[str] | None = None, repeats: int = 30) -> dict:
     """Entry point for the test suite runner."""
     if phys_regs is None:
-        phys_regs = [f"r{i}" for i in range(5)]
+        phys_regs = list(TEMP_REGS[:5])
     block = _gen_block(num_insts=80, num_vregs=30)
     stats = bench_allocate(block, phys_regs, repeats=repeats)
-    stats["valid"] = stats["spills"] > 0
+    stats["valid"] = stats["spills"] > 0 and stats["execution_valid"]
     return stats
 
 
@@ -111,7 +116,7 @@ def main():
     )
     args = parser.parse_args()
 
-    phys_regs = [f"r{i}" for i in range(5)]
+    phys_regs = list(TEMP_REGS[:5])
 
     print("=" * 60)
     print("Benchmark 2 — Dense Computation (30 vregs / 5 phys regs)")

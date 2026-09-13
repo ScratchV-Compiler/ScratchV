@@ -140,6 +140,7 @@ def bench_merge(asm_text: str, repeats: int = 50) -> dict:
 
     return {
         "benchmark_type": "synthetic",
+        "instruction_metric_scope": "source assembly (pre-pseudo-expansion)",
         "input_instructions": input_instructions,
         "output_instructions": output_instructions,
         "instruction_reduction": input_instructions - output_instructions,
