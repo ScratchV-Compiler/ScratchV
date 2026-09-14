@@ -135,6 +135,30 @@ def run_spike(elf_path, max_instr, ic_config, dc_config):
 
 ---
 
+## 运行方式与降级行为
+
+```bash
+# 1. 显式指定（优先级最高，CI 推荐固定版本）
+python scratchv/standalone/spike_sim.py --binary output.bin --code-size 3140 \
+    --spike-bin /opt/riscv/bin/spike --json
+
+# 2. 环境变量（整机安装）
+export SCRATCHV_SPIKE_HOME=/opt/coralnpu-spike-rv32   # 约定 $HOME/bin/spike
+python scratchv/standalone/spike_sim.py --binary output.bin --code-size 3140
+```
+
+无 Spike 机器上的行为：
+
+- 未找到 spike：默认打印 `SKIP: spike binary not found.`（含搜索位置与修复提示），
+  退出码 0，不生成 ELF；加 `--require-spike` 则打印 `ERROR:` 并返回退出码 2。
+- CLI 显式路径无效（不存在 / 不可执行 / 是目录）：`ERROR:` + 退出码 2；
+  环境变量指向无效路径：`WARNING:` 后继续向后一层解析。
+- `spike-dasm` / `spike-log-parser` 缺失只产生 `WARNING:`，不阻断仿真。
+- `--json` 报告新增 `status` / `skip_reason` / `spike_binary` / `spike_tools`
+  / `parse_warnings` / `tool_warnings` 字段，既有字段保持不变。
+
+---
+
 ## 动手练习
 
 ### 练习 1: 对比 Spike vs 估算
@@ -155,7 +179,7 @@ def run_spike(elf_path, max_instr, ic_config, dc_config):
 
 | 坑 | 说明 |
 |----|------|
-| **Spike 二进制路径** | 需要自己编译 Spike RV32 版本，当前硬编码路径需要确认存在 |
+| **Spike 二进制路径** | 不再硬编码：按 `--spike-bin` > `SCRATCHV_SPIKE_BIN` > `SCRATCHV_SPIKE_HOME` > `PATH` > 常见目录 > legacy 常量解析；`spike-dasm` / `spike-log-parser` 同规则 |
 | **内存限制** | Spike 默认内存模型可能不够大，CNN 模型需要 `-m512`（512MB） |
 | **执行时间** | 全量 CNN（32 亿指令）在 Spike 上可能跑数小时，用 `--max-instr` 限制 |
 | **ELF 兼容性** | 最小 ELF32 只包含必要 header，某些 Spike 版本可能要求更完整的 ELF |

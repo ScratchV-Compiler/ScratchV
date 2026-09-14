@@ -18,6 +18,10 @@ platform due to custom device tree conflicts) while providing strictly
 MORE information than Spike would — since we can classify misses, track
 per-layer stats, and sample at higher resolution.
 
+All numbers come from the built-in emulator, never from the real Spike
+binary (use spike_sim.py for real Spike runs). The JSON report marks this
+with a "backend" field so simulated data is not mistaken for Spike data.
+
 Usage:
     python scratchv/standalone/run_spike_bench.py \\
         --binary output.bin --code-size 3140 \\
@@ -666,10 +670,18 @@ def generate_report(result: SpikeStyleResult) -> str:
     return "\n".join(lines)
 
 
-def generate_json_report(result: SpikeStyleResult) -> dict:
-    """Generate structured JSON report."""
+def generate_json_report(result: SpikeStyleResult,
+                         spike_tools: SpikeTools | None = None) -> dict:
+    """Generate structured JSON report.
+
+    Args:
+        result: Simulated benchmark result.
+        spike_tools: Optional resolved Spike toolchain (from --probe-spike);
+                     included as "spike_tools" when provided.
+    """
     total = max(result.total_insns, 1)
     report = {
+        "backend": {"kind": "emulator", "spike_style": True},
         "summary": {
             "binary_path": result.binary_path,
             "code_size": result.code_size,
@@ -722,7 +734,52 @@ def generate_json_report(result: SpikeStyleResult) -> dict:
             if count > 0
         },
     }
+    if spike_tools is not None:
+        report["spike_tools"] = spike_tools.as_dict()
     return report
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Spike availability probe (external toolchain only, never used for stats)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def probe_spike_tools() -> "SpikeTools | None":
+    """Probe the external Spike toolchain and report availability to stderr.
+
+    This never changes the simulation backend: all benchmark numbers still
+    come from the built-in emulator. Returns the resolved tools (or None when
+    resolution failed) so callers can attach them to JSON reports.
+    """
+    try:
+        from scratchv.standalone.spike_sim import (
+            SpikeConfigError,
+            resolve_spike_tools,
+        )
+    except ImportError as e:
+        print(f"Spike tools: probe failed: {e}", file=sys.stderr)
+        return None
+
+    try:
+        tools = resolve_spike_tools()
+    except SpikeConfigError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return None
+
+    parts = []
+    for name, path in (
+        ("spike", tools.spike),
+        ("spike-dasm", tools.spike_dasm),
+        ("spike-log-parser", tools.spike_log_parser),
+    ):
+        if path:
+            parts.append(f"{name}={path} ({tools.sources.get(name, 'missing')})")
+        else:
+            parts.append(f"{name}=NOT FOUND")
+    print(f"Spike tools: {', '.join(parts)}", file=sys.stderr)
+    if tools.spike is None:
+        print("  hint: real Spike is unavailable; this run uses the "
+              "built-in emulator backend", file=sys.stderr)
+    return tools
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -753,12 +810,19 @@ def main() -> int:
                         help="Save JSON report to file")
     parser.add_argument("--markdown", type=str, default="",
                         help="Save markdown report to file")
+    parser.add_argument("--probe-spike", action="store_true",
+                        help="Probe the external Spike toolchain and report "
+                             "availability (does not change the backend)")
 
     args = parser.parse_args()
 
     if not os.path.exists(args.binary):
         print(f"ERROR: binary not found: {args.binary}", file=sys.stderr)
         return 1
+
+    spike_tools = None
+    if args.probe_spike:
+        spike_tools = probe_spike_tools()
 
     # ── Build label address map ────────────────────────────────────
     # These are the same labels as used by onnx_to_riscv_standalone.py
@@ -793,14 +857,14 @@ def main() -> int:
 
     # ── Output ─────────────────────────────────────────────────────
     if args.json:
-        report = generate_json_report(result)
+        report = generate_json_report(result, spike_tools=spike_tools)
         print(json.dumps(report, indent=2))
     else:
         report = generate_report(result)
         print(report)
 
     if args.json_output:
-        json_report = generate_json_report(result)
+        json_report = generate_json_report(result, spike_tools=spike_tools)
         with open(args.json_output, "w") as f:
             json.dump(json_report, f, indent=2)
         print(f"\n  JSON report saved to: {args.json_output}", file=sys.stderr)

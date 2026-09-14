@@ -12,19 +12,29 @@ collect:
   - Instruction trace samples
   - Spike execution time
 
-Spike binary:  /home/kinsomwang/workspace/coralnpu-spike-rv32/bin/spike
+Spike tool resolution order:
+  1. --spike-bin / --spike-dasm / --spike-log-parser
+  2. SCRATCHV_SPIKE_BIN / SCRATCHV_SPIKE_DASM / SCRATCHV_SPIKE_LOG_PARSER
+  3. $SCRATCHV_SPIKE_HOME/bin/<tool>
+  4. PATH, then common install dirs, then the legacy constants below
+If spike is missing, the tool exits 0 with "SKIP: ..." unless --require-spike.
+
 ScratchV binary: output.bin
 
 Usage:
     python scratchv/standalone/spike_sim.py                    \\
         --binary output.bin --code-size 3140                    \\
-        [--max-instr 50000000] [--ic 64:2:32] [--dc 128:4:32]
+        [--max-instr 50000000] [--ic 64:2:32] [--dc 128:4:32]  \\
+        [--spike-bin /path/to/spike] [--require-spike] [--json]
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -34,9 +44,32 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 # ── Paths ──────────────────────────────────────────────────────────────────
+# Legacy fallback (may not exist on this machine). New code must use
+# resolve_spike_tools(); these constants are only the last resolution layer.
 SPIKE = "/home/kinsomwang/workspace/coralnpu-spike-rv32/bin/spike"
 SPIKE_DASM = "/home/kinsomwang/workspace/coralnpu-spike-rv32/bin/spike-dasm"
 SPIKE_LOG_PARSER = "/home/kinsomwang/workspace/coralnpu-spike-rv32/bin/spike-log-parser"
+
+# Environment variable contract (see docs/topics/24-Spike仿真.md)
+ENV_SPIKE_BIN = "SCRATCHV_SPIKE_BIN"
+ENV_SPIKE_DASM = "SCRATCHV_SPIKE_DASM"
+ENV_SPIKE_LOG_PARSER = "SCRATCHV_SPIKE_LOG_PARSER"
+ENV_SPIKE_HOME = "SCRATCHV_SPIKE_HOME"
+
+COMMON_SPIKE_DIRS: tuple[str, ...] = (
+    "/opt/riscv/bin",
+    "/opt/riscv64/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "~/riscv/bin",
+    "~/.local/bin",
+    "~/spike/bin",
+)
+
+# Exit code contract: 0 = success/skip, 1 = run failure, 2 = config error.
+EXIT_OK = 0
+EXIT_RUN_FAIL = 1
+EXIT_CONFIG = 2
 
 # ── Constants ──────────────────────────────────────────────────────────────
 ELF_BASE = 0x80000000       # RISC-V DRAM base (Spike default)
@@ -50,6 +83,196 @@ OUTPUT_BUF = 0x87000000     # a1 = output buffer
 RV_OP_LUI   = 0b0110111
 RV_OP_JAL   = 0b1101111
 RV_OP_ECALL = 0b1110011     # ECALL is SYSTEM opcode with funct12=0, rd=0, rs1=0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Spike toolchain resolution (no filesystem probing at import time)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def is_executable(path: str) -> bool:
+    """Return True if path expands to an existing executable file."""
+    path = os.path.expanduser(path)
+    return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+class SpikeConfigError(ValueError):
+    """Raised when an explicitly configured (CLI) tool path is invalid."""
+
+
+@dataclass(frozen=True)
+class SpikeTools:
+    """Resolved paths for the Spike toolchain and how they were found."""
+    spike: str | None = None
+    spike_dasm: str | None = None
+    spike_log_parser: str | None = None
+    sources: dict[str, str] = field(default_factory=dict)
+    candidates: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def missing(self) -> list[str]:
+        """Canonical names of tools that could not be resolved."""
+        pairs = (
+            ("spike", self.spike),
+            ("spike-dasm", self.spike_dasm),
+            ("spike-log-parser", self.spike_log_parser),
+        )
+        return [name for name, path in pairs if not path]
+
+    def as_dict(self) -> dict:
+        """Machine-readable snapshot for reports."""
+        def one(name: str, path: str | None) -> dict:
+            return {
+                "path": path,
+                "source": self.sources.get(name, "missing"),
+                "candidates": list(self.candidates.get(name, ())),
+            }
+
+        return {
+            "spike": one("spike", self.spike),
+            "spike_dasm": one("spike-dasm", self.spike_dasm),
+            "spike_log_parser": one("spike-log-parser", self.spike_log_parser),
+            "warnings": list(self.warnings),
+        }
+
+
+def _resolve_one(
+    tool: str,
+    cli_flag: str,
+    cli_value: str | None,
+    env_name: str,
+    legacy_const: str,
+    env,
+    which,
+    common_dirs,
+    cli_required: bool = True,
+) -> tuple[str | None, str, list[str], list[str]]:
+    """Resolve one tool, returning (path, source, candidates, warnings).
+
+    An invalid CLI value raises SpikeConfigError when ``cli_required`` is
+    true (the spike binary); for optional tools it degrades to a warning
+    and resolution continues with the lower-priority layers.
+    """
+    candidates: list[str] = []
+    warnings: list[str] = []
+
+    # 1. CLI (explicit per-run intent)
+    if cli_value:
+        cand = os.path.expanduser(cli_value.strip())
+        candidates.append(cand)
+        if not is_executable(cand):
+            if cli_required:
+                raise SpikeConfigError(
+                    f"{cli_flag}={cli_value!r} is not an executable file")
+            warnings.append(
+                f"{cli_flag}={cli_value!r} is not executable; ignored")
+        else:
+            return cand, "cli", candidates, warnings
+
+    # 2. Dedicated environment variable (explicit, possibly stale: warn)
+    env_value = (env.get(env_name) or "").strip()
+    if env_value:
+        cand = os.path.expanduser(env_value)
+        candidates.append(cand)
+        if is_executable(cand):
+            return cand, "env", candidates, warnings
+        warnings.append(f"{env_name}={env_value} is not executable; ignored")
+
+    # 3. $SCRATCHV_SPIKE_HOME/bin/<tool>
+    home = (env.get(ENV_SPIKE_HOME) or "").strip()
+    if home:
+        cand = os.path.join(os.path.expanduser(home), "bin", tool)
+        candidates.append(cand)
+        if is_executable(cand):
+            return cand, "spike_home", candidates, warnings
+
+    # 4. PATH
+    found = which(tool) if which else None
+    if found:
+        candidates.append(found)
+        return found, "path", candidates, warnings
+
+    # 5. Common install directories
+    for directory in common_dirs:
+        cand = os.path.join(os.path.expanduser(directory), tool)
+        candidates.append(cand)
+        if is_executable(cand):
+            return cand, "common", candidates, warnings
+
+    # 6. Legacy hard-coded constant
+    if legacy_const and is_executable(legacy_const):
+        candidates.append(legacy_const)
+        return legacy_const, "legacy", candidates, warnings
+
+    return None, "missing", candidates, warnings
+
+
+def resolve_spike_tools(
+    cli_spike: str | None = None,
+    cli_dasm: str | None = None,
+    cli_log_parser: str | None = None,
+    env=None,
+    which=None,
+    common_dirs=None,
+) -> SpikeTools:
+    """Resolve spike / spike-dasm / spike-log-parser paths by priority.
+
+    Priority: CLI > dedicated env vars > $SCRATCHV_SPIKE_HOME/bin > PATH >
+    common install dirs > legacy constants. Invalid CLI paths raise
+    SpikeConfigError for the required spike binary; for the optional tools
+    (spike-dasm / spike-log-parser) they add a warning and fall through.
+    Invalid env paths add a warning and fall through.
+    """
+    env = os.environ if env is None else env
+    which = shutil.which if which is None else which
+    common_dirs = COMMON_SPIKE_DIRS if common_dirs is None else common_dirs
+
+    # Legacy constants are read here (not captured at import time) so tests
+    # can monkeypatch them and so each call sees the current values.
+    spec = (
+        ("spike", "--spike-bin", cli_spike, ENV_SPIKE_BIN, SPIKE, True),
+        ("spike-dasm", "--spike-dasm", cli_dasm, ENV_SPIKE_DASM, SPIKE_DASM,
+         False),
+        ("spike-log-parser", "--spike-log-parser", cli_log_parser,
+         ENV_SPIKE_LOG_PARSER, SPIKE_LOG_PARSER, False),
+    )
+    paths: dict[str, str | None] = {}
+    sources: dict[str, str] = {}
+    candidates: dict[str, tuple[str, ...]] = {}
+    warnings: list[str] = []
+    for tool, flag, cli_value, env_name, legacy_const, cli_required in spec:
+        path, source, cands, warns = _resolve_one(
+            tool, flag, cli_value, env_name, legacy_const,
+            env, which, common_dirs, cli_required=cli_required)
+        paths[tool], sources[tool], candidates[tool] = path, source, tuple(cands)
+        warnings.extend(warns)
+
+    return SpikeTools(
+        spike=paths["spike"],
+        spike_dasm=paths["spike-dasm"],
+        spike_log_parser=paths["spike-log-parser"],
+        sources=sources,
+        candidates=candidates,
+        warnings=tuple(warnings),
+    )
+
+
+def _optional_tool_warnings(tools: SpikeTools) -> list[str]:
+    """Warnings for missing optional tools (never escalated to failure).
+
+    Neither tool is called by this module yet, so their absence does not
+    degrade any current feature; the messages must not imply otherwise.
+    """
+    warnings: list[str] = []
+    if tools.spike_dasm is None:
+        warnings.append(
+            "spike-dasm not found; not used by this module yet "
+            "(disassembly support is not implemented)")
+    if tools.spike_log_parser is None:
+        warnings.append(
+            "spike-log-parser not found; not used by this module yet "
+            "(commit log parsing is not implemented)")
+    return warnings
 
 
 def _sext(v: int, bits: int) -> int:
@@ -274,6 +497,130 @@ class SpikeResult:
     # Spike internal struct data (from stderr)
     commited_insns_per_sec: float = 0.0
 
+    # Run status / tool resolution (topic 24)
+    status: str = "ok"             # ok | skipped | timeout | failed
+    skip_reason: str = ""
+    spike_path: str = ""
+    tool_warnings: list[str] = field(default_factory=list)
+    parse_warnings: list[str] = field(default_factory=list)
+
+
+# ── Output parsing patterns (tolerant of whitespace and thousands separators) ──
+_RE_COMMIT = re.compile(r"(?:Commited|Committed)\s+([\d,]+)\s+instructions")
+_RE_MIPS = re.compile(r"([\d.]+)\s*MIPS")
+_RE_CACHE_HITS = re.compile(r"hits:\s*([\d,]+)")
+_RE_CACHE_MISSES = re.compile(r"misses:\s*([\d,]+)")
+_RE_CACHE_RATE = re.compile(r"miss rate:\s*([\d.]+)%")
+_RE_PC_LINE = re.compile(r"^(0x[0-9a-fA-F]+):\s*(\d+)$")
+_RE_ICACHE_HEADER = re.compile(r"^\s*I\$:", re.MULTILINE)
+_RE_DCACHE_HEADER = re.compile(r"^\s*D\$:", re.MULTILINE)
+
+
+def _parse_int(text: str) -> int | None:
+    """Parse an integer with optional thousands separators."""
+    try:
+        return int(text.replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_commit_stats(stderr: str) -> tuple[int, float]:
+    """Parse committed instruction count and MIPS rate from Spike stderr.
+
+    Tolerates both the legacy "Commited" and corrected "Committed" spellings
+    as well as thousands separators. Missing sections yield (0, 0.0).
+    """
+    stderr = stderr or ""
+
+    committed = 0
+    match = _RE_COMMIT.search(stderr)
+    if match:
+        value = _parse_int(match.group(1))
+        if value is not None:
+            committed = value
+
+    mips = 0.0
+    match = _RE_MIPS.search(stderr)
+    if match:
+        try:
+            mips = float(match.group(1))
+        except ValueError:
+            mips = 0.0
+
+    return committed, mips
+
+
+def parse_cache_stats(stderr: str) -> dict[str, int | float]:
+    """Parse I$/D$ cache statistics from Spike stderr.
+
+    Always returns the same fixed set of keys; missing sections stay at 0.
+    """
+    stats: dict[str, int | float] = {
+        "icache_hits": 0,
+        "icache_misses": 0,
+        "icache_miss_rate": 0.0,
+        "dcache_hits": 0,
+        "dcache_misses": 0,
+        "dcache_miss_rate": 0.0,
+    }
+    current: str | None = None
+    for line in (stderr or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("I$:"):
+            current = "icache"
+            continue
+        if stripped.startswith("D$:"):
+            current = "dcache"
+            continue
+        if current is None:
+            continue
+
+        hits = _RE_CACHE_HITS.search(stripped)
+        if hits:
+            value = _parse_int(hits.group(1))
+            if value is not None:
+                stats[f"{current}_hits"] = value
+        misses = _RE_CACHE_MISSES.search(stripped)
+        if misses:
+            value = _parse_int(misses.group(1))
+            if value is not None:
+                stats[f"{current}_misses"] = value
+        rate = _RE_CACHE_RATE.search(stripped)
+        if rate:
+            try:
+                stats[f"{current}_miss_rate"] = float(rate.group(1))
+            except ValueError:
+                pass
+
+    return stats
+
+
+def parse_pc_histogram(stdout: str) -> dict[int, int]:
+    """Parse the `PC histogram` section from Spike stdout.
+
+    Data lines look like `0x80000014: 123`; the section ends at a blank line
+    and malformed lines are ignored.
+    """
+    histogram: dict[int, int] = {}
+    in_histogram = False
+    for line in (stdout or "").splitlines():
+        if not in_histogram:
+            if "PC histogram" in line or (
+                "histogram" in line.lower() and "pc" in line.lower()
+            ):
+                in_histogram = True
+            continue
+        if line.strip() == "":
+            break
+        match = _RE_PC_LINE.match(line.strip())
+        if not match:
+            continue
+        try:
+            histogram[int(match.group(1), 16)] = int(match.group(2))
+        except ValueError:
+            continue
+    return histogram
+
 
 def run_spike(
     elf_path: str,
@@ -285,6 +632,8 @@ def run_spike(
     timeout_s: int = 600,
     isa: str = "rv32im",
     mem_mb: int = 512,
+    *,
+    tools: SpikeTools | None = None,
 ) -> SpikeResult:
     """Run Spike on an ELF binary and parse results.
 
@@ -298,11 +647,23 @@ def run_spike(
         timeout_s: Wall-clock timeout.
         isa: RISC-V ISA string.
         mem_mb: Target memory in MiB.
+        tools: Pre-resolved Spike toolchain; resolved on demand when omitted.
 
     Returns: SpikeResult with parsed data.
     """
+    tools = tools or resolve_spike_tools()
+    if tools.spike is None:
+        return SpikeResult(
+            status="skipped",
+            skip_reason="spike binary not found",
+            exit_code=-2,
+            stderr="SKIP: spike binary not found; "
+                   "set SCRATCHV_SPIKE_BIN or pass --spike-bin",
+            tool_warnings=list(tools.warnings),
+        )
+
     cmd = [
-        SPIKE,
+        tools.spike,
         f"--isa={isa}",
         f"-m{mem_mb}",
         f"--ic={ic_config}",
@@ -319,7 +680,10 @@ def run_spike(
     print(f"  Running Spike: {' '.join(cmd)}", file=sys.stderr)
     print(f"  Max instructions: {max_instr:,}", file=sys.stderr)
 
-    result = SpikeResult()
+    result = SpikeResult(
+        spike_path=tools.spike,
+        tool_warnings=list(tools.warnings),
+    )
     t_start = time.perf_counter()
 
     try:
@@ -333,94 +697,63 @@ def run_spike(
         result.stderr = proc.stderr
         result.exit_code = proc.returncode
     except subprocess.TimeoutExpired:
+        result.status = "timeout"
         result.stderr = "TIMEOUT: Spike did not finish within time limit"
         result.exit_code = -1
         result.wall_time_s = timeout_s
         return result
     except FileNotFoundError:
-        result.stderr = f"ERROR: Spike not found at {SPIKE}"
+        result.status = "failed"
+        result.stderr = f"ERROR: Spike not found at {tools.spike}"
+        result.exit_code = -2
+        return result
+    except OSError as e:
+        # Exists and is executable, but the kernel refused to exec it
+        # (ENOEXEC: no shebang, wrong architecture, truncated binary, ...).
+        result.status = "failed"
+        result.stderr = (
+            f"ERROR: failed to start Spike at {tools.spike}: {e}")
         result.exit_code = -2
         return result
 
     result.wall_time_s = time.perf_counter() - t_start
     result.total_insns = max_instr  # We set the limit
+    if proc.returncode != 0:
+        result.status = "failed"
 
-    # ── Parse committed instruction count from stderr ──
-    # Spike stderr format: "Commited 100000000 instructions"
-    for line in result.stderr.splitlines():
-        if "Commited" in line and "instructions" in line:
-            parts = line.strip().split()
-            for i, p in enumerate(parts):
-                if p == "Commited" or p == "Committed":
-                    try:
-                        result.committed_insns = int(parts[i + 1])
-                    except (IndexError, ValueError):
-                        pass
-                if "MIPS" in p or "mips" in p.lower():
-                    try:
-                        # Extract the number before MIPS
-                        result.commited_insns_per_sec = float(parts[i - 1])
-                    except (IndexError, ValueError):
-                        pass
+    # ── Parse stats via pure helpers (missing sections never fail the run) ──
+    result.committed_insns, result.commited_insns_per_sec = parse_commit_stats(
+        result.stderr)
+    cache_stats = parse_cache_stats(result.stderr)
+    result.icache_hits = int(cache_stats["icache_hits"])
+    result.icache_misses = int(cache_stats["icache_misses"])
+    result.icache_miss_rate = float(cache_stats["icache_miss_rate"])
+    result.dcache_hits = int(cache_stats["dcache_hits"])
+    result.dcache_misses = int(cache_stats["dcache_misses"])
+    result.dcache_miss_rate = float(cache_stats["dcache_miss_rate"])
+    result.pc_histogram = parse_pc_histogram(result.stdout)
 
-    # ── Parse cache stats from stderr ──
-    # Format:
-    # I$: 16 sets × 4 ways × 32 B = 2048 B
-    #   hits: 98234567    misses: 12345    miss rate: 0.01%
-    # D$: 32 sets × 4 ways × 32 B = 4096 B
-    #   hits: 87654321    misses: 23456    miss rate: 0.03%
-    current_cache = None
-    for line in result.stderr.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("I$:"):
-            current_cache = "icache"
-        elif stripped.startswith("D$:"):
-            current_cache = "dcache"
-        elif current_cache and "hits:" in stripped:
-            import re
-            hits_m = re.search(r'hits:\s+(\d+)', stripped)
-            misses_m = re.search(r'misses:\s+(\d+)', stripped)
-            rate_m = re.search(r'miss rate:\s+([\d.]+)%', stripped)
-            if current_cache == "icache":
-                if hits_m:
-                    result.icache_hits = int(hits_m.group(1))
-                if misses_m:
-                    result.icache_misses = int(misses_m.group(1))
-                if rate_m:
-                    result.icache_miss_rate = float(rate_m.group(1))
-            elif current_cache == "dcache":
-                if hits_m:
-                    result.dcache_hits = int(hits_m.group(1))
-                if misses_m:
-                    result.dcache_misses = int(misses_m.group(1))
-                if rate_m:
-                    result.dcache_miss_rate = float(rate_m.group(1))
+    stderr_text = result.stderr or ""
+    has_commit_stats = bool(_RE_COMMIT.search(stderr_text))
+    has_icache_stats = bool(_RE_ICACHE_HEADER.search(stderr_text))
+    has_dcache_stats = bool(_RE_DCACHE_HEADER.search(stderr_text))
+    if not has_commit_stats:
+        result.parse_warnings.append("commit stats not found in Spike stderr")
+    if not has_icache_stats:
+        result.parse_warnings.append("I$ cache stats not found in Spike stderr")
+    if not has_dcache_stats:
+        result.parse_warnings.append("D$ cache stats not found in Spike stderr")
 
-    # ── Parse PC histogram from stdout (-g flag) ──
-    # Format (from spike source code):
-    # PC histogram (number of commits per PC):
-    # 0x80000014: 12345678
-    # 0x80000018: 23456789
-    # ...
-    in_histogram = False
-    for line in result.stdout.splitlines():
-        if "PC histogram" in line or ("histogram" in line.lower() and "pc" in line.lower()):
-            in_histogram = True
-            continue
-        if in_histogram and ':' in line:
-            parts = line.strip().split(':')
-            if len(parts) >= 2:
-                try:
-                    pc_str = parts[0].strip()
-                    count_str = parts[1].strip()
-                    if pc_str.startswith('0x'):
-                        pc = int(pc_str, 16)
-                        count = int(count_str)
-                        result.pc_histogram[pc] = count
-                except (ValueError, IndexError):
-                    pass
-        elif in_histogram and line.strip() == "":
-            in_histogram = False
+    # Anti-fake-success guard: a clean exit with no recognizable Spike
+    # statistics at all means the executable produced no usable Spike output
+    # (e.g. /bin/true). Without this, any executable would look "successful".
+    if (proc.returncode == 0
+            and not (has_commit_stats or has_icache_stats or has_dcache_stats)):
+        result.status = "failed"
+        result.exit_code = -2
+        result.parse_warnings.append(
+            "no Spike statistics section found; "
+            "the executable may not be Spike")
 
     return result
 
@@ -436,14 +769,30 @@ def run_spike_with_log(
     isa: str = "rv32im",
     mem_mb: int = 512,
     timeout_s: int = 600,
+    *,
+    tools: SpikeTools | None = None,
 ) -> tuple[SpikeResult, str]:
     """Run Spike with --log-commits and save the log.
 
     WARNING: Logging every committed instruction is very slow (100-1000× slower).
     Only use for small instruction counts (e.g., 1M-10M).
     """
+    tools = tools or resolve_spike_tools()
+    if tools.spike is None:
+        return (
+            SpikeResult(
+                status="skipped",
+                skip_reason="spike binary not found",
+                exit_code=-2,
+                stderr="SKIP: spike binary not found; "
+                       "set SCRATCHV_SPIKE_BIN or pass --spike-bin",
+                tool_warnings=list(tools.warnings),
+            ),
+            "",
+        )
+
     cmd = [
-        SPIKE,
+        tools.spike,
         f"--isa={isa}",
         f"-m{mem_mb}",
         f"--instructions={max_instr}",
@@ -458,7 +807,10 @@ def run_spike_with_log(
     print(f"  Max instructions: {max_instr:,}", file=sys.stderr)
     print(f"  Log file: {log_path}", file=sys.stderr)
 
-    result = SpikeResult()
+    result = SpikeResult(
+        spike_path=tools.spike,
+        tool_warnings=list(tools.warnings),
+    )
     t_start = time.perf_counter()
 
     try:
@@ -472,12 +824,26 @@ def run_spike_with_log(
         result.stderr = proc.stderr
         result.exit_code = proc.returncode
     except subprocess.TimeoutExpired:
+        result.status = "timeout"
         result.stderr = "TIMEOUT"
         result.exit_code = -1
         result.wall_time_s = timeout_s
         return result, ""
+    except FileNotFoundError:
+        result.status = "failed"
+        result.stderr = f"ERROR: Spike not found at {tools.spike}"
+        result.exit_code = -2
+        return result, ""
+    except OSError as e:
+        result.status = "failed"
+        result.stderr = (
+            f"ERROR: failed to start Spike at {tools.spike}: {e}")
+        result.exit_code = -2
+        return result, ""
 
     result.wall_time_s = time.perf_counter() - t_start
+    if proc.returncode != 0:
+        result.status = "failed"
 
     # If log was written to file, read it
     log_content = ""
@@ -509,9 +875,29 @@ def generate_spike_report(
     lines.append(sep)
     lines.append(f"  Binary:        {binary_path}")
     lines.append(f"  Code size:     {code_size:,} B ({code_size // 4} static insns)")
-    lines.append(f"  Spike:         {SPIKE}")
+    lines.append(f"  Spike:         {result.spike_path or '(not resolved)'}")
     lines.append(f"  ISA:           rv32im")
     lines.append("")
+
+    # ── Run Status (only meaningful when not a clean run) ──
+    if result.status != "ok" or result.skip_reason:
+        lines.append("  ── Run Status ──")
+        lines.append(f"  Status:        {result.status}")
+        if result.skip_reason:
+            lines.append(f"  Skip reason:   {result.skip_reason}")
+        lines.append("")
+
+    # ── Warnings (tool resolution / output parsing) ──
+    if result.tool_warnings:
+        lines.append("  ── Tool warnings ──")
+        for warning in result.tool_warnings:
+            lines.append(f"  | {warning}")
+        lines.append("")
+    if result.parse_warnings:
+        lines.append("  ── Parse warnings ──")
+        for warning in result.parse_warnings:
+            lines.append(f"  | {warning}")
+        lines.append("")
 
     # ── Timing ──
     lines.append("  ── Simulation Execution ──")
@@ -589,7 +975,54 @@ def generate_spike_report(
 # Main entry
 # ═══════════════════════════════════════════════════════════════════════════
 
-def main() -> int:
+def build_json_report(
+    result: SpikeResult,
+    binary_path: str,
+    code_size: int,
+    ic_config: str,
+    dc_config: str,
+    max_instr: int,
+    tools: SpikeTools | None = None,
+) -> dict:
+    """Build the machine-readable Spike report (existing keys preserved)."""
+    report = {
+        "status": result.status,
+        "skip_reason": result.skip_reason,
+        "spike_binary": result.spike_path or None,
+        "binary": binary_path,
+        "code_size": code_size,
+        "static_insns": code_size // 4,
+        "max_instr": max_instr,
+        "committed_insns": result.committed_insns,
+        "wall_time_s": result.wall_time_s,
+        "exit_code": result.exit_code,
+        "icache": {
+            "config": ic_config,
+            "hits": result.icache_hits,
+            "misses": result.icache_misses,
+            "miss_rate_pct": result.icache_miss_rate,
+        },
+        "dcache": {
+            "config": dc_config,
+            "hits": result.dcache_hits,
+            "misses": result.dcache_misses,
+            "miss_rate_pct": result.dcache_miss_rate,
+        },
+        "top_pcs": sorted(
+            [{"pc": f"0x{pc:08x}", "count": cnt}
+             for pc, cnt in result.pc_histogram.items()],
+            key=lambda x: -x["count"]
+        )[:15],
+        "stderr_tail": result.stderr[-2000:] if result.stderr else "",
+        "parse_warnings": list(result.parse_warnings),
+        "tool_warnings": list(result.tool_warnings),
+    }
+    if tools is not None:
+        report["spike_tools"] = tools.as_dict()
+    return report
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Spike RISC-V Simulator — ScratchV CNN Benchmark"
     )
@@ -649,20 +1082,99 @@ def main() -> int:
         "--json", action="store_true",
         help="Output results as JSON",
     )
+    parser.add_argument(
+        "--spike-bin", default=None,
+        help="Path to the spike executable (highest priority)",
+    )
+    parser.add_argument(
+        "--spike-dasm", default=None,
+        help="Path to spike-dasm (optional)",
+    )
+    parser.add_argument(
+        "--spike-log-parser", default=None,
+        help="Path to spike-log-parser (optional)",
+    )
+    parser.add_argument(
+        "--require-spike", action="store_true",
+        help="Exit with code 2 when spike is missing (default: skip)",
+    )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # ── Load binary ────────────────────────────────────────────────────
     if not os.path.exists(args.binary):
         print(f"ERROR: binary not found: {args.binary}", file=sys.stderr)
         return 1
 
-    with open(args.binary, "rb") as f:
-        raw_binary = f.read()
-
     code_size = args.code_size
     if code_size % 4 != 0:
         code_size += 4 - (code_size % 4)
+
+    # ── Resolve Spike toolchain (probing happens only here, never at import) ──
+    try:
+        tools = resolve_spike_tools(
+            args.spike_bin, args.spike_dasm, args.spike_log_parser)
+    except SpikeConfigError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return EXIT_CONFIG
+
+    for warning in tools.warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+
+    if tools.spike is None:
+        searched = ", ".join([
+            "--spike-bin",
+            ENV_SPIKE_BIN,
+            f"{ENV_SPIKE_HOME}/bin/spike",
+            "PATH",
+            *COMMON_SPIKE_DIRS,
+            "legacy",
+        ])
+        if args.require_spike:
+            print(
+                f"ERROR: spike binary not found (--require-spike).\n"
+                f"  searched: {searched}",
+                file=sys.stderr,
+            )
+            return EXIT_CONFIG
+        print(
+            f"SKIP: spike binary not found.\n"
+            f"  searched: {searched}\n"
+            f"  hint: export {ENV_SPIKE_BIN}=/path/to/spike",
+            file=sys.stderr,
+        )
+        if args.json:
+            skipped_result = SpikeResult(
+                status="skipped",
+                skip_reason="spike binary not found",
+                exit_code=-2,  # same sentinel as the library skip path
+                tool_warnings=list(tools.warnings),
+            )
+            print(json.dumps(
+                build_json_report(
+                    skipped_result, args.binary, code_size,
+                    args.ic, args.dc, args.max_instr, tools),
+                indent=2,
+            ))
+        return EXIT_OK
+
+    optional_warnings = _optional_tool_warnings(tools)
+    for warning in optional_warnings:
+        print(f"WARNING: {warning}", file=sys.stderr)
+
+    tools_summary = ", ".join(
+        f"{name}={path} ({tools.sources.get(name, 'missing')})"
+        if path else f"{name}=missing"
+        for name, path in (
+            ("spike", tools.spike),
+            ("spike-dasm", tools.spike_dasm),
+            ("spike-log-parser", tools.spike_log_parser),
+        )
+    )
+    print(f"Spike tools: {tools_summary}", file=sys.stderr)
+
+    with open(args.binary, "rb") as f:
+        raw_binary = f.read()
 
     code = raw_binary[:code_size]
     data = raw_binary[code_size:]
@@ -698,6 +1210,7 @@ def main() -> int:
             isa=args.isa,
             mem_mb=args.mem,
             timeout_s=args.timeout,
+            tools=tools,
         )
     else:
         result = run_spike(
@@ -710,39 +1223,19 @@ def main() -> int:
             timeout_s=args.timeout,
             isa=args.isa,
             mem_mb=args.mem,
+            tools=tools,
         )
+
+    result.tool_warnings.extend(optional_warnings)
 
     # ── Generate report ────────────────────────────────────────────────
     if args.json:
-        import json
-        report = {
-            "binary": args.binary,
-            "code_size": code_size,
-            "static_insns": code_size // 4,
-            "max_instr": args.max_instr,
-            "committed_insns": result.committed_insns,
-            "wall_time_s": result.wall_time_s,
-            "exit_code": result.exit_code,
-            "icache": {
-                "config": args.ic,
-                "hits": result.icache_hits,
-                "misses": result.icache_misses,
-                "miss_rate_pct": result.icache_miss_rate,
-            },
-            "dcache": {
-                "config": args.dc,
-                "hits": result.dcache_hits,
-                "misses": result.dcache_misses,
-                "miss_rate_pct": result.dcache_miss_rate,
-            },
-            "top_pcs": sorted(
-                [{"pc": f"0x{pc:08x}", "count": cnt}
-                 for pc, cnt in result.pc_histogram.items()],
-                key=lambda x: -x["count"]
-            )[:15],
-            "stderr_tail": result.stderr[-2000:] if result.stderr else "",
-        }
-        print(json.dumps(report, indent=2))
+        print(json.dumps(
+            build_json_report(
+                result, args.binary, code_size,
+                args.ic, args.dc, args.max_instr, tools),
+            indent=2,
+        ))
     else:
         print(generate_spike_report(
             result,
@@ -760,7 +1253,7 @@ def main() -> int:
         except OSError:
             pass
 
-    return 0 if result.exit_code == 0 else 1
+    return EXIT_OK if result.status == "ok" else EXIT_RUN_FAIL
 
 
 if __name__ == "__main__":
