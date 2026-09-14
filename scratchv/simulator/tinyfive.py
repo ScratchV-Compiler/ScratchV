@@ -173,6 +173,43 @@ class ProfiledMachine:
             after = int(self._m.ops.get('total', 0))
             self.instr_count = after - before
 
+    def run_until(
+        self,
+        end: int,
+        max_instructions: int = 100_000_000,
+        start: Optional[int] = None,
+        *,
+        strict: bool = False,
+    ):
+        """Execute until the program counter reaches *end* or the limit."""
+        if not self._available:
+            return
+        start_pc = self.pc if start is None else start
+        before = int(self._m.ops.get('total', 0))
+        self.last_error = None
+        try:
+            # TinyFive's exe() also normalizes pc to a scalar before decoding.
+            # Keeping its initial one-element NumPy array breaks branch updates.
+            self._m.pc = int(start_pc)
+            with np.errstate(over="ignore"):
+                for _ in range(max(0, max_instructions)):
+                    if self.pc == end:
+                        break
+                    inst = self._m.read_i32(self.pc)
+                    self._m.dec(np.binary_repr(self._m.u(inst), 32))
+                else:
+                    raise RuntimeError(
+                        f"instruction limit exceeded: {max_instructions}"
+                    )
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            if strict:
+                raise RuntimeError(self.last_error) from exc
+        finally:
+            self._m.x[0] = 0
+            after = int(self._m.ops.get('total', 0))
+            self.instr_count = after - before
+
     # ── Register access ─────────────────────────────────────────────────
 
     def get_reg(self, idx: int) -> int:
@@ -251,7 +288,7 @@ class ProfiledMachine:
     def _set_pc(self, val: int):
         if not self._available:
             return
-        if hasattr(self._m.pc, '__getitem__'):
+        if isinstance(self._m.pc, np.ndarray):
             self._m.pc[0] = np.uint32(val)  # type: ignore[index]
         else:
             self._m.pc = int(val)
@@ -261,7 +298,7 @@ class ProfiledMachine:
         if not self._available:
             return 0
         pc_val = self._m.pc
-        if hasattr(pc_val, '__getitem__'):
+        if isinstance(pc_val, np.ndarray):
             return int(pc_val[0])  # type: ignore[index]
         return int(pc_val)
 
@@ -343,7 +380,47 @@ class StubProfiledMachine(ProfiledMachine):
         self._pc = val
 
 
-def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
+_REG_NUMS: dict[str, int] = {
+    "zero": 0, "x0": 0,
+    "ra": 1, "x1": 1,
+    "sp": 2, "x2": 2,
+    "gp": 3, "x3": 3,
+    "tp": 4, "x4": 4,
+    "t0": 5, "x5": 5,
+    "t1": 6, "x6": 6,
+    "t2": 7, "x7": 7,
+    "s0": 8, "fp": 8, "x8": 8,
+    "s1": 9, "x9": 9,
+    "a0": 10, "x10": 10,
+    "a1": 11, "x11": 11,
+    "a2": 12, "x12": 12,
+    "a3": 13, "x13": 13,
+    "a4": 14, "x14": 14,
+    "a5": 15, "x15": 15,
+    "a6": 16, "x16": 16,
+    "a7": 17, "x17": 17,
+    "s2": 18, "x18": 18,
+    "s3": 19, "x19": 19,
+    "s4": 20, "x20": 20,
+    "s5": 21, "x21": 21,
+    "s6": 22, "x22": 22,
+    "s7": 23, "x23": 23,
+    "s8": 24, "x24": 24,
+    "s9": 25, "x25": 25,
+    "s10": 26, "x26": 26,
+    "s11": 27, "x27": 27,
+    "t3": 28, "x28": 28,
+    "t4": 29, "x29": 29,
+    "t5": 30, "x30": 30,
+    "t6": 31, "x31": 31,
+}
+
+
+def verify_assembly(
+    asm_code: str,
+    verbose: bool = False,
+    initial_registers: Optional[dict[str, int]] = None,
+) -> dict:
     """Verify generated assembly by running it in TinyFive.
 
     Uses ``RISCVAEncoder`` to assemble text → binary, then executes each
@@ -353,15 +430,18 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
     Args:
         asm_code: RISC-V assembly text.
         verbose: Print performance info.
+        initial_registers: Optional ABI register values to set before execution.
 
     Returns:
-        dict with keys: success, instr_count, error
+        dict with keys: success, instr_count, return_value, error
     """
     m = ProfiledMachine(mem_size=128 * 1024 * 1024)
     if not m.available:
         return {
             "success": False,
             "instr_count": 0,
+            "return_value": None,
+            "backend": "tinyfive",
             "error": "tinyfive not installed",
         }
 
@@ -376,14 +456,35 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
             for i in range(0, len(binary), 4)
         ]
         m.load_binary(words, origin=0)
-        m.run(instructions=len(words), start=0, strict=True)
+
+        for reg_name, value in (initial_registers or {}).items():
+            reg_num = _REG_NUMS.get(reg_name)
+            if reg_num is not None:
+                m.set_reg(reg_num, int(value))
+
+        return_address = len(binary)
+        m.set_reg(1, return_address)
+        m.run_until(
+            end=return_address,
+            max_instructions=100_000_000,
+            start=0,
+            strict=True,
+        )
     except Exception as e:
         return {
             "success": False,
             "instr_count": m.instr_count,
+            "return_value": None,
+            "backend": "tinyfive",
             "error": str(e),
         }
 
     if verbose:
         m.print_perf()
-    return {"success": True, "instr_count": m.instr_count, "error": None}
+    return {
+        "success": True,
+        "instr_count": m.instr_count,
+        "return_value": m.get_reg(10),
+        "backend": "tinyfive",
+        "error": None,
+    }

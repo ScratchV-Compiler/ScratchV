@@ -221,6 +221,7 @@ class CompilerDriver:
 
     def __init__(self, config: CompilerConfig | None = None):
         self.config = config or CompilerConfig()
+        self._last_register_map: dict[str, str] = {}
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -238,6 +239,7 @@ class CompilerDriver:
         """
         errors: list[str] = []
         warnings: list[str] = []
+        self._last_register_map = {}
 
         # Resolve output path
         if output_path is None:
@@ -353,7 +355,11 @@ class CompilerDriver:
             output_text=asm_text,
             output_path=output_path,
             ir_dump=ir_dump,
-            stats={"opt_message": opt_message, "cycle_report": cycle_report},
+            stats={
+                "opt_message": opt_message,
+                "cycle_report": cycle_report,
+                "register_map": dict(self._last_register_map),
+            },
             warnings=warnings,
         )
 
@@ -444,10 +450,13 @@ class CompilerDriver:
             )
             ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
-            return lsa.emit(ls_insts)
+            asm_text = lsa.emit(ls_insts)
+            self._last_register_map = dict(lsa.alloc_map)
+            return asm_text
 
         alloc = RegisterAllocator(machine_instrs, mode=self.config.reg_alloc)
         allocated = alloc.run()
+        self._last_register_map = alloc.register_map
         emitter = AsmEmitter(allocated)
         return emitter.emit()
 
@@ -468,6 +477,7 @@ class CompilerDriver:
 
         alloc = RegisterAllocator(machine_instrs, mode=self.config.reg_alloc)
         allocated = alloc.run()
+        self._last_register_map = alloc.register_map
 
         emitter = AsmEmitter(allocated)
         return emitter.emit()

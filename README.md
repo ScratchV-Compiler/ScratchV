@@ -39,6 +39,7 @@
 ```bash
 make quick-start    # 打印新手引导
 make test           # 运行全部测试
+make bench-topic06  # 运行课题 06 TinyFive 性能测试套件
 make bench-cnn      # 编译 CNN 模型 + 性能估算
 make bench-ci       # 完整 CI 对比 (ScratchV vs LLVM)
 make bench-reports  # 生成 Dashboard + 优化历史
@@ -62,9 +63,9 @@ ScratchV/
 │   ├── 00~04-*.md        ← 新手入门 5 篇
 │   ├── topics/           ← 30 个模块详解
 │   └── topics/html/      ← 🌐 交互式课程站点
-├── benchmarks/           ← 23 个 DSL 基准用例
-├── tests/                ← 348 个单元测试
-├── scripts/              ← 工具脚本
+├── benchmarks/           ← 通用基准与课题 06 性能基线
+├── tests/                ← 单元测试及课题 06 的 23 个 DSL 用例
+├── scripts/              ← 工具脚本及课题 06 测试驱动
 └── models/               ← 测试用 ONNX 模型
 ```
 
@@ -104,6 +105,7 @@ ONNX 模型 (.onnx)
 | [📖 文档导航](docs/INDEX.md) | 全部 Markdown 文档索引 |
 | [🏗️ 架构总览](docs/ARCHITECTURE.md) | ONNX→RISC-V 双路径详解 |
 | [📊 性能仪表盘](https://scratchv-compiler.github.io/ScratchV/dashboard.html) | LLVM vs ScratchV 对比 |
+| [课题 06 测试套件](docs/topics/06-性能测试套件使用说明.md) | TinyFive 正确性验证、Benchmark 与回归报告 |
 | [📢 项目海报](https://scratchv-compiler.github.io/ScratchV/ScratchV.html) | 招募信息 + 3个月学习路线 + 课题精选 |
 
 ---

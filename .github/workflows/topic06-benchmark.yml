@@ -1,0 +1,47 @@
+name: Topic 06 Compiler Benchmark
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  topic06-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ScratchV and benchmark dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[topic06]"
+
+      - name: Verify Topic 06 integration contracts
+        run: python -m pytest tests/topic06/test_integration.py -q
+
+      - name: Run supported correctness gates
+        run: |
+          python scripts/run_topic06_benchmarks.py --category activation --fail-on-test-failure
+          python scripts/run_topic06_benchmarks.py --category elementwise --fail-on-test-failure
+          python scripts/run_topic06_benchmarks.py --category loop --fail-on-test-failure
+
+      - name: Generate full diagnostic benchmark report
+        run: python scripts/run_topic06_benchmarks.py --benchmark 3
+
+      - name: Upload Topic 06 reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: topic06-benchmark-reports
+          path: |
+            benchmark_reports/topic06/report.md
+            benchmark_reports/topic06/report.json
+            benchmark_reports/topic06/failures/
+            benchmarks/topic06/baseline.json
