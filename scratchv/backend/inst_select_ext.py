@@ -105,6 +105,8 @@ class ExtendedInstructionSelector(InstructionSelector):
     def _select_min(self, instr: Instruction) -> None:
         """Select instruction for min(a, b).
 
+        Float32: fmin.s
+        Float64: fmin.d
         Integer min (branchless):
             slt tmp, a, b       # tmp = (a < b)
             sub dst, b, a       # diff = b - a
@@ -117,8 +119,9 @@ class ExtendedInstructionSelector(InstructionSelector):
 
         if (self.enable_fp64 and instr.dest
                 and instr.dest.dtype == DataType.FLOAT64):
-            # Use FMIN.D pseudo (expands to branchless sequence)
             self._emit(MachineOp.FMIN_D, dst, a, b, comment="fmin.d")
+        elif self._has_f32_operand(instr):
+            self._emit(MachineOp.FMIN_S, dst, a, b, comment="fmin.s")
         else:
             tmp = MachineOperand.vreg("_min_tmp1")
             self._emit(MachineOp.SLT, tmp, a, b, comment="min: slt")
@@ -136,8 +139,9 @@ class ExtendedInstructionSelector(InstructionSelector):
     def _select_max(self, instr: Instruction) -> None:
         """Select instruction for max(a, b).
 
-        Uses the existing `max` pseudo-instruction from the base selector,
-        or a branchless sequence if not available.
+        Float32: fmax.s
+        Float64: fmax.d
+        Integer: uses the `max` pseudo-instruction from the base selector.
         """
         a = self._op(instr, 0)
         b = self._op(instr, 1)
@@ -146,8 +150,9 @@ class ExtendedInstructionSelector(InstructionSelector):
         if (self.enable_fp64 and instr.dest
                 and instr.dest.dtype == DataType.FLOAT64):
             self._emit(MachineOp.FMAX_D, dst, a, b, comment="fmax.d")
+        elif self._has_f32_operand(instr):
+            self._emit(MachineOp.FMAX_S, dst, a, b, comment="fmax.s")
         else:
-            # Use existing MAX pseudo (base selector has this)
             self._emit(MachineOp.MAX, dst, a, b, comment="max")
 
     # ------------------------------------------------------------------
@@ -161,14 +166,18 @@ class ExtendedInstructionSelector(InstructionSelector):
             srai tmp, x, 31     # sign bit broadcast
             xor dst, x, tmp     # invert bits if negative
             sub dst, dst, tmp   # add 1 if negative
+
+        Float32: fabs.s (clear sign bit).
+        Float64: fabs.d (clear sign bit).
         """
         src = self._op(instr, 0)
         dst = self._dst(instr)
 
         if (self.enable_fp64 and instr.dest
                 and instr.dest.dtype == DataType.FLOAT64):
-            # fabs.d: clear the sign bit
             self._emit(MachineOp.FABS_D, dst, src, comment="fabs.d")
+        elif self._has_f32_operand(instr):
+            self._emit(MachineOp.FABS_S, dst, src, comment="fabs.s")
         else:
             tmp1 = MachineOperand.vreg("_abs_tmp1")
             imm31 = MachineOperand.immediate(31)
@@ -205,6 +214,34 @@ class ExtendedInstructionSelector(InstructionSelector):
     def _select_mod(self, instr: Instruction) -> None:
         """Select instruction for modulo (synonym of rem for non-negative)."""
         self._select_rem(instr)
+
+    # ------------------------------------------------------------------
+    # transpose / concat
+    # ------------------------------------------------------------------
+
+    def _select_transpose(self, instr: Instruction) -> None:
+        """Select instruction for transpose.
+
+        Transpose is a data layout operation; at the machine level it is a
+        no-op that copies the buffer pointer, since the actual data movement
+        is handled by the memory layout descriptor.
+        """
+        src = self._op(instr, 0)
+        dst = self._dst(instr)
+        if dst and src:
+            self._emit(MachineOp.MV, dst, src, comment="transpose (no-op)")
+
+    def _select_concat(self, instr: Instruction) -> None:
+        """Select instruction for concat.
+
+        Concat is a buffer merge operation; at the machine level it is a
+        no-op that copies the first buffer pointer.  The runtime handles
+        the actual concatenation via the memory layout descriptor.
+        """
+        src = self._op(instr, 0)
+        dst = self._dst(instr)
+        if dst and src:
+            self._emit(MachineOp.MV, dst, src, comment="concat (no-op)")
 
     # ------------------------------------------------------------------
     # float64 (D extension)
@@ -312,8 +349,14 @@ class ExtendedInstructionSelector(InstructionSelector):
     def _select_div(self, instr: Instruction) -> None:
         if self._is_fp64(instr):
             self._select_fdiv_d(instr)
-        elif instr.dest and instr.dest.dtype == DataType.INT32:
+        elif self._has_int_operand(instr):
             self._select_idiv(instr)
+        elif self._has_f32_operand(instr):
+            # f32 浮点除法 → FDIV_S
+            a = self._op(instr, 0)
+            b = self._op(instr, 1)
+            dst = self._dst(instr)
+            self._emit(MachineOp.FDIV_S, dst, a, b, comment="fdiv.s")
         else:
             super()._select_div(instr)
 
@@ -336,11 +379,16 @@ class ExtendedInstructionSelector(InstructionSelector):
             super()._select_load_const(instr)
 
     def _select_neg(self, instr: Instruction) -> None:
-        """Negate: for float64 use fneg.d, for int use sub x0 - x."""
+        """Negate: for float64 use fneg.d, for float32 use fneg.s,
+        for int use sub x0 - x."""
         if self._is_fp64(instr):
             src = self._op(instr, 0)
             dst = self._dst(instr)
             self._emit(MachineOp.FNEG_D, dst, src, comment="fneg.d")
+        elif self._has_f32_operand(instr):
+            src = self._op(instr, 0)
+            dst = self._dst(instr)
+            self._emit(MachineOp.FNEG_S, dst, src, comment="fneg.s")
         else:
             super()._select_neg(instr)
 
@@ -359,6 +407,24 @@ class ExtendedInstructionSelector(InstructionSelector):
                 return True
         return False
 
+    def _has_int_operand(self, instr: Instruction) -> bool:
+        """Check if an instruction has integer operands."""
+        if instr.dest is not None and instr.dest.dtype == DataType.INT32:
+            return True
+        for op in instr.operands:
+            if op.dtype == DataType.INT32:
+                return True
+        return False
+
+    def _has_f32_operand(self, instr: Instruction) -> bool:
+        """Check if an instruction has float32 operands."""
+        if instr.dest is not None and instr.dest.dtype == DataType.FLOAT32:
+            return True
+        for op in instr.operands:
+            if op.dtype == DataType.FLOAT32:
+                return True
+        return False
+
     @property
     def supported_ops(self) -> list[str]:
         """Return list of all supported opcodes in this selector."""
@@ -372,6 +438,7 @@ class ExtendedInstructionSelector(InstructionSelector):
         extended_ops = [
             "sqrt", "min", "max", "abs",
             "idiv", "rem", "mod",
+            "transpose", "concat",
         ]
         fp64_ops = [
             "load_f64", "store_f64", "fadd_d", "fsub_d", "fmul_d",

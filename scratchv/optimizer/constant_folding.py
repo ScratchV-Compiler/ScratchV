@@ -42,7 +42,8 @@ class ConstantFolder:
         """Try to fold an instruction. Returns a replacement or None."""
         if instr.opcode not in (
                 OpCode.ADD, OpCode.SUB,
-                OpCode.MUL, OpCode.DIV):
+                OpCode.MUL, OpCode.DIV,
+                OpCode.IDIV, OpCode.REM, OpCode.MOD):
             return None
         if len(instr.operands) != 2:
             return None
@@ -77,5 +78,8 @@ class ConstantFolder:
             OpCode.SUB: a - b,
             OpCode.MUL: a * b,
             OpCode.DIV: a / b if b != 0 else None,
+            OpCode.IDIV: int(a) // int(b) if b != 0 else None,
+            OpCode.REM: int(a) % int(b) if b != 0 else None,
+            OpCode.MOD: int(a) % int(b) if b != 0 else None,
         }
         return mapping.get(opcode)

@@ -156,6 +156,20 @@ class InstructionSelector:
         if dst and src:
             self._emit(MachineOp.MV, dst, src, comment="reshape")
 
+    def _select_transpose(self, instr: Instruction) -> None:
+        """Transpose: no-op copy (data movement handled by layout descriptor)."""
+        src = self._op(instr, 0)
+        dst = self._dst(instr)
+        if dst and src:
+            self._emit(MachineOp.MV, dst, src, comment="transpose")
+
+    def _select_concat(self, instr: Instruction) -> None:
+        """Concat: no-op copy (buffer merge handled by runtime)."""
+        src = self._op(instr, 0)
+        dst = self._dst(instr)
+        if dst and src:
+            self._emit(MachineOp.MV, dst, src, comment="concat")
+
     def _select_load(self, instr: Instruction) -> None:
         self._emit(MachineOp.LW, self._dst(instr), self._op(instr, 0))
 

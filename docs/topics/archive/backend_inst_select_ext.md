@@ -34,9 +34,10 @@ Computes square root. Two modes:
 
 ### min / max
 
+- **Float32**: Uses `fmin.s` / `fmax.s` hardware instructions.
+- **Float64**: Uses `fmin.d` / `fmax.d` hardware instructions.
 - **Integer min**: Branchless sequence using `slt; sub; and; add`.
 - **Integer max**: Uses the existing `MAX` pseudo-instruction from the base selector.
-- **Float64**: Uses `fmin.d` / `fmax.d` hardware instructions.
 
 Integer min branchless implementation:
 ```
@@ -49,8 +50,9 @@ This works because: if a < b, mask = b - a, so dst = a + (b - a) = b. If a >= b,
 
 ### abs
 
-- **Integer abs**: `srai 31 + xor + sub` branchless sequence.
+- **Float32**: Uses `fabs.s` hardware instruction.
 - **Float64**: Uses `fabs.d` hardware instruction.
+- **Integer abs**: `srai 31 + xor + sub` branchless sequence.
 
 ### Integer Division (div, rem, mod)
 
@@ -58,6 +60,16 @@ Uses native RISC-V M-extension instructions:
 - `div rd, rs1, rs2` for integer division
 - `rem rd, rs1, rs2` for remainder
 - `mod` is mapped to `rem` for non-negative cases
+
+### transpose / concat
+
+Data layout operations implemented as no-op copies (`mv`). The actual data movement is handled by the memory layout descriptor at runtime.
+
+### neg
+
+- **Float32**: Uses `fneg.s` hardware instruction.
+- **Float64**: Uses `fneg.d` hardware instruction.
+- **Integer**: Uses `sub rd, x0, rs` (negate via subtraction from zero).
 
 ## Float64 (D Extension) Support
 
