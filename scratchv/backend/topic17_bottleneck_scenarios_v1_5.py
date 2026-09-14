@@ -24,7 +24,7 @@
 多源指令改写为两两累加链（会显著降低同一位置的峰值压力），那是另一类
 测试，不属于本框架的压力模型范围。
 """
-from scratchv.backend.regalloc_linear_v1_5 import LinearScanAllocator, LsInstruction
+from scratchv.backend.regalloc_linear import LinearScanAllocator, LsInstruction
 import random
 import inspect
 import re
@@ -122,7 +122,10 @@ def _all_spill_lines(alloc):
 def run_scenario(name, category, desc, block_fn, phys_regs=None):
     """Run a single scenario and return all metrics."""
     regs = phys_regs or PHYS_REGS
-    alloc = LinearScanAllocator(phys_regs=regs)
+    # Pressure-measurement mode: deliberately invalid multi-source blocks
+    # exceed the ISA operand limit, so degrade with counters instead of
+    # raising (see the module docstring).
+    alloc = LinearScanAllocator(phys_regs=regs, strict=False)
     try:
         block = _renumber(block_fn())
         ivs = alloc.compute_live_intervals(block)

@@ -37,7 +37,8 @@ class CompilerConfig:
     Attributes:
         backend:        ``"riscv"`` or ``"llvm"``.
         optimize_level: ``"none"``, ``"basic"``, or ``"all"``.
-        reg_alloc:      ``"naive"`` or ``"greedy"`` (also ``"linear"``).
+        reg_alloc:      ``"naive"``, ``"greedy"``, or ``"linear"``
+                        (``"linear-v1.5"`` is a transitional alias).
         dump_ir:        Print IR dumps during compilation.
         verify:         Run ONNX Runtime / numpy verification.
         rtol:           Relative tolerance for verification.
@@ -57,7 +58,9 @@ class CompilerConfig:
 
     backend: str = "riscv"
     optimize_level: str = "none"
-    reg_alloc: str = "linear"
+    # Stage 1 default: "greedy" (aligned with the CLI); "linear" is opt-in
+    # until the linear-scan path is fully baked, then both flip together.
+    reg_alloc: str = "greedy"
     dump_ir: bool = False
     verify: bool = False
     rtol: float = 1e-5
@@ -437,16 +440,24 @@ class CompilerDriver:
         selector = InstructionSelector(program)
         machine_instrs = selector.run()
 
-        # Linear-scan: skip greedy allocator, use liveness-driven allocator
-        if self.config.reg_alloc == "linear":
-            from scratchv.backend.regalloc_linear import (
-                LinearScanAllocator, block_from_machine_instrs,
+        mode = self.config.reg_alloc
+        if mode == "linear-v1.5":  # transitional alias
+            mode = "linear"
+        if mode not in ("naive", "greedy", "linear"):
+            raise ValueError(
+                f"unknown reg_alloc mode: {self.config.reg_alloc!r} "
+                "(expected naive, greedy, or linear)"
             )
-            ls_insts = block_from_machine_instrs(machine_instrs)
-            lsa = LinearScanAllocator()
-            return lsa.emit(ls_insts)
 
-        alloc = RegisterAllocator(machine_instrs, mode=self.config.reg_alloc)
+        if mode == "linear":
+            # Basic-block linear scan + W9 frame allocation, then the shared
+            # AsmEmitter so labels/.globl/.size/branch targets are preserved.
+            from scratchv.backend.frame_layout import FunctionFrameAllocator
+            allocated = FunctionFrameAllocator().allocate_program(
+                machine_instrs)
+            return AsmEmitter(allocated).emit()
+
+        alloc = RegisterAllocator(machine_instrs, mode=mode)
         allocated = alloc.run()
         emitter = AsmEmitter(allocated)
         return emitter.emit()

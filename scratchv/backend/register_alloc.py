@@ -2,7 +2,8 @@
 
 Implements two strategies:
 1. Naive: map every virtual register to a stack slot (load/store).
-2. Greedy: simple local greedy allocator using callee-saved regs first.
+2. Greedy: simple local greedy allocator using temp registers first.
+   Legacy: the spill path is not reload-correct; prefer ``--reg-alloc linear``.
 
 Machine instruction types (MachineOp, MachineOperand, MachineInstr) are
 defined in ``scratchv.backend.machine_types`` and re-exported here for
@@ -17,9 +18,12 @@ from scratchv.backend.machine_types import (  # noqa: F401 — re-export
     ALL_REGS,
     ARG_REGS,
     CALLEE_SAVED,
+    CALLER_SAVED,
+    GREEDY_REGS,
     MachineInstr,
     MachineOp,
     MachineOperand,
+    REG_NUMS,
     STACK_BASE,
     TEMP_REGS,
     ZERO_REG,
@@ -34,7 +38,10 @@ __all__ = [
     "CALLEE_SAVED",
     "TEMP_REGS",
     "ARG_REGS",
+    "CALLER_SAVED",
     "ALL_REGS",
+    "GREEDY_REGS",
+    "REG_NUMS",
     "STACK_BASE",
     "ZERO_REG",
     "RegisterAllocator",
@@ -46,6 +53,10 @@ class RegisterAllocator:
 
     Mode 'naive': spill everything to stack, for maximum correctness.
     Mode 'greedy': simple local allocator using temp registers first.
+
+    Legacy note: greedy's spill path does not reload spilled values and is
+    kept only for compatibility; use the linear-scan allocator for correct
+    spilling.
     """
 
     def __init__(self, instructions: list[MachineInstr], mode: str = "greedy"):
@@ -55,7 +66,7 @@ class RegisterAllocator:
         self._spill_slots: dict[str, int] = {}  # vreg_name -> stack offset
         self._next_spill = 0
         # Track which physical registers are currently allocated
-        self._reg_pool: dict[str, Optional[str]] = {r: None for r in ALL_REGS}
+        self._reg_pool: dict[str, Optional[str]] = {r: None for r in GREEDY_REGS}
         self._output: list[MachineInstr] = []
 
     def run(self) -> list[MachineInstr]:
@@ -101,7 +112,7 @@ class RegisterAllocator:
         """Simple greedy allocator: assign physical registers to vregs."""
         self._output = []
         self._vreg_map.clear()
-        self._reg_pool = {r: None for r in ALL_REGS}
+        self._reg_pool = {r: None for r in GREEDY_REGS}
 
         for instr in self.instructions:
             if instr.op == MachineOp.LABEL:

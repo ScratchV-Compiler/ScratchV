@@ -45,9 +45,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # ── Register allocation ─────────────────────────────────────────────
     parser.add_argument(
-        "--reg-alloc", choices=["naive", "greedy", "linear"],
+        "--reg-alloc",
+        choices=["naive", "greedy", "linear", "linear-v1.5"],
         default="greedy",
-        help="Register allocation strategy (default: greedy)",
+        help="Register allocation strategy (default: greedy; "
+             "'linear' = basic-block linear scan, opt-in; "
+             "'linear-v1.5' = transitional alias for 'linear')",
     )
 
     # ── Debug ───────────────────────────────────────────────────────────
@@ -134,10 +137,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def args_to_config(args: argparse.Namespace) -> CompilerConfig:
     """Translate parsed CLI arguments to a CompilerConfig."""
+    reg_alloc = args.reg_alloc
+    if reg_alloc == "linear-v1.5":
+        import warnings
+        warnings.warn(
+            "--reg-alloc linear-v1.5 is a transitional alias for 'linear'",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        reg_alloc = "linear"
     return CompilerConfig(
         backend=args.backend,
         optimize_level=args.optimize,
-        reg_alloc=args.reg_alloc,
+        reg_alloc=reg_alloc,
         dump_ir=args.dump_ir,
         verify=args.verify,
         rtol=args.rtol,

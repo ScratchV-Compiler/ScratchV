@@ -1,8 +1,8 @@
 """Regression tests for the register-allocation changes in PR #37.
 
-The implementation under test is intentionally kept in the PR-specific
-module.  The module is not present on the pre-PR main branch, so this file is
-skipped there and becomes active as soon as the PR is checked out by CI.
+The implementation under test converged into
+``scratchv.backend.regalloc_linear`` (topic 17); the former PR-specific
+module is a forwarding alias.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ import pytest
 
 
 regalloc = pytest.importorskip(
-    "scratchv.backend.regalloc_linear_v1_5",
-    reason="PR #37 register allocator is not present on this branch",
+    "scratchv.backend.regalloc_linear",
+    reason="linear-scan register allocator is not present on this branch",
 )
 
 

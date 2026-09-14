@@ -13,7 +13,7 @@ import statistics
 import sys
 import time
 
-from scratchv.backend.regalloc_linear_v1_5 import (
+from scratchv.backend.regalloc_linear import (
     LinearScanAllocator,
     block_from_machine_instrs,
     _INT_REGS,

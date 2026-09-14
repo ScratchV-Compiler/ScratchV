@@ -12,7 +12,7 @@ import statistics
 import sys
 import time
 
-from scratchv.backend.regalloc_linear_v1_5 import LinearScanAllocator, LsInstruction
+from scratchv.backend.regalloc_linear import LinearScanAllocator, LsInstruction
 
 
 def _gen_block(
@@ -63,7 +63,7 @@ def bench_allocate(
     spill_counts = []
 
     for _ in range(repeats):
-        alloc = LinearScanAllocator(phys_regs=phys_regs)
+        alloc = LinearScanAllocator(phys_regs=phys_regs, strict=False)
         t0 = time.perf_counter()
         alloc.allocate(alloc.compute_live_intervals(block))
         t1 = time.perf_counter()
@@ -71,7 +71,7 @@ def bench_allocate(
         spill_counts.append(len(alloc._spill_slots))
 
     # Final run for stable stats
-    alloc = LinearScanAllocator(phys_regs=phys_regs)
+    alloc = LinearScanAllocator(phys_regs=phys_regs, strict=False)
     alloc.allocate(alloc.compute_live_intervals(block))
     code = alloc.get_allocated_code(block)
     reloads = sum(

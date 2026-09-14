@@ -9,7 +9,8 @@ Usage::
 
     from scratchv.backend.machine_types import (
         MachineOp, MachineOperand, MachineInstr,
-        CALLEE_SAVED, TEMP_REGS, ARG_REGS, ALL_REGS, STACK_BASE, ZERO_REG,
+        CALLEE_SAVED, TEMP_REGS, ARG_REGS, ALL_REGS, GREEDY_REGS,
+        REG_NUMS, STACK_BASE, ZERO_REG,
     )
 """
 
@@ -101,9 +102,9 @@ class MachineOp(enum.Enum):
 
 @dataclass
 class MachineOperand:
-    """A register or immediate operand."""
+    """A register, immediate, or memory operand."""
 
-    kind: str  # "reg", "imm", "vreg"
+    kind: str  # "reg", "imm", "vreg", "mem"
     value: str | int
 
     @staticmethod
@@ -121,8 +122,13 @@ class MachineOperand:
         """Create a physical register operand."""
         return MachineOperand("reg", name)
 
+    @staticmethod
+    def mem(offset: int, base: str = "sp") -> "MachineOperand":
+        """Create a memory operand, formatted as ``offset(base)``."""
+        return MachineOperand("mem", f"{offset}({base})")
+
     def __repr__(self) -> str:
-        if self.kind == "imm":
+        if self.kind in ("imm", "mem"):
             return str(self.value)
         return f"%{self.value}"
 
@@ -168,8 +174,52 @@ TEMP_REGS: list[str] = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"]
 # Argument / return-value registers
 ARG_REGS: list[str] = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"]
 
-# All allocatable integer registers (19 total)
-ALL_REGS: list[str] = TEMP_REGS + CALLEE_SAVED
+# Caller-saved registers: arguments + temporaries
+CALLER_SAVED: list[str] = ARG_REGS + TEMP_REGS
+
+# All allocatable integer registers (27 total):
+# a0-a7 + t0-t6 + s0-s11, order shared with the linear-scan allocator pool.
+ALL_REGS: list[str] = CALLER_SAVED + CALLEE_SAVED
+
+# Legacy greedy allocator pool (19): temporaries + callee-saved.  Frozen so
+# that the greedy allocation order is unchanged by the ALL_REGS correction.
+GREEDY_REGS: list[str] = TEMP_REGS + CALLEE_SAVED
+
+# Canonical RISC-V register-number table (includes x-aliases and fp).
+REG_NUMS: dict[str, int] = {
+    "x0": 0, "zero": 0,
+    "ra": 1, "x1": 1,
+    "sp": 2, "x2": 2,
+    "gp": 3, "x3": 3,
+    "tp": 4, "x4": 4,
+    "t0": 5, "x5": 5,
+    "t1": 6, "x6": 6,
+    "t2": 7, "x7": 7,
+    "s0": 8, "fp": 8, "x8": 8,
+    "s1": 9, "x9": 9,
+    "a0": 10, "x10": 10,
+    "a1": 11, "x11": 11,
+    "a2": 12, "x12": 12,
+    "a3": 13, "x13": 13,
+    "a4": 14, "x14": 14,
+    "a5": 15, "x15": 15,
+    "a6": 16, "x16": 16,
+    "a7": 17, "x17": 17,
+    "s2": 18, "x18": 18,
+    "s3": 19, "x19": 19,
+    "s4": 20, "x20": 20,
+    "s5": 21, "x21": 21,
+    "s6": 22, "x22": 22,
+    "s7": 23, "x23": 23,
+    "s8": 24, "x24": 24,
+    "s9": 25, "x25": 25,
+    "s10": 26, "x26": 26,
+    "s11": 27, "x27": 27,
+    "t3": 28, "x28": 28,
+    "t4": 29, "x29": 29,
+    "t5": 30, "x30": 30,
+    "t6": 31, "x31": 31,
+}
 
 # Special-purpose registers
 STACK_BASE: str = "sp"
