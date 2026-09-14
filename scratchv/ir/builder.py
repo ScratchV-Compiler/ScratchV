@@ -149,6 +149,20 @@ class IRBuilder:
         operands = [val] if val else []
         return self._emit(OpCode.RETURN, operands=operands)
 
+    def call(self, callee: str, args: list[Value] | None = None,
+             has_ret: bool = True,
+             dtype: DataType = DataType.FLOAT32,
+             is_tail: bool = False) -> Value | None:
+        """Emit a CALL.
+
+        Returns the result Value when *has_ret* is True, else None.
+        """
+        call_args = list(args or [])
+        dest = self.make_value(dtype=dtype) if has_ret else None
+        self._emit(OpCode.CALL, dest, call_args,
+                   target=callee, argc=len(call_args), is_tail=is_tail)
+        return dest
+
     def relu(self, val: Value) -> Value:
         dest = self.make_value()
         self._emit(OpCode.RELU, dest, [val])

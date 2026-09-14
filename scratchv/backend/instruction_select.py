@@ -13,11 +13,18 @@ from scratchv.backend.machine_types import (
 )
 
 
+class UnsupportedCallError(NotImplementedError):
+    """Raised when a CALL cannot be lowered (ABI not implemented, Topic 15)."""
+
+
 class InstructionSelector:
     """Select RISC-V instructions for each IR instruction."""
 
-    def __init__(self, program: Program):
+    def __init__(self, program: Program, *,
+                 allow_uninlined_calls: bool = False):
         self.program = program
+        self.allow_uninlined_calls = allow_uninlined_calls
+        self._current_function_name = ""
         self._instructions: list[MachineInstr] = []
         self._label_counter = 0
 
@@ -37,6 +44,7 @@ class InstructionSelector:
 
     def _select_function(self, func: Function) -> None:
         # Function prologue label
+        self._current_function_name = func.name
         self._emit_label(func.name)
 
         for block in func.blocks:
@@ -234,6 +242,31 @@ class InstructionSelector:
         # bnez cond, true_label; j false_label
         self._emit(MachineOp.BNEZ, cond, comment=true_target)
         self._emit(MachineOp.J, comment=false_target)
+
+    def _select_call(self, instr: Instruction) -> None:
+        callee = instr.target or "<unknown>"
+        if instr.attrs.get("is_tail", False):
+            raise UnsupportedCallError(
+                f"CALL {callee}: tail calls require ABI support (Topic 15)")
+        args = instr.operands
+        if len(args) > 8:
+            raise UnsupportedCallError(
+                f"CALL {callee}: {len(args)} args > 8 requires stack "
+                f"passing (ABI not implemented)")
+        if not self.allow_uninlined_calls:
+            raise UnsupportedCallError(
+                f"CALL {callee} in function "
+                f"'{self._current_function_name}': ABI support "
+                f"(prologue/epilogue, stack args) is not implemented; "
+                f"enable inlining (--inline) or set minimal_call_codegen=True")
+        for i, _ in enumerate(args):
+            self._emit(MachineOp.MV, MachineOperand.reg(f"a{i}"),
+                       self._op(instr, i), comment=f"arg{i} -> a{i}")
+        self._emit(MachineOp.JAL, MachineOperand.reg("ra"),
+                   comment=callee)
+        if instr.dest is not None:
+            self._emit(MachineOp.MV, self._dst(instr),
+                       MachineOperand.reg("a0"), comment="return a0")
 
     def _select_return(self, instr: Instruction) -> None:
         if instr.operands:

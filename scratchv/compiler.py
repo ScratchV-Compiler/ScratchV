@@ -74,6 +74,12 @@ class CompilerConfig:
     enable_forwarding: bool = True
     branch_predictor: str = "always_not_taken"
 
+    # ── Topic 15: inlining ──
+    inline: bool = False
+    inline_max_instrs: int = 32
+    inline_single_site: bool = False
+    minimal_call_codegen: bool = False
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PassManager
@@ -296,9 +302,13 @@ class CompilerDriver:
 
         # --- 3. Optimize ---
         opt_message = ""
+        if self.config.inline and self.config.optimize_level == "none":
+            warnings.append(
+                "inliner requires --optimize basic|all; skipped")
         if self.config.optimize_level != "none":
             opt_result = self._run_optimizations(program)
             opt_message = opt_result.message
+            warnings.extend(opt_result.warnings)
 
         ir_dump_after = ""
         if self.config.dump_ir:
@@ -413,6 +423,17 @@ class CompilerDriver:
             pm.add(_PassAdapter("muladd-fusion", MulAddFusion(program)))
             pm.add(_PassAdapter("licm", LICM(program)))
 
+        if self.config.inline:
+            from scratchv.optimizer.inliner import Inliner, InlinerConfig
+
+            pm.add(_PassAdapter("inliner", Inliner(
+                program,
+                InlinerConfig(
+                    max_instrs=self.config.inline_max_instrs,
+                    single_site_only=self.config.inline_single_site,
+                ),
+            )))
+
         return pm.run(program)
 
     # ── Internal: code generation ───────────────────────────────────────────
@@ -434,7 +455,10 @@ class CompilerDriver:
         from scratchv.backend.register_alloc import RegisterAllocator
         from scratchv.backend.asm_emit import AsmEmitter
 
-        selector = InstructionSelector(program)
+        selector = InstructionSelector(
+            program,
+            allow_uninlined_calls=self.config.minimal_call_codegen,
+        )
         machine_instrs = selector.run()
 
         # Linear-scan: skip greedy allocator, use liveness-driven allocator
@@ -545,4 +569,5 @@ class _PassAdapter(CompilerPass):
             data=input_data,
             changes=changes,
             message=f"{changes} change(s)",
+            warnings=list(getattr(self._legacy, "warnings", [])),
         )

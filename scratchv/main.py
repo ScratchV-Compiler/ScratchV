@@ -104,6 +104,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--extended-isel", action="store_true",
         help="Use extended instruction selector with fp64/sqrt/min/max/abs support (Topic 28)",
     )
+    parser.add_argument(
+        "--inline", action="store_true",
+        help="Run function inliner (Topic 15); requires --optimize basic|all",
+    )
+    parser.add_argument(
+        "--inline-max-instrs", type=int, default=32,
+        help="Inline only callees with <= N instructions (default: 32)",
+    )
+    parser.add_argument(
+        "--inline-single-site", action="store_true",
+        help="Only inline callees with a single call site",
+    )
+    parser.add_argument(
+        "--minimal-call-codegen", action="store_true",
+        help="Lower uninlined CALLs without ABI (experimental; not executable)",
+    )
 
     # ── Cycle estimation ──────────────────────────────────────────────
     parser.add_argument(
@@ -153,6 +169,10 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         cycle_stats=args.cycle_stats,
         enable_forwarding=not args.no_forwarding,
         branch_predictor=args.branch_predictor,
+        inline=args.inline,
+        inline_max_instrs=args.inline_max_instrs,
+        inline_single_site=args.inline_single_site,
+        minimal_call_codegen=args.minimal_call_codegen,
     )
 
 

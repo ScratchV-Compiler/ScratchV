@@ -49,6 +49,9 @@ class OpCode(enum.Enum):
     RESHAPE = "reshape"
     CONCAT = "concat"
 
+    # ── Topic 15: interprocedural (2026-09-14) ──
+    CALL = "call"
+
     def is_arith(self) -> bool:
         return self in (OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV)
 
@@ -70,6 +73,10 @@ class OpCode(enum.Enum):
         return self in (
             OpCode.FOR, OpCode.ENDFOR, OpCode.BR,
             OpCode.BR_IF, OpCode.RETURN)
+
+    def is_call(self) -> bool:
+        """True for the interprocedural call opcode (Topic 15)."""
+        return self is OpCode.CALL
 
 
 class DataType(enum.Enum):
