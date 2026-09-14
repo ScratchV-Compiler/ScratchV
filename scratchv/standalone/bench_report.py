@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from typing import Any
@@ -436,6 +437,479 @@ def generate_github_summary(
         lines.append(f"| {name} | {s} | {pct:.1f}% |")
 
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Schema v2 renderers (rv32_bench.py reports)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_MISSING = object()
+
+
+def _dig(data: Any, path: str) -> Any:
+    node: Any = data
+    for part in path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return _MISSING
+        node = node[part]
+    return node
+
+
+def _fmt(value: Any) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _shape(shape: Any) -> str:
+    if not shape:
+        return "?"
+    return "×".join(str(d) for d in shape)
+
+
+def render_markdown(report: dict) -> str:
+    """Render a schema v2 report as Markdown with provenance tags."""
+    model = report.get("model") or {}
+    env = report.get("environment") or {}
+    targets = report.get("targets") or {}
+    sv = report.get("scratchv") or {}
+    llvm = report.get("llvm") or {}
+    cmp_ = report.get("comparison") or {}
+
+    sv_compile = sv.get("compile") or {}
+    sv_dyn = sv.get("dynamic") or {}
+    sv_mix = sv.get("static_instruction_mix") or {}
+    sv_out = sv.get("output") or {}
+    ll_compile = llvm.get("compile") or {}
+    ll_dyn = llvm.get("dynamic") or {}
+    tgt_sv = targets.get("scratchv") or {}
+    tgt_ll = targets.get("llvm") or {}
+
+    sha = str(model.get("sha256") or "")
+    completion = sv_dyn.get("completion")
+    dyn_rows = [
+        ("source", _fmt(sv_dyn.get("source")), _fmt(ll_dyn.get("source"))),
+        ("completion", _fmt(completion), _fmt(ll_dyn.get("completion"))),
+        ("executed", _fmt(sv_dyn.get("executed")), _fmt(ll_dyn.get("executed"))),
+    ]
+    sv_ops = sv_dyn.get("ops") or {}
+    for key in ("total", "load", "store", "mul", "add", "madd", "branch"):
+        dyn_rows.append(
+            (f"ops.{key}", _fmt(sv_ops.get(key)), _fmt(None)),
+        )
+
+    lines = []
+    lines.append(f"# RV32 Benchmark Report — {_fmt(model.get('path'))}")
+    lines.append("")
+    lines.append(f"- Generated: {_fmt(report.get('generated_at'))} | "
+                 f"schema: {_fmt(report.get('schema_version'))}")
+    lines.append(
+        f"- Model: {_fmt(model.get('input_name'))}{_shape(model.get('input_shape'))}"
+        f" → {_fmt(model.get('output_name'))}{_shape(model.get('output_shape'))}"
+        f" | sha256={sha[:12]} | bytes={_fmt(model.get('bytes'))}"
+    )
+    lines.append(
+        f"- Targets: ScratchV {_fmt(tgt_sv.get('isa'))}/{_fmt(tgt_sv.get('numeric_format'))}"
+        f" | LLVM {_fmt(tgt_ll.get('isa'))}/{_fmt(tgt_ll.get('numeric_format'))}"
+        f" (opt={_fmt(tgt_ll.get('opt_level'))})"
+    )
+    lines.append(
+        f"- Environment: python={_fmt(env.get('python'))} "
+        f"numpy={_fmt(env.get('numpy'))} tinyfive={_fmt(env.get('tinyfive'))} "
+        f"llvmlite={_fmt(env.get('llvmlite'))}"
+    )
+    lines.append("")
+
+    lines.append("## 1. Compilation [static]")
+    lines.append("")
+    lines.append("| Metric | ScratchV | LLVM |")
+    lines.append("|--------|----------|------|")
+    lines.append(f"| status | {_fmt(sv_compile.get('status'))} | {_fmt(ll_compile.get('status'))} |")
+    lines.append(f"| code bytes | {_fmt(sv_compile.get('code_bytes'))} | — |")
+    lines.append(f"| data offset | {_fmt(sv_compile.get('data_offset'))} | — |")
+    lines.append(f"| data bytes | {_fmt(sv_compile.get('data_bytes'))} | — |")
+    ll_static = (
+        _fmt(ll_compile.get("static_insns"))
+        if ll_compile.get("status") == "success" else "—"
+    )
+    lines.append(
+        f"| static insns [asm_scan] | {_fmt(sv_compile.get('static_insns'))} "
+        f"| {ll_static} |"
+    )
+    lines.append("")
+    lines.append("### Static instruction mix [static]")
+    lines.append("")
+    lines.append("| class | count |")
+    lines.append("|-------|-------|")
+    for key in ("load", "store", "mul", "add", "madd", "branch", "other"):
+        lines.append(f"| {key} | {_fmt(sv_mix.get(key))} |")
+    lines.append("")
+
+    lines.append("## 2. Dynamic Execution [measured]")
+    lines.append("")
+    lines.append("| Metric | ScratchV | LLVM |")
+    lines.append("|--------|----------|------|")
+    for label, sv_cell, ll_cell in dyn_rows:
+        lines.append(f"| {label} | {sv_cell} | {ll_cell} |")
+    lines.append("")
+    if completion == "budget_exhausted":
+        lines.append(
+            f"> [measured/budget] budget exhausted at {sv_dyn.get('limit')} "
+            "instructions; dynamic counts are partial and excluded from "
+            "comparison."
+        )
+        lines.append("")
+    elif completion == "timeout":
+        lines.append(
+            f"> [measured/timeout] wall-clock timeout after "
+            f"{_fmt(sv_dyn.get('elapsed_s'))}s; dynamic counts are partial."
+        )
+        lines.append("")
+    elif sv_dyn.get("source") == "unavailable":
+        lines.append(
+            f"> [unavailable] ScratchV dynamic section omitted: "
+            f"{_fmt(sv_dyn.get('reason'))}"
+        )
+        lines.append("")
+    if ll_dyn.get("source") == "unavailable":
+        lines.append(
+            f"> [unavailable] LLVM dynamic section omitted: "
+            f"{_fmt(ll_dyn.get('reason'))}"
+        )
+        lines.append("")
+    if sv_dyn.get("source") == "simulated":
+        lines.append(
+            f"> Simulated by {_fmt(sv_dyn.get('simulator'))} "
+            f"{_fmt(sv_dyn.get('simulator_version'))} | "
+            f"completion={_fmt(completion)} | executed={_fmt(sv_dyn.get('executed'))} "
+            f"| limit={_fmt(sv_dyn.get('limit'))} | "
+            f"memory={_fmt(sv_dyn.get('memory_size_bytes'))} "
+            f"| seed={_fmt(sv_dyn.get('input_seed'))} "
+            f"| halt=0x{int(sv_dyn.get('halt_addr') or 0):x}"
+        )
+        lines.append("")
+
+    lines.append("## 3. Comparison [measured]")
+    lines.append("")
+    ratio = cmp_.get("dynamic_instruction_ratio")
+    if ratio is None:
+        lines.append(
+            f"- comparison ratio: **null** — "
+            f"{_fmt(cmp_.get('incomparable_reason'))}"
+        )
+    else:
+        lines.append(
+            f"- dynamic_instruction_ratio: **{ratio:g}** "
+            "(ScratchV / LLVM, both sides halted)"
+        )
+    lines.append("")
+
+    lines.append("## 4. Analytical Warnings [estimated]")
+    lines.append("")
+    warnings = report.get("warnings") or []
+    if warnings:
+        lines.extend(f"- {w}" for w in warnings)
+    else:
+        lines.append("- none")
+    lines.append("")
+    errors = report.get("errors") or []
+    if errors:
+        lines.append("## 5. Errors")
+        lines.append("")
+        lines.extend(f"- {e}" for e in errors)
+        lines.append("")
+
+    lines.append("## Provenance")
+    lines.append("")
+    lines.append(f"- model sha256={sha}")
+    lines.append(
+        f"- binary sha256={_fmt(sv_compile.get('binary_sha256'))} "
+        f"| data_offset={_fmt(sv_compile.get('data_offset'))} "
+        f"({_fmt(sv_compile.get('data_offset_source'))})"
+    )
+    lines.append(
+        f"- static_source={_fmt(sv_compile.get('static_source'))} "
+        f"| llvm static_source={_fmt(ll_compile.get('static_source'))}"
+    )
+    if sv_dyn.get("source") != "simulated":
+        out_tag = "[unavailable]"
+    elif sv_out.get("partial"):
+        out_tag = "[measured/partial]"
+    else:
+        out_tag = "[measured]"
+    lines.append(
+        f"- output {out_tag}: {_fmt(sv_out.get('raw_hex'))} "
+        f"(addr=0x{int(sv_out.get('addr') or 0):x}, "
+        f"elements={_fmt(sv_out.get('elements'))}, "
+        f"completion={_fmt(sv_out.get('completion'))})"
+    )
+    return "\n".join(lines)
+
+
+def _md_to_html(md: str) -> str:
+    from html import escape
+    lines = md.splitlines()
+    out: list[str] = []
+    in_table = False
+    in_list = False
+
+    def close_blocks():
+        nonlocal in_table, in_list
+        if in_table:
+            out.append("</table>")
+            in_table = False
+        if in_list:
+            out.append("</ul>")
+            in_list = False
+
+    def inline(text: str) -> str:
+        text = escape(text)
+        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+        text = re.sub(r"`(.+?)`", r"<code>\1</code>", text)
+        return text
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if all(set(c) <= {"-", " "} and c for c in cells):
+                continue
+            if not in_table:
+                close_blocks()
+                out.append("<table>")
+                in_table = True
+            tag = "th" if not any(mark.startswith("<tr>") for mark in out[-2:]) else "td"
+            out.append("<tr>" + "".join(
+                f"<{tag}>{inline(c)}</{tag}>" for c in cells) + "</tr>")
+            continue
+        if stripped.startswith("- "):
+            if not in_list:
+                close_blocks()
+                out.append("<ul>")
+                in_list = True
+            out.append(f"<li>{inline(stripped[2:])}</li>")
+            continue
+        close_blocks()
+        if stripped.startswith("### "):
+            out.append(f"<h3>{inline(stripped[4:])}</h3>")
+        elif stripped.startswith("## "):
+            out.append(f"<h2>{inline(stripped[3:])}</h2>")
+        elif stripped.startswith("# "):
+            out.append(f"<h1>{inline(stripped[2:])}</h1>")
+        elif stripped.startswith("> "):
+            out.append(f"<blockquote>{inline(stripped[2:])}</blockquote>")
+        elif stripped:
+            out.append(f"<p>{inline(stripped)}</p>")
+    close_blocks()
+    body = "\n".join(out)
+    return (
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>RV32 Benchmark Report</title>"
+        f"{HTML_CSS}</head><body>\n{body}\n</body></html>"
+    )
+
+
+def render_html(report: dict) -> str:
+    """Wrap the schema v2 Markdown rendering in a self-contained HTML shell."""
+    return _md_to_html(render_markdown(report))
+
+
+def render_bench_json(report: dict) -> str:
+    """Serialize the schema v2 report as JSON."""
+    return json.dumps(report, sort_keys=False, indent=2, default=str)
+
+
+def render_github_summary(report: dict) -> str:
+    """Render a compact GitHub Actions summary using measured/static data only."""
+    model = report.get("model") or {}
+    env = report.get("environment") or {}
+    sv = report.get("scratchv") or {}
+    sv_compile = sv.get("compile") or {}
+    sv_dyn = sv.get("dynamic") or {}
+    sv_ops = sv_dyn.get("ops") or {}
+    cmp_ = report.get("comparison") or {}
+    sha = str(model.get("sha256") or "")
+
+    lines = []
+    lines.append("# RV32 Benchmark Summary")
+    lines.append("")
+    lines.append(f"- Model: `{_fmt(model.get('path'))}` (sha256={sha[:12]})")
+    lines.append(f"- schema: {_fmt(report.get('schema_version'))}")
+    lines.append("")
+    lines.append("| Metric | Value | Source |")
+    lines.append("|--------|-------|--------|")
+    lines.append(
+        f"| completion | {_fmt(sv_dyn.get('completion'))} | "
+        f"[{_fmt(sv_dyn.get('source'))}] |"
+    )
+    lines.append(f"| executed | {_fmt(sv_dyn.get('executed'))} | [measured] |")
+    lines.append(f"| ops.total | {_fmt(sv_ops.get('total'))} | [measured] |")
+    lines.append(
+        f"| static insns | {_fmt(sv_compile.get('static_insns'))} | [static] |"
+    )
+    lines.append(
+        f"| model bytes | {_fmt(model.get('bytes'))} | [static] |"
+    )
+    lines.append("")
+    ratio = cmp_.get("dynamic_instruction_ratio")
+    if ratio is None:
+        lines.append(
+            f"> ratio: null — {_fmt(cmp_.get('incomparable_reason'))}"
+        )
+    else:
+        lines.append(f"> dynamic_instruction_ratio: {ratio:g}")
+    lines.append("")
+    lines.append(
+        f"> tinyfive={_fmt(env.get('tinyfive'))} "
+        f"| memory={_fmt(sv_dyn.get('memory_size_bytes'))} "
+        f"| seed={_fmt(sv_dyn.get('input_seed'))}"
+    )
+    warnings = report.get("warnings") or []
+    if warnings:
+        lines.append("")
+        lines.append("## Warnings [estimated]")
+        lines.extend(f"- {w}" for w in warnings)
+    return "\n".join(lines)
+
+
+def validate_report_schema(report: dict) -> list[str]:
+    """Structural validation of a schema v2 report; empty list means valid."""
+    errors: list[str] = []
+    if not isinstance(report, dict):
+        return ["report is not a dict"]
+
+    def require(path: str, predicate=None, description: str = ""):
+        value = _dig(report, path)
+        if value is _MISSING:
+            errors.append(f"missing required field: {path}")
+        elif predicate is not None and not predicate(value):
+            errors.append(
+                f"invalid {description or path}: {value!r}"
+            )
+        return value
+
+    def is_int(value) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    require("schema_version", lambda v: v == "rv32-bench/2")
+    require("generated_at", lambda v: isinstance(v, str) and bool(v))
+    require("generator.script", lambda v: isinstance(v, str) and bool(v))
+    require("model.path", lambda v: isinstance(v, str) and bool(v))
+    require(
+        "model.sha256",
+        lambda v: isinstance(v, str) and bool(re.fullmatch(r"[0-9a-f]{64}", v)),
+    )
+    require("model.bytes", is_int)
+    require("environment", lambda v: isinstance(v, dict))
+    require("targets.scratchv.isa", lambda v: isinstance(v, str) and bool(v))
+    require("targets.llvm.isa", lambda v: isinstance(v, str) and bool(v))
+
+    for side in ("scratchv", "llvm"):
+        require(f"{side}.compile.status", lambda v: isinstance(v, str) and bool(v))
+        require(f"{side}.compile.static_source", lambda v: v == "asm_scan")
+        dyn = _dig(report, f"{side}.dynamic")
+        if dyn is _MISSING or not isinstance(dyn, dict):
+            errors.append(f"missing required field: {side}.dynamic")
+            continue
+        source = dyn.get("source")
+        if source not in ("simulated", "unavailable"):
+            errors.append(f"invalid {side}.dynamic.source: {source!r}")
+            continue
+        if source == "simulated":
+            for key in ("simulator", "simulator_version", "completion",
+                        "executed", "memory_size_bytes", "input_seed"):
+                if dyn.get(key) is None:
+                    errors.append(
+                        f"missing required field: {side}.dynamic.{key}"
+                    )
+            if dyn.get("completion") not in (
+                "halted", "budget_exhausted", "timeout"
+            ):
+                errors.append(
+                    f"invalid {side}.dynamic.completion: "
+                    f"{dyn.get('completion')!r}"
+                )
+            if not is_int(dyn.get("executed")):
+                errors.append(
+                    f"invalid {side}.dynamic.executed: {dyn.get('executed')!r}"
+                )
+            ops = dyn.get("ops")
+            if not isinstance(ops, dict):
+                errors.append(f"missing required field: {side}.dynamic.ops")
+            else:
+                for key in ("total", "load", "store", "mul", "add",
+                            "madd", "branch"):
+                    if not is_int(ops.get(key)):
+                        errors.append(
+                            f"invalid {side}.dynamic.ops.{key}: "
+                            f"{ops.get(key)!r}"
+                        )
+        else:
+            require(f"{side}.dynamic.reason",
+                    lambda v: isinstance(v, str) and bool(v))
+            if dyn.get("ops") is not None:
+                errors.append(
+                    f"{side}.dynamic.ops must be null when unavailable"
+                )
+
+    out = _dig(report, "scratchv.output")
+    if out is _MISSING or not isinstance(out, dict):
+        errors.append("missing required field: scratchv.output")
+    else:
+        if not isinstance(out.get("partial"), bool):
+            errors.append(
+                f"invalid scratchv.output.partial: {out.get('partial')!r}"
+            )
+        if not isinstance(out.get("completion"), str) or \
+                not out.get("completion"):
+            errors.append(
+                "invalid scratchv.output.completion: "
+                f"{out.get('completion')!r}"
+            )
+        if not is_int(out.get("elements")):
+            errors.append(
+                f"invalid scratchv.output.elements: "
+                f"{out.get('elements')!r}"
+            )
+        q16 = out.get("q16_16")
+        if out.get("partial") is False:
+            if out.get("raw_hex") is None:
+                errors.append(
+                    "missing required field: scratchv.output.raw_hex"
+                )
+            if not isinstance(q16, list):
+                errors.append(
+                    f"invalid scratchv.output.q16_16: {q16!r}"
+                )
+        elif q16 is not None and not isinstance(q16, list):
+            errors.append(
+                f"invalid scratchv.output.q16_16: {q16!r}"
+            )
+        if isinstance(q16, list) and is_int(out.get("elements")) and \
+                len(q16) != out["elements"]:
+            errors.append(
+                f"invalid scratchv.output.q16_16 length: {len(q16)} "
+                f"!= elements {out['elements']}"
+            )
+
+    comparison = _dig(report, "comparison")
+    if comparison is _MISSING or not isinstance(comparison, dict):
+        errors.append("missing required field: comparison")
+    else:
+        if "dynamic_instruction_ratio" not in comparison:
+            errors.append(
+                "missing required field: comparison.dynamic_instruction_ratio"
+            )
+        require("comparison.incomparable_reason",
+                lambda v: v is None or (isinstance(v, str) and bool(v)))
+    require("warnings", lambda v: isinstance(v, list))
+    require("errors", lambda v: isinstance(v, list))
+    return errors
 
 
 # ═══════════════════════════════════════════════════════════════════════════
