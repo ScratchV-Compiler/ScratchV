@@ -104,6 +104,39 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--extended-isel", action="store_true",
         help="Use extended instruction selector with fp64/sqrt/min/max/abs support (Topic 28)",
     )
+    parser.add_argument(
+        "--loop-unroll", dest="loop_unroll", action="store_true",
+        default=False,
+        help="Enable IR loop unrolling at --optimize all (Topic 10). "
+             "Opt-in: disabled by default while the greedy register "
+             "allocator spills without reloading.",
+    )
+    parser.add_argument(
+        "--no-loop-unroll", dest="loop_unroll", action="store_false",
+        help="Disable IR loop unrolling at --optimize all (Topic 10)",
+    )
+    parser.add_argument(
+        "--unroll-factor", type=int, default=8,
+        help="Max unroll factor for partial unrolling (default: 8)",
+    )
+    parser.add_argument(
+        "--unroll-full-threshold", type=int, default=8,
+        help="Fully unroll loops with trip count <= N (default: 8)",
+    )
+    parser.add_argument(
+        "--unroll-body-limit", type=int, default=64,
+        help="Max loop-body IR instructions eligible for unrolling "
+             "(default: 64)",
+    )
+    parser.add_argument(
+        "--unroll-max-growth", type=int, default=512,
+        help="Max newly added IR instructions per loop (default: 512)",
+    )
+    parser.add_argument(
+        "--unroll-epilogue", action="store_true",
+        help="Allow remainder (epilogue) loop when factor does not "
+             "divide trip count",
+    )
 
     # ── Cycle estimation ──────────────────────────────────────────────
     parser.add_argument(
@@ -153,6 +186,12 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         cycle_stats=args.cycle_stats,
         enable_forwarding=not args.no_forwarding,
         branch_predictor=args.branch_predictor,
+        loop_unroll=args.loop_unroll,
+        unroll_max_factor=args.unroll_factor,
+        unroll_full_threshold=args.unroll_full_threshold,
+        unroll_body_limit=args.unroll_body_limit,
+        unroll_max_growth=args.unroll_max_growth,
+        unroll_epilogue=args.unroll_epilogue,
     )
 
 

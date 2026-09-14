@@ -1,0 +1,16 @@
+.text
+.align 2
+  .globl main
+  .type main, @function
+main:
+.entry:
+    add t2, t0, t1
+    li t3, 0  # loop init
+.Lloop_header_1:
+    bge t3, 4, .Lloop_exit_3
+.Lloop_body_2:
+    addi t3, t3, 1  # loop inc
+    j .Lloop_header_1
+.Lloop_exit_3:
+    mv a0, t2  # return value
+    jalr zero, ra  # ret

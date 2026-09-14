@@ -41,12 +41,14 @@ class PassResult:
         changes:  Number of transformations / fixes applied.
         message:  Human-readable summary (e.g. "3 constants folded").
         warnings: Non-fatal issues discovered during the pass.
+        stats:    Optional per-pass statistics keyed by metric name.
     """
 
     data: Any
     changes: int = 0
     message: str = ""
     warnings: list[str] = field(default_factory=list)
+    stats: dict[str, Any] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:

@@ -53,6 +53,14 @@ class CompilerConfig:
         cycle_stats:    Run 5-stage pipeline cycle estimation (detailed).
         enable_forwarding:  Enable forwarding in cycle estimator.
         branch_predictor:   Branch predictor mode for cycle estimator.
+        loop_unroll:        Run IR loop unrolling at optimize_level "all"
+                            (opt-in until the greedy allocator reload defect
+                            is fixed).
+        unroll_max_factor:      Max unroll factor for partial unrolling.
+        unroll_full_threshold:  Fully unroll loops with trip count <= N.
+        unroll_body_limit:      Max loop-body IR instructions eligible.
+        unroll_max_growth:      Max newly added IR instructions per loop.
+        unroll_epilogue:        Allow remainder (epilogue) loop.
     """
 
     backend: str = "riscv"
@@ -73,6 +81,12 @@ class CompilerConfig:
     cycle_stats: bool = False
     enable_forwarding: bool = True
     branch_predictor: str = "always_not_taken"
+    loop_unroll: bool = False
+    unroll_max_factor: int = 8
+    unroll_full_threshold: int = 8
+    unroll_body_limit: int = 64
+    unroll_max_growth: int = 512
+    unroll_epilogue: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -121,6 +135,7 @@ class PassManager:
         messages: list[str] = []
         all_warnings: list[str] = []
         timings: dict[str, float] = {}
+        all_stats: dict[str, Any] = {}
 
         for p in self._passes:
             t0 = time.perf_counter()
@@ -132,6 +147,7 @@ class PassManager:
                     changes=total_changes,
                     message=f"Pass '{p.name}' failed: {exc}",
                     warnings=all_warnings,
+                    stats=all_stats,
                 )
             elapsed = time.perf_counter() - t0
             timings[p.name] = elapsed
@@ -142,6 +158,7 @@ class PassManager:
                     changes=total_changes,
                     message=f"Pipeline stopped after '{p.name}': {result.message}",
                     warnings=all_warnings + result.warnings,
+                    stats=all_stats,
                 )
 
             data = result.data
@@ -149,12 +166,15 @@ class PassManager:
             if result.message:
                 messages.append(f"[{p.name}] {result.message}")
             all_warnings.extend(result.warnings)
+            if result.stats:
+                all_stats[p.name] = result.stats
 
         return PassResult(
             data=data,
             changes=total_changes,
             message="; ".join(messages) if messages else "pipeline complete",
             warnings=all_warnings,
+            stats=all_stats,
         )
 
     def report(self) -> str:
@@ -296,9 +316,11 @@ class CompilerDriver:
 
         # --- 3. Optimize ---
         opt_message = ""
+        opt_stats: dict[str, Any] = {}
         if self.config.optimize_level != "none":
             opt_result = self._run_optimizations(program)
             opt_message = opt_result.message
+            opt_stats = opt_result.stats
 
         ir_dump_after = ""
         if self.config.dump_ir:
@@ -353,7 +375,11 @@ class CompilerDriver:
             output_text=asm_text,
             output_path=output_path,
             ir_dump=ir_dump,
-            stats={"opt_message": opt_message, "cycle_report": cycle_report},
+            stats={
+                "opt_message": opt_message,
+                "cycle_report": cycle_report,
+                "passes": opt_stats,
+            },
             warnings=warnings,
         )
 
@@ -404,16 +430,34 @@ class CompilerDriver:
         pm.add(_PassAdapter("constant-folding", ConstantFolder(program)))
         pm.add(_PassAdapter("dead-code-elim", DeadCodeEliminator(program)))
 
+        unroll = None
         if self.config.optimize_level == "all":
             from scratchv.optimizer.peephole import IRPeepholeOptimizer
             from scratchv.optimizer.muladd_fusion import MulAddFusion
             from scratchv.optimizer.licm import LICM
+            from scratchv.optimizer.loop_unroll import LoopUnroll
 
             pm.add(_PassAdapter("ir-peephole", IRPeepholeOptimizer(program)))
             pm.add(_PassAdapter("muladd-fusion", MulAddFusion(program)))
             pm.add(_PassAdapter("licm", LICM(program)))
 
-        return pm.run(program)
+            if self.config.loop_unroll:
+                unroll = LoopUnroll(
+                    program,
+                    max_factor=self.config.unroll_max_factor,
+                    full_threshold=self.config.unroll_full_threshold,
+                    body_limit=self.config.unroll_body_limit,
+                    max_growth=self.config.unroll_max_growth,
+                    epilogue=self.config.unroll_epilogue,
+                )
+                pm.add(_PassAdapter("loop-unroll", unroll))
+                pm.add(_PassAdapter(
+                    "dead-code-elim-cleanup", DeadCodeEliminator(program)))
+
+        result = pm.run(program)
+        if unroll is not None:
+            result.stats["loop-unroll"] = unroll.stats
+        return result
 
     # ── Internal: code generation ───────────────────────────────────────────
 
@@ -566,8 +610,20 @@ class _PassAdapter(CompilerPass):
 
     def run(self, input_data: Any) -> PassResult:
         changes = self._legacy.run()
+        stats = getattr(self._legacy, "stats", {}) or {}
+        message = f"{changes} change(s)"
+        if "loops_unrolled" in stats:
+            message = (
+                f"{stats['loops_unrolled']} loop(s) "
+                f"({stats['full_unrolls']} full, "
+                f"{stats['partial_unrolls']} partial, "
+                f"{stats['partial_epilogues']} epilogue), "
+                f"IR {stats['instructions_before']} → "
+                f"{stats['instructions_after']}"
+            )
         return PassResult(
             data=input_data,
             changes=changes,
-            message=f"{changes} change(s)",
+            message=message,
+            stats=stats,
         )
