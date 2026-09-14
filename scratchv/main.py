@@ -104,6 +104,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--extended-isel", action="store_true",
         help="Use extended instruction selector with fp64/sqrt/min/max/abs support (Topic 28)",
     )
+    parser.add_argument(
+        "--vectorize", action="store_true",
+        help="Run FOR-loop strip-mining vectorization (Topic 29, phase 1)",
+    )
+    parser.add_argument(
+        "--vector-width", type=int, choices=[2, 4], default=4,
+        help="Vector strip width W (default: 4)",
+    )
+    parser.add_argument(
+        "--vector-isa", choices=["scalar", "p", "v"], default="scalar",
+        help="Vector ISA target; 'p'/'v' are rejected until phase 2",
+    )
 
     # ── Cycle estimation ──────────────────────────────────────────────
     parser.add_argument(
@@ -153,6 +165,9 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         cycle_stats=args.cycle_stats,
         enable_forwarding=not args.no_forwarding,
         branch_predictor=args.branch_predictor,
+        vectorize=args.vectorize,
+        vector_width=args.vector_width,
+        vector_isa=args.vector_isa,
     )
 
 

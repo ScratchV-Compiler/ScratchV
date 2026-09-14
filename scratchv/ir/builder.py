@@ -207,3 +207,61 @@ class IRBuilder:
         dest = self.make_value()
         self._emit(OpCode.RESHAPE, dest, [val], shape=shape)
         return dest
+
+    # --- SIMD vector ops (Topic 29, phase 1) ---
+
+    def vload(self, addr: Value, *, width: int = 4,
+              elem_bytes: int = 4, align: int = 4) -> Value:
+        dest = self.make_value(dtype=addr.dtype)
+        dest.shape = (width,)
+        self._emit(OpCode.VLOAD, dest, [addr], width=width,
+                   elem_bytes=elem_bytes, align=align)
+        return dest
+
+    def vstore(self, addr: Value, vec: Value, *, width: int | None = None,
+               elem_bytes: int = 4, align: int = 4) -> Instruction:
+        w = width if width is not None else _shape_width(vec)
+        return self._emit(OpCode.VSTORE, operands=[addr, vec], width=w,
+                          elem_bytes=elem_bytes, align=align)
+
+    def vbcast(self, scalar: Value, *, width: int = 4) -> Value:
+        dest = self.make_value(dtype=scalar.dtype)
+        dest.shape = (width,)
+        self._emit(OpCode.VBCAST, dest, [scalar], width=width)
+        return dest
+
+    def vadd(self, lhs: Value, rhs: Value, *,
+             width: int | None = None) -> Value:
+        return self._emit_vector_binary(OpCode.VADD, lhs, rhs, width)
+
+    def vsub(self, lhs: Value, rhs: Value, *,
+             width: int | None = None) -> Value:
+        return self._emit_vector_binary(OpCode.VSUB, lhs, rhs, width)
+
+    def vmul(self, lhs: Value, rhs: Value, *,
+             width: int | None = None) -> Value:
+        return self._emit_vector_binary(OpCode.VMUL, lhs, rhs, width)
+
+    def vdiv(self, lhs: Value, rhs: Value, *,
+             width: int | None = None) -> Value:
+        return self._emit_vector_binary(OpCode.VDIV, lhs, rhs, width)
+
+    def vrelu(self, val: Value, *, width: int | None = None) -> Value:
+        w = width if width is not None else _shape_width(val)
+        dest = self.make_value(dtype=val.dtype)
+        dest.shape = (w,)
+        self._emit(OpCode.VRELU, dest, [val], width=w)
+        return dest
+
+    def _emit_vector_binary(self, opcode: OpCode, lhs: Value, rhs: Value,
+                            width: int | None) -> Value:
+        w = width if width is not None else _shape_width(lhs)
+        dest = self.make_value(dtype=lhs.dtype)
+        dest.shape = (w,)
+        self._emit(opcode, dest, [lhs, rhs], width=w)
+        return dest
+
+
+def _shape_width(value: Value, default: int = 4) -> int:
+    """Return the lane count of a vector value, or *default*."""
+    return value.shape[0] if value.shape else default

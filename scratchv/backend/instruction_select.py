@@ -11,15 +11,22 @@ from scratchv.ir.types import Instruction, Function, Program
 from scratchv.backend.machine_types import (
     MachineInstr, MachineOp, MachineOperand,
 )
+from scratchv.backend.vector_scalar import VectorScalarExpander
 
 
 class InstructionSelector:
     """Select RISC-V instructions for each IR instruction."""
 
+    # Not in ``machine_types.ALL_REGS``: the register allocator can never
+    # assign a virtual register to it, so it is safe as a scratch register.
+    _ADDR_SCRATCH = "a1"
+
     def __init__(self, program: Program):
         self.program = program
         self._instructions: list[MachineInstr] = []
         self._label_counter = 0
+        self._vector_expander = VectorScalarExpander()
+        self._defined_consts: set[str] = set()
 
     def run(self) -> list[MachineInstr]:
         """Select instructions for all functions.
@@ -29,7 +36,26 @@ class InstructionSelector:
         self._instructions = []
         for func in self.program.functions:
             self._select_function(func)
+        self._assert_no_vector_leak()
         return self._instructions
+
+    def _assert_no_vector_leak(self) -> None:
+        """Post-condition: no raw vector value reaches machine code."""
+        vector_names: set[str] = set()
+        for func in self.program.functions:
+            for block in func.blocks:
+                for instr in block.instructions:
+                    if instr.opcode.is_vector() and instr.dest is not None:
+                        vector_names.add(instr.dest.name)
+        if not vector_names:
+            return
+        for mi in self._instructions:
+            for op in (mi.dst, mi.src1, mi.src2):
+                if op is None or op.kind != "vreg":
+                    continue
+                if op.value in vector_names:
+                    raise AssertionError(
+                        f"vector value leaked into machine code: {op.value}")
 
     def _fresh_label(self, prefix: str = "L") -> str:
         self._label_counter += 1
@@ -38,6 +64,8 @@ class InstructionSelector:
     def _select_function(self, func: Function) -> None:
         # Function prologue label
         self._emit_label(func.name)
+        self._vector_expander.begin_function(func.name)
+        self._defined_consts.clear()
 
         for block in func.blocks:
             self._emit_label(f".{block.name}")
@@ -45,6 +73,10 @@ class InstructionSelector:
                 self._select_instruction(instr)
 
     def _select_instruction(self, instr: Instruction) -> None:
+        if instr.opcode.is_vector():
+            self._instructions.extend(
+                self._vector_expander.expand(instr))
+            return
         handler = getattr(self, f"_select_{instr.opcode.value}", None)
         if handler is None:
             raise ValueError(
@@ -68,6 +100,43 @@ class InstructionSelector:
             return MachineOperand.immediate(int(op.const_value))
         return MachineOperand.vreg(op.name)
 
+    def _op_reg(self, instr: Instruction, idx: int):
+        """Like ``_op``, but materializes constants into a vreg.
+
+        R-type machine instructions (add/sub/mul/div) cannot encode an
+        immediate operand, and the RV32IM encoder silently maps a
+        non-register operand to ``x0``.  Constants are therefore turned
+        into ``LI tmp, imm`` first and passed as a register.
+        """
+        op = instr.operands[idx]
+        if op.is_constant and op.const_value is not None:
+            # Reuse the register already materialized by a LOAD_CONST
+            # instruction when there is one (avoids a duplicate LI and a
+            # needless virtual register).
+            if op.name in self._defined_consts:
+                return MachineOperand.vreg(op.name)
+            tmp = MachineOperand.vreg(f"const__{op.name}")
+            self._emit(MachineOp.LI, tmp,
+                       MachineOperand.immediate(int(op.const_value)),
+                       comment=f"const {op.const_value}")
+            return tmp
+        return MachineOperand.vreg(op.name)
+
+    def _mem_addr(self, instr: Instruction, idx: int) -> MachineOperand:
+        """Return an encoder-safe memory operand for an address value.
+
+        The RV32IM encoder only accepts ``lw rd, rs1(offset)`` and
+        ``sw rs1(offset), rs2``; a bare ``lw rd, rs1`` operand is silently
+        encoded with ``rs1 = x0``.  The address is copied into the fixed
+        scratch register ``a1`` and emitted with an explicit ``(0)``
+        offset.  ``a1`` is not part of ``ALL_REGS``, so the register
+        allocator never assigns it to a virtual register.
+        """
+        addr = self._op_reg(instr, idx)
+        self._emit(MachineOp.ADDI, MachineOperand.reg(self._ADDR_SCRATCH),
+                   addr, MachineOperand.immediate(0), comment="addr")
+        return MachineOperand.reg(f"{self._ADDR_SCRATCH}(0)")
+
     def _dst(self, instr: Instruction):
         if instr.dest is None:
             return None
@@ -84,22 +153,24 @@ class InstructionSelector:
         self._emit(MachineOp.LI, dst,
                    MachineOperand.immediate(int(val)),
                    comment=f"const {val}")
+        if instr.dest is not None:
+            self._defined_consts.add(instr.dest.name)
 
     def _select_add(self, instr: Instruction) -> None:
         self._emit(MachineOp.ADD, self._dst(instr),
-                   self._op(instr, 0), self._op(instr, 1))
+                   self._op_reg(instr, 0), self._op_reg(instr, 1))
 
     def _select_sub(self, instr: Instruction) -> None:
         self._emit(MachineOp.SUB, self._dst(instr),
-                   self._op(instr, 0), self._op(instr, 1))
+                   self._op_reg(instr, 0), self._op_reg(instr, 1))
 
     def _select_mul(self, instr: Instruction) -> None:
         self._emit(MachineOp.MUL, self._dst(instr),
-                   self._op(instr, 0), self._op(instr, 1))
+                   self._op_reg(instr, 0), self._op_reg(instr, 1))
 
     def _select_div(self, instr: Instruction) -> None:
         self._emit(MachineOp.DIV, self._dst(instr),
-                   self._op(instr, 0), self._op(instr, 1))
+                   self._op_reg(instr, 0), self._op_reg(instr, 1))
 
     def _select_neg(self, instr: Instruction) -> None:
         # RISC-V: sub rd, x0, rs
@@ -123,7 +194,9 @@ class InstructionSelector:
         """ReLU(x) = max(x, 0).  Use:  max rd, rs, x0"""
         src = self._op(instr, 0)
         dst = self._dst(instr)
-        self._emit(MachineOp.MAX, dst, src, MachineOperand.immediate(0))
+        # ``zero`` (not immediate 0): the encoder's ``max`` expansion must
+        # not borrow a temporary register that may be live here.
+        self._emit(MachineOp.MAX, dst, src, MachineOperand.reg("zero"))
 
     def _select_gelu(self, instr: Instruction) -> None:
         # GELU approx: x * relu(x) / 2 (simplified, pure RV32IM)
@@ -137,9 +210,10 @@ class InstructionSelector:
                    comment="relu(x)")
         self._emit(MachineOp.MUL, dst, src, tmp,
                    comment="x * relu(x)")
-        self._emit(MachineOp.DIV, dst, dst,
-                   MachineOperand.immediate(2),
-                   comment="/ 2")
+        div2 = MachineOperand.vreg("const__gelu_div2")
+        self._emit(MachineOp.LI, div2, MachineOperand.immediate(2),
+                   comment="const 2")
+        self._emit(MachineOp.DIV, dst, dst, div2, comment="/ 2")
 
     def _select_softmax(self, instr: Instruction) -> None:
         # softmax ≈ identity (pure RV32I passthrough)
@@ -157,10 +231,12 @@ class InstructionSelector:
             self._emit(MachineOp.MV, dst, src, comment="reshape")
 
     def _select_load(self, instr: Instruction) -> None:
-        self._emit(MachineOp.LW, self._dst(instr), self._op(instr, 0))
+        addr = self._mem_addr(instr, 0)
+        self._emit(MachineOp.LW, self._dst(instr), addr)
 
     def _select_store(self, instr: Instruction) -> None:
-        self._emit(MachineOp.SW, self._op(instr, 0), self._op(instr, 1))
+        addr = self._mem_addr(instr, 0)
+        self._emit(MachineOp.SW, addr, self._op_reg(instr, 1))
 
     def _select_alloca(self, instr: Instruction) -> None:
         raw_size = instr.attrs.get("size", 4)

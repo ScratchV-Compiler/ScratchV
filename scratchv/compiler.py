@@ -53,6 +53,9 @@ class CompilerConfig:
         cycle_stats:    Run 5-stage pipeline cycle estimation (detailed).
         enable_forwarding:  Enable forwarding in cycle estimator.
         branch_predictor:   Branch predictor mode for cycle estimator.
+        vectorize:      Run the FOR-loop strip-mining vectorizer (Topic 29).
+        vector_width:   Vector strip width W (2 or 4).
+        vector_isa:     Vector ISA target ("scalar"; "p"/"v" rejected).
     """
 
     backend: str = "riscv"
@@ -73,6 +76,9 @@ class CompilerConfig:
     cycle_stats: bool = False
     enable_forwarding: bool = True
     branch_predictor: str = "always_not_taken"
+    vectorize: bool = False
+    vector_width: int = 4
+    vector_isa: str = "scalar"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -243,6 +249,26 @@ class CompilerDriver:
         if output_path is None:
             output_path = "output.ll" if self.config.backend == "llvm" else "output.s"
 
+        # Vectorization preconditions (Topic 29 phase 1, review F5/F6):
+        # the LLVM backend silently drops vector ops into comments, and an
+        # out-of-range width used to crash with ZeroDivisionError deep in
+        # the pass.  Both are rejected with a clear error before parsing.
+        if self.config.vectorize:
+            from scratchv.optimizer.vectorize import validate_vector_width
+            try:
+                validate_vector_width(self.config.vector_width)
+            except ValueError as exc:
+                return CompileResult(success=False, errors=[str(exc)])
+            if self.config.backend == "llvm":
+                return CompileResult(
+                    success=False,
+                    errors=[
+                        "vectorize is not supported with --backend llvm "
+                        "(Topic 29 phase 1 targets the RISC-V backend); "
+                        "disable --vectorize or use --backend riscv"
+                    ],
+                )
+
         use_dsl = (
             dsl_source is not None
             or (input_path and input_path.endswith(".dsl"))
@@ -300,6 +326,26 @@ class CompilerDriver:
             opt_result = self._run_optimizations(program)
             opt_message = opt_result.message
 
+        # --- 3b. Vectorize (Topic 29, phase 1) ---
+        if self.config.vectorize:
+            if self.config.use_dag_isel:
+                warnings.append(
+                    "vectorize is incompatible with --dag-isel; "
+                    "falling back to linear isel")
+                self.config.use_dag_isel = False
+            if self.config.reg_alloc == "linear":
+                warnings.append(
+                    "vectorize requires the greedy register allocator; "
+                    "linear-scan label emission is broken, falling back "
+                    "to greedy")
+                self.config.reg_alloc = "greedy"
+            vec_result = self._run_vectorizer(program)
+            warnings.extend(vec_result.warnings)
+            if vec_result.message:
+                opt_message = (
+                    (opt_message + "; " if opt_message else "")
+                    + vec_result.message)
+
         ir_dump_after = ""
         if self.config.dump_ir:
             from scratchv.ir.printer import IRPrinter
@@ -315,6 +361,15 @@ class CompilerDriver:
             )
 
         # --- 4. Code generation ---
+        if self.config.vectorize and self.config.vector_isa != "scalar":
+            return CompileResult(
+                success=False,
+                errors=[
+                    f"vector-ISA '{self.config.vector_isa}' is not "
+                    "implemented (phase 2); use --vector-isa scalar"
+                ],
+                ir_dump=ir_dump,
+            )
         try:
             asm_text = self._generate_code(program)
         except Exception as e:
@@ -414,6 +469,14 @@ class CompilerDriver:
             pm.add(_PassAdapter("licm", LICM(program)))
 
         return pm.run(program)
+
+    # ── Internal: vectorization (Topic 29) ──────────────────────────────────
+
+    def _run_vectorizer(self, program) -> PassResult:
+        """Run the FOR-loop strip-mining vectorizer."""
+        from scratchv.optimizer.vectorize import Vectorizer
+        vec = Vectorizer(program, width=self.config.vector_width)
+        return vec.run(program)
 
     # ── Internal: code generation ───────────────────────────────────────────
 

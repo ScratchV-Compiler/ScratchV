@@ -120,6 +120,26 @@ def _sext(val: int, bits: int) -> int:
     return val
 
 
+# ── Vector mnemonic guard (Topic 29, phase 1) ─────────────────────────
+#
+# Phase 1 lowers vector IR to plain RV32IM before encoding, so no vector
+# instruction should ever reach this encoder.  This guard turns a silent
+# ``unknown instruction``/mis-encoding into an explicit failure.
+
+VECTOR_MNEMONIC_RE = re.compile(
+    r"^v(setvli|setivli|set|le|se|lw|sw|add|sub|mul|div|rem|max|min|"
+    r"mv|fmv|fadd|fsub|fmul|fdiv|redsum|rgather|slide|merge|macc|nclip|"
+    r"widen|narrow|and|or|xor)")
+
+VECTOR_ENCODING_MSG = (
+    "vector instruction '{op}' is not supported: "
+    "ScratchV phase 1 targets RV32IM only")
+
+
+class VectorEncodingError(ValueError):
+    """Raised when a vector mnemonic reaches the RV32IM encoder."""
+
+
 # ── Instruction encoders ──────────────────────────────────────────────
 
 def _r_type(rd: int, rs1: int, rs2: int,
@@ -333,6 +353,8 @@ class RISCVAEncoder:
             return None
 
         op = tokens[0].lower()
+        if VECTOR_MNEMONIC_RE.match(op):
+            raise VectorEncodingError(VECTOR_ENCODING_MSG.format(op=op))
         operands = tokens[1:]
 
         fixup = None

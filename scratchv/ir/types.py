@@ -49,6 +49,19 @@ class OpCode(enum.Enum):
     RESHAPE = "reshape"
     CONCAT = "concat"
 
+    # ── Extended instruction selection (Topic 28) ────────────────────
+    # Reserved for Topic 28; Topic 29 does not touch this partition.
+
+    # ── SIMD vector ops (Topic 29, phase 1) ──────────────────────────
+    VLOAD = "vload"
+    VSTORE = "vstore"
+    VBCAST = "vbcast"
+    VADD = "vadd"
+    VSUB = "vsub"
+    VMUL = "vmul"
+    VDIV = "vdiv"
+    VRELU = "vrelu"
+
     def is_arith(self) -> bool:
         return self in (OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV)
 
@@ -70,6 +83,16 @@ class OpCode(enum.Enum):
         return self in (
             OpCode.FOR, OpCode.ENDFOR, OpCode.BR,
             OpCode.BR_IF, OpCode.RETURN)
+
+    def is_vector(self) -> bool:
+        """Whether this opcode is a phase-1 SIMD vector op (Topic 29)."""
+        return self in _VECTOR_OPS
+
+
+_VECTOR_OPS = frozenset({
+    OpCode.VLOAD, OpCode.VSTORE, OpCode.VBCAST,
+    OpCode.VADD, OpCode.VSUB, OpCode.VMUL, OpCode.VDIV, OpCode.VRELU,
+})
 
 
 class DataType(enum.Enum):
