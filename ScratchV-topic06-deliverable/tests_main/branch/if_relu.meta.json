@@ -1,0 +1,10 @@
+{
+  "description": "if/else branch combined with add and relu.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "use_relu": 1,
+    "a": -8,
+    "b": 3
+  },
+  "expected_return": 0
+}

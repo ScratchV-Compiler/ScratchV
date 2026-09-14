@@ -1,0 +1,9 @@
+{
+  "description": "Compute a symbolic 2x2 by 2x2 matrix multiplication.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "A": [[1, 2], [3, 4]],
+    "B": [[5, 6], [7, 8]]
+  },
+  "expected_return": [[19, 22], [43, 50]]
+}
