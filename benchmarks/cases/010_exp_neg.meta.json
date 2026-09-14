@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "Chained exponentiation and negation",
+  "category": "arith",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    -2.71828183,
+    -7.3890561,
+    -20.08553692,
+    -54.59815003
+  ],
+  "max_instructions": 5
+}

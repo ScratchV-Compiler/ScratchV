@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "description": "Nested if-else branches (extended DSL parser required)",
+  "category": "control",
+  "flow": "control",
+  "oracle": "execution",
+  "inputs": {
+    "a": 4,
+    "b": 1
+  },
+  "input_registers": {
+    "a": "a0",
+    "b": "a1"
+  },
+  "expected_return": 5,
+  "max_instructions": 14,
+  "xfail": {
+    "stages": [
+      "assemble",
+      "budget",
+      "semantic"
+    ],
+    "reason": "C1 backend/regalloc: the linear-scan emitter keeps the branch target in the instruction comment and emits no operand, so assemble_to_binary fails; greedy path encodes the same branch. first bad line: bnez a1  # if_then1",
+    "owner": "backend/regalloc",
+    "strict": false
+  }
+}

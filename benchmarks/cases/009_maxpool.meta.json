@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "description": "1D MaxPool with kernel=2, stride=2",
+  "category": "nn",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    2.0,
+    4.0
+  ],
+  "max_instructions": 9,
+  "xfail": {
+    "stages": [
+      "assemble",
+      "budget"
+    ],
+    "reason": "C1 backend/regalloc: the linear-scan emitter keeps the branch target in the instruction comment and emits no operand, so assemble_to_binary fails; greedy path encodes the same branch. first bad line: bnez a1  # .Lmp_gt_1",
+    "owner": "backend/regalloc",
+    "strict": false
+  }
+}

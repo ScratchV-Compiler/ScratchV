@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "description": "Matrix multiplication (2x2 matrices)",
+  "category": "nn",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": 30.0,
+  "max_instructions": 3
+}

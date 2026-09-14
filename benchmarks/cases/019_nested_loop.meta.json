@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "description": "Double-nested for-loops",
+  "category": "control",
+  "flow": "control",
+  "oracle": "execution",
+  "inputs": {
+    "x": 1,
+    "y": 1,
+    "acc": 0
+  },
+  "input_registers": {
+    "x": "a0",
+    "y": "a1",
+    "acc": "a2"
+  },
+  "expected_return": 8,
+  "max_instructions": 14,
+  "xfail": {
+    "stages": [
+      "assemble",
+      "budget",
+      "semantic"
+    ],
+    "reason": "C1 backend/regalloc: the linear-scan emitter keeps the branch target in the instruction comment and emits no operand, so assemble_to_binary fails; greedy path encodes the same branch. first bad line: bge a3, 4  # .Lloop_exit_3",
+    "owner": "backend/regalloc",
+    "strict": false
+  }
+}

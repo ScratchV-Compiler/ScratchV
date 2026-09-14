@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "Typical NN layer: matmul + bias + relu",
+  "category": "nn",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    31.0,
+    32.0,
+    33.0,
+    34.0
+  ],
+  "max_instructions": 5
+}

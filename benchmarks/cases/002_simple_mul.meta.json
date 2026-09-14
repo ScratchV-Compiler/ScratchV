@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "Element-wise multiplication of two vectors",
+  "category": "arith",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    1.0,
+    4.0,
+    9.0,
+    16.0
+  ],
+  "max_instructions": 3
+}

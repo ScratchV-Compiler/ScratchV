@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "description": "Arithmetic with literal constants for constant folding test",
+  "category": "const",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": 20.0,
+  "max_instructions": 3
+}

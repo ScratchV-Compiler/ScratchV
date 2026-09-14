@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "GELU activation function",
+  "category": "nn",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    0.841192,
+    1.954598,
+    2.996363,
+    3.99993
+  ],
+  "max_instructions": 5
+}

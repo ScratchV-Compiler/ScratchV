@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "Softmax activation on a vector",
+  "category": "nn",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    0.0320586,
+    0.08714432,
+    0.23688282,
+    0.64391428
+  ],
+  "max_instructions": 3
+}

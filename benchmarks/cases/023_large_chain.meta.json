@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "Long 6-operation chain with mixed ops (add, sub, relu, mul, gelu, div)",
+  "category": "complex",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "max_instructions": 10
+}

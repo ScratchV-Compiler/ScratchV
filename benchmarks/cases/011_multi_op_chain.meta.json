@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "Multi-operation chain with three arithmetic ops",
+  "category": "complex",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "max_instructions": 5
+}

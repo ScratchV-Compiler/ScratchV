@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "Chained subtraction and division",
+  "category": "arith",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "max_instructions": 4
+}

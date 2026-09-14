@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "description": "While-loop accumulation (extended DSL parser required)",
+  "category": "control",
+  "flow": "control",
+  "oracle": "execution",
+  "inputs": {
+    "i": 0,
+    "x": 1,
+    "acc": 0
+  },
+  "input_registers": {
+    "i": "a0",
+    "x": "a1",
+    "acc": "a2"
+  },
+  "expected_return": 10,
+  "max_instructions": 9,
+  "xfail": {
+    "stages": [
+      "assemble",
+      "budget",
+      "semantic"
+    ],
+    "reason": "C1 backend/regalloc: the linear-scan emitter keeps the branch target in the instruction comment and emits no operand, so assemble_to_binary fails; greedy path encodes the same branch. first bad line: j  # while_hdr1",
+    "owner": "backend/regalloc",
+    "strict": false
+  }
+}

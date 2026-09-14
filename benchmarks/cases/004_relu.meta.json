@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "ReLU activation function",
+  "category": "nn",
+  "flow": "linear",
+  "oracle": "interpreter",
+  "inputs": {},
+  "expected_return": [
+    1.0,
+    2.0,
+    3.0,
+    4.0
+  ],
+  "max_instructions": 3
+}

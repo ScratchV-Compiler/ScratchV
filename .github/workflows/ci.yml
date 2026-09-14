@@ -96,6 +96,14 @@ jobs:
             --junit-xml=benchmark_reports/test_results.xml \
             --ignore=tests/test_simulator.py
 
+      # ── 课题06：DSL 基准套件（硬门禁，xfail 不红灯）+ 报告契约 ───────
+      - name: Run DSL benchmark suite
+        run: |
+          python3.12 -m pytest \
+            tests/test_dsl_suite.py \
+            tests/test_suite_report_contract.py \
+            -v --tb=short
+
       - name: Run assembly-beautifier regressions
         run: |
           $PY -m pytest \
@@ -275,6 +283,13 @@ jobs:
             --output-html benchmark_reports/dsl_bench.html \
             --output-md benchmark_reports/dsl_bench.md
 
+      # ── 课题06：DSL 基准套件 JSON/MD 报告（同时作为第二道门禁） ───────
+      - name: DSL benchmark suite report
+        run: |
+          python3.12 benchmarks/run_suite.py \
+            --json benchmark_reports/dsl_suite.json \
+            --markdown benchmark_reports/dsl_suite.md
+
       # ── 3.3 CNN RISC-V 编译 + 性能估算 ────────────────────────────────
       - name: CNN RISC-V compilation & estimation
         run: |
@@ -433,6 +448,11 @@ jobs:
           echo "### Register Allocation Benchmarks" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/regalloc_bench.md ]; then
             cat benchmark_reports/regalloc_bench.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### DSL Benchmark Suite" >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/dsl_suite.md ]; then
+            cat benchmark_reports/dsl_suite.md >> $GITHUB_STEP_SUMMARY
           fi
 
   # ═════════════════════════════════════════════════════════════════════════

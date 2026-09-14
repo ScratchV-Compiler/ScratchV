@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "description": "Dot product simulated with for-loop",
+  "category": "control",
+  "flow": "control",
+  "oracle": "execution",
+  "inputs": {
+    "a": 2,
+    "b": 3,
+    "acc": 0
+  },
+  "input_registers": {
+    "a": "a0",
+    "b": "a1",
+    "acc": "a2"
+  },
+  "expected_return": 24,
+  "max_instructions": 9,
+  "xfail": {
+    "stages": [
+      "assemble",
+      "budget",
+      "semantic"
+    ],
+    "reason": "C1 backend/regalloc: the linear-scan emitter keeps the branch target in the instruction comment and emits no operand, so assemble_to_binary fails; greedy path encodes the same branch. first bad line: bge a3, 4  # .Lloop_exit_3",
+    "owner": "backend/regalloc",
+    "strict": false
+  }
+}
