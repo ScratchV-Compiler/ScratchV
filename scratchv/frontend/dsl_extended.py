@@ -17,6 +17,11 @@ New syntax supported:
 The extended parser follows the same patterns as the base DSLParser:
 recursive-descent parsing, variable-to-Value tracking, and IR generation
 via IRBuilder.
+
+Diagnostics: strict mode (default) fails fast with the first structured
+error from the shared pre-validation pass, then raises ``DSLSyntaxError``
+on any remaining rich error; passing an ``ErrorCollector`` records errors
+and recovers/skips bad lines or blocks, returning a partial Program.
 """
 
 from __future__ import annotations
@@ -24,12 +29,23 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-# moved import above
-from scratchv.frontend.dsl_parser import DSLParser, DSLParseError
-from scratchv.frontend.dsl_errors import ErrorCollector
+from scratchv.frontend.dsl_errors import (
+    DSLParseError,
+    DSLSyntaxError,
+    ErrorCollector,
+    ErrorCode,
+)
+from scratchv.frontend.dsl_parser import DSLParser
 from scratchv.frontend.dsl_validator import DSLValidator
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import OpCode, Program, Value
+
+__all__ = [
+    "ExtendedDSLParser",
+    "CondExpr",
+    "DSLParseError",
+    "DSLSyntaxError",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +100,7 @@ class ExtendedDSLParser(DSLParser):
         # Label counters for generating unique block names
         self._label_counter: int = 0
         # Stack for tracking nested while-loop labels
-        self._while_stack: list[dict[str, str]] = []
+        self._while_stack: list[dict[str, str | int]] = []
 
     # -----------------------------------------------------------------------
     # Label generation
@@ -96,11 +112,14 @@ class ExtendedDSLParser(DSLParser):
         return f"{prefix}{self._label_counter}"
 
     # -----------------------------------------------------------------------
-    # Core parse method (overrides base)
+    # Validation
     # -----------------------------------------------------------------------
 
     def validate(
-        self, text: str, *, filename: str | None = None,
+        self,
+        text: str,
+        *,
+        filename: Optional[str] = None,
         max_errors: int = 20,
     ) -> ErrorCollector:
         """Validate base and extended DSL syntax without creating IR."""
@@ -108,24 +127,37 @@ class ExtendedDSLParser(DSLParser):
             text, filename=filename, max_errors=max_errors,
         )
 
-    def parse(self, text: str, *, filename: str | None = None) -> Program:
+    # -----------------------------------------------------------------------
+    # Core parse method (overrides base)
+    # -----------------------------------------------------------------------
+
+    def parse(
+        self,
+        text: str,
+        filename: Optional[str] = None,
+        collector: Optional[ErrorCollector] = None,
+    ) -> Program:
         """Parse DSL text into IR Program, supporting if/else and while.
 
         Args:
             text: The DSL source code as a string.
+            filename: Optional source filename for diagnostics.
+            collector: Optional ErrorCollector; when provided, errors are
+                collected and parsing recovers instead of raising.
 
         Returns:
-            A Program object containing the generated IR.
+            A Program object containing the generated IR (partial when the
+            collector recorded errors).
         """
-        collector = self.validate(text, filename=filename)
-        if collector.has_errors:
-            raise collector.errors[0]
+        if collector is None:
+            preflight = self.validate(text, filename=filename)
+            if preflight.has_errors:
+                raise preflight.errors[0]
 
-        # Strip comments before splitting to handle block-level constructs
-        lines_raw = text.split("\n")
+        raw_lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         lines: list[str] = []
-        for line in lines_raw:
-            line = line.strip()
+        for raw in raw_lines:
+            line = raw.strip()
             if not line or line.startswith("#"):
                 lines.append("")  # keep blank for indexing
             else:
@@ -141,8 +173,13 @@ class ExtendedDSLParser(DSLParser):
                     lines.append(line)
 
         self.builder = IRBuilder()
-        self._vars: dict[str] = {}
-        self._loop_stack: list[str] = []
+        self._vars = {}
+        self._loop_stack = []
+        self._for_positions = []
+        self._raw_lines = raw_lines
+        self._filename = filename
+        self._collector = collector
+        self._line_no = 0
         self._label_counter = 0
         self._while_stack = []
 
@@ -156,16 +193,24 @@ class ExtendedDSLParser(DSLParser):
                 idx += 1
                 continue
 
-            if line.startswith("if "):
+            if re.match(r"^if\b", line):
                 idx = self._parse_if_block(lines, idx)
-            elif line.startswith("while "):
+            elif re.match(r"^while\b", line):
                 idx = self._parse_while_block(lines, idx)
             else:
-                self._parse_line(line)
+                self._parse_line(line, idx + 1)
                 idx += 1
 
+        unclosed = bool(self._loop_stack or self._while_stack)
+        self._report_unclosed_for()
+        self._report_unclosed_while()
+
         # Ensure function ends with a return
-        if not self._loop_stack and not self._while_stack:
+        if (
+            not self._loop_stack
+            and not self._while_stack
+            and not unclosed
+        ):
             block = self.builder.current_block
             if block and block.instructions:
                 has_ret = (
@@ -179,18 +224,148 @@ class ExtendedDSLParser(DSLParser):
         return self.builder.program
 
     # -----------------------------------------------------------------------
+    # Block parsing helpers
+    # -----------------------------------------------------------------------
+
+    def _report_unclosed_while(self) -> None:
+        """Report every unclosed ``while`` at EOF (LIFO), clearing the stack."""
+        while self._while_stack:
+            ctx = self._while_stack.pop()
+            line_no = int(ctx.get("line", self._line_no))
+            col = int(ctx.get("col", 1))
+            self._report_error(
+                line_no, col,
+                "missing 'endwhile' for 'while' opened here",
+                ErrorCode.SYN_MISSING_TERMINATOR,
+                fix_hint="add 'endwhile' to close this block",
+            )
+
+    @staticmethod
+    def _condition_hint(line: str) -> str:
+        """Build a fix hint for E202 based on paren balance."""
+        if line.count("(") > line.count(")"):
+            return "missing closing ')'"
+        if line.count(")") > line.count("("):
+            return "missing opening '('"
+        return (
+            "expected one of ==, !=, <, >, <=, >= "
+            "and parentheses around each operand"
+        )
+
+    def _parse_block(
+        self,
+        lines: list[str],
+        start_idx: int,
+        terminators: tuple[str, ...],
+        opener_kind: str,
+        opener_line: int,
+        opener_col: int,
+    ) -> tuple[int, Optional[str]]:
+        """Parse block body until a terminator.
+
+        Returns ``(next_index, terminator)``. Terminators ``endif`` and
+        ``endwhile`` are never consumed here: they are returned to the caller
+        so an unmatched one can be handed to the enclosing block (or reported
+        as stray at the top level). ``endfor`` is delegated to the base
+        statement parser.
+
+        Args:
+            lines: Stripped/comment-free source lines (blank = skipped).
+            start_idx: First index of the body.
+            terminators: Tokens that end this block (e.g. ``else``, ``endif``).
+            opener_kind: ``"if"`` or ``"while"`` (diagnostics only).
+            opener_line: 1-based line of the opening keyword.
+            opener_col: 1-based column of the opening keyword.
+        """
+        idx = start_idx
+        while idx < len(lines):
+            line = lines[idx]
+            if not line:
+                idx += 1
+                continue
+            if line in ("endif", "endwhile"):
+                return idx, line  # never consume; caller decides
+            if line in ("else", "else:"):
+                if line in terminators:
+                    return idx, line
+                self._report_error(
+                    idx + 1,
+                    self._col_of(
+                        idx + 1, "else", self._line_indent(idx + 1) + 1,
+                    ),
+                    "'else' without matching 'if'",
+                    ErrorCode.SYN_STRAY_TERMINATOR,
+                    fix_hint="remove this line or add a matching 'if'",
+                )
+                idx += 1
+                continue
+            if line == "endfor":
+                self._parse_line(line, idx + 1)
+                idx += 1
+                continue
+            if re.match(r"^if\b", line):
+                idx = self._parse_if_block(lines, idx)
+            elif re.match(r"^while\b", line):
+                idx = self._parse_while_block(lines, idx)
+            else:
+                self._parse_line(line, idx + 1)
+                idx += 1
+        return idx, None
+
+    def _recover_after_bad_header(
+        self, lines: list[str], start_idx: int, opener_kind: str,
+    ) -> int:
+        """Skip a block whose header failed to parse (E202 already reported).
+
+        Scans forward respecting nested openers until the matching terminator
+        (consumed) or a foreign terminator at depth 0 (not consumed) or EOF.
+        Never reports errors itself, to avoid cascading diagnostics.
+        """
+        end_tok = "endif" if opener_kind == "if" else "endwhile"
+        idx = start_idx + 1
+        depth = 0
+        while idx < len(lines):
+            line = lines[idx]
+            if not line:
+                idx += 1
+                continue
+            if re.match(r"^if\b", line) or re.match(r"^while\b", line):
+                depth += 1
+            elif line in ("endif", "endwhile"):
+                if depth > 0:
+                    depth -= 1
+                elif line == end_tok:
+                    return idx + 1
+                else:
+                    return idx
+            idx += 1
+        return len(lines)
+
+    # -----------------------------------------------------------------------
     # if / else / endif parsing
     # -----------------------------------------------------------------------
 
     def _parse_if_block(self, lines: list[str], start_idx: int) -> int:
         """Parse an if/else/endif block starting at start_idx.
 
-        Returns the index of the next line after 'endif'.
+        Returns the index of the next line after 'endif' (or after the
+        last consumed line on error paths).
         """
         line = lines[start_idx]
+        opener_line = start_idx + 1
+        opener_col = self._col_of(
+            opener_line, "if", self._line_indent(opener_line) + 1,
+        )
         cond = self._parse_condition(line)
         if cond is None:
-            raise DSLParseError(f"Invalid if condition: {line}")
+            self._report_error(
+                opener_line, opener_col,
+                "invalid condition in 'if'; "
+                "expected 'if (<expr>) <op> (<expr>):'",
+                ErrorCode.SYN_INVALID_CONDITION,
+                fix_hint=self._condition_hint(line),
+            )
+            return self._recover_after_bad_header(lines, start_idx, "if")
 
         then_label = self._fresh_label("if_then")
         else_label = self._fresh_label("if_else")
@@ -207,56 +382,44 @@ class ExtendedDSLParser(DSLParser):
 
         # Parse then branch
         self.builder.new_block(then_label)
-        idx = start_idx + 1
-        while idx < len(lines):
-            inner_line = lines[idx]
-            if not inner_line:
-                idx += 1
-                continue
-            if inner_line == "else:" or inner_line == "else":
-                break
-            if inner_line == "endif":
-                break
-            if inner_line.startswith("if "):
-                idx = self._parse_if_block(lines, idx)
-            elif inner_line.startswith("while "):
-                idx = self._parse_while_block(lines, idx)
-            else:
-                self._parse_line(inner_line)
-                idx += 1
+        idx, term = self._parse_block(
+            lines, start_idx + 1, ("else", "else:", "endif"),
+            "if", opener_line, opener_col,
+        )
 
         # Terminate then branch with jump to endif
         self.builder.br(endif_label)
 
-        # Check for else branch
-        has_else = False
-        if idx < len(lines) and lines[idx] in ("else:", "else"):
-            has_else = True
+        if term in ("else", "else:"):
             idx += 1
             self.builder.new_block(else_label)
-            while idx < len(lines):
-                inner_line = lines[idx]
-                if not inner_line:
-                    idx += 1
-                    continue
-                if inner_line == "endif":
-                    break
-                if inner_line.startswith("if "):
-                    idx = self._parse_if_block(lines, idx)
-                elif inner_line.startswith("while "):
-                    idx = self._parse_while_block(lines, idx)
-                else:
-                    self._parse_line(inner_line)
-                    idx += 1
+            idx, term2 = self._parse_block(
+                lines, idx, ("endif",), "if", opener_line, opener_col,
+            )
             self.builder.br(endif_label)
-
-        if not has_else:
-            # Else block exists but is empty - just jumps to endif
+            if term2 != "endif":
+                self._report_error(
+                    opener_line, opener_col,
+                    "missing 'endif' for 'if' opened here",
+                    ErrorCode.SYN_MISSING_TERMINATOR,
+                    fix_hint="add 'endif' to close this block",
+                )
+            else:
+                idx += 1
+        else:
+            # No else branch: keep the (empty) else block for IR shape
             self.builder.new_block(else_label)
             self.builder.br(endif_label)
-
-        if idx < len(lines) and lines[idx] == "endif":
-            idx += 1
+            if term == "endif":
+                idx += 1
+            else:
+                # EOF or foreign terminator (e.g. 'endwhile'): not consumed
+                self._report_error(
+                    opener_line, opener_col,
+                    "missing 'endif' for 'if' opened here",
+                    ErrorCode.SYN_MISSING_TERMINATOR,
+                    fix_hint="add 'endif' to close this block",
+                )
 
         self.builder.new_block(endif_label)
         return idx
@@ -268,12 +431,24 @@ class ExtendedDSLParser(DSLParser):
     def _parse_while_block(self, lines: list[str], start_idx: int) -> int:
         """Parse a while/endwhile block starting at start_idx.
 
-        Returns the index of the next line after 'endwhile'.
+        Returns the index of the next line after 'endwhile' (or after the
+        last consumed line on error paths).
         """
         line = lines[start_idx]
+        opener_line = start_idx + 1
+        opener_col = self._col_of(
+            opener_line, "while", self._line_indent(opener_line) + 1,
+        )
         cond = self._parse_condition(line)
         if cond is None:
-            raise DSLParseError(f"Invalid while condition: {line}")
+            self._report_error(
+                opener_line, opener_col,
+                "invalid condition in 'while'; "
+                "expected 'while (<expr>) <op> (<expr>):'",
+                ErrorCode.SYN_INVALID_CONDITION,
+                fix_hint=self._condition_hint(line),
+            )
+            return self._recover_after_bad_header(lines, start_idx, "while")
 
         header_label = self._fresh_label("while_hdr")
         body_label = self._fresh_label("while_body")
@@ -284,46 +459,47 @@ class ExtendedDSLParser(DSLParser):
             "header": header_label,
             "body": body_label,
             "exit": exit_label,
+            "line": opener_line,
+            "col": opener_col,
         })
 
-        # Header: evaluate condition, branch to body or exit
-        self.builder.br(header_label)
-        self.builder.new_block(header_label)
-        lhs_val, op_str, rhs_val = cond.resolve(self)
-        self.builder._emit(
-            OpCode.BR_IF,
-            operands=[lhs_val, rhs_val],
-            target=f"{body_label},{exit_label}",
-            cmp_op=op_str,
-        )
+        try:
+            # Header: evaluate condition, branch to body or exit
+            self.builder.br(header_label)
+            self.builder.new_block(header_label)
+            lhs_val, op_str, rhs_val = cond.resolve(self)
+            self.builder._emit(
+                OpCode.BR_IF,
+                operands=[lhs_val, rhs_val],
+                target=f"{body_label},{exit_label}",
+                cmp_op=op_str,
+            )
 
-        # Body
-        self.builder.new_block(body_label)
-        idx = start_idx + 1
-        while idx < len(lines):
-            inner_line = lines[idx]
-            if not inner_line:
+            # Body
+            self.builder.new_block(body_label)
+            idx, term = self._parse_block(
+                lines, start_idx + 1, ("endwhile",),
+                "while", opener_line, opener_col,
+            )
+
+            # Jump back to header
+            self.builder.br(header_label)
+
+            if term == "endwhile":
                 idx += 1
-                continue
-            if inner_line == "endwhile":
-                break
-            if inner_line.startswith("if "):
-                idx = self._parse_if_block(lines, idx)
-            elif inner_line.startswith("while "):
-                idx = self._parse_while_block(lines, idx)
             else:
-                self._parse_line(inner_line)
-                idx += 1
+                # EOF or foreign terminator (e.g. 'endif'): not consumed
+                self._report_error(
+                    opener_line, opener_col,
+                    "missing 'endwhile' for 'while' opened here",
+                    ErrorCode.SYN_MISSING_TERMINATOR,
+                    fix_hint="add 'endwhile' to close this block",
+                )
 
-        # Jump back to header
-        self.builder.br(header_label)
-
-        if idx < len(lines) and lines[idx] == "endwhile":
-            idx += 1
-
-        self.builder.new_block(exit_label)
-        self._while_stack.pop()
-        return idx
+            self.builder.new_block(exit_label)
+            return idx
+        finally:
+            self._while_stack.pop()
 
     # -----------------------------------------------------------------------
     # Condition parsing
@@ -372,14 +548,35 @@ class ExtendedDSLParser(DSLParser):
     # Override _parse_line to handle extended keywords
     # -----------------------------------------------------------------------
 
-    def _parse_line(self, line: str) -> None:
+    def _parse_line(self, line: str, line_no: int = 0) -> None:
         """Parse a single DSL line, delegating to base for standard ops."""
-        # Keywords we handle at the block level
-        if line in ("endif", "endwhile", "else", "else:"):
+        # Stray terminators reaching statement level are errors
+        if line in ("endif", "endwhile"):
+            opener = "if" if line == "endif" else "while"
+            self._report_error(
+                line_no,
+                self._col_of(
+                    line_no, line, self._line_indent(line_no) + 1,
+                ),
+                f"'{line}' without matching '{opener}'",
+                ErrorCode.SYN_STRAY_TERMINATOR,
+                fix_hint=f"remove this line or add a matching '{opener}'",
+            )
             return
-        if line.startswith("if ") or line.startswith("while "):
+        if line in ("else", "else:"):
+            self._report_error(
+                line_no,
+                self._col_of(
+                    line_no, "else", self._line_indent(line_no) + 1,
+                ),
+                "'else' without matching 'if'",
+                ErrorCode.SYN_STRAY_TERMINATOR,
+                fix_hint="remove this line or add a matching 'if'",
+            )
             return
-        super()._parse_line(line)
+        if re.match(r"^if\b", line) or re.match(r"^while\b", line):
+            return
+        super()._parse_line(line, line_no)
 
     # -----------------------------------------------------------------------
     # Convenience: create a stand-alone label block

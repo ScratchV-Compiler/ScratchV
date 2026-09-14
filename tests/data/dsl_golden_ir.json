@@ -1,0 +1,130 @@
+{
+  "benchmarks/cases/001_simple_add.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = add $a $b\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/002_simple_mul.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = mul $a $b\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/003_sub_div.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = sub $a $b\n    $v_2 = div $v_1 $a\n    return $v_2\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/004_relu.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = relu $x\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/005_gelu.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = gelu $x\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/006_softmax.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = softmax $x [axis=-1]\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/007_matmul.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = matmul $A $B [m=2] [n=2] [k=2]\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/008_dot.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = dot $a $b [length=4]\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/009_maxpool.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = maxpool $x [kernel=2] [stride=2]\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/010_exp_neg.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = exp $x\n    $v_2 = neg $v_1\n    return $v_2\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/011_multi_op_chain.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = add $a $b\n    $v_2 = sub $a $b\n    $v_3 = mul $v_1 $v_2\n    return $v_3\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/012_nn_pipeline.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = matmul $x $W [m=1] [n=4] [k=4]\n    $v_2 = add $v_1 $b\n    $v_3 = relu $v_2\n    return $v_3\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/013_for_sum.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = for [start=0] [end=4] [step=1]\n    $v_2 = add $acc $x\n    endfor\n    return $v_2\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/014_for_dot.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = for [start=0] [end=4] [step=1]\n    $v_2 = mul $a $b\n    $v_3 = add $acc $v_2\n    endfor\n    return $v_3\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/015_for_relu.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = for [start=0] [end=4] [step=1]\n    $v_2 = relu $x\n    $v_3 = add $y $v_2\n    endfor\n    return $v_3\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/016_if_simple.dsl": {
+    "ir": "fun $main(\n  .entry:\n    br_if $a $b -> if_then1,if_else2 [cmp_op=>]\n  .if_then1:\n    $v_1 = add $a $b\n    br -> if_end3\n  .if_else2:\n    $v_2 = mul $a $b\n    br -> if_end3\n  .if_end3:\n    return $v_2\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/017_while_sum.dsl": {
+    "ir": "fun $main(\n  .entry:\n    br -> while_hdr1\n  .while_hdr1:\n    $v_1 = load_const [value=10.0]\n    br_if $i $v_1 -> while_body2,while_exit3 [cmp_op=<]\n  .while_body2:\n    $v_2 = add $acc $x\n    br -> while_hdr1\n  .while_exit3:\n    return $v_2\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/018_nested_if.dsl": {
+    "ir": "fun $main(\n  .entry:\n    br_if $a $b -> if_then1,if_else2 [cmp_op=>]\n  .if_then1:\n    $v_1 = load_const [value=0.0]\n    br_if $a $v_1 -> if_then4,if_else5 [cmp_op=>]\n  .if_then4:\n    $v_2 = add $a $b\n    br -> if_end6\n  .if_else5:\n    $v_3 = mul $a $b\n    br -> if_end6\n  .if_end6:\n    br -> if_end3\n  .if_else2:\n    $v_4 = sub $a $b\n    br -> if_end3\n  .if_end3:\n    return $v_4\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/019_nested_loop.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = for [start=0] [end=4] [step=1]\n    $v_2 = for [start=0] [end=2] [step=1]\n    $v_3 = mul $x $y\n    $v_4 = add $acc $v_3\n    endfor\n    endfor\n    return $v_4\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/020_constant_propagation.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = load_const [value=2.0]\n    $v_2 = load_const [value=3.0]\n    $v_3 = add $v_1 $v_2\n    $v_4 = load_const [value=4.0]\n    $v_5 = mul $v_3 $v_4\n    return $v_5\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/021_dsl_if_else.dsl": {
+    "ir": "fun $main(\n  .entry:\n    br_if $a $b -> if_then1,if_else2 [cmp_op=>]\n  .if_then1:\n    $v_1 = add $a $b\n    $v_2 = load_const [value=2.0]\n    $v_3 = mul $v_1 $v_2\n    $v_4 = relu $v_3\n    br -> if_end3\n  .if_else2:\n    $v_5 = sub $a $b\n    $v_6 = relu $v_5\n    br -> if_end3\n  .if_end3:\n    return $v_6\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/022_dsl_while_sum.dsl": {
+    "ir": "fun $main(\n  .entry:\n    br -> while_hdr1\n  .while_hdr1:\n    $v_1 = load_const [value=5.0]\n    br_if $i $v_1 -> while_body2,while_exit3 [cmp_op=<]\n  .while_body2:\n    $v_2 = mul $x $y\n    $v_3 = add $acc $v_2\n    br -> while_hdr1\n  .while_exit3:\n    return $v_3\n",
+    "parser": "extended"
+  },
+  "benchmarks/cases/023_large_chain.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = add $a $b\n    $v_2 = sub $a $b\n    $v_3 = relu $v_2\n    $v_4 = mul $v_1 $v_3\n    $v_5 = gelu $x\n    $v_6 = div $v_4 $v_5\n    return $v_6\n",
+    "parser": "extended"
+  },
+  "examples/cfg/if_else.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = load_const [value=0.0]\n    br_if $x $v_1 -> if_then1,if_else2 [cmp_op=>]\n  .if_then1:\n    $v_2 = load_const [value=1.0]\n    $v_3 = add $x $v_2\n    br -> if_end3\n  .if_else2:\n    $v_4 = load_const [value=1.0]\n    $v_5 = sub $x $v_4\n    br -> if_end3\n  .if_end3:\n    return $v_5\n",
+    "parser": "extended"
+  },
+  "examples/cfg/nested_loop.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = for [start=0] [end=3] [step=1]\n    $v_2 = for [start=0] [end=2] [step=1]\n    $v_3 = add $sum $a\n    endfor\n    endfor\n    return $v_3\n",
+    "parser": "extended"
+  },
+  "examples/cfg/unreachable.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = add $a $b\n    return $v_1\n    $v_2 = mul $a $b\n    return $v_2\n",
+    "parser": "extended"
+  },
+  "examples/cfg/while_loop.dsl": {
+    "ir": "fun $main(\n  .entry:\n    br -> while_hdr1\n  .while_hdr1:\n    $v_1 = load_const [value=10.0]\n    br_if $i $v_1 -> while_body2,while_exit3 [cmp_op=<]\n  .while_body2:\n    $v_2 = add $acc $x\n    $v_3 = load_const [value=1.0]\n    $v_4 = add $i $v_3\n    br -> while_hdr1\n  .while_exit3:\n    return $v_2\n",
+    "parser": "extended"
+  },
+  "examples/dot_product.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = dot $a $b [length=4]\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "examples/loop_add.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = add $a $b\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "examples/matmul_test.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = matmul $A $B [m=2] [n=2] [k=2]\n    return $v_1\n",
+    "parser": "extended"
+  },
+  "examples/relu_test.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = add $input $bias\n    $v_2 = relu $v_1\n    return $v_2\n",
+    "parser": "extended"
+  },
+  "examples/simple_add.dsl": {
+    "ir": "fun $main(\n  .entry:\n    $v_1 = add $a $b\n    return $v_1\n",
+    "parser": "extended"
+  }
+}

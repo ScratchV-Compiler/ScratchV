@@ -101,8 +101,6 @@ class DSLValidator:
         stack: list[BlockFrame] = []
 
         for line_no, raw_line in enumerate(source.lines, start=1):
-            if collector.limit_reached:
-                break
             statement = self._statement(raw_line)
             if not statement:
                 continue
@@ -147,8 +145,6 @@ class DSLValidator:
             self._validate_assignment(statement, line_no, col, raw_line, collector)
 
         for frame in stack:
-            if collector.limit_reached:
-                break
             expected = {"if": "endif", "while": "endwhile", "for": "endfor"}[frame.kind]
             self._add(
                 collector, frame.line, frame.col, frame.source_line, "E111",

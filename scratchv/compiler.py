@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from scratchv.frontend.dsl_errors import DSLParseError, DSLSyntaxError
 from scratchv.pass_interface import CompilerPass, PassResult
 
 
@@ -271,15 +272,12 @@ class CompilerDriver:
         # --- 1. Parse ---
         try:
             program = self._parse(input_path, dsl_source)
+        except DSLSyntaxError as e:
+            return CompileResult(
+                success=False, errors=[str(e)], diagnostics=[e],
+            )
         except Exception as e:
             if use_dsl:
-                from scratchv.frontend.dsl_errors import DSLSyntaxError
-                if isinstance(e, DSLSyntaxError):
-                    return CompileResult(
-                        success=False,
-                        errors=[str(e)],
-                        diagnostics=[e],
-                    )
                 raise
             return CompileResult(
                 success=False, errors=[f"Parse error: {e}"],
@@ -368,13 +366,21 @@ class CompilerDriver:
 
         if use_dsl:
             source = dsl_source
+            filename: str | None = None
             if source is None and input_path:
                 with open(input_path) as f:
                     source = f.read()
-            from scratchv.frontend.dsl_extended import ExtendedDSLParser
-            return ExtendedDSLParser().parse(
-                source or "", filename=input_path or "<dsl>",
-            )
+                filename = input_path
+            # Try extended DSL first
+            try:
+                from scratchv.frontend.dsl_extended import ExtendedDSLParser
+                return ExtendedDSLParser().parse(source, filename=filename)
+            except DSLSyntaxError:
+                # Precise, positioned error: never swallow it with fallback
+                raise
+            except DSLParseError:
+                from scratchv.frontend.dsl_parser import DSLParser
+                return DSLParser().parse(source, filename=filename)
         else:
             from scratchv.frontend.onnx_parser import ONNXParser
             return ONNXParser().parse(input_path)
