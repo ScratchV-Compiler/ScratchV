@@ -64,7 +64,9 @@ class _ColorFormatter(logging.Formatter):
             "%H:%M:%S", time.localtime(record.created),
         )
         name = record.name
-        message = record.getMessage()
+        # Delegate to the base formatter so exc_info / stack_info are
+        # rendered into the message body (D1).
+        message = super().format(record)
 
         if self.use_color and levelname in _COLORS:
             color = _COLORS[levelname]
@@ -86,8 +88,11 @@ class _PlainFormatter(logging.Formatter):
         asctime = time.strftime(
             "%Y-%m-%d %H:%M:%S", time.localtime(record.created),
         )
+        # Delegate to the base formatter so exc_info / stack_info are
+        # rendered into the message body (D2).
+        message = super().format(record)
         return (f"{asctime} {record.levelname:<8} "
-                f"[{record.name}] {record.getMessage()}")
+                f"[{record.name}] {message}")
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +102,8 @@ class _PlainFormatter(logging.Formatter):
 _root_logger: Optional[logging.Logger] = None
 _initialized: bool = False
 _config: dict = {}
+_console_handler: Optional[logging.Handler] = None
+_file_handler: Optional[logging.Handler] = None
 
 
 def init_logger(
@@ -117,12 +124,16 @@ def init_logger(
     Raises:
         ValueError: If level is not a valid log level string.
     """
-    global _root_logger, _initialized, _config
+    global _root_logger, _initialized, _config, _console_handler, _file_handler
 
     # Validate level
     numeric_level = getattr(logging, level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {level}")
+
+    # Release previous handlers before rebuilding (D3).  Validating the
+    # level first ensures a failed re-init does not destroy prior config.
+    shutdown()
 
     _config = {
         "level": level,
@@ -134,16 +145,15 @@ def init_logger(
     _root_logger = logging.getLogger("scratchv")
     _root_logger.setLevel(numeric_level)
 
-    # Remove any existing handlers
-    _root_logger.handlers.clear()
-
     # Console handler
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(numeric_level)
     console_handler.setFormatter(_ColorFormatter(use_color=use_color))
     _root_logger.addHandler(console_handler)
+    _console_handler = console_handler
 
     # File handler
+    _file_handler = None
     if log_file:
         file_handler = logging.FileHandler(
             log_file, mode="w", encoding="utf-8",
@@ -151,6 +161,7 @@ def init_logger(
         file_handler.setLevel(logging.DEBUG)  # Always write DEBUG to file
         file_handler.setFormatter(_PlainFormatter())
         _root_logger.addHandler(file_handler)
+        _file_handler = file_handler
 
     _initialized = True
 
@@ -159,15 +170,14 @@ def get_logger(name: str) -> logging.Logger:
     """Get or create a named logger under the scratchv namespace.
 
     If no name prefix is given, 'scratchv.' is prepended automatically.
+    When the logging system has not been initialised, it is initialised
+    automatically with default parameters.
 
     Args:
         name: Logger name (e.g., 'parser', 'optimizer.constant_folding').
 
     Returns:
         A logging.Logger instance.
-
-    Raises:
-        RuntimeError: If init_logger() has not been called.
     """
     if not _initialized:
         # Auto-initialize with defaults
@@ -195,18 +205,30 @@ def set_level(level: str) -> None:
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {level}")
     _root_logger.setLevel(numeric_level)
-    for handler in _root_logger.handlers:
-        if hasattr(handler, "stream") and handler.stream == sys.stderr:
-            handler.setLevel(numeric_level)
+    # Update the console handler only; the file handler always stays at
+    # DEBUG so the log file remains a complete record (D5).
+    if _console_handler is not None:
+        _console_handler.setLevel(numeric_level)
+    _config["level"] = level.upper()
 
 
 def shutdown() -> None:
-    """Flush and close all logging handlers."""
+    """Flush and close all logging handlers and reset global state.
+
+    Safe to call repeatedly; after shutdown the logging system can be
+    re-initialised with ``init_logger()``.
+    """
+    global _root_logger, _initialized, _config, _console_handler, _file_handler
     if _root_logger is not None:
-        for handler in _root_logger.handlers:
+        for handler in list(_root_logger.handlers):
             handler.flush()
             handler.close()
-        _root_logger.handlers.clear()
+            _root_logger.removeHandler(handler)
+    _root_logger = None
+    _initialized = False
+    _config = {}
+    _console_handler = None
+    _file_handler = None
 
 
 # ---------------------------------------------------------------------------

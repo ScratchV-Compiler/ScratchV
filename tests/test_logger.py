@@ -3,8 +3,10 @@
 import logging
 import os
 import tempfile
+from unittest import mock
 
 import pytest
+import scratchv.utils.logger as logger_mod
 from scratchv.utils.logger import (
     init_logger,
     get_logger,
@@ -181,4 +183,75 @@ class TestLogPhase:
                 raise RuntimeError("phase failed")
         except RuntimeError:
             pass  # expected
+        shutdown()
+
+
+class TestLoggerDefectRegressions:
+    """Regression tests for the known logger defects D1-D5."""
+
+    def teardown_method(self):
+        shutdown()
+
+    def test_exc_info_preserved_console_and_file(self, tmp_path, capsys):
+        log_path = tmp_path / "exc.log"
+        init_logger(level="DEBUG", log_file=str(log_path), use_color=False)
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            get_logger("test.exc").error("caught", exc_info=True)
+        shutdown()
+
+        err = capsys.readouterr().err
+        file_text = log_path.read_text()
+
+        assert "Traceback (most recent call last)" in err
+        assert "ValueError: boom" in err
+        assert "Traceback (most recent call last)" in file_text
+        assert "ValueError: boom" in file_text
+        assert "\033[" not in err
+
+    def test_reinit_closes_old_handlers(self, tmp_path):
+        init_logger(level="DEBUG", log_file=str(tmp_path / "a.log"))
+        old_handlers = list(logging.getLogger("scratchv").handlers)
+        spies = [
+            mock.patch.object(h, "close", wraps=h.close)
+            for h in old_handlers
+        ]
+        started = [s.start() for s in spies]
+        try:
+            init_logger(level="INFO", log_file=str(tmp_path / "b.log"))
+        finally:
+            for s in spies:
+                s.stop()
+
+        assert all(m.called for m in started)
+        old_file = next(
+            h for h in old_handlers
+            if isinstance(h, logging.FileHandler)
+        )
+        assert old_file.stream is None
+        new_handlers = list(logging.getLogger("scratchv").handlers)
+        assert len(new_handlers) == 2
+        assert logging.getLogger("scratchv").level == logging.INFO
+
+    def test_shutdown_resets_state(self):
+        init_logger(level="DEBUG")
+        shutdown()
+        assert logger_mod._initialized is False
+        assert logger_mod._root_logger is None
+        assert logger_mod._console_handler is None
+        assert logger_mod._file_handler is None
+        assert logger_mod._config == {}
+
+        log = get_logger("after_shutdown")
+        assert isinstance(log, logging.Logger)
+        log.info("revived logger")
+        shutdown()
+
+    def test_set_level_updates_console_only(self, tmp_path):
+        init_logger(level="INFO", log_file=str(tmp_path / "a.log"))
+        set_level("WARNING")
+        assert logger_mod._console_handler.level == logging.WARNING
+        assert logger_mod._file_handler.level == logging.DEBUG
+        assert logger_mod._config["level"] == "WARNING"
         shutdown()

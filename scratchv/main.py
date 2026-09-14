@@ -15,6 +15,7 @@ import argparse
 import sys
 
 from scratchv.compiler import CompilerConfig, CompilerDriver, CompileResult
+from scratchv.utils.logger import shutdown
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -68,9 +69,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # ── Topic module flags ──────────────────────────────────────────────
     parser.add_argument(
-        "--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         default=None,
-        help="Enable structured logging at given level",
+        help="Enable structured logging at given level (stderr only)",
+    )
+    parser.add_argument(
+        "--log-file", default=None, metavar="FILE",
+        help="Write plain-text DEBUG log to FILE (implies logging at INFO+)",
     )
     parser.add_argument(
         "--verify-ir", action="store_true",
@@ -142,8 +148,10 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         verify=args.verify,
         rtol=args.rtol,
         atol=args.atol,
-        use_logger=args.log_level is not None,
+        use_logger=args.log_level is not None or args.log_file is not None,
         log_level=args.log_level or "INFO",
+        log_file=args.log_file,
+        log_color=sys.stderr.isatty(),
         use_dag_isel=args.dag_isel,
         beautify_asm=args.beautify,
         peephole_asm=args.peephole_asm,
@@ -250,6 +258,9 @@ def main(argv: list[str] | None = None) -> int:
             raise
         print(f"internal compiler error: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if config.use_logger:
+            shutdown()
 
     # Report
     if result.ir_dump:
