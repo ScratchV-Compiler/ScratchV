@@ -53,6 +53,10 @@ class CompilerConfig:
         cycle_stats:    Run 5-stage pipeline cycle estimation (detailed).
         enable_forwarding:  Enable forwarding in cycle estimator.
         branch_predictor:   Branch predictor mode for cycle estimator.
+        extended_isel:  Use the extended instruction selector (Topic 28).
+        enable_fp64:    Enable float64 (D extension) support (Topic 28).
+        use_hardware_sqrt:  Use ``fsqrt.s``/``fsqrt.d`` instead of libm
+                            calls (Topic 28).
     """
 
     backend: str = "riscv"
@@ -73,6 +77,9 @@ class CompilerConfig:
     cycle_stats: bool = False
     enable_forwarding: bool = True
     branch_predictor: str = "always_not_taken"
+    extended_isel: bool = False
+    enable_fp64: bool = True
+    use_hardware_sqrt: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -315,6 +322,7 @@ class CompilerDriver:
             )
 
         # --- 4. Code generation ---
+        self._collect_selector_warnings(warnings)
         try:
             asm_text = self._generate_code(program)
         except Exception as e:
@@ -428,13 +436,41 @@ class CompilerDriver:
             return self._generate_riscv_dag(program)
         return self._generate_riscv_linear(program)
 
+    def _collect_selector_warnings(self, warnings: list[str]) -> None:
+        """Append mode-conflict warnings for selector-related options."""
+        if self.config.extended_isel:
+            if self.config.use_dag_isel:
+                warnings.append(
+                    "--dag-isel takes precedence; --extended-isel ignored")
+            if self.config.backend == "llvm":
+                warnings.append(
+                    "--extended-isel is RISC-V only; ignored for LLVM "
+                    "backend")
+        elif (not self.config.enable_fp64
+                or self.config.use_hardware_sqrt):
+            warnings.append(
+                "--no-fp64/--hardware-sqrt have no effect without "
+                "--extended-isel")
+
     def _generate_riscv_linear(self, program) -> str:
         """Standard RISC-V pipeline."""
-        from scratchv.backend.instruction_select import InstructionSelector
         from scratchv.backend.register_alloc import RegisterAllocator
         from scratchv.backend.asm_emit import AsmEmitter
 
-        selector = InstructionSelector(program)
+        if self.config.extended_isel:
+            from scratchv.backend.inst_select_ext import (
+                ExtendedInstructionSelector,
+            )
+            selector = ExtendedInstructionSelector(
+                program,
+                enable_fp64=self.config.enable_fp64,
+                use_hardware_sqrt=self.config.use_hardware_sqrt,
+            )
+        else:
+            from scratchv.backend.instruction_select import (
+                InstructionSelector,
+            )
+            selector = InstructionSelector(program)
         machine_instrs = selector.run()
 
         # Linear-scan path: allocate on *unallocated* MachineInstrs.

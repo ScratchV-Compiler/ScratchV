@@ -2,6 +2,10 @@
 
 Converts assembly text to 32-bit machine code words. Supports the
 subset of instructions emitted by the ScratchV compiler backend.
+
+F/D (single/double-precision floating point) instructions are not
+supported by this encoder; encoding F/D assembly raises
+``UnsupportedInstructionError`` (see Topic 28).
 """
 
 from __future__ import annotations
@@ -9,6 +13,32 @@ from __future__ import annotations
 import re
 import struct
 from enum import IntEnum
+
+
+class UnsupportedInstructionError(ValueError):
+    """Raised when assembly cannot be encoded by the RV32IM encoder."""
+
+
+# Exact F/D mnemonics plus prefixes/patterns covering the F/D families.
+_FD_EXACT: frozenset[str] = frozenset({"fld", "fsd", "flw", "fsw", "li.d"})
+_FD_PREFIXES: tuple[str, ...] = (
+    "fcvt.",  # e.g. fcvt.s.d / fcvt.d.s (multi-suffix)
+    "fmv.",   # e.g. fmv.x.w / fmv.w.x
+    "fmadd.", "fnmadd.", "fmsub.", "fnmsub.",
+    "fclass.", "fli.", "fround.",
+)
+# Single-suffix families: fadd.d, fsqrt.s, fsgnjx.d, fmin.s, ...
+_FD_PATTERN = re.compile(r"^f[a-z0-9]+\.[sd]$")
+
+
+def _is_fd_mnemonic(op: str) -> bool:
+    """Return True if *op* is an F/D-extension instruction mnemonic."""
+    op = op.lower()
+    if op in _FD_EXACT:
+        return True
+    if _FD_PATTERN.match(op):
+        return True
+    return any(op.startswith(prefix) for prefix in _FD_PREFIXES)
 
 
 # ── RISC-V opcodes ────────────────────────────────────────────────────
@@ -489,6 +519,11 @@ class RISCVAEncoder:
         elif op == "nop":
             word = _i_type(0, 0, 0, F3_ADD_SUB)
         else:
+            if _is_fd_mnemonic(op):
+                raise UnsupportedInstructionError(
+                    f"F/D instruction '{op}' is not supported by the "
+                    f"RV32IM encoder (Topic 28: final encoding out of "
+                    f"scope; output is assembly text)")
             raise ValueError(f"Unknown instruction: {op}")
 
         return (word, fixup)

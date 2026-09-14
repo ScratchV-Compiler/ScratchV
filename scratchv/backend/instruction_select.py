@@ -45,6 +45,9 @@ class InstructionSelector:
                 self._select_instruction(instr)
 
     def _select_instruction(self, instr: Instruction) -> None:
+        # Handler naming contract: ``_select_{opcode.value}``.  New opcodes
+        # from Topic 28 are implemented only in the extended selector;
+        # this base selector raises ``ValueError`` for them.
         handler = getattr(self, f"_select_{instr.opcode.value}", None)
         if handler is None:
             raise ValueError(

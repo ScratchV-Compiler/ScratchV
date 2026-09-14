@@ -127,7 +127,9 @@ class AsmEmitter:
     def _format_instr(self, instr: MachineInstr) -> str:
         op_name = _OP_NAMES.get(instr.op)
         if op_name is None:
-            return f"  # {instr.op.value} {instr.comment}".strip()
+            raise ValueError(
+                f"no assembly mapping for MachineOp "
+                f"{instr.op.name} ({instr.op.value})")
 
         # Branch/jump/call use comment as target label
         if instr.op in (MachineOp.CALL, MachineOp.J, MachineOp.JAL,

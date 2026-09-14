@@ -207,3 +207,98 @@ class IRBuilder:
         dest = self.make_value()
         self._emit(OpCode.RESHAPE, dest, [val], shape=shape)
         return dest
+
+    # --- [Topic 28] Extended instruction selection ---
+
+    def sqrt(self, val: Value,
+             dtype: DataType = DataType.FLOAT32) -> Value:
+        dest = self.make_value(dtype=dtype)
+        self._emit(OpCode.SQRT, dest, [val])
+        return dest
+
+    def min(self, a: Value, b: Value,
+            dtype: DataType = DataType.INT32) -> Value:
+        dest = self.make_value(dtype=dtype)
+        self._emit(OpCode.MIN, dest, [a, b])
+        return dest
+
+    def max(self, a: Value, b: Value,
+            dtype: DataType = DataType.INT32) -> Value:
+        dest = self.make_value(dtype=dtype)
+        self._emit(OpCode.MAX, dest, [a, b])
+        return dest
+
+    def abs(self, val: Value,
+            dtype: DataType = DataType.INT32) -> Value:
+        dest = self.make_value(dtype=dtype)
+        self._emit(OpCode.ABS, dest, [val])
+        return dest
+
+    def idiv(self, a: Value, b: Value) -> Value:
+        dest = self.make_value(dtype=DataType.INT32)
+        self._emit(OpCode.IDIV, dest, [a, b])
+        return dest
+
+    def rem(self, a: Value, b: Value) -> Value:
+        dest = self.make_value(dtype=DataType.INT32)
+        self._emit(OpCode.REM, dest, [a, b])
+        return dest
+
+    def mod(self, a: Value, b: Value) -> Value:
+        dest = self.make_value(dtype=DataType.INT32)
+        self._emit(OpCode.MOD, dest, [a, b])
+        return dest
+
+    def load_f64(self, addr: Value) -> Value:
+        dest = self.make_value(dtype=DataType.FLOAT64)
+        self._emit(OpCode.LOAD_F64, dest, [addr])
+        return dest
+
+    def store_f64(self, addr: Value, val: Value) -> Instruction:
+        return self._emit(OpCode.STORE_F64, operands=[addr, val])
+
+    def load_const_f64(self, value: float) -> Value:
+        dest = self.make_value(dtype=DataType.FLOAT64,
+                               is_constant=True, const_value=value)
+        self._emit(OpCode.LOAD_CONST_F64, dest, value=value)
+        return dest
+
+    def fadd_d(self, a: Value, b: Value) -> Value:
+        dest = self.make_value(dtype=DataType.FLOAT64)
+        self._emit(OpCode.FADD_D, dest, [a, b])
+        return dest
+
+    def fsub_d(self, a: Value, b: Value) -> Value:
+        dest = self.make_value(dtype=DataType.FLOAT64)
+        self._emit(OpCode.FSUB_D, dest, [a, b])
+        return dest
+
+    def fmul_d(self, a: Value, b: Value) -> Value:
+        dest = self.make_value(dtype=DataType.FLOAT64)
+        self._emit(OpCode.FMUL_D, dest, [a, b])
+        return dest
+
+    def fdiv_d(self, a: Value, b: Value) -> Value:
+        dest = self.make_value(dtype=DataType.FLOAT64)
+        self._emit(OpCode.FDIV_D, dest, [a, b])
+        return dest
+
+    def fcmp_l_d(self, a: Value, b: Value) -> Value:
+        dest = self.make_value(dtype=DataType.INT32)
+        self._emit(OpCode.FCMP_L_D, dest, [a, b])
+        return dest
+
+    def fcmp_eq_d(self, a: Value, b: Value) -> Value:
+        dest = self.make_value(dtype=DataType.INT32)
+        self._emit(OpCode.FCMP_EQ_D, dest, [a, b])
+        return dest
+
+    def fcvt_s_d(self, val: Value) -> Value:
+        dest = self.make_value(dtype=DataType.FLOAT32)
+        self._emit(OpCode.FCVT_S_D, dest, [val])
+        return dest
+
+    def fcvt_d_s(self, val: Value) -> Value:
+        dest = self.make_value(dtype=DataType.FLOAT64)
+        self._emit(OpCode.FCVT_D_S, dest, [val])
+        return dest

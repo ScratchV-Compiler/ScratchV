@@ -49,6 +49,33 @@ class OpCode(enum.Enum):
     RESHAPE = "reshape"
     CONCAT = "concat"
 
+    # ─────────────────────────────────────────────────────────────────
+    # [Topic 28] Extended instruction selection — append-only partition.
+    # 约定：新成员只能追加在本分区末尾；课题 29 及后续课题必须追加在
+    # 本分区之后，禁止插入本分区或重排既有成员（保护序列化与并行合入）。
+    # Dispatch 契约：_select_{value}（见 backend/instruction_select.py）。
+    # ─────────────────────────────────────────────────────────────────
+    # 整数 / 通用扩展
+    SQRT = "sqrt"
+    MIN = "min"
+    MAX = "max"
+    ABS = "abs"
+    IDIV = "idiv"
+    REM = "rem"
+    MOD = "mod"
+    # float64（D 扩展）
+    LOAD_F64 = "load_f64"
+    STORE_F64 = "store_f64"
+    LOAD_CONST_F64 = "load_const_f64"
+    FADD_D = "fadd_d"
+    FSUB_D = "fsub_d"
+    FMUL_D = "fmul_d"
+    FDIV_D = "fdiv_d"
+    FCMP_L_D = "fcmp_l_d"
+    FCMP_EQ_D = "fcmp_eq_d"
+    FCVT_S_D = "fcvt_s_d"
+    FCVT_D_S = "fcvt_d_s"
+
     def is_arith(self) -> bool:
         return self in (OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV)
 

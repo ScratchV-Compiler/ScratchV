@@ -104,6 +104,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--extended-isel", action="store_true",
         help="Use extended instruction selector with fp64/sqrt/min/max/abs support (Topic 28)",
     )
+    parser.add_argument(
+        "--no-fp64", dest="enable_fp64", action="store_false",
+        help="Disable float64 (D extension) support "
+             "(requires --extended-isel)",
+    )
+    parser.add_argument(
+        "--hardware-sqrt", dest="use_hardware_sqrt", action="store_true",
+        help="Use fsqrt.s/fsqrt.d instead of libm calls "
+             "(requires --extended-isel)",
+    )
 
     # ── Cycle estimation ──────────────────────────────────────────────
     parser.add_argument(
@@ -153,6 +163,9 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         cycle_stats=args.cycle_stats,
         enable_forwarding=not args.no_forwarding,
         branch_predictor=args.branch_predictor,
+        extended_isel=args.extended_isel,
+        enable_fp64=args.enable_fp64,
+        use_hardware_sqrt=args.use_hardware_sqrt,
     )
 
 
