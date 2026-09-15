@@ -17,6 +17,7 @@ from .regalloc_linear import (
 )
 from .inst_scheduler import (
     InstructionScheduler, parse_instructions, machine_instrs_from_scheduled,
+    ScheduleConfig, ScheduleResult, schedule_assembly,
 )
 from .inst_select_ext import ExtendedInstructionSelector
 from .cycle_estimator import (
@@ -39,5 +40,6 @@ __all__ = [
     "AsmPeepholeOptimizer", "merge_constants",
     "LinearScanAllocator", "block_from_machine_instrs", "machine_instrs_from_block",
     "InstructionScheduler", "parse_instructions", "machine_instrs_from_scheduled",
+    "ScheduleConfig", "ScheduleResult", "schedule_assembly",
     "ExtendedInstructionSelector",
 ]

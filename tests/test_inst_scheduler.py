@@ -1,8 +1,12 @@
 """Tests for Instruction Scheduler (List Scheduling)."""
 
 import pytest
+
 from scratchv.backend.inst_scheduler import (
-    InstructionScheduler, SchedInst, DAGNode, parse_instructions,
+    DAGNode,
+    InstructionScheduler,
+    SchedInst,
+    parse_instructions,
 )
 
 
@@ -10,30 +14,34 @@ class TestSchedInst:
     """Tests for SchedInst data class."""
 
     def test_creation(self):
-        inst = SchedInst(0, "add", ["t0", "t1", "t2"],
-                         defines={"t0"}, uses={"t1", "t2"})
+        inst = SchedInst(
+            0, "add", ["t0", "t1", "t2"], defines={"t0"}, uses={"t1", "t2"}
+        )
         assert inst.id == 0
         assert inst.opcode == "add"
-        assert inst.defines == {"t0"}
-        assert inst.uses == {"t1", "t2"}
+        assert inst.defines == {"x5"}
+        assert inst.uses == {"x6", "x7"}
 
 
 class TestDAGNode:
     """Tests for DAG node."""
 
     def test_creation(self):
-        inst = SchedInst(0, "add", ["t0", "t1", "t2"],
-                         defines={"t0"}, uses={"t1", "t2"})
+        inst = SchedInst(
+            0, "add", ["t0", "t1", "t2"], defines={"t0"}, uses={"t1", "t2"}
+        )
         node = DAGNode(inst=inst)
         assert node.inst.opcode == "add"
         assert not node.scheduled
         assert node.priority == 0
 
     def test_add_predecessor(self):
-        inst_a = SchedInst(0, "add", ["t0", "t1", "t2"],
-                           defines={"t0"}, uses={"t1", "t2"})
-        inst_b = SchedInst(1, "mul", ["t3", "t0", "t4"],
-                           defines={"t3"}, uses={"t0", "t4"})
+        inst_a = SchedInst(
+            0, "add", ["t0", "t1", "t2"], defines={"t0"}, uses={"t1", "t2"}
+        )
+        inst_b = SchedInst(
+            1, "mul", ["t3", "t0", "t4"], defines={"t3"}, uses={"t0", "t4"}
+        )
         na = DAGNode(inst=inst_a)
         nb = DAGNode(inst=inst_b)
         nb.predecessors.append((na, 2))
@@ -64,17 +72,16 @@ class TestParseInstructions:
     def test_parse_defines_uses(self):
         asm = "  add t0, t1, t2\n"
         insts = parse_instructions(asm)
-        assert "t0" in insts[0].defines
-        assert "t1" in insts[0].uses
-        assert "t2" in insts[0].uses
+        assert insts[0].defines == {"x5"}
+        assert insts[0].uses == {"x6", "x7"}
 
     def test_parse_store(self):
         asm = "  sw t0, 0(sp)\n"
         insts = parse_instructions(asm)
         assert insts[0].opcode == "sw"
         # Store: first operand is a use (value to store)
-        assert "t0" in insts[0].uses
-        assert "sp" in insts[0].uses
+        assert insts[0].uses == {"x5", "x2"}
+        assert not insts[0].defines
 
 
 class TestInstructionScheduler:
@@ -84,8 +91,7 @@ class TestInstructionScheduler:
         insts = [
             SchedInst(0, "li", ["t0", "42"], defines={"t0"}, uses=set()),
             SchedInst(1, "li", ["t1", "10"], defines={"t1"}, uses=set()),
-            SchedInst(2, "add", ["t2", "t0", "t1"],
-                      defines={"t2"}, uses={"t0", "t1"}),
+            SchedInst(2, "add", ["t2", "t0", "t1"], defines={"t2"}, uses={"t0", "t1"}),
         ]
         scheduler = InstructionScheduler()
         dag = scheduler.build_dag(insts)
@@ -104,38 +110,34 @@ class TestInstructionScheduler:
         scheduler = InstructionScheduler()
         dag = scheduler.build_dag(insts)
         scheduled = scheduler.schedule(dag)
-        assert len(scheduled) == 3
+        assert [i.id for i in scheduled] == [0, 1, 2]
 
     def test_schedule_with_dependency(self):
         """An instruction that depends on a previous result."""
         insts = [
             SchedInst(0, "lw", ["t0", "0(a0)"], defines={"t0"}, uses={"a0"}),
-            SchedInst(1, "add", ["t1", "t0", "t2"],
-                      defines={"t1"}, uses={"t0", "t2"}),
+            SchedInst(1, "add", ["t1", "t0", "t2"], defines={"t1"}, uses={"t0", "t2"}),
             SchedInst(2, "lw", ["t3", "4(a0)"], defines={"t3"}, uses={"a0"}),
         ]
         scheduler = InstructionScheduler()
         dag = scheduler.build_dag(insts)
         scheduled = scheduler.schedule(dag)
-        assert len(scheduled) == 3
+        assert [i.id for i in scheduled] == [0, 2, 1]
         # The second lw is independent and may be moved before the add
 
     def test_estimate_cycles(self):
         insts = [
-            SchedInst(0, "add", ["t0", "t1", "t2"],
-                      defines={"t0"}, uses={"t1", "t2"}),
-            SchedInst(1, "mul", ["t3", "t0", "t4"],
-                      defines={"t3"}, uses={"t0", "t4"}),
+            SchedInst(0, "add", ["t0", "t1", "t2"], defines={"t0"}, uses={"t1", "t2"}),
+            SchedInst(1, "mul", ["t3", "t0", "t4"], defines={"t3"}, uses={"t0", "t4"}),
         ]
         scheduler = InstructionScheduler()
         cycles = scheduler.estimate_cycles(insts)
-        # add(1) + mul(3) = 4
-        assert cycles >= 2
+        # add(1) + mul(4) = 5 in the conservative v2 model.
+        assert cycles == 5
 
     def test_report(self):
         insts = [
-            SchedInst(0, "add", ["t0", "t1", "t2"],
-                      defines={"t0"}, uses={"t1", "t2"}),
+            SchedInst(0, "add", ["t0", "t1", "t2"], defines={"t0"}, uses={"t1", "t2"}),
         ]
         scheduler = InstructionScheduler()
         dag = scheduler.build_dag(insts)
@@ -148,14 +150,11 @@ class TestInstructionScheduler:
         """Verify that priorities are computed (critical path)."""
         insts = [
             SchedInst(0, "lw", ["t0", "0(a0)"], defines={"t0"}, uses={"a0"}),
-            SchedInst(1, "mul", ["t1", "t0", "t2"],
-                      defines={"t1"}, uses={"t0", "t2"}),
+            SchedInst(1, "mul", ["t1", "t0", "t2"], defines={"t1"}, uses={"t0", "t2"}),
         ]
         scheduler = InstructionScheduler()
         dag = scheduler.build_dag(insts)
-        # Both nodes should have priority > 0
-        for node in dag:
-            assert node.priority > 0
+        assert [node.priority for node in dag] == [6, 4]
 
     def test_empty_input(self):
         scheduler = InstructionScheduler()
@@ -171,14 +170,14 @@ class TestInstructionScheduler:
     def test_waw_dependency(self):
         """WAW: two writes to same register create a dependency."""
         insts = [
-            SchedInst(0, "add", ["t0", "t1", "t2"],
-                      defines={"t0"}, uses={"t1", "t2"}),
-            SchedInst(1, "sub", ["t0", "t3", "t4"],
-                      defines={"t0"}, uses={"t3", "t4"}),
+            SchedInst(0, "add", ["t0", "t1", "t2"], defines={"t0"}, uses={"t1", "t2"}),
+            SchedInst(1, "sub", ["t0", "t3", "t4"], defines={"t0"}, uses={"t3", "t4"}),
         ]
         scheduler = InstructionScheduler()
         dag = scheduler.build_dag(insts)
         assert len(dag) == 2
+        assert dag[1].predecessors == [(dag[0], 1)]
+        assert dag[1].edge_kinds[0] == {"WAW"}
 
 
 if __name__ == "__main__":

@@ -92,6 +92,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--schedule", action="store_true",
         help="Run instruction scheduler (Topic 18)",
     )
+    parser.add_argument("--schedule-strict", action="store_true",
+                        help="Fail compilation on scheduler verification errors (requires --schedule)")
+    parser.add_argument("--schedule-report", action="store_true",
+                        help="Print local scheduling model estimates (requires --schedule)")
     parser.add_argument(
         "--count-instr", action="store_true",
         help="Print instruction count statistics (Topic 12)",
@@ -149,6 +153,8 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         peephole_asm=args.peephole_asm,
         const_merge=args.const_merge,
         schedule=args.schedule,
+        schedule_strict=args.schedule_strict,
+        schedule_report=args.schedule_report,
         count_instr=args.count_instr,
         cycle_stats=args.cycle_stats,
         enable_forwarding=not args.no_forwarding,
@@ -264,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  optimizer: {result.stats['opt_message']}", file=sys.stderr)
         if result.stats.get("cycle_report"):
             print(result.stats["cycle_report"], file=sys.stderr)
+        if result.stats.get("schedule", {}).get("report"):
+            print(result.stats["schedule"]["report"], file=sys.stderr)
 
         # Verification
         if args.verify:

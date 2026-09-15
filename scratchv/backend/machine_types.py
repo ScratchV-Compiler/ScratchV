@@ -141,6 +141,32 @@ class MachineInstr:
     src2: Optional[MachineOperand] = None
     comment: str = ""
 
+    def __post_init__(self) -> None:
+        # Zero in an integer register source position has a canonical RISC-V
+        # representation. Keep immediate fields (li/addi/shifts) unchanged.
+        sources = {
+            MachineOp.ADD: ("src1", "src2"),
+            MachineOp.SUB: ("src1", "src2"),
+            MachineOp.MUL: ("src1", "src2"),
+            MachineOp.DIV: ("src1", "src2"),
+            MachineOp.REM: ("src1", "src2"),
+            MachineOp.XOR: ("src1", "src2"),
+            MachineOp.AND: ("src1", "src2"),
+            MachineOp.SLT: ("src1", "src2"),
+            MachineOp.MV: ("src1",),
+            MachineOp.ADDI: ("src1",),
+            MachineOp.SRAI: ("src1",),
+            MachineOp.BEQ: ("dst", "src1"),
+            MachineOp.BNE: ("dst", "src1"),
+            MachineOp.BLT: ("dst", "src1"),
+            MachineOp.BGE: ("dst", "src1"),
+            MachineOp.BNEZ: ("dst",),
+        }
+        for field_name in sources.get(self.op, ()):
+            operand = getattr(self, field_name)
+            if operand is not None and operand.kind == "imm" and operand.value == 0:
+                setattr(self, field_name, MachineOperand.reg("zero"))
+
     def __repr__(self) -> str:
         parts = [self.op.value]
         for op in (self.dst, self.src1, self.src2):

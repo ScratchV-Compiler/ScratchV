@@ -13,6 +13,50 @@ permissions:
   contents: read
 
 jobs:
+  scheduler-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      SCRATCHV_REQUIRE_RISCV_EXECUTION: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install RISC-V execution and independent scheduling tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang-18 lld-18 llvm-18 qemu-user
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+          python -m pip install -e '.[riscv]' 'pytest>=7,<10'
+      - name: Require real RISC-V execution regressions
+        run: |
+          command -v clang
+          command -v ld.lld
+          command -v qemu-riscv32
+          mkdir -p benchmark_reports
+          python -m pytest tests/test_inst_scheduler*.py tests/test_regalloc_linear.py tests/test_pr37_regression.py \
+            -q --junit-xml=benchmark_reports/scheduler_tests.xml
+      - name: Generate CNN input and audit both CPU models
+        run: |
+          mkdir -p models/graph
+          python scripts/gen_minimal_cnn.py
+          python -m benchmarks.audit_inst_scheduler --llvm-mca llvm-mca-18
+      - name: Publish scheduling audit summary
+        if: always()
+        run: |
+          if [ -f benchmark_reports/inst_scheduler_audit.md ]; then
+            cat benchmark_reports/inst_scheduler_audit.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload scheduling verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scheduler-review-report
+          path: benchmark_reports/
+
   # ═════════════════════════════════════════════════════════════════════════
   # 课题功能测试：所有14个模块的单元测试 + 集成测试
   # ═════════════════════════════════════════════════════════════════════════
@@ -258,6 +302,19 @@ jobs:
             --json benchmark_reports/const_merge_report.json \
             --markdown benchmark_reports/const_merge_report.md
 
+      # ── 课题18：固定用例执行验证与独立合成规模测试 ─────────────────
+      - name: Topic 18 scheduling case report
+        run: |
+          $PY -m benchmarks.run_inst_scheduler_case \
+            --json benchmark_reports/inst_scheduler_report.json \
+            --markdown benchmark_reports/inst_scheduler_report.md
+
+      - name: Topic 18 synthetic scheduling benchmark
+        run: |
+          $PY -m benchmarks.bench_inst_scheduler --repeats 3 \
+            --json benchmark_reports/inst_scheduler_synthetic.json \
+            --markdown benchmark_reports/inst_scheduler_synthetic.md
+
       # ── 3.1.2 课题13：窥孔前后对比报告 ─────────────────────────────
       - name: Topic 13 peephole compare report
         run: |
@@ -288,6 +345,13 @@ jobs:
             "$MODEL" -o /tmp/cnn_riscv.bin \
             --asm benchmark_reports/cnn_scratchv.s \
             --estimate --report --const-merge
+
+      - name: Topic 18 CNN assembly scheduling A/B
+        run: |
+          $PY -m benchmarks.run_inst_scheduler_case \
+            benchmark_reports/cnn_scratchv.s --static-only \
+            --json benchmark_reports/inst_scheduler_cnn.json \
+            --markdown benchmark_reports/inst_scheduler_cnn.md
 
       # ── 3.3.1 汇编美化器：真实 CNN 输出 + Actions Summary ───────────
       - name: CNN assembly beautifier benchmark
@@ -411,6 +475,11 @@ jobs:
           if [ -f benchmark_reports/const_merge_report.md ]; then
             cat benchmark_reports/const_merge_report.md >> $GITHUB_STEP_SUMMARY
           fi
+          for report in inst_scheduler_report inst_scheduler_cnn inst_scheduler_synthetic; do
+            if [ -f "benchmark_reports/$report.md" ]; then
+              cat "benchmark_reports/$report.md" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/peephole_compare.md ]; then
             echo "### Topic 13 Peephole Compare" >> $GITHUB_STEP_SUMMARY

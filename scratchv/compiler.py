@@ -69,6 +69,8 @@ class CompilerConfig:
     peephole_asm: bool = False
     const_merge: bool = False
     schedule: bool = False
+    schedule_strict: bool = False
+    schedule_report: bool = False
     count_instr: bool = False
     cycle_stats: bool = False
     enable_forwarding: bool = True
@@ -239,6 +241,11 @@ class CompilerDriver:
         errors: list[str] = []
         warnings: list[str] = []
 
+        if self.config.schedule and self.config.backend != "riscv":
+            return CompileResult(success=False, errors=["--schedule requires the RISC-V backend"])
+        if (self.config.schedule_strict or self.config.schedule_report) and not self.config.schedule:
+            return CompileResult(success=False, errors=["Scheduling options require --schedule"])
+
         # Resolve output path
         if output_path is None:
             output_path = "output.ll" if self.config.backend == "llvm" else "output.s"
@@ -324,7 +331,13 @@ class CompilerDriver:
             )
 
         # --- 5. Post-codegen passes ---
-        asm_text = self._run_asm_passes(asm_text, warnings)
+        from scratchv.backend.schedule_semantics import ScheduleError
+        schedule_stats: dict = {}
+        try:
+            asm_text = self._run_asm_passes(asm_text, warnings, schedule_stats)
+        except ScheduleError as exc:
+            return CompileResult(success=False, errors=[f"Scheduling failed: {exc}"],
+                                 warnings=warnings, ir_dump=ir_dump)
 
         # --- 6. Cycle estimation ---
         cycle_report = ""
@@ -353,7 +366,7 @@ class CompilerDriver:
             output_text=asm_text,
             output_path=output_path,
             ir_dump=ir_dump,
-            stats={"opt_message": opt_message, "cycle_report": cycle_report},
+            stats={"opt_message": opt_message, "cycle_report": cycle_report, **schedule_stats},
             warnings=warnings,
         )
 
@@ -495,7 +508,8 @@ class CompilerDriver:
 
     # ── Internal: post-codegen passes ───────────────────────────────────────
 
-    def _run_asm_passes(self, asm_text: str, warnings: list[str]) -> str:
+    def _run_asm_passes(self, asm_text: str, warnings: list[str],
+                        stats: dict | None = None) -> str:
         """Run assembly-level passes (peephole, const-merge, beautify, etc.)."""
         if self.config.peephole_asm:
             from scratchv.backend.asm_peephole import AsmPeepholeOptimizer
@@ -510,26 +524,30 @@ class CompilerDriver:
 
         if self.config.const_merge:
             from scratchv.backend.const_merge import merge_constants_detailed
-            asm_text, stats = merge_constants_detailed(asm_text)
-            if stats.total_changes:
+            asm_text, merge_stats = merge_constants_detailed(asm_text)
+            if merge_stats.total_changes:
                 warnings.append(
-                    f"Const merge: {stats.total_changes} changes "
-                    f"({stats.merged_pairs} pairs, "
-                    f"{stats.redundant_lui_removed} redundant lui)"
+                    f"Const merge: {merge_stats.total_changes} changes "
+                    f"({merge_stats.merged_pairs} pairs, "
+                    f"{merge_stats.redundant_lui_removed} redundant lui)"
                 )
 
         if self.config.schedule:
             from scratchv.backend.inst_scheduler import (
-                InstructionScheduler, parse_instructions,
+                ScheduleConfig, ScheduleError, schedule_assembly,
             )
-            sched = InstructionScheduler()
-            insts = parse_instructions(asm_text)
-            dag = sched.build_dag(insts)
-            scheduled = sched.schedule(dag)
-            asm_text = "\n".join(
-                f"  {inst.opcode} " + ", ".join(inst.operands)
-                for inst in scheduled
-            )
+            if self.config.backend != "riscv":
+                raise ScheduleError("--schedule requires the RISC-V backend")
+            result = schedule_assembly(asm_text, ScheduleConfig(strict=self.config.schedule_strict))
+            asm_text = result.asm_text
+            if stats is not None:
+                stats["schedule"] = {**result.stats, "diagnostics": result.diagnostics}
+            for diagnostic in result.diagnostics:
+                if diagnostic["severity"] == "warning":
+                    warnings.append(f"Schedule line {diagnostic['line']}: {diagnostic['reason']}")
+            if self.config.schedule_report:
+                if stats is not None:
+                    stats["schedule"]["report"] = result.report()
 
         if self.config.beautify_asm:
             from scratchv.backend.asm_beautifier import beautify_asm

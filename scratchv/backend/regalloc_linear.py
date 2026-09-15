@@ -108,6 +108,7 @@ class LsInstruction:
     defines: set[str] = field(default_factory=set)
     uses: set[str] = field(default_factory=set)
     comment: str = ""
+    target: str | None = None
 
     def __repr__(self) -> str:
         return (f"LsInstruction({self.id}, {self.opcode}, "
@@ -115,9 +116,15 @@ class LsInstruction:
 
     def to_asm(self, rename: Optional[dict[str, str]] = None) -> str:
         """Emit this instruction as assembly after register renaming."""
+        if self.opcode == ".label":
+            return f"{self.operands[0] if self.operands else self.comment}:"
         ops = self.operands[:]
         if rename:
             ops = [rename.get(o, o) for o in ops]
+        # MachineInstr currently stores direct control-flow targets in comment.
+        # Match AsmEmitter: targets are operands, never register-renamed.
+        if self.target:
+            ops.append(self.target)
         parts = [f"  {self.opcode}"]
         if ops:
             parts.append(" " + ", ".join(ops))
@@ -571,7 +578,10 @@ def block_from_machine_instrs(
             op_str = str(op).lstrip("%")
             if op.kind == "vreg":
                 # For the destination operand position
-                if op is mi.dst:
+                # Stores and conditional branches READ their first operand.
+                if op is mi.dst and mi.op.value not in {
+                    "sw", "fsd", "fsw", "beq", "bne", "blt", "bge", "bnez",
+                }:
                     defines.add(op_str)
                     operands.append(op_str)
                 else:
@@ -586,13 +596,17 @@ def block_from_machine_instrs(
                 comment=mi.comment,
             ))
         else:
+            target = mi.comment if mi.op.value in {
+                "j", "jal", "call", "bnez", "beq", "bne", "blt", "bge",
+            } else None
             result.append(LsInstruction(
                 id=i,
                 opcode=mi.op.value,
                 operands=operands,
                 defines=defines,
                 uses=uses,
-                comment=mi.comment,
+                comment="" if target else mi.comment,
+                target=target,
             ))
 
     return result
@@ -652,6 +666,6 @@ def machine_instrs_from_block(
         if len(ops) >= 3:
             src2 = ops[2]
 
-        result.append(MachineInstr(mop, dst, src1, src2, inst.comment))
+        result.append(MachineInstr(mop, dst, src1, src2, inst.target or inst.comment))
 
     return result

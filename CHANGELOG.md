@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — Topic 18 review iteration (2026-09-16)
+
+- Keep instruction scheduling disabled by default at the assembly-text V1 entry point. Model cycles and llvm-mca estimates are not hardware speedups or dynamic-instruction-count improvements.
+- Use conservative integer latencies, preserve division order, account for write completion, and require gains under a second latency table before applying a candidate.
+- Restore linear-allocator branch operands and labels; classify branch/store operands as reads and emit canonical integer zero-register sources.
+- Report coverage, unsupported opcodes and latency-sensitive rejections; restore section-stack state and distinguish quoted text from layout directives.
+- Add a required RISC-V execution CI job and independent two-CPU llvm-mca/real-input audit reports.
+- API migration: `SchedInst` is immutable and recomputes def/use; `build_dag` rejects multiple regions; `machine_instrs_from_scheduled` rejects lossy conversions. Use `schedule_assembly` for complete assembly, and read the compiler report from `stats["schedule"]["report"]` instead of `warnings`.
+- Structured post-RA/pre-emission scheduling and Fast/BURR strategy selection remain future work; see `docs/topic-18/README.md`.
+
 ## [0.3.0] — 2026-05-18
 
 ### Added

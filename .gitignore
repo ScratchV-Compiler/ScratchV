@@ -38,3 +38,6 @@ benchmark_reports/
 *.dot
 *.png
 .idea/
+
+# Local tool session state
+/:memory:.ses
