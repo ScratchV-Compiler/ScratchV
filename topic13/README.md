@@ -17,8 +17,8 @@
 | **新手教程** | 入门学习 | [`docs/topics/13-窥孔优化器.md`](../docs/topics/13-窥孔优化器.md) |
 | **课题提案（归档）** | 原始任务说明 | [`docs/topics/archive/课题13：窥孔优化器.md`](../docs/topics/archive/课题13：窥孔优化器.md) |
 | **课程 HTML** | 浏览器阅读 | [`docs/topics/html/13-窥孔优化器.html`](../docs/topics/html/13-窥孔优化器.html) |
-| **前后对比报告** | 效果数据 | [`benchmark_reports/peephole_compare.md`](../benchmark_reports/peephole_compare.md) |
-| **HTML 对比报告** | Benchmark 数据 | [`benchmark_reports/peephole_compare.html`](../benchmark_reports/peephole_compare.html) |
+| **前后对比报告** | 效果数据 | 运行后生成：`benchmark_reports/peephole_compare.md`（CI artifact 可下载） |
+| **HTML 对比报告** | Benchmark 数据 | 运行后生成：`benchmark_reports/peephole_compare.html`（CI artifact 可下载） |
 | **课题索引入口** | 全课题地图 | [`docs/topics/INDEX.md`](../docs/topics/INDEX.md)（第 13 项） |
 
 ---
@@ -37,7 +37,7 @@
 | 性能基准 | `benchmarks/bench_asm_peephole.py` |
 | DSL/Markdown 对比 | `benchmarks/compare_peephole.py` |
 | JSON/HTML 对比 | `benchmarks/compare_peephole_html.py` |
-| CI | `.github/workflows/ci.yml` → job **`topic13-peephole`**（`ubuntu-latest`） |
+| CI | `.github/workflows/ci.yml` → `test` job 的 peephole regression/CLI smoke，以及 `benchmark` job 的 Topic 13 report step |
 
 ---
 
@@ -45,7 +45,7 @@
 
 - 默认规则：**8 条**（假交换删除已移除；mv 链仅在中间寄存器局部死时应用）
 - 测试：优化器、CLI 和 benchmark 工具均有对应测试；运行方式见下。
-- 效果：历史 DSL 基准约 -0.43%；benchmark 覆盖套件本地冒烟 31→22 条有效指令（-29.032%）。
+- 效果：历史 DSL 基准约 -0.43%；默认覆盖套件的本地样例为 31→22 条有效指令（-29.032%，不是性能保证）。
 - PR：[#39](https://github.com/ScratchV-Compiler/ScratchV/pull/39)
 
 ### CLI
@@ -70,14 +70,14 @@ python benchmarks/compare_peephole.py --json benchmark_reports/peephole_compare.
 python benchmarks/compare_peephole_html.py --repeats 5 --output-dir benchmark_reports
 ```
 
-GitHub Actions：PR 到 `main` 会跑 job **`topic13-peephole`**（不依赖 self-hosted mirror）。
+GitHub Actions：PR 到 `main` 会在 `test` job 中运行 peephole regression/CLI smoke，并在 `benchmark` job 中生成 Topic 13 对比报告（不依赖 self-hosted mirror）。
 
 ### Review 后续（已知）
 
 - [x] mv 链：中间寄存器局部活跃则拒绝优化（CI 有正/负例）
 - [x] `--reg-alloc linear` 真正走 LinearScan（不再先 greedy）
 - [x] CLI：`--list-rules` 无需 dummy input；支持 `--json` / `--json-output`
-- [x] CI：`topic13-peephole` job + `make ci-peephole`
+- [x] CI：`test` job 的 peephole regression/CLI smoke、`benchmark` job 的 Topic 13 report + `make ci-peephole`
 - [ ] assembler/simulator 端到端语义等价、spill 压力矩阵、随机生成（可小组协作）
 ---
 
@@ -86,5 +86,5 @@ GitHub Actions：PR 到 `main` 会跑 job **`topic13-peephole`**（不依赖 sel
 1. 本页（定位课题与路径）  
 2. [新手教程](../docs/topics/13-窥孔优化器.md)  
 3. [设计文档](../docs/topics/13-窥孔优化器-设计文档.md)  
-4. [DSL 对比报告](../benchmark_reports/peephole_compare.md) / [HTML 对比报告](../benchmark_reports/peephole_compare.html)
+4. 运行后生成的 DSL/HTML 对比报告：`benchmark_reports/peephole_compare.md`、`benchmark_reports/peephole_compare.html`（CI artifact）
 5. 改代码时再看 [AI 开发文档](../docs/topics/archive/topic13_asm_peephole_guide.md)  

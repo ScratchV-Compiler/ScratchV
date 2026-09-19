@@ -1,4 +1,3 @@
-# flake8: noqa
 """Reproducible micro-benchmarks for the assembly peephole optimizer.
 
 The module deliberately separates data collection from presentation.  It
@@ -25,18 +24,18 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Iterable, Optional, Sequence
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Direct script execution omits the repository root from sys.path.
 # Put this worktree first so the benchmark measures the checked-out code.
 if __package__ is None:
-    _REPO_ROOT = Path(__file__).resolve().parents[1]
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
 
-from scratchv.backend._asm_parser import parse_asm
-from scratchv.backend.asm_peephole import AsmPeepholeOptimizer
-
+from scratchv.backend._asm_parser import parse_asm  # noqa: E402
+from scratchv.backend.asm_peephole import AsmPeepholeOptimizer  # noqa: E402
 
 PR39_RULES = (
     "addi+addi fusion",
@@ -48,6 +47,26 @@ PR39_RULES = (
     "nop elimination",
     "mv-self elimination",
 )
+
+
+def validate_default_rules(rule_names: Iterable[str]) -> None:
+    """Reject silent drift between the optimizer and this benchmark suite."""
+
+    expected = set(PR39_RULES)
+    actual = set(rule_names)
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        if extra:
+            details.append(f"extra: {', '.join(extra)}")
+        raise ValueError(
+            "Default peephole rules differ from PR39_RULES ("
+            + "; ".join(details)
+            + "). Update the benchmark rule list."
+        )
 
 
 @dataclass(frozen=True)
@@ -197,30 +216,21 @@ def _gen_synthetic_asm(
 
     rng = random.Random(seed)
     lines = [".text", "synthetic_func:"]
-    regs = ["t0", "t1", "t2", "s0", "s1", "a0", "a1"]
-    other_regs = ["t0", "t1", "t2", "t3", "t4", "s0", "s1", "a0", "a1"]
-    i = 0
-    while i < num_instrs:
-        if i + 1 < num_instrs and rng.random() < fusion_ratio:
-            register = rng.choice(regs)
-            lines.append(f"  addi {register}, {register}, {rng.randint(1, 5)}")
-            lines.append(f"  addi {register}, {register}, {rng.randint(1, 5)}")
-            i += 2
-            continue
+    body_instrs = num_instrs - 1
+    pair_instrs = int(body_instrs * fusion_ratio) // 2 * 2
+    pair_count = pair_instrs // 2
+    pair_regs = ["t0", "t1", "t2", "s0", "s1", "a0", "a1"]
 
-        opcode = rng.choice(["add", "sub", "lw", "sw", "li", "mv", "mul", "xor"])
-        rd = rng.choice(other_regs)
-        rs1 = rng.choice(other_regs)
-        rs2 = rng.choice(other_regs)
-        if opcode == "li":
-            lines.append(f"  li {rd}, {rng.randint(0, 100)}")
-        elif opcode == "mv":
-            lines.append(f"  mv {rd}, {rs1}")
-        elif opcode in ("lw", "sw"):
-            lines.append(f"  {opcode} {rd}, {rng.randint(0, 16)}(sp)")
-        else:
-            lines.append(f"  {opcode} {rd}, {rs1}, {rs2}")
-        i += 1
+    for pair_index in range(pair_count):
+        register = pair_regs[pair_index % len(pair_regs)]
+        lines.append(f"  addi {register}, {register}, {rng.randint(1, 5)}")
+        lines.append(f"  addi {register}, {register}, {rng.randint(1, 5)}")
+
+    for index in range(body_instrs - pair_instrs):
+        rd = pair_regs[index % len(pair_regs)]
+        rs1 = pair_regs[(index + 1) % len(pair_regs)]
+        rs2 = pair_regs[(index + 2) % len(pair_regs)]
+        lines.append(f"  add {rd}, {rs1}, {rs2}")
 
     lines.append("  ret")
     return "\n".join(lines) + "\n"
@@ -252,8 +262,7 @@ def measure_case(case: BenchmarkCase, repeats: int = 5) -> dict:
     reduced = before - after
     reduction_percent = (100.0 * reduced / before) if before else 0.0
     expected_hit = (
-        case.expected_rule is not None
-        and rule_matches.get(case.expected_rule, 0) > 0
+        case.expected_rule is not None and rule_matches.get(case.expected_rule, 0) > 0
     )
 
     return {
@@ -279,10 +288,11 @@ def measure_case(case: BenchmarkCase, repeats: int = 5) -> dict:
 def _git_commit() -> str:
     try:
         completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "-c", f"safe.directory={_REPO_ROOT}", "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             check=True,
+            cwd=_REPO_ROOT,
         )
     except (OSError, subprocess.CalledProcessError):
         return ""
@@ -296,6 +306,7 @@ def run_benchmark(
     """Run all cases and aggregate static savings and rule matches."""
 
     repeats = _validate_repeats(repeats)
+    validate_default_rules(rule.name for rule in AsmPeepholeOptimizer().rules)
     selected = list(cases if cases is not None else default_cases())
     case_results = [measure_case(case, repeats=repeats) for case in selected]
 
