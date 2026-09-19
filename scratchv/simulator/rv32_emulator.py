@@ -220,7 +220,7 @@ class RV32Emulator:
         return struct.unpack("<i", raw)[0]
 
     def write_i32(self, addr: int, val: int) -> None:
-        self.mem[addr:addr + 4] = struct.pack("<i", val)
+        self.mem[addr:addr + 4] = struct.pack("<I", val & 0xFFFFFFFF)
 
     # ── Execution ─────────────────────────────────────────────────────────
 
@@ -297,7 +297,7 @@ class RV32Emulator:
             if d["funct3"] == 0b010:  # LW
                 raw = bytes(self.mem[addr:addr + 4])
                 if len(raw) == 4:
-                    self.regs[d["rd"]] = struct.unpack("<i", raw)[0]
+                    self.regs[d["rd"]] = struct.unpack("<I", raw)[0]
                 else:
                     self.regs[d["rd"]] = 0
 
@@ -307,7 +307,7 @@ class RV32Emulator:
             addr = self.regs[d["rs1"]] + d["imm"]
             val = self.regs[d["rs2"]]
             if d["funct3"] == 0b010:  # SW
-                self.mem[addr:addr + 4] = struct.pack("<i", val)
+                self.mem[addr:addr + 4] = struct.pack("<I", val & 0xFFFFFFFF)
 
         # ── BRANCH ────────────────────────────────────────────────────────
         elif opcode == 0b1100011:

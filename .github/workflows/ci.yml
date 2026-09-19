@@ -136,6 +136,20 @@ jobs:
           $PY -c "import json; d=json.load(open('/tmp/peephole_report.json')); assert d['instructions_saved']>=1"
           grep -q "8" /tmp/peephole_out.s
 
+      - name: Run Topic 17 register-allocation regressions
+        run: |
+          $PY -m pytest \
+            tests/test_regalloc_pseudo.py \
+            tests/test_regalloc_pseudo_benchmark.py \
+            tests/test_regalloc_p1.py \
+            tests/test_regalloc_metrics.py \
+            tests/test_regalloc_spill_compare.py \
+            tests/test_abi_frame.py \
+            tests/test_riscv_encoder_validation.py \
+            tests/test_rv32_emulator.py \
+            tests/test_simulator.py::TestRealProfiledMachine::test_lw_preserves_all_four_bytes \
+            -v --tb=short
+
       - name: Generate test visualization page
         if: github.ref == 'refs/heads/main'
         run: |
@@ -330,7 +344,9 @@ jobs:
       - name: Single-operator benchmarks
         run: |
           $PY scripts/bench_single_ops.py \
-            || echo "WARNING: bench_single_ops failed"
+            --output-json benchmark_reports/single_op_bench.json \
+            --output-md benchmark_reports/single_op_bench.md \
+            --pressure-regs 2,3,5,8,12,19
 
       # ── 3.7 生成仪表盘 HTML (版本vsLLVM + 指令分类 + 算子对比) ─────
       - name: Generate dashboard
@@ -342,13 +358,19 @@ jobs:
             || echo "WARNING: dashboard generation failed"
 
       # ── 3.8 寄存器分配 benchmark(线性扫描:simple/dense/cnn + LLVM对比) ──
-      - name: Register allocation benchmarks
+      - name: Topic 17 register-allocation before/after benchmark
         run: |
           $PY -m benchmarks.test_regalloc.bench_regalloc_linear \
             --repeats 30 \
             --output-json benchmark_reports/regalloc_bench.json \
             --output-html benchmark_reports/regalloc_bench.html \
             --output-md benchmark_reports/regalloc_bench.md
+
+      - name: Topic 17 spill-pressure comparison
+        run: |
+          $PY -m benchmarks.bench_regalloc_spill_compare \
+            --json-output benchmark_reports/regalloc_spill_compare.json \
+            --markdown benchmark_reports/regalloc_spill_compare.md
 
       # ── 上报 ──────────────────────────────────────────────────────────
       - name: Upload benchmark reports
@@ -430,9 +452,17 @@ jobs:
             tail -20 benchmark_reports/llvm_vs_scratchv.md >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Register Allocation Benchmarks" >> $GITHUB_STEP_SUMMARY
+          echo "### Topic 17 Register Allocation" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/regalloc_bench.md ]; then
             cat benchmark_reports/regalloc_bench.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/regalloc_spill_compare.md ]; then
+            cat benchmark_reports/regalloc_spill_compare.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f benchmark_reports/single_op_bench.md ]; then
+            cat benchmark_reports/single_op_bench.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
   # ═════════════════════════════════════════════════════════════════════════

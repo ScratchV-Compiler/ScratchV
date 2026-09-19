@@ -446,9 +446,9 @@ class CompilerDriver:
             )
             ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
-            intervals = lsa.compute_live_intervals(ls_insts)
-            lsa.allocate(intervals)
-            return lsa.get_allocated_code(ls_insts)
+            assembly = lsa.emit(ls_insts)
+            from scratchv.backend.abi_frame import apply_abi_frames
+            return apply_abi_frames(assembly, lsa.spill_slot_count)
 
         mode = self.config.reg_alloc if self.config.reg_alloc in (
             "naive", "greedy",
@@ -457,7 +457,9 @@ class CompilerDriver:
         allocated = alloc.run()
 
         emitter = AsmEmitter(allocated)
-        return emitter.emit()
+        assembly = emitter.emit()
+        from scratchv.backend.abi_frame import apply_abi_frames
+        return apply_abi_frames(assembly, alloc.spill_slot_count)
 
     def _generate_riscv_dag(self, program) -> str:
         """DAG-based instruction selection pipeline."""
@@ -480,9 +482,9 @@ class CompilerDriver:
             )
             ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
-            intervals = lsa.compute_live_intervals(ls_insts)
-            lsa.allocate(intervals)
-            return lsa.get_allocated_code(ls_insts)
+            assembly = lsa.emit(ls_insts)
+            from scratchv.backend.abi_frame import apply_abi_frames
+            return apply_abi_frames(assembly, lsa.spill_slot_count)
 
         mode = self.config.reg_alloc if self.config.reg_alloc in (
             "naive", "greedy",
@@ -491,7 +493,9 @@ class CompilerDriver:
         allocated = alloc.run()
 
         emitter = AsmEmitter(allocated)
-        return emitter.emit()
+        assembly = emitter.emit()
+        from scratchv.backend.abi_frame import apply_abi_frames
+        return apply_abi_frames(assembly, alloc.spill_slot_count)
 
     # ── Internal: post-codegen passes ───────────────────────────────────────
 

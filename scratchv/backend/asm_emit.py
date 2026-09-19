@@ -91,6 +91,10 @@ def _memory_address(op: MachineOperand) -> str:
     return address
 
 
+def _comment_suffix(instr: MachineInstr) -> str:
+    return f"  # {instr.comment}" if instr.comment else ""
+
+
 class AsmEmitter:
     """Emit RISC-V assembly text from machine instructions."""
 
@@ -143,11 +147,17 @@ class AsmEmitter:
 
         if instr.op == MachineOp.LW and instr.dst and instr.src1:
             address = _memory_address(instr.src1)
-            return f"  lw {_fmt_op(instr.dst)}, {address}"
+            return (
+                f"  lw {_fmt_op(instr.dst)}, {address}"
+                f"{_comment_suffix(instr)}"
+            )
 
         if instr.op == MachineOp.SW and instr.dst and instr.src1:
-            address = _memory_address(instr.dst)
-            return f"  sw {_fmt_op(instr.src1)}, {address}"
+            address = _memory_address(instr.src1)
+            return (
+                f"  sw {_fmt_op(instr.dst)}, {address}"
+                f"{_comment_suffix(instr)}"
+            )
 
         # Branch/jump/call use comment as target label
         if instr.op in (MachineOp.CALL, MachineOp.J, MachineOp.JAL,

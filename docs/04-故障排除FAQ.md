@@ -297,7 +297,7 @@ git config --global http.proxy http://127.0.0.1:7890
 git config --global https.proxy http://127.0.0.1:7890
 
 # 或者用浅克隆（只取最近一次提交）
-git clone --depth 1 https://github.com/kinsomwang/ScratchV.git
+git clone --depth 1 https://github.com/ScratchV-Compiler/ScratchV.git
 ```
 
 ---
@@ -341,7 +341,7 @@ ScratchV 的编译速度通常不是瓶颈（CNN 模型几秒就能编译完）�
 
 ## 还没解决？
 
-1. 搜索 [GitHub Issues](https://github.com/kinsomwang/ScratchV/issues) — 看有没有人遇到过同样的问题
+1. 搜索 [GitHub Issues](https://github.com/ScratchV-Compiler/ScratchV/issues) — 看有没有人遇到过同样的问题
 2. 如果没找到，创建新的 Issue，附上：
    - 你的操作系统和 Python 版本
    - 完整的错误信息（复制粘贴，不要截图）

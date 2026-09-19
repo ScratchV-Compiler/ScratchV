@@ -2705,6 +2705,9 @@ def convert_onnx_to_riscv(
 
         constant_merge_report = {
             "enabled": True,
+            "source_transform_path": "backend.const_merge public assembly pass",
+            "machine_codegen_path": "RISCVEmitter(compact_li32=True)",
+            "machine_metrics_are_public_pass_output": False,
             "used": merge_stats.total_changes > 0,
             "candidate_pairs": merge_stats.candidate_pairs,
             "merged_pairs": merge_stats.merged_pairs,
