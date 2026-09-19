@@ -17,6 +17,103 @@ from benchmarks.test_regalloc import bench_cnn, bench_dense, bench_pseudo, bench
 # ---------------------------------------------------------------------------
 
 
+def _optimization_comparison(results: dict) -> dict | None:
+    cnn = results.get("3. CNN Integration", {})
+    if not isinstance(cnn, dict):
+        return None
+    comparison = cnn.get("optimization_comparison")
+    return comparison if isinstance(comparison, dict) else None
+
+
+def _format_comparison_value(metric: dict) -> tuple[str, str]:
+    unit = metric.get("unit", "")
+
+    def format_one(value: float) -> str:
+        if unit == "ms":
+            return f"{value:.3f} ms"
+        return f"{value:g} {unit}".strip()
+
+    return format_one(metric["before"]), format_one(metric["after"])
+
+
+def _format_improvement(value: float | None) -> str:
+    if value is None:
+        return "n/a (zero baseline)"
+    if value > 0:
+        return f"{value:.2f}% better"
+    if value < 0:
+        return f"{abs(value):.2f}% worse"
+    return "unchanged"
+
+
+def _comparison_markdown(results: dict) -> list[str]:
+    comparison = _optimization_comparison(results)
+    if comparison is None:
+        return []
+
+    baseline = comparison["baseline"]
+    optimized = comparison["optimized"]
+    lines = [
+        "",
+        "## CNN Register Allocation: Before vs After",
+        "",
+        (
+            "Both allocators receive the same selected Machine IR in the same "
+            "process. Lower is better for every metric below."
+        ),
+        "",
+        f"| Metric | Before ({baseline}) | After ({optimized}) | Optimization |",
+        "|---|---:|---:|---:|",
+    ]
+    for metric in comparison["metrics"].values():
+        before, after = _format_comparison_value(metric)
+        lines.append(
+            f"| {metric['label']} | {before} | {after} | "
+            f"{_format_improvement(metric['improvement_pct'])} |"
+        )
+
+    correctness = comparison["correctness"]
+    before_status = "PASS" if correctness["before"] else "FAIL"
+    after_status = "PASS" if correctness["after"] else "FAIL"
+    lines.extend(
+        [
+            "",
+            f"Correctness (assembly + emulator): **{before_status} -> "
+            f"{after_status}**.",
+        ]
+    )
+    return lines
+
+
+def _comparison_html(results: dict) -> str:
+    comparison = _optimization_comparison(results)
+    if comparison is None:
+        return ""
+
+    rows = []
+    for metric in comparison["metrics"].values():
+        before, after = _format_comparison_value(metric)
+        rows.append(
+            f"<tr><td>{metric['label']}</td><td>{before}</td>"
+            f"<td>{after}</td><td>"
+            f"{_format_improvement(metric['improvement_pct'])}</td></tr>"
+        )
+    correctness = comparison["correctness"]
+    before_status = "PASS" if correctness["before"] else "FAIL"
+    after_status = "PASS" if correctness["after"] else "FAIL"
+    return f"""
+<h2>CNN Register Allocation: Before vs After</h2>
+<p>Both allocators receive the same selected Machine IR in the same process.
+Lower is better for every metric below.</p>
+<table>
+<tr><th>Metric</th><th>Before ({comparison['baseline']})</th>
+<th>After ({comparison['optimized']})</th><th>Optimization</th></tr>
+{''.join(rows)}
+</table>
+<p>Correctness (assembly + emulator): <strong>{before_status} &rarr;
+{after_status}</strong>.</p>"""
+
+
 def _make_html(results: dict, total_time: float) -> str:
     """Generate an HTML report."""
     rows = ""
@@ -36,6 +133,7 @@ def _make_html(results: dict, total_time: float) -> str:
             f"<td>{r.get('asm_lines', '-')}</td>"
             f"<td style='color:{c}'>{v}</td></tr>\n"
         )
+    comparison_html = _comparison_html(results)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -59,6 +157,7 @@ def _make_html(results: dict, total_time: float) -> str:
 <th>Spills</th><th>Peak</th><th>Reloads</th><th>Asm</th><th>Valid</th></tr>
 {rows}
 </table>
+{comparison_html}
 </body>
 </html>"""
 
@@ -88,6 +187,7 @@ def _make_markdown(results: dict) -> str:
             f"{r.get('reloads', '-')} | {r.get('asm_lines', '-')} | "
             f"{v} |"
         )
+    lines.extend(_comparison_markdown(results))
     return "\n".join(lines)
 
 

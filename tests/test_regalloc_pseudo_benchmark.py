@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from benchmarks.test_regalloc import bench_pseudo, bench_regalloc_linear
+from benchmarks.test_regalloc import bench_cnn, bench_pseudo, bench_regalloc_linear
 from scratchv.backend.machine_types import MachineOp
 
 
@@ -65,3 +65,46 @@ def test_pseudo_metrics_are_report_serializable() -> None:
     markdown = bench_regalloc_linear._make_markdown(results)
     assert "4. Pseudo Instructions" in html
     assert "4. Pseudo Instructions" in markdown
+
+
+def test_reports_show_comparable_before_after_optimization() -> None:
+    stats = {
+        "greedy_time_s": 0.002,
+        "mean_s": 0.001,
+        "greedy_static_instrs": 100,
+        "sv_static_instrs": 75,
+        "greedy_spill_slots": 20,
+        "spill_slots": 0,
+        "greedy_spill_stores": 40,
+        "spill_stores": 10,
+        "greedy_reloads": 50,
+        "reloads": 25,
+        "greedy_asm_valid": True,
+        "greedy_emu_passed": True,
+        "asm_valid": True,
+        "emu_passed": True,
+    }
+    stats["optimization_comparison"] = (
+        bench_cnn._build_optimization_comparison(stats)
+    )
+    results = {"3. CNN Integration": stats}
+
+    markdown = bench_regalloc_linear._make_markdown(results)
+    html = bench_regalloc_linear._make_html(results, 0.0)
+
+    assert "CNN Register Allocation: Before vs After" in markdown
+    assert "Before (Greedy allocator)" in markdown
+    assert "After (Topic17 LinearScan)" in markdown
+    assert "| Allocation mean | 2.000 ms | 1.000 ms | 50.00% better |" in markdown
+    assert (
+        "| Static instructions | 100 instructions | 75 instructions | "
+        "25.00% better |"
+    ) in markdown
+    assert "Correctness (assembly + emulator): **PASS -> PASS**" in markdown
+    assert "CNN Register Allocation: Before vs After" in html
+    assert "25.00% better" in html
+
+
+def test_optimization_percentage_handles_zero_baseline() -> None:
+    assert bench_cnn._improvement_pct(0, 0) == 0
+    assert bench_cnn._improvement_pct(0, 1) is None

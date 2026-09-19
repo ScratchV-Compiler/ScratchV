@@ -75,6 +75,18 @@ def test_topic17_cnn_executes_the_allocated_assembly_it_measures():
     assert stats["actual_a0"] == stats["expected_a0"]
     assert stats["greedy_asm_valid"], stats["greedy_asm_errors"]
     assert stats["greedy_emu_passed"], stats["greedy_emu_error"]
+    comparison = stats["optimization_comparison"]
+    assert comparison["same_machine_ir"]
+    assert comparison["correctness"] == {"before": True, "after": True}
+    assert (
+        comparison["metrics"]["static_instructions"]["before"]
+        == stats["greedy_static_instrs"]
+    )
+    assert (
+        comparison["metrics"]["static_instructions"]["after"]
+        == stats["sv_static_instrs"]
+    )
+    assert comparison["metrics"]["spill_slots"]["improvement_pct"] == 100
 
 
 def test_real_assembly_validation_rejects_unresolved_named_vreg():

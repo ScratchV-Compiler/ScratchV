@@ -27,6 +27,7 @@ from scratchv.backend.machine_types import (
 from scratchv.backend.riscv_encoder import RISCVAEncoder
 from scratchv.backend.abi_frame import apply_abi_frames
 from scratchv.backend.register_alloc import RegisterAllocator
+from scratchv.backend.regalloc_metrics import count_spill_reload_sites
 from scratchv.backend.asm_emit import AsmEmitter
 from scratchv.standalone.compare_codegen import count_riscv_instrs
 
@@ -360,14 +361,23 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
     expected_a0 = _interpret_machine(machine)
     sv_cnt, sv_cats = count_riscv_instrs(code)
 
-    # Greedy allocator baseline
-    t0 = time.perf_counter()
+    # Greedy allocator baseline.  Measure it with the same Machine IR and the
+    # same repeat count as LinearScan so the before/after time is comparable.
+    greedy_times = []
+    for _ in range(repeats):
+        greedy = RegisterAllocator(machine, mode="greedy")
+        t0 = time.perf_counter()
+        greedy.run()
+        greedy_times.append(time.perf_counter() - t0)
+
+    # Final run for stable assembly, spill, and execution metrics.
     greedy = RegisterAllocator(machine, mode="greedy")
     greedy_out = greedy.run()
-    greedy_time = time.perf_counter() - t0
     greedy_code = apply_abi_frames(
         AsmEmitter(greedy_out).emit(), greedy.spill_slot_count
     )
+    greedy_static_instrs, _ = count_riscv_instrs(greedy_code)
+    greedy_spill_stores, greedy_reloads = count_spill_reload_sites(greedy_code)
     greedy_errors = _validate_asm(greedy_code)
     greedy_emu = _run_emulator(greedy_code, expected_a0)
 
@@ -391,9 +401,15 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         "sv_cat_buckets": _op_categories(sv_cats),
         "asm_errors": asm_errors,
         "asm_valid": len(asm_errors) == 0,
-        "greedy_time_s": greedy_time,
+        "greedy_time_s": statistics.mean(greedy_times),
+        "greedy_stdev_s": (
+            statistics.stdev(greedy_times) if len(greedy_times) > 1 else 0
+        ),
         "greedy_out_instrs": len(greedy_out),
+        "greedy_static_instrs": greedy_static_instrs,
         "greedy_spill_slots": greedy.spill_slot_count,
+        "greedy_spill_stores": greedy_spill_stores,
+        "greedy_reloads": greedy_reloads,
         "greedy_asm_valid": not greedy_errors,
         "greedy_asm_errors": greedy_errors,
         "greedy_emu_passed": greedy_emu["passed"],
@@ -402,6 +418,87 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         "_alloc": alloc,
         "_assembly": code,
         "expected_a0": expected_a0,
+    }
+
+
+def _improvement_pct(before: float, after: float) -> float | None:
+    """Return the percentage reduction; positive values are improvements."""
+
+    if before == 0:
+        return 0.0 if after == 0 else None
+    return round((before - after) / before * 100, 2)
+
+
+def _build_optimization_comparison(stats: dict) -> dict | None:
+    """Build a machine-readable Greedy -> LinearScan comparison."""
+
+    required = {
+        "greedy_time_s",
+        "mean_s",
+        "greedy_static_instrs",
+        "sv_static_instrs",
+        "greedy_spill_slots",
+        "spill_slots",
+        "greedy_spill_stores",
+        "spill_stores",
+        "greedy_reloads",
+        "reloads",
+    }
+    if not required.issubset(stats):
+        return None
+
+    def metric(label: str, unit: str, before: float, after: float) -> dict:
+        return {
+            "label": label,
+            "unit": unit,
+            "before": before,
+            "after": after,
+            "improvement_pct": _improvement_pct(before, after),
+        }
+
+    return {
+        "baseline": "Greedy allocator",
+        "optimized": "Topic17 LinearScan",
+        "same_machine_ir": True,
+        "metrics": {
+            "allocation_time": metric(
+                "Allocation mean",
+                "ms",
+                stats["greedy_time_s"] * 1000,
+                stats["mean_s"] * 1000,
+            ),
+            "static_instructions": metric(
+                "Static instructions",
+                "instructions",
+                stats["greedy_static_instrs"],
+                stats["sv_static_instrs"],
+            ),
+            "spill_slots": metric(
+                "Spill slots",
+                "slots",
+                stats["greedy_spill_slots"],
+                stats["spill_slots"],
+            ),
+            "spill_stores": metric(
+                "Spill stores",
+                "instructions",
+                stats["greedy_spill_stores"],
+                stats["spill_stores"],
+            ),
+            "reloads": metric(
+                "Reloads",
+                "instructions",
+                stats["greedy_reloads"],
+                stats["reloads"],
+            ),
+        },
+        "correctness": {
+            "before": bool(
+                stats.get("greedy_asm_valid")
+                and stats.get("greedy_emu_passed")
+            ),
+            "after": bool(stats.get("asm_valid") and stats.get("emu_passed")),
+        },
     }
 
 
@@ -438,6 +535,9 @@ def run_bench(
         stats["instr_ratio_fd"] = round(
             stats["llvm_fd_instrs"] / max(stats["sv_static_instrs"], 1), 2
         )
+    comparison = _build_optimization_comparison(stats)
+    if comparison is not None:
+        stats["optimization_comparison"] = comparison
     return stats
 
 

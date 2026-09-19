@@ -356,7 +356,7 @@ jobs:
             || echo "WARNING: dashboard generation failed"
 
       # ── 3.8 寄存器分配 benchmark(线性扫描:simple/dense/cnn + LLVM对比) ──
-      - name: Register allocation benchmarks
+      - name: Topic 17 register-allocation before/after benchmark
         run: |
           $PY -m benchmarks.test_regalloc.bench_regalloc_linear \
             --repeats 30 \
@@ -450,7 +450,7 @@ jobs:
             tail -20 benchmark_reports/llvm_vs_scratchv.md >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Register Allocation Benchmarks" >> $GITHUB_STEP_SUMMARY
+          echo "### Topic 17 Register Allocation: Before vs After" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/regalloc_bench.md ]; then
             cat benchmark_reports/regalloc_bench.md >> $GITHUB_STEP_SUMMARY
           fi
