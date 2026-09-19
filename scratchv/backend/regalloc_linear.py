@@ -17,20 +17,31 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from scratchv.backend.machine_semantics import (
+    get_machine_semantics,
+    linear_scan_operands,
+    virtual_register_defs_uses,
+)
+from scratchv.backend.machine_types import ALL_REGS, ARG_REGS
+from scratchv.backend.regalloc_metrics import (
+    count_spill_reload_sites,
+    peak_live_intervals,
+)
+from scratchv.backend.regalloc_cfg import (
+    MachineCFG,
+    analyze_control_flow,
+    apply_cfg_liveness,
+)
+from scratchv.backend.regalloc_rewrite import rewrite_with_spills
+
 
 # ---------------------------------------------------------------------------
 # RISC-V register definitions
 # ---------------------------------------------------------------------------
 
-# Allocatable integer registers (excludes x0/zero, sp, gp, tp, ra)
-_INT_REGS = [
-    # Argument/temp registers (caller-saved)
-    "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",   # x10-x17
-    "t0", "t1", "t2", "t3", "t4", "t5", "t6",          # x5-x7, x28-x31
-    # Saved registers (callee-saved)
-    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",    # x8-x9, x18-x23
-    "s8", "s9", "s10", "s11",                           # x24-x27
-]
+# Canonical 19-register bank shared with the greedy allocator.  Keep the
+# private alias for compatibility with existing benchmark imports.
+_INT_REGS = list(ALL_REGS)
 
 _FP_REGS = [
     "f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7",
@@ -116,6 +127,12 @@ class LsInstruction:
 
     def to_asm(self, rename: Optional[dict[str, str]] = None) -> str:
         """Emit this instruction as assembly after register renaming."""
+        if self.opcode == ".label":
+            label = self.operands[0] if self.operands else self.comment
+            if not label:
+                raise ValueError("machine label must have a name")
+            return f"{label}:"
+
         ops = self.operands[:]
         if rename:
             ops = [rename.get(o, o) for o in ops]
@@ -192,12 +209,38 @@ class LinearScanAllocator:
             phys_regs if phys_regs is not None
             else list(_DEFAULT_PHYS_REGS)
         )
+        valid_regs = set(ALL_REGS) | set(ARG_REGS)
+        invalid = [reg for reg in self.phys_regs if reg not in valid_regs]
+        if invalid:
+            raise ValueError(
+                "linear regalloc supports only RV32 integer allocatable "
+                f"registers; invalid: {', '.join(invalid)}"
+            )
+        if len(set(self.phys_regs)) != len(self.phys_regs):
+            raise ValueError("linear regalloc physical registers must be unique")
         self.stack_slot: int = 0
         self.alloc_map: dict[str, str] = {}
-        self.spill_code: list[tuple[int, str, str]] = (
-            []  # (position, op, operand)
-        )
+        self.spill_code: dict[int, list[str]] = {}  # pos -> [sw asm lines]
         self._spill_slots: dict[str, int] = {}  # vreg -> slot offset
+        self._reloads: dict[int, list[tuple[str, int]]] = (
+            {}  # pos -> [(vreg, slot), ...]
+        )
+        self._spilled: set[str] = set()
+        self._intervals: list[LiveInterval] = []
+        self._vreg_interval: dict[str, LiveInterval] = {}
+        self._evictions: dict[int, list[str]] = {}  # pos -> sw lines emitted before reload
+        self.peak_active: int = 0
+        self.pressure_peak: int = 0
+        self.pressure_excess_peak: int = 0
+        self.spill_store_count: int = 0
+        self.reload_load_count: int = 0
+        self.cfg: MachineCFG = MachineCFG([], {}, {})
+
+    @property
+    def spill_slot_count(self) -> int:
+        """Return the number of unique stack slots reserved for spills."""
+
+        return len(self._spill_slots)
 
     # ------------------------------------------------------------------
     # Live interval computation
@@ -254,7 +297,8 @@ class LinearScanAllocator:
                 vreg=vreg, start=start, end=end, uses=uses,
             ))
 
-        return sorted(intervals, key=lambda iv: iv.start)
+        self.cfg = analyze_control_flow(block)
+        return apply_cfg_liveness(intervals, self.cfg)
 
     # ------------------------------------------------------------------
     # Linear scan allocation
@@ -275,6 +319,19 @@ class LinearScanAllocator:
         self.alloc_map.clear()
         self.spill_code.clear()
         self._spill_slots.clear()
+        self._reloads.clear()
+        self._spilled.clear()
+        self._evictions.clear()
+        self.stack_slot = 0
+        self._intervals = intervals
+        self._vreg_interval = {iv.vreg: iv for iv in intervals}
+        self.peak_active = 0
+        self.pressure_peak = peak_live_intervals(intervals)
+        self.pressure_excess_peak = max(
+            0, self.pressure_peak - len(self.phys_regs)
+        )
+        self.spill_store_count = 0
+        self.reload_load_count = 0
 
         # Active list: (interval, phys_reg) sorted by increasing end
         active: list[tuple[LiveInterval, str]] = []
@@ -301,6 +358,8 @@ class LinearScanAllocator:
                     self.alloc_map[interval.vreg] = reg
                     active.append((interval, reg))
 
+            self.peak_active = max(self.peak_active, len(active))
+
         return dict(self.alloc_map)
 
     def _expire_old_intervals(self, active: list[tuple[LiveInterval, str]],
@@ -322,19 +381,12 @@ class LinearScanAllocator:
         """Select a register to spill and emit spill code.
 
         Chooses the active interval with the farthest end position to spill.
-
-        Parameters
-        ----------
-        current:
-            The live interval that needs a register.
-        active:
-            Currently active intervals.
-        free_regs:
-            List of free registers (will be appended to if a spill succeeds).
+        Records reload positions for the spilled interval so that
+        ``get_allocated_code`` can insert ``lw`` before each future use.
 
         Returns
         -------
-        The physical register freed by spilling, or None if no spill possible.
+        The physical register freed by spilling, or None if current is spilled.
         """
         if not active:
             return None
@@ -352,23 +404,37 @@ class LinearScanAllocator:
 
         # Only spill if the current interval ends earlier
         if current.end <= spill_interval.end:
-            # Spill the farthest interval
+            # Spill the farthest active interval (victim)
             slot = self._get_spill_slot(spill_interval.vreg)
             active.pop(spill_idx)
-            # Emit store after the definition point
-            self.spill_code.append(
-                (spill_interval.start, "sw",
-                 f"{spill_reg}, {slot}(sp)  # spill {spill_interval.vreg}")
+            self._evictions.setdefault(current.start, []).append(
+                f"  sw {spill_reg}, {slot}(sp)  # evict {spill_interval.vreg}"
             )
+            # Remove stale mapping so codegen won't use the freed register
+            if spill_interval.vreg in self.alloc_map:
+                del self.alloc_map[spill_interval.vreg]
+            self._spilled.add(spill_interval.vreg)
+            # Record reload at every future use of the spilled vreg
+            for use_pos in spill_interval.uses:
+                if use_pos > current.start:
+                    self._reloads.setdefault(use_pos, []).append(
+                        (spill_interval.vreg, slot))
             free_regs.append(spill_reg)
             return spill_reg
 
         # Otherwise, spill the current interval
         slot = self._get_spill_slot(current.vreg)
-        self.spill_code.append(
-            (current.start, "sw",
-             f"{self.phys_regs[0]}, {slot}(sp)  # spill {current.vreg}")
+        # Assign a temporary register for the definition instruction
+        temp_reg = self.phys_regs[0]
+        self.alloc_map[current.vreg] = temp_reg
+        self._spilled.add(current.vreg)
+        self.spill_code.setdefault(current.start, []).append(
+            f"  sw {temp_reg}, {slot}(sp)  # spill {current.vreg}"
         )
+        for use_pos in current.uses:
+            if use_pos > current.start:
+                self._reloads.setdefault(use_pos, []).append(
+                    (current.vreg, slot))
         return None
 
     def _get_spill_slot(self, vreg: str) -> int:
@@ -382,40 +448,142 @@ class LinearScanAllocator:
     # Code generation
     # ------------------------------------------------------------------
 
-    def get_allocated_code(self, block: list[LsInstruction]) -> str:
-        """Generate allocated assembly code for the block.
+    def emit(self, block: list[LsInstruction]) -> str:
+        """Main entry point: allocate registers and emit assembly.
 
-        Parameters
-        ----------
-        block:
-            The original block of LsInstruction objects.
+        Computes live intervals, runs linear-scan allocation, then
+        generates assembly with spill stores and reloads interleaved.
+        """
+        intervals = self.compute_live_intervals(block)
+        self.allocate(intervals)
+        return self.get_allocated_code(block)
 
-        Returns
-        -------
-        RISC-V assembly text with physical registers and spill code.
+    def _get_allocated_code_legacy(self, block: list[LsInstruction]) -> str:
+        """Generate allocated assembly with spill stores and reloads.
+
+        Walks the instruction block in order.  Before each instruction
+        that uses a spilled vreg, a reload ``lw`` is inserted.  After
+        each instruction that defines a spilled vreg, a spill ``sw``
+        is inserted.
         """
         lines: list[str] = []
-        rename = self.alloc_map
-
-        # Build a position -> spill load map
-        spill_loads: dict[int, list[str]] = {}
-        for pos, op, operand in self.spill_code:
-            if "sw" in op:
-                lines.append(f"  {op} {operand}")
-            else:
-                if pos not in spill_loads:
-                    spill_loads[pos] = []
-                spill_loads[pos].append(f"  {op} {operand}")
+        rename: dict[str, str] = dict(self.alloc_map)
 
         for inst in block:
-            # Insert spill loads before instruction
-            if inst.id in spill_loads:
-                for load_line in spill_loads[inst.id]:
-                    lines.append(load_line)
+            # Emit eviction spill stores before reloads at this position
+            if inst.id in self._evictions:
+                lines.extend(self._evictions[inst.id])
+
+            # Insert reloads before the instruction
+            if inst.id in self._reloads:
+                # Vregs used/defined by this instruction must not be evicted
+                # by _evict_for_reload, otherwise inst.to_asm() would get
+                # an unresolved vreg name.
+                protected: set[str] = inst.uses | inst.defines
+                for vreg, slot in self._reloads[inst.id]:
+                    reload_reg = self._pick_reload_reg(rename, inst.id, protected)
+                    lines.append(
+                        f"  lw {reload_reg}, {slot}(sp)"
+                        f"  # reload {vreg}"
+                    )
+                    rename[vreg] = reload_reg
 
             lines.append(inst.to_asm(rename))
 
-        return "\n".join(lines)
+            # Insert spill stores after the instruction
+            if inst.id in self.spill_code:
+                lines.extend(self.spill_code[inst.id])
+
+        assembly = "\n".join(lines)
+        (
+            self.spill_store_count,
+            self.reload_load_count,
+        ) = count_spill_reload_sites(assembly)
+        return assembly
+
+    def _pick_reload_reg(self, rename: dict[str, str], current_pos: int,
+                          protected_vregs: set[str] | None = None) -> str:
+        """Pick a free physical register for a reload ``lw``.
+
+        Filters *rename* by actual liveness at *current_pos* so that
+        registers held by already-expired vregs are considered free.
+        If all registers are genuinely occupied, evicts the one whose
+        interval ends farthest away.
+
+        *protected_vregs* are excluded from eviction — typically the
+        current instruction's own uses/defines — since evicting them
+        would leave the instruction with an unresolved vreg name.
+        """
+        used: set[str] = set()
+        for vreg, preg in rename.items():
+            interval = self._vreg_interval.get(vreg)
+            if interval is None or interval.contains(current_pos):
+                used.add(preg)
+        for reg in self.phys_regs:
+            if reg not in used:
+                return reg
+        return self._evict_for_reload(rename, used, current_pos, protected_vregs)
+
+    def _evict_for_reload(
+        self, rename: dict[str, str], used: set[str], current_pos: int,
+        protected_vregs: set[str] | None = None,
+    ) -> str:
+        """Evict a live register to make room for a reload.
+
+        Picks the vreg whose interval ends farthest away, generates a
+        spill store to its stack slot, and records future reloads for
+        its remaining uses.
+
+        Vregs in *protected_vregs* are excluded from eviction — they are
+        needed by the instruction at *current_pos* and evicting them
+        would produce unresolved vreg names in the output.
+        """
+        protect = protected_vregs or set()
+        farthest_vreg: str | None = None
+        farthest_end = -1
+        for vreg, preg in rename.items():
+            if preg not in used:
+                continue
+            if vreg in protect:
+                continue
+            interval = self._vreg_interval.get(vreg)
+            if interval is not None and interval.end > farthest_end:
+                farthest_end = interval.end
+                farthest_vreg = vreg
+
+        if farthest_vreg is None:
+            return self.phys_regs[0]
+
+        evicted_reg = rename[farthest_vreg]
+        slot = self._get_spill_slot(farthest_vreg)
+        self._spilled.add(farthest_vreg)
+
+        # Emit spill store BEFORE the reload (evictions go before reloads)
+        self._evictions.setdefault(current_pos, []).append(
+            f"  sw {evicted_reg}, {slot}(sp)"
+            f"  # evict {farthest_vreg} for reload"
+        )
+
+        # Record future reloads for remaining uses of the evicted vreg
+        interval = self._vreg_interval.get(farthest_vreg)
+        if interval is not None:
+            for use_pos in interval.uses:
+                if use_pos > current_pos:
+                    self._reloads.setdefault(use_pos, []).append(
+                        (farthest_vreg, slot))
+
+        del rename[farthest_vreg]
+        return evicted_reg
+
+    def get_allocated_code(self, block: list[LsInstruction]) -> str:
+        """Emit allocated code through the CFG-aware spill rewriter."""
+
+        assembly = rewrite_with_spills(self, block)
+        (
+            self.spill_store_count,
+            self.reload_load_count,
+        ) = count_spill_reload_sites(assembly)
+        return assembly
 
     # ------------------------------------------------------------------
     # Report
@@ -424,11 +592,17 @@ class LinearScanAllocator:
     def report(self) -> str:
         """Return a string summary of the allocation result."""
         total = len(self.alloc_map)
-        spilled = len(self._spill_slots)
+        spilled = self.spill_slot_count
         parts = []
         parts.append("Linear Scan Register Allocation Report")
         parts.append(f"  Virtual registers allocated: {total}")
         parts.append(f"  Stack spill slots used: {spilled}")
+        parts.append(f"  Static spill stores: {self.spill_store_count}")
+        parts.append(f"  Static reload loads: {self.reload_load_count}")
+        parts.append(f"  Peak live-register pressure: {self.pressure_peak}")
+        parts.append(
+            f"  Peak pressure above register bank: {self.pressure_excess_peak}"
+        )
         parts.append(
             f"  Physical registers available: {len(self.phys_regs)}"
         )
@@ -459,24 +633,8 @@ def block_from_machine_instrs(
     """
     result = []
     for i, mi in enumerate(instrs):
-        defines: set[str] = set()
-        uses: set[str] = set()
-        operands: list[str] = []
-
-        for op in (mi.dst, mi.src1, mi.src2):
-            if op is None:
-                continue
-            op_str = str(op).lstrip("%")
-            if op.kind == "vreg":
-                # For the destination operand position
-                if op is mi.dst:
-                    defines.add(op_str)
-                    operands.append(op_str)
-                else:
-                    uses.add(op_str)
-                    operands.append(op_str)
-            else:
-                operands.append(op_str)
+        defines, uses = virtual_register_defs_uses(mi)
+        operands, comment = linear_scan_operands(mi)
 
         if mi.op.value == ".label":
             label_name = mi.target if mi.target is not None else mi.comment
@@ -491,7 +649,7 @@ def block_from_machine_instrs(
                 operands=operands,
                 defines=defines,
                 uses=uses,
-                comment=mi.comment, target=mi.target,
+                comment=comment, target=mi.target,
             ))
 
     return result
@@ -519,21 +677,29 @@ def machine_instrs_from_block(
     result = []
     for inst in block:
         if inst.opcode == ".label":
+            label = inst.operands[0] if inst.operands else inst.comment
             result.append(MachineInstr(
-                MachineOp.LABEL, comment=inst.comment, target=inst.target or inst.comment,
+                MachineOp.LABEL, comment=label, target=inst.target or label,
             ))
             continue
 
         # Resolve opcode
-        try:
-            mop = MachineOp(inst.opcode)
-        except ValueError:
-            mop = MachineOp.MV  # fallback
+        mop = MachineOp(inst.opcode)
 
-        # Build operands
+        # Move semantic branch/jump targets back to MachineInstr.comment,
+        # preserving the legacy MachineInstr representation on round-trip.
+        operand_strings = list(inst.operands)
+        comment = inst.comment
+        semantics = get_machine_semantics(mop)
+        if semantics.target_from_comment:
+            if semantics.target_required and not operand_strings:
+                raise ValueError(f"{mop.value} requires a target label")
+            if operand_strings:
+                comment = operand_strings.pop()
+
+        # Build register/immediate operands.
         def _to_mop(s: str) -> MachineOperand:
-            if s.startswith("x") or s.startswith("a") or s.startswith("t") or \
-               s.startswith("s") or s.startswith("f") or s in ("zero", "ra", "sp", "gp", "tp", "fp"):
+            if s in _REG_NUMS:
                 return MachineOperand.reg(s)
             try:
                 return MachineOperand.immediate(int(s))
@@ -543,7 +709,7 @@ def machine_instrs_from_block(
         dst = None
         src1 = None
         src2 = None
-        ops = [_to_mop(o) for o in inst.operands]
+        ops = [_to_mop(o) for o in operand_strings]
         if len(ops) >= 1:
             dst = ops[0]
         if len(ops) >= 2:
@@ -551,6 +717,6 @@ def machine_instrs_from_block(
         if len(ops) >= 3:
             src2 = ops[2]
 
-        result.append(MachineInstr(mop, dst, src1, src2, inst.comment, inst.target))
+        result.append(MachineInstr(mop, dst, src1, src2, comment, inst.target))
 
     return result

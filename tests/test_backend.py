@@ -5,6 +5,8 @@ from scratchv.backend.instruction_select import InstructionSelector
 from scratchv.backend.register_alloc import RegisterAllocator, MachineOp
 from scratchv.backend.asm_emit import AsmEmitter
 from scratchv.frontend.dsl_parser import DSLParser
+from scratchv.compiler import CompilerConfig, CompilerDriver
+from scratchv.main import args_to_config, build_arg_parser
 
 
 class TestInstructionSelect:
@@ -108,3 +110,30 @@ class TestAsmEmitter:
         asm = emitter.emit()
 
         assert "max" in asm
+
+
+class TestConstMergeIntegration:
+    def test_main_cli_flag_enables_compiler_config(self):
+        args = build_arg_parser().parse_args(["input.dsl", "--const-merge"])
+        config = args_to_config(args)
+        assert config.const_merge is True
+
+    def test_compiler_driver_runs_const_merge_post_pass(self):
+        driver = CompilerDriver(CompilerConfig(const_merge=True))
+        warnings: list[str] = []
+        result = driver._run_asm_passes(
+            "  lui t0, 1\n  addi t0, t0, 2\n",
+            warnings,
+        )
+        assert "li t0, 4098" in result
+        assert len(warnings) == 1
+        assert "1 changes" in warnings[0]
+        assert "1 pairs" in warnings[0]
+
+    def test_disabled_config_leaves_assembly_unchanged(self):
+        driver = CompilerDriver(CompilerConfig(const_merge=False))
+        source = "  lui t0, 1\n  addi t0, t0, 2\n"
+        warnings: list[str] = []
+        result = driver._run_asm_passes(source, warnings)
+        assert result == source
+        assert warnings == []

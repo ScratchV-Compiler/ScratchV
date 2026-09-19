@@ -26,6 +26,8 @@ from typing import Optional
 
 # moved import above
 from scratchv.frontend.dsl_parser import DSLParser, DSLParseError
+from scratchv.frontend.dsl_errors import ErrorCollector
+from scratchv.frontend.dsl_validator import DSLValidator
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import OpCode, Program, Value
 
@@ -97,7 +99,16 @@ class ExtendedDSLParser(DSLParser):
     # Core parse method (overrides base)
     # -----------------------------------------------------------------------
 
-    def parse(self, text: str) -> Program:
+    def validate(
+        self, text: str, *, filename: str | None = None,
+        max_errors: int = 20,
+    ) -> ErrorCollector:
+        """Validate base and extended DSL syntax without creating IR."""
+        return DSLValidator(extended=True).validate(
+            text, filename=filename, max_errors=max_errors,
+        )
+
+    def parse(self, text: str, *, filename: str | None = None) -> Program:
         """Parse DSL text into IR Program, supporting if/else and while.
 
         Args:
@@ -106,6 +117,10 @@ class ExtendedDSLParser(DSLParser):
         Returns:
             A Program object containing the generated IR.
         """
+        collector = self.validate(text, filename=filename)
+        if collector.has_errors:
+            raise collector.errors[0]
+
         # Strip comments before splitting to handle block-level constructs
         lines_raw = text.split("\n")
         lines: list[str] = []

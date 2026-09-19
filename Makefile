@@ -1,7 +1,7 @@
 # ScratchV developer makefile
 .POSIX:
 
-.PHONY: quick-start install test bench bench-cnn clean lint
+.PHONY: quick-start install test test-peephole ci-peephole bench bench-cnn clean lint
 
 # ── Beginner quick-start ─────────────────────────────────────────────────────
 
@@ -39,6 +39,22 @@ install:
 
 test:
 	python3 -m pytest tests/ -v --tb=short
+
+# ── Topic 13 窥孔优化器（本地 / CI 对齐） ─────────────────────────────────
+
+test-peephole:
+	python3 -m pytest tests/test_asm_peephole*.py -v --tb=short
+	python3 -m scratchv.backend.asm_peephole --list-rules
+	python3 -m scratchv.backend.asm_peephole \
+		tests/fixtures/asm_peephole/input_addi_fusion.s \
+		-o /tmp/peephole_out.s --report --json
+
+ci-peephole: test-peephole
+	@mkdir -p benchmark_reports
+	python3 benchmarks/compare_peephole.py \
+		--json benchmark_reports/peephole_compare.json \
+		--markdown benchmark_reports/peephole_compare.md
+	@echo "Peephole CI checks done."
 
 # ── 模型性能基准 ──────────────────────────────────────────────────────────
 

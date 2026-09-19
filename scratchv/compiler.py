@@ -190,6 +190,9 @@ class CompileResult:
     stats: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    diagnostics: list[Any] = field(default_factory=list)
+    diagnostic_limit_reached: bool = False
+    diagnostic_limit: int = 20
 
     def summary(self) -> str:
         """Return a one-line summary."""
@@ -240,10 +243,44 @@ class CompilerDriver:
         if output_path is None:
             output_path = "output.ll" if self.config.backend == "llvm" else "output.s"
 
+        use_dsl = (
+            dsl_source is not None
+            or (input_path and input_path.endswith(".dsl"))
+        )
+
+        if use_dsl:
+            source = dsl_source
+            if source is None and input_path:
+                with open(input_path) as source_file:
+                    source = source_file.read()
+            from scratchv.frontend.dsl_extended import ExtendedDSLParser
+            parser = ExtendedDSLParser()
+            collector = parser.validate(
+                source or "", filename=input_path or "<dsl>",
+            )
+            if collector.has_errors:
+                diagnostics = collector.errors
+                return CompileResult(
+                    success=False,
+                    errors=[str(error) for error in diagnostics],
+                    diagnostics=diagnostics,
+                    diagnostic_limit_reached=collector.limit_reached,
+                    diagnostic_limit=collector.max_errors,
+                )
+
         # --- 1. Parse ---
         try:
             program = self._parse(input_path, dsl_source)
         except Exception as e:
+            if use_dsl:
+                from scratchv.frontend.dsl_errors import DSLSyntaxError
+                if isinstance(e, DSLSyntaxError):
+                    return CompileResult(
+                        success=False,
+                        errors=[str(e)],
+                        diagnostics=[e],
+                    )
+                raise
             return CompileResult(
                 success=False, errors=[f"Parse error: {e}"],
             )
@@ -334,13 +371,10 @@ class CompilerDriver:
             if source is None and input_path:
                 with open(input_path) as f:
                     source = f.read()
-            # Try extended DSL first
-            try:
-                from scratchv.frontend.dsl_extended import ExtendedDSLParser
-                return ExtendedDSLParser().parse(source)
-            except Exception:
-                from scratchv.frontend.dsl_parser import DSLParser
-                return DSLParser().parse(source)
+            from scratchv.frontend.dsl_extended import ExtendedDSLParser
+            return ExtendedDSLParser().parse(
+                source or "", filename=input_path or "<dsl>",
+            )
         else:
             from scratchv.frontend.onnx_parser import ONNXParser
             return ONNXParser().parse(input_path)
@@ -403,23 +437,29 @@ class CompilerDriver:
         selector = InstructionSelector(program)
         machine_instrs = selector.run()
 
-        alloc = RegisterAllocator(machine_instrs, mode=self.config.reg_alloc)
-        allocated = alloc.run()
-
-        # Optional: use linear-scan instead
+        # Linear-scan path: allocate on *unallocated* MachineInstrs.
+        # (Previously RegisterAllocator ran first with mode="linear", which
+        # fell through to greedy — so LinearScan never saw virtual regs.)
         if self.config.reg_alloc == "linear":
             from scratchv.backend.regalloc_linear import (
                 LinearScanAllocator, block_from_machine_instrs,
             )
-            ls_insts = block_from_machine_instrs(allocated)
+            ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
-            intervals = lsa.compute_live_intervals(ls_insts)
-            lsa.allocate(intervals)
-            # Use linear-scan allocated code as assembly directly
-            return lsa.get_allocated_code(ls_insts)
+            assembly = lsa.emit(ls_insts)
+            from scratchv.backend.abi_frame import apply_abi_frames
+            return apply_abi_frames(assembly, lsa.spill_slot_count)
+
+        mode = self.config.reg_alloc if self.config.reg_alloc in (
+            "naive", "greedy",
+        ) else "greedy"
+        alloc = RegisterAllocator(machine_instrs, mode=mode)
+        allocated = alloc.run()
 
         emitter = AsmEmitter(allocated)
-        return emitter.emit()
+        assembly = emitter.emit()
+        from scratchv.backend.abi_frame import apply_abi_frames
+        return apply_abi_frames(assembly, alloc.spill_slot_count)
 
     def _generate_riscv_dag(self, program) -> str:
         """DAG-based instruction selection pipeline."""
@@ -436,11 +476,26 @@ class CompilerDriver:
         scheduler = DAGScheduler(dag)
         machine_instrs = scheduler.run()
 
-        alloc = RegisterAllocator(machine_instrs, mode=self.config.reg_alloc)
+        if self.config.reg_alloc == "linear":
+            from scratchv.backend.regalloc_linear import (
+                LinearScanAllocator, block_from_machine_instrs,
+            )
+            ls_insts = block_from_machine_instrs(machine_instrs)
+            lsa = LinearScanAllocator()
+            assembly = lsa.emit(ls_insts)
+            from scratchv.backend.abi_frame import apply_abi_frames
+            return apply_abi_frames(assembly, lsa.spill_slot_count)
+
+        mode = self.config.reg_alloc if self.config.reg_alloc in (
+            "naive", "greedy",
+        ) else "greedy"
+        alloc = RegisterAllocator(machine_instrs, mode=mode)
         allocated = alloc.run()
 
         emitter = AsmEmitter(allocated)
-        return emitter.emit()
+        assembly = emitter.emit()
+        from scratchv.backend.abi_frame import apply_abi_frames
+        return apply_abi_frames(assembly, alloc.spill_slot_count)
 
     # ── Internal: post-codegen passes ───────────────────────────────────────
 
@@ -451,13 +506,21 @@ class CompilerDriver:
             opt = AsmPeepholeOptimizer()
             asm_text, changes = opt.optimize(asm_text)
             if changes:
-                warnings.append(f"Asm peephole: {changes} changes")
+                warnings.append(
+                    f"Asm peephole: {changes} changes, "
+                    f"{opt.instructions_saved} instr saved "
+                    f"({opt.instructions_before}->{opt.instructions_after})"
+                )
 
         if self.config.const_merge:
-            from scratchv.backend.const_merge import merge_constants
-            asm_text, changes = merge_constants(asm_text)
-            if changes:
-                warnings.append(f"Const merge: {changes} changes")
+            from scratchv.backend.const_merge import merge_constants_detailed
+            asm_text, stats = merge_constants_detailed(asm_text)
+            if stats.total_changes:
+                warnings.append(
+                    f"Const merge: {stats.total_changes} changes "
+                    f"({stats.merged_pairs} pairs, "
+                    f"{stats.redundant_lui_removed} redundant lui)"
+                )
 
         if self.config.schedule:
             from scratchv.backend.inst_scheduler import (

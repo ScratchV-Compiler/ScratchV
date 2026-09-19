@@ -1,0 +1,8 @@
+{
+  "description": "32-vreg stress test using input variables (no constants). Fan-in tree over 32 intermediate add(x,x) values triggers spill/reload path. 32 > 19 (greedy allocator register count).",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "x": 1
+  },
+  "expected_return": 64
+}

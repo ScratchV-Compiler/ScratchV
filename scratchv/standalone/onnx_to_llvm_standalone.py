@@ -303,7 +303,7 @@ class LLVMIRBuilder:
 
     def emit_i32_and(self, lhs: str, rhs: str) -> str:
         r = self.fresh("iand")
-        self._p(f"  {r} = and i1 {lhs}, {rhs}")
+        self._p(f"  {r} = and i32 {lhs}, {rhs}")
         return r
 
     # -- control flow ------------------------------------------------------
