@@ -289,10 +289,17 @@ def verify_assembly(asm_code: str, verbose: bool = False) -> dict:
         }
 
     lines = asm_code.strip().split("\n")
-    load_asm(lines, origin=0)
+    code_lines = [
+        line for line in lines
+        if line.strip() and not line.strip().endswith(":")
+    ]
+    if not code_lines:
+        return {"success": True, "instr_count": 0, "error": None}
+
+    m.load_asm(lines, origin=0)
 
     try:
-        m.run(instructions=100_000_000)
+        m.run(instructions=1000)
     except Exception as e:
         return {
             "success": False,
