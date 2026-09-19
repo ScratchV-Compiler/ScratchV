@@ -173,6 +173,9 @@ class IRVerifier:
         # Check 6: SSA validity
         self._check_ssa_validity(func)
 
+        # Unified CFG structural validation (delegated to verify_cfg)
+        self._check_unified_cfg(func)
+
         # Check 7: Entry block existence
         if len(func.blocks) == 0:
             self._add_error(
@@ -447,6 +450,42 @@ class IRVerifier:
                         )
                     else:
                         assigned[instr.dest.name] = i
+
+    # -------------------------------------------------------------------
+    # Unified CFG structural checks (delegated to verify_cfg)
+    # -------------------------------------------------------------------
+
+    def _check_unified_cfg(self, func: Function) -> None:
+        """Build the unified CFG and convert structural diagnostics.
+
+        This deliberately reuses `scratchv.analysis.cfg_validation.verify_cfg`
+        so IR and Machine IR checks do not drift apart.
+        """
+        from scratchv.analysis.adapters import IRCFGAdapter
+        from scratchv.analysis.cfg import build_cfg
+        from scratchv.analysis.cfg_validation import verify_cfg
+
+        try:
+            cfg = build_cfg(IRCFGAdapter(func))
+        except Exception as exc:  # noqa: BLE001 - report as verifier error
+            self._add_error(
+                ErrorLevel.ERROR,
+                f"failed to build unified CFG: {exc}",
+                func_name=func.name,
+                rule="cfg-build",
+            )
+            return
+
+        for diagnostic in verify_cfg(cfg):
+            if diagnostic.severity != "error":
+                continue
+            self._add_error(
+                ErrorLevel.ERROR,
+                diagnostic.message,
+                func_name=func.name,
+                block_name=diagnostic.block,
+                rule=f"cfg:{diagnostic.code}",
+            )
 
     # -------------------------------------------------------------------
     # Helper

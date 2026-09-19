@@ -80,7 +80,7 @@ class RegisterAllocator:
             if instr.dst and instr.dst.kind == "vreg":
                 dst = self._spill_operand(instr.dst)
 
-            self._emit(MachineInstr(instr.op, dst, src1, src2, instr.comment))
+            self._emit(MachineInstr(instr.op, dst, src1, src2, instr.comment, instr.target))
 
             # After: store dst back to stack if it's a vreg
             if instr.dst and instr.dst.kind == "vreg":
@@ -125,7 +125,7 @@ class RegisterAllocator:
                 assert isinstance(v3, str)
                 dst = MachineOperand.reg(self._vreg_map[v3])
 
-            self._emit(MachineInstr(instr.op, dst, src1, src2, instr.comment))
+            self._emit(MachineInstr(instr.op, dst, src1, src2, instr.comment, instr.target))
 
         return self._output
 

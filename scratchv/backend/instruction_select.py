@@ -7,6 +7,8 @@ virtual registers.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from scratchv.ir.types import Instruction, Function, Program
 from scratchv.backend.machine_types import (
     MachineInstr, MachineOp, MachineOperand,
@@ -52,13 +54,13 @@ class InstructionSelector:
         handler(instr)
 
     def _emit(self, op: MachineOp, dst=None, src1=None, src2=None,
-              comment: str = "") -> None:
+              comment: str = "", target: Optional[str] = None) -> None:
         self._instructions.append(
-            MachineInstr(op, dst, src1, src2, comment))
+            MachineInstr(op, dst, src1, src2, comment, target))
 
     def _emit_label(self, name: str) -> None:
         self._instructions.append(
-            MachineInstr(MachineOp.LABEL, comment=name))
+            MachineInstr(MachineOp.LABEL, target=name))
 
     def _op(self, instr: Instruction, idx: int):
         """Get an operand from an IR instruction as a machine operand."""
@@ -204,7 +206,7 @@ class InstructionSelector:
 
         # Check condition: if iv >= end, exit
         end_val = MachineOperand.immediate(int(end))  # type: ignore[arg-type]
-        self._emit(MachineOp.BGE, iv, end_val, comment=exit_label)
+        self._emit(MachineOp.BGE, iv, end_val, target=exit_label)
         self._emit_label(body_label)
 
     def _select_endfor(self, instr: Instruction) -> None:
@@ -218,12 +220,12 @@ class InstructionSelector:
         self._emit(MachineOp.ADDI, iv, iv, MachineOperand.immediate(1),
                    comment="loop inc")
         # Jump back to header
-        self._emit(MachineOp.J, comment=ctx["header"])
+        self._emit(MachineOp.J, target=ctx["header"])
         # Exit label
         self._emit_label(ctx["exit"])
 
     def _select_br(self, instr: Instruction) -> None:
-        self._emit(MachineOp.J, comment=instr.target or "")
+        self._emit(MachineOp.J, target=instr.target or "")
 
     def _select_br_if(self, instr: Instruction) -> None:
         cond = self._op(instr, 0)
@@ -232,8 +234,8 @@ class InstructionSelector:
         false_target = targets[1] if len(targets) > 1 else ""
 
         # bnez cond, true_label; j false_label
-        self._emit(MachineOp.BNEZ, cond, comment=true_target)
-        self._emit(MachineOp.J, comment=false_target)
+        self._emit(MachineOp.BNEZ, cond, target=true_target)
+        self._emit(MachineOp.J, target=false_target)
 
     def _select_return(self, instr: Instruction) -> None:
         if instr.operands:
@@ -281,13 +283,13 @@ class InstructionSelector:
                    comment="src < 1 ?")
         self._emit(MachineOp.BNEZ,
                    MachineOperand.vreg("t_sig"),
-                   comment=keep_label)
+                   target=keep_label)
         self._emit(MachineOp.LI, dst,
                    MachineOperand.immediate(1),
                    comment="clamp to 1")
         # Branch over the mv
         done_label = self._fresh_label("sig_done")
-        self._emit(MachineOp.J, comment=done_label)
+        self._emit(MachineOp.J, target=done_label)
         self._emit_label(keep_label)
         self._emit(MachineOp.MV, dst, src,
                    comment="keep src")
@@ -301,7 +303,7 @@ class InstructionSelector:
         zero_label = self._fresh_label("sig_zero")
         self._emit(MachineOp.BNEZ,
                    MachineOperand.vreg("t_sig2"),
-                   comment=zero_label)
+                   target=zero_label)
         self._emit(MachineOp.LI, dst,
                    MachineOperand.immediate(0),
                    comment="clamp to 0")
@@ -355,12 +357,12 @@ class InstructionSelector:
                    comment="0 < x ?")
         self._emit(MachineOp.BNEZ,
                    MachineOperand.vreg("t_mp"),
-                   comment=gt_label)
+                   target=gt_label)
         self._emit(MachineOp.LI, dst,
                    MachineOperand.immediate(0),
                    comment="result = 0")
         done_label = self._fresh_label("mp_done")
-        self._emit(MachineOp.J, comment=done_label)
+        self._emit(MachineOp.J, target=done_label)
         self._emit_label(gt_label)
         self._emit(MachineOp.MV, dst, src,
                    comment="result = x")

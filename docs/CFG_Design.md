@@ -1,8 +1,8 @@
-﻿# ScratchV 控制流图（CFG）模块 — 设计文档
+# ScratchV 统一控制流图（CFG）基础设施 — 设计文档
 
-> **版本**: 1.0 | **读者**: 模块负责人、代码审查者、下游优化 pass 开发者
-> **源文件**: `scratchv/ir/cfg.py`（待实现） | **课题**: 11 — 控制流图生成器
-> **状态**: 设计中 | **最后更新**: 2026-08-02
+> **版本**: 2.0 | **读者**: 模块负责人、代码审查者、IR/Machine 优化 pass 开发者
+> **主实现**: `scratchv/analysis/cfg.py` | **课题**: 11 — 控制流图生成器
+> **状态**: 已实现（统一 CFG 核心） | **最后更新**: 2026-09-18
 
 ---
 
@@ -10,15 +10,18 @@
 
 ### 1.1 输入与输出
 
-**输入**: ScratchV IR 的 `Program` 对象（经过前端解析的 ONNX 或 DSL）。
+**输入**：
 
-**输出**: 每个 `Function` 对应一个 `CFG` 对象，包含基本块节点和控制流边。
+- IR 层：`scratchv.ir.types.Program` / `Function`
+- Machine IR 层：单函数扁平 `list[MachineInstr]`
+
+**输出**：每个函数一个 `ControlFlowGraph`（兼容别名 `CFG`），包含基本块节点、控制流边，以及可供活跃变量、常量传播、校验器使用的统一图查询接口。
 
 ### 1.2 实例
 
-给定 DSL 源码：
+DSL：
 
-```
+```text
 if (x > 0):
     y = add(x, 1)
 else:
@@ -27,72 +30,60 @@ endif
 return y
 ```
 
-经前端解析为 IR 指令后，CFG 模块应产出 4 个基本块和 4 条边：
+CFG 拓扑：
 
-```
-entry --BRANCH(true)--> L_then --JUMP--> merge --(return, 出口)
-  |                                       ^
-  +-------BRANCH(false)--> L_else --JUMP--+
+```text
+entry --BRANCH(true)--> L_then --JUMP--> merge --(return, exit)
+  |                                        ^
+  +-------BRANCH(false)--> L_else --JUMP---+
 ```
 
 ### 1.3 设计目标
 
 | 目标 | 含义 |
 |------|------|
-| **正确的基本块划分** | 以 label/br/br_if/return 为边界，单趟线性扫描完成 |
-| **准确的边类型** | FALLTHROUGH / BRANCH / JUMP / CALL（预留）四类 |
-| **基础分析能力** | 不可达消除、支配树、自然循环检测 |
-| **可可视化** | 输出 Graphviz DOT，节点着色区分入口/出口/循环头 |
-| **零外部依赖** | 仅依赖 Python 标准库 + `scratchv.ir.types` |
+| **单一事实源** | IR 与 Machine IR 共用一套 CFG 数据结构与图算法 |
+| **adapter 解耦** | 不同指令表示通过 `CFGAdapter` 接入统一 builder |
+| **控制流规则明确** | label、terminator、fallthrough、branch target 契约统一 |
+| **分析可复用** | 活跃变量使用反向数据流，常量传播使用前向数据流，二者复用同一 worklist 框架 |
+| **诊断不静默** | 悬空目标、无效 entry、重复块名、非法 fallthrough 等给出明确错误 |
+| **可可视化** | DOT 输出区分入口/出口/循环头，边类型样式稳定 |
 
-### 1.4 非目标（当前版本不做）
+### 1.4 非目标（当前范围）
 
-- **控制依赖图** — 程序切片的前置需求
-- **SSA 构造 / 破坏** — ScratchV IR 已有 SSA 形式
-- **数据流分析**（到达定义、活跃变量）— 留给后续优化 pass
-- **跨函数分析**（调用图）— 每个函数的 CFG 独立构建
+- 不实现寄存器分配的 spill/reload 插入位置选择
+- 不构造或破坏 SSA；Phi 相关接口保留但 IR 当前无 Phi
+- 不直接修改原始 IR/Machine IR 列表；CFG 只报告事实
 
 ---
 
 ## 2. 架构定位
 
-### 2.1 在 ScratchV 管线中的位置
+### 2.1 管线位置
 
-```
- ONNX / DSL
+```text
+ONNX / DSL
      │
      ▼
-┌─────────┐     ┌───────────┐     ┌───────────┐
-│ Frontend│────▶│ IR Program│────▶│ Optimizer │────▶ Backend
-│ Parser  │     │ types.py  │     │ 5 passes  │
-└─────────┘     └─────┬─────┘     └─────┬─────┘
-                      │                 │
-                      ▼                 │
-                ┌──────────┐            │
-                │   CFG    │◀───────────┘
-                │ Builder  │
-                └────┬─────┘
-                     │
-                     ▼
-           ┌────────────────┐
-           │  下游消费者:    │
-           │ · LICM         │
-           │ · 死代码消除    │
-           │ · 寄存器分配    │
-           │ · IR 验证器     │
-           └────────────────┘
+IR Program ────▶ IRCFGAdapter ─────┐
+                                   ├──▶ build_cfg ──▶ ControlFlowGraph
+MachineInstr ─▶ MachineCFGAdapter ─┘          │
+                                              ├──▶ analyze_liveness
+                                              ├──▶ ConstantPropagation
+                                              └──▶ verify_cfg
 ```
 
-**核心定位**: CFG 是分析基础设施，位于 IR 层之上、优化 pass 之下。
+### 2.2 模块布局
 
-### 2.2 模块依赖
-
-```
-scratchv/ir/cfg.py
-  ├── 依赖: scratchv/ir/types.py
-  ├── 被依赖: scratchv/optimizer/
-  ├── 被依赖: scratchv/analysis/ir_verifier.py
-  └── 外部依赖: 无（仅 Python 标准库）
+```text
+scratchv/analysis/cfg.py             统一 CFG 数据结构 + builder + 图算法
+scratchv/analysis/adapters.py        IRCFGAdapter / MachineCFGAdapter
+scratchv/analysis/liveness.py        反向活跃变量分析
+scratchv/analysis/dataflow.py        通用数据流求解 + 常量传播
+scratchv/analysis/usedef.py          IR / Machine use-def provider
+scratchv/analysis/cfg_validation.py  CFG 结构化诊断
+scratchv/analysis/cfg_builder.py     旧路径兼容 shim
+scratchv/ir/cfg.py                   旧路径兼容 shim
 ```
 
 ---
@@ -103,25 +94,31 @@ scratchv/ir/cfg.py
 
 ```python
 class EdgeType(enum.Enum):
-    FALLTHROUGH = "fallthrough"   # 顺序执行过渡
-    BRANCH      = "branch"        # 条件分支（带 condition 标签）
+    FALLTHROUGH = "fallthrough"   # 顺序过渡
+    BRANCH      = "branch"        # 条件分支，带 true/false 条件
     JUMP        = "jump"          # 无条件跳转
-    CALL        = "call"          # 函数调用（预留，IR 当前无此指令）
+    CALL        = "call"          # 兼容保留；CALL 不是 terminator
 ```
-
-**设计决策**: 包含 CALL 作为预留类型，与课题 user guide 保持一致。
 
 ### 3.2 CFGNode
 
 ```python
 @dataclass
 class CFGNode:
-    name: str                       # 块名（唯一标识）
-    instructions: list[Instruction] # 对原列表的引用（非拷贝），外部修改原 IR 会反映到此列表
-    is_entry: bool                  # 函数入口
-    is_exit: bool                   # 以 return 结尾
-    terminator_opcode: str | None   # 终止指令类型
+    name: str
+    instructions: Any = 0          # builder 产物为 list[Instruction|MachineInstr]
+    is_entry: bool = False
+    is_exit: bool = False
+    terminator_opcode: Optional[str] = None
+    block_id: Optional[str] = None
+    instruction_ids: list[str] = field(default_factory=list)
 ```
+
+说明：
+
+- `instructions` 保留旧接口的整数计数兼容；builder 产物始终为指令序列。
+- `instruction_ids` 为 liveness 等分析提供稳定 `InstructionId`。
+- `block_id` 当前默认等于 `name`。
 
 ### 3.3 CFGEdge
 
@@ -130,205 +127,211 @@ class CFGNode:
 class CFGEdge:
     source: str
     target: str
-    edge_type: EdgeType
-    condition: str | None  # "true"/"false"，仅 BRANCH 类型
+    edge_type: EdgeType = EdgeType.FALLTHROUGH
+    condition: Optional[str] = None
 ```
 
-### 3.4 CFG
+### 3.4 ControlFlowGraph / CFG
 
 ```python
 @dataclass
-class CFG:
+class ControlFlowGraph:
     function_name: str
-    nodes: dict[str, CFGNode]  # dict 保证 O(1) 按名查找
-    edges: list[CFGEdge]       # list 保证遍历效率
-    entry: str                 # 入口块名
+    nodes: dict[str, CFGNode]
+    edges: list[CFGEdge]
+    entry: str
 ```
 
-**DOT 可视化样式规范**（与课题 user guide 一致）：
+核心方法：
 
-节点样式:
+- `successors(block)` / `predecessors(block)`
+- `reachable_nodes` / `unreachable_blocks`
+- `to_dot(highlight_loops=False, loop_headers=None)`
+- `verify_cfg(cfg)` 由 `cfg_validation.py` 提供
+
+DOT 样式：
 
 | 节点类型 | 颜色 |
 |---------|------|
-| 入口块 | 绿色 (`#90EE90`) |
-| 出口块 (return) | 红色 (`#FF6B6B`) |
-| 循环头 | 蓝色 (`#87CEEB`) |
-| 普通块 | 浅黄色 (`lightyellow`) |
-
-边样式:
+| 入口块 | `#90EE90` |
+| 出口块 | `#FF6B6B` |
+| 循环头 | `#87CEEB` |
+| 普通块 | `lightyellow` |
 
 | 边类型 | DOT 样式 |
 |--------|---------|
 | FALLTHROUGH | 黑色实线 |
-| BRANCH | 蓝色虚线 + `[true]`/`[false]` 标签 |
+| BRANCH | 蓝色虚线 + `[true]`/`[false]` |
 | JUMP | 红色实线 |
-| CALL（预留） | 紫色点线 |
+| CALL | 紫色点线（兼容保留） |
 
-### 3.5 NaturalLoop
+---
+
+## 4. 构建算法
+
+### 4.1 CFGAdapter 协议
 
 ```python
-@dataclass
-class NaturalLoop:
-    header: str                        # 循环头块名
-    body: set[str]                     # 循环体中所有块名（含 header）
-    back_edges: list[tuple[str, str]]  # (source, header) 回边列表
-    parent: str | None                 # 外层循环 header
-    children: list[str]                # 内层循环 headers
-    nesting_depth: int                 # 嵌套深度（0 = 最外层）
+class CFGAdapter(Protocol):
+    @property
+    def function_name(self) -> str: ...
+    def blocks(self) -> Sequence[Any]: ...
+    def block_name(self, block) -> str: ...
+    def instructions(self, block) -> Sequence[Any]: ...
+    def is_label(self, instr) -> bool: ...
+    def is_terminator(self, instr) -> bool: ...
+    def branch_targets(self, instr) -> Sequence[str]: ...
+    def has_fallthrough(self, instr) -> bool: ...
+    def opcode_name(self, instr) -> str: ...
 ```
 
-**嵌套关系构建**: 在所有循环检测完毕后，对每对循环 (outer, inner)，若 `inner.header in outer.body` 且 `inner.body` 是 `outer.body` 的真子集，则 inner 嵌套于 outer。递归计算 nesting_depth = outer.depth + 1。
+### 4.2 控制流规则
 
----
+| 指令/场景 | 规则 |
+|-----------|------|
+| LABEL | 块入口；不进入任何块的指令列表 |
+| 条件分支 | target + fallthrough |
+| J/JAL | 只有静态 target，不加 fallthrough |
+| JALR/return | 无静态 successor |
+| CALL | 非 terminator，保留 fallthrough |
+| terminator 后指令 | 必须开启新基本块 |
+| 空函数 | 生成唯一空 entry 块 |
 
-## 4. 算法设计
+### 4.3 FOR/ENDFOR 规范化
 
-### 4.1 基本块划分
+IR adapter 在构建 CFG 前将 `FOR/ENDFOR` 规范化为：
 
-**输入**: `list[Instruction]`  **输出**: `list[tuple[name, list[Instruction]]]`
-
-**算法**: 单趟线性扫描 O(n)
-
+```text
+load_const iv = start
+br for_hdr
+for_hdr:
+br_if iv, end -> for_body, for_exit
+for_body:
+... body ...
+add iv, iv, step
+br for_hdr
+for_exit:
 ```
-遍历指令:
-  遇到 LABEL → 结束当前块；标签名 = 新块名
-               LABEL 指令本身不加入任何块的指令列表，仅用作块名
-  加入指令到当前块
-  遇到 BR / BR_IF / RETURN → 结束当前块
-```
 
-**边界情况**: 空函数返回空 CFG；连续 label 产生空块（保留）；BR 后无 label 则自动命名 `b0`, `b1`...。
+这样 IR 与 Machine CFG 使用同一套显式 branch/label 语义，不再各自维护隐式循环规则。
 
-### 4.2 支配集计算
+### 4.4 支配集与直接支配者
 
-**算法**: 迭代不动点 (Iterative Fixed-Point)
-
-**初始化**:
-```
+```text
 Dom(entry) = {entry}
-Dom(n) = {所有节点}  (n != entry)
+Dom(n)      = {n} ∪ ⋂{Dom(p) | p ∈ predecessors(n)}  (n != entry)
 ```
 
-**迭代** (重复直到不再变化):
-```
-Dom(n) = {n} ∪ 交集{ Dom(p) | p ∈ predecessors(n) }
-```
+- 支配集迭代：实际节点数 N < 100 时 3–5 轮收敛。
+- idom 提取：对每个节点取支配集中“支配集合最大”的严格支配者，最坏 O(N²)。
 
-**复杂度**: 
-- 支配集迭代：理论最坏 O(N²) 轮，实际 3-5 轮收敛（ScratchV CFG 节点数 N < 100）
-- idom 提取：对每个节点遍历其严格支配者，最坏 O(N²)
-- 总体在实际规模下 < 1ms
+### 4.5 自然循环检测
 
-**选型理由**: 工业编译器用 Lengauer-Tarjan（近似 O(N log N)），此处选迭代不动点——代码量约 30 行 vs LT 约 150 行，CFG 节点数小，可读性优先。
+回边：`edge(a → b)` 且 `b ∈ Dom(a)`。
 
-### 4.3 直接支配树
+循环体：从 `source` 反向 BFS，遇 `header` 停止，访问节点加 `header` 组成 body；同一 header 的多条回边合并 body。
 
-从支配集筛选: `idom(n)` = 最接近 n 的严格支配者（在 `Dom(n) - {n}` 中，不被任何其他严格支配者支配的那个）。
-
-### 4.4 自然循环检测
-
-**回边识别**:
-```
-edge(a → b) 且 b ∈ Dom(a) → 回边
-```
-
-**循环体收集**:
-```
-对每条回边 (source, header):
-    从 source 反向 BFS，遇到 header 即停止
-    所有被访问到的节点 + header = body
-    多条回边指向同一 header 时，合并所有回边对应的 body 取并集
-```
-
-**嵌套检测**:
-```
-对每对循环 (outer, inner):
-    若 inner.header ∈ outer.body 且 inner.body ⊂ outer.body:
-        inner.parent = outer.header
-        inner.nesting_depth = outer.nesting_depth + 1
-        outer.children.append(inner.header)
-```
-
-### 4.5 边构建规则
-
-| 块终止指令 | 产生的边 |
-|-----------|---------|
-| RETURN | 无出边 |
-| BR target | 1 条 JUMP → target（不加 FALLTHROUGH） |
-| BR_IF → t1, t2 | 2 条 BRANCH: true→t1, false→t2 |
-| 无终止符（纯计算块） | 1 条 FALLTHROUGH → 下一个块 |
-| BR_IF 只有 1 个 target | true→target + FALLTHROUGH→下一个块 作为 false 路径 |
+嵌套：若 `inner.header ∈ outer.body` 且 `inner.body ⊂ outer.body`，则 inner 为 outer 子循环，设置 `parent`、`children`、`nesting_depth`。
 
 ---
 
-## 5. 接口契约
+## 5. 分析接口
 
-| 函数 | 输入 | 输出 | 不变量 |
-|------|------|------|--------|
-| `partition_basic_blocks_with_names` | 指令列表 | (名,指令) 列表 | 纯函数；LABEL 不进任何指令列表 |
-| `build_cfg_from_instructions` | 指令列表 | CFG | 纯函数；entry 始终是第一个块的名称 |
-| `cfg.successors(name)` | 块名 | 后继列表 | 不存在的块返回 [] |
-| `eliminate_unreachable` | CFG | 被删块名列表 | 原地修改 CFG（非纯函数）；entry 始终保留 |
+### 5.1 活跃变量
+
+```python
+def analyze_liveness(cfg, provider: UseDefProvider) -> LivenessResult
+```
+
+无 Phi：
+
+```text
+live_out[B] = ⋃ live_in[S]
+live_in[B]  = uses[B] ∪ (live_out[B] - defs[B])
+```
+
+有 Phi：
+
+```text
+edge_live[B,S] = (live_in[S] - phi_defs[S]) ∪ phi_uses[B,S]
+live_out[B]     = ⋃ edge_live[B,S]
+```
+
+结果包含：
+
+- `blocks: Mapping[BlockId, BlockLiveness]`
+- `edge_live: Mapping[(BlockId, BlockId), frozenset[ValueId]]`
+- `live_before` / `live_after: Mapping[InstructionId, frozenset[ValueId]]`
+
+### 5.2 数据流求解
+
+`run_dataflow(cfg, analysis)` 提供 forward/backward 统一 worklist，`ConstantPropagation` 是基于该框架的前向分析。
+
+常量 meet：
+
+- `undefined ⊓ c = c`
+- `c ⊓ c = c`
+- `c ⊓ d = overdefined`
+- `overdefined ⊓ x = overdefined`
+
+### 5.3 CFG 校验
+
+`verify_cfg(cfg)` 检查：
+
+- entry 是否存在
+- 边 source/target 是否存在
+- terminator 是否位于块尾
+- 无条件跳转后是否错误存在 fallthrough
+- predecessor/successor 一致性
+
+重复块名在 `build_cfg` 中直接抛出 `ValueError`，不会静默覆盖。
 
 ---
 
-## 6. 技术债与已知限制
+## 6. 已知限制
 
 | 项 | 说明 | 优先级 |
 |----|------|--------|
-| idom 提取复杂度 | O(N²) 理论最坏；实际 N<100 可接受 | 低 |
-| 回边检测去重 | 多条回边指向同一 header 时合并 body 取并集——算法设计中已规划，实现时需验证 | 中 |
-| 空块处理 | 连续 label 间的空块保留但无意义 | 低 |
-| 与旧版 `analysis/cfg_builder.py` 的关系 | 本模块是重写版，旧文件应标注 deprecated | 中 |
-| CALL 边未实现 | CALL 已定义，构建逻辑待 IR 支持函数调用后实现 | 低 |
-| instructions 是引用非拷贝 | 外部修改原 IR 会影响 CFG 节点；CFG 构建期间应冻结 IR | 低 |
+| Phi | 接口已保留，IR 当前无 Phi 构造 | 中 |
+| 常量传播 | 只输出 fact，不直接折叠指令 | 中 |
+| Machine liveness | 仅追踪 vreg；物理寄存器与 CALL clobber 分开暴露 | 中 |
+| 调用图 | 当前每函数 CFG 独立构建 | 低 |
 
 ---
 
 ## 7. 相关文件索引
 
-### 现有文件
+### 核心文件
+
 | 文件 | 关系 |
 |------|------|
-| `scratchv/ir/types.py` | 依赖 — Instruction、OpCode、BasicBlock 等 IR 类型 |
-| `scratchv/analysis/cfg_builder.py` | 旧版实现（本模块重写后标注 deprecated） |
-| `docs/topics/11-控制流图生成器.md` | 课题原始说明 |
-| `docs/CFG_Design.md` | 本文档 |
-| `docs/CFG_Dev.md` | 配套开发文档 |
+| `scratchv/analysis/cfg.py` | 统一 CFG 核心 |
+| `scratchv/analysis/adapters.py` | IR/Machine adapter |
+| `scratchv/analysis/liveness.py` | 反向活跃变量 |
+| `scratchv/analysis/dataflow.py` | 数据流框架 + 常量传播 |
+| `scratchv/analysis/usedef.py` | use/def provider |
+| `scratchv/analysis/cfg_validation.py` | CFG 校验 |
+| `scratchv/analysis/cfg_builder.py` | 旧路径 shim |
+| `scratchv/ir/cfg.py` | 旧路径 shim |
 
-### 待创建文件
-| 文件 | 对应周 | 说明 |
-|------|--------|------|
-| `scratchv/ir/cfg.py` | W2-W9 | 主实现 |
-| `tests/test_cfg.py` | W2-W12 | 单元测试 |
-| `examples/cfg/if_else.dsl` | W4 | if/else 示例 |
-| `examples/cfg/while_loop.dsl` | W9 | while 循环示例 |
-| `examples/cfg/nested_loop.dsl` | W9 | 嵌套循环示例 |
-| `examples/cfg/unreachable.dsl` | W7 | 不可达代码示例 |
-| `scripts/visualize_cfg.py` | W10 | 可视化脚本 |
+### 测试与示例
 
----
-
-## 8. 审查清单
-
-| 检查项 | 验证方法 |
-|--------|---------|
-| 基本块划分正确处理 LABEL/BR/BR_IF/RETURN | 提供 if_else.dsl，检查块数和块名 |
-| LABEL 不进任何指令列表 | 检查每个块的 instructions 中无 LABEL |
-| 边类型与 IR 语义一致 | 对 if_else.dsl 验证 JUMP>=2, BRANCH>=2 |
-| DOT 样式与 user guide 一致 | 生成 DOT 后用 Graphviz 渲染，检查颜色 |
-| 不可达消除不破坏 entry 可达性 | 构造含 return 后死代码的 DSL，验证 dead 块被移除 |
-| 支配集在 10 轮内收敛 | 对所有示例 DSL 运行，断言迭代次数 < 10 |
-| 自然循环检测识别回边和嵌套 | while_loop.dsl 检测到循环，nested_loop.dsl 检测到外层 depth=0 内层 depth=1 |
-| 所有测试通过 | pytest tests/test_cfg.py -v |
+| 文件 | 关系 |
+|------|------|
+| `tests/test_cfg.py` | Topic 11 回归测试 |
+| `tests/test_cfg_builder.py` | 旧 builder 回归测试 |
+| `tests/test_unified_cfg.py` | 统一 CFG 基础设施测试 |
+| `scripts/visualize_cfg.py` | DOT/PNG 可视化 |
+| `examples/cfg/*.dsl` | if/else、while、nested、unreachable 示例 |
 
 ---
 
-## 9. 参考资料
+## 8. 验收标准
 
-- Aho, Lam, Sethi, Ullman — *Compilers: Principles, Techniques, and Tools* (龙书), 第 8.4 / 9.6 节
-- Cooper, Torczon — *Engineering a Compiler*, 第 5 / 9 章
-- Graphviz — [DOT Language Specification](https://graphviz.org/doc/info/lang.html)
-- 课题 11 User Guide — `topic11_cfg_builder_guide.md`
-
+- 项目只有一个正式 CFG 核心实现：`scratchv/analysis/cfg.py`
+- IR 与 Machine IR 共用数据结构与图算法
+- `IRCFGAdapter` / `MachineCFGAdapter` 提供稳定控制流语义
+- liveness 提供块级、边级、指令级结果
+- `verify_cfg` 对非法结构返回明确诊断
+- 精确节点/边/活跃集合测试通过
+- 全量测试通过

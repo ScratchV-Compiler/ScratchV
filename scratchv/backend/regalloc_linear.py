@@ -108,6 +108,7 @@ class LsInstruction:
     defines: set[str] = field(default_factory=set)
     uses: set[str] = field(default_factory=set)
     comment: str = ""
+    target: Optional[str] = None
 
     def __repr__(self) -> str:
         return (f"LsInstruction({self.id}, {self.opcode}, "
@@ -121,8 +122,9 @@ class LsInstruction:
         parts = [f"  {self.opcode}"]
         if ops:
             parts.append(" " + ", ".join(ops))
-        if self.comment:
-            parts.append(f"  # {self.comment}")
+        tail = self.target or self.comment
+        if tail:
+            parts.append(f"  # {tail}")
         return "".join(parts)
 
 
@@ -477,9 +479,10 @@ def block_from_machine_instrs(
                 operands.append(op_str)
 
         if mi.op.value == ".label":
+            label_name = mi.target if mi.target is not None else mi.comment
             result.append(LsInstruction(
-                id=i, opcode=".label", operands=[mi.comment],
-                comment=mi.comment,
+                id=i, opcode=".label", operands=[label_name],
+                comment=mi.comment, target=label_name,
             ))
         else:
             result.append(LsInstruction(
@@ -488,7 +491,7 @@ def block_from_machine_instrs(
                 operands=operands,
                 defines=defines,
                 uses=uses,
-                comment=mi.comment,
+                comment=mi.comment, target=mi.target,
             ))
 
     return result
@@ -517,7 +520,7 @@ def machine_instrs_from_block(
     for inst in block:
         if inst.opcode == ".label":
             result.append(MachineInstr(
-                MachineOp.LABEL, comment=inst.comment,
+                MachineOp.LABEL, comment=inst.comment, target=inst.target or inst.comment,
             ))
             continue
 
@@ -548,6 +551,6 @@ def machine_instrs_from_block(
         if len(ops) >= 3:
             src2 = ops[2]
 
-        result.append(MachineInstr(mop, dst, src1, src2, inst.comment))
+        result.append(MachineInstr(mop, dst, src1, src2, inst.comment, inst.target))
 
     return result
