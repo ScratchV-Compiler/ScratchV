@@ -135,10 +135,14 @@ class InstructionSelector:
     def _op(self, instr: Instruction, idx: int):
         """Get an operand from an IR instruction as a machine operand."""
         op = instr.operands[idx]
-        # LOAD_CONST materializes constants before their use, so consumers
-        # refer to the resulting virtual register.  Most RISC-V arithmetic
-        # and branch instructions do not accept immediate operands.
+        if op.is_constant and op.const_value is not None:
+            return MachineOperand.immediate(int(op.const_value))
         return MachineOperand.vreg(op.name)
+
+    @staticmethod
+    def _reg_op(instr: Instruction, idx: int) -> MachineOperand:
+        """Return an operand through its materialized virtual register."""
+        return MachineOperand.vreg(instr.operands[idx].name)
 
     def _dst(self, instr: Instruction):
         if instr.dest is None:
@@ -330,8 +334,10 @@ class InstructionSelector:
         )
 
         if len(instr.operands) == 2 and "cmp_op" in instr.attrs:
-            lhs = self._op(instr, 0)
-            rhs = self._op(instr, 1)
+            # RISC-V branch comparisons require two registers.  Constants
+            # already have LOAD_CONST definitions, so use those registers.
+            lhs = self._reg_op(instr, 0)
+            rhs = self._reg_op(instr, 1)
             operator = instr.attrs["cmp_op"]
             branches = {
                 "==": (MachineOp.BEQ, lhs, rhs),

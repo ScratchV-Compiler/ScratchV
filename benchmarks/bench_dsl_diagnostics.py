@@ -196,14 +196,29 @@ def run_worker(root: Path, mode: str, args: argparse.Namespace) -> dict:
     return json.loads(result.stdout)
 
 
-def compare_parsing(baseline: dict, current: dict, target: float) -> dict:
+def compare_parsing(
+    baseline: dict,
+    current: dict,
+    target: float,
+    allowed_ir_changes: set[str] | None = None,
+) -> dict:
     same_cases = baseline["case_hashes"] == current["case_hashes"]
     same_ir = baseline["ir_hashes"] == current["ir_hashes"]
+    changed_cases = sorted(
+        name
+        for name, current_hash in current["ir_hashes"].items()
+        if baseline["ir_hashes"].get(name) != current_hash
+    )
+    allowed = allowed_ir_changes or set()
+    unexpected_changes = sorted(set(changed_cases) - allowed)
     ratio = current["median_s"] / baseline["median_s"]
     return {
         "baseline": baseline, "current": current, "same_cases": same_cases,
         "ir_equal": same_ir, "ratio": ratio, "target_ratio": target,
         "target_met": ratio <= target,
+        "ir_changed_cases": changed_cases,
+        "allowed_ir_changes": sorted(allowed),
+        "unexpected_ir_changes": unexpected_changes,
     }
 
 
@@ -230,10 +245,18 @@ def build_report(args: argparse.Namespace) -> dict:
             raise ValueError("--baseline-root is required; no baseline is fabricated")
         baseline = run_worker(args.baseline_root, "baseline", args)
         current = run_worker(ROOT, "current", args)
-        parsing = compare_parsing(baseline, current, args.max_parse_ratio)
+        parsing = compare_parsing(
+            baseline,
+            current,
+            args.max_parse_ratio,
+            set(args.allow_ir_change),
+        )
         report["parsing"] = parsing
-        if not parsing["same_cases"] or not parsing["ir_equal"]:
-            raise ValueError("baseline/current case corpus or generated IR differs")
+        if not parsing["same_cases"]:
+            raise ValueError("baseline/current case corpus differs")
+        if parsing["unexpected_ir_changes"]:
+            changed = ", ".join(parsing["unexpected_ir_changes"])
+            raise ValueError(f"generated IR differs for unexpected cases: {changed}")
         if not parsing["target_met"]:
             report["warnings"].append(
                 f"Parsing ratio {parsing['ratio']:.3f}x exceeds target {args.max_parse_ratio:.3f}x."
@@ -265,6 +288,12 @@ def markdown_report(report: dict, *, include_examples: bool = True) -> str:
                   f"Same case corpus: {parsing['same_cases']}; identical IR dumps: {parsing['ir_equal']}.",
                   f"Performance target enforced: {config['performance_enforced']}.", "",
                   "Cases: " + ", ".join(parsing["current"]["case_hashes"]), ""]
+        if parsing["ir_changed_cases"]:
+            lines += [
+                "Expected IR changes: "
+                + ", ".join(parsing["ir_changed_cases"]),
+                "",
+            ]
     if "diagnostics" in report:
         lines += ["## Diagnostic acceptance and timings", "",
                   "Validation/rendering times are per operation (batch median divided by iterations). CLI runs are correctness checks, not timed.", "",
@@ -310,6 +339,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--iterations", type=positive_int, default=100)
     parser.add_argument("--max-parse-ratio", type=positive_float, default=1.5)
     parser.add_argument("--enforce-performance", action="store_true")
+    parser.add_argument(
+        "--allow-ir-change",
+        action="append",
+        default=[],
+        metavar="CASE",
+        help="allow an expected baseline IR difference for one case filename",
+    )
     parser.add_argument("--worker-timeout", type=positive_int, default=300)
     parser.add_argument("--json", action="store_true", help="emit only JSON to stdout")
     parser.add_argument("--json-output", type=Path)
