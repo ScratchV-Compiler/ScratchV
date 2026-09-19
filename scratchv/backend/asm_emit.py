@@ -6,6 +6,8 @@ or ``riscv64-linux-gnu-gcc``.
 
 from __future__ import annotations
 
+import re
+
 from scratchv.backend.machine_types import (
     MachineInstr, MachineOp, MachineOperand,
 )
@@ -79,6 +81,16 @@ def _fmt_op(op: MachineOperand | None) -> str:
     return str(op).lstrip("%")
 
 
+def _memory_address(op: MachineOperand) -> str:
+    address = _fmt_op(op)
+    legacy = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)\((-?\d+)\)", address)
+    if legacy:
+        return f"{legacy.group(2)}({legacy.group(1)})"
+    if "(" not in address:
+        return f"0({address})"
+    return address
+
+
 class AsmEmitter:
     """Emit RISC-V assembly text from machine instructions."""
 
@@ -128,6 +140,14 @@ class AsmEmitter:
         op_name = _OP_NAMES.get(instr.op)
         if op_name is None:
             return f"  # {instr.op.value} {instr.comment}".strip()
+
+        if instr.op == MachineOp.LW and instr.dst and instr.src1:
+            address = _memory_address(instr.src1)
+            return f"  lw {_fmt_op(instr.dst)}, {address}"
+
+        if instr.op == MachineOp.SW and instr.dst and instr.src1:
+            address = _memory_address(instr.dst)
+            return f"  sw {_fmt_op(instr.src1)}, {address}"
 
         # Branch/jump/call use comment as target label
         if instr.op in (MachineOp.CALL, MachineOp.J, MachineOp.JAL,

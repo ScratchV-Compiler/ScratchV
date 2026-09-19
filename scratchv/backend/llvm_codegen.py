@@ -88,7 +88,7 @@ class LLVMCodegen:
         in "y = add(a, b)") are referenced but not declared as params.
         """
         defined: set[str] = {p.name for p in func.params}
-        referenced: set[str] = set()
+        referenced = {}
 
         for block in func.blocks:
             for instr in block.instructions:
@@ -96,14 +96,12 @@ class LLVMCodegen:
                     defined.add(instr.dest.name)
                 for op in instr.operands:
                     if not op.is_constant:
-                        referenced.add(op.name)
+                        referenced.setdefault(op.name, op)
 
         existing_param_names = {p.name for p in func.params}
-        for name in referenced - defined:
+        for name in referenced.keys() - defined:
             if name not in existing_param_names:
-                # Find the value from the program's globals or create a new one
-                from scratchv.ir.types import Value, DataType
-                val = Value(name=name, dtype=DataType.FLOAT32)
+                val = referenced[name]
                 func.params.append(val)
 
     def _emit_function(self, func: Function) -> None:
@@ -361,15 +359,43 @@ class LLVMCodegen:
         self._p(f"  br label %{target}")
 
     def _emit_br_if(self, instr: Instruction) -> None:
-        cond_op = self._op(instr, 0) if instr.operands else ""
         targets = (instr.target or ",").split(",")
         true_t = targets[0].strip() if len(targets) > 0 else ""
         false_t = targets[1].strip() if len(targets) > 1 else ""
 
-        if cond_op:
+        if len(instr.operands) == 2 and "cmp_op" in instr.attrs:
+            lhs = self._op(instr, 0)
+            rhs = self._op(instr, 1)
+            operator = instr.attrs["cmp_op"]
+            dtype = instr.operands[0].dtype
+            if dtype in (DataType.FLOAT32, DataType.FLOAT64):
+                predicates = {
+                    "==": "oeq", "!=": "une", "<": "olt",
+                    ">": "ogt", "<=": "ole", ">=": "oge",
+                }
+                opcode = "fcmp"
+            else:
+                predicates = {
+                    "==": "eq", "!=": "ne", "<": "slt",
+                    ">": "sgt", "<=": "sle", ">=": "sge",
+                }
+                opcode = "icmp"
+            if operator not in predicates:
+                raise ValueError(f"unsupported comparison operator: {operator}")
+            cmp_result = self._fresh("cmp")
+            ty = _llvm_type(dtype)
+            self._p(
+                f"  {cmp_result} = {opcode} {predicates[operator]} "
+                f"{ty} {lhs}, {rhs}"
+            )
+            self._p(
+                f"  br i1 {cmp_result}, label %{true_t}, label %{false_t}"
+            )
+        elif len(instr.operands) == 1:
+            cond_op = self._op(instr, 0)
             self._p(f"  br i1 {cond_op}, label %{true_t}, label %{false_t}")
         else:
-            self._p(f"  br label %{true_t}")
+            raise ValueError("br_if expects a boolean or comparison operands")
 
     def _emit_return(self, instr: Instruction) -> None:
         if instr.operands:

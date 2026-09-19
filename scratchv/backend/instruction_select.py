@@ -20,6 +20,7 @@ class InstructionSelector:
         self.program = program
         self._instructions: list[MachineInstr] = []
         self._label_counter = 0
+        self._stack_offset = 0
 
     def run(self) -> list[MachineInstr]:
         """Select instructions for all functions.
@@ -38,6 +39,7 @@ class InstructionSelector:
     def _select_function(self, func: Function) -> None:
         # Function prologue label
         self._emit_label(func.name)
+        self._stack_offset = 0
 
         for block in func.blocks:
             self._emit_label(f".{block.name}")
@@ -63,9 +65,9 @@ class InstructionSelector:
     def _op(self, instr: Instruction, idx: int):
         """Get an operand from an IR instruction as a machine operand."""
         op = instr.operands[idx]
-        # Small integers can be encoded as immediate operands
-        if op.is_constant and op.const_value is not None:
-            return MachineOperand.immediate(int(op.const_value))
+        # LOAD_CONST materializes constants before their use, so consumers
+        # refer to the resulting virtual register.  Most RISC-V arithmetic
+        # and branch instructions do not accept immediate operands.
         return MachineOperand.vreg(op.name)
 
     def _dst(self, instr: Instruction):
@@ -165,11 +167,17 @@ class InstructionSelector:
     def _select_alloca(self, instr: Instruction) -> None:
         raw_size = instr.attrs.get("size", 4)
         assert isinstance(raw_size, int)
-        size = raw_size
+        size = max(raw_size, 1)
+        size = (size + 3) // 4 * 4
+        self._stack_offset += size
         dst = self._dst(instr)
-        # Subtract from sp to allocate
-        self._emit(MachineOp.ADDI, dst, MachineOperand.vreg("sp"),
-                   MachineOperand.immediate(-size), comment=f"alloca {size}")
+        self._emit(
+            MachineOp.ADDI,
+            dst,
+            MachineOperand.reg("sp"),
+            MachineOperand.immediate(-self._stack_offset),
+            comment=f"alloca {size}",
+        )
 
     def _select_for(self, instr: Instruction) -> None:
         """Begin a for loop: set up loop variable and branch to loop header."""
@@ -223,17 +231,54 @@ class InstructionSelector:
         self._emit_label(ctx["exit"])
 
     def _select_br(self, instr: Instruction) -> None:
-        self._emit(MachineOp.J, comment=instr.target or "")
+        self._emit(
+            MachineOp.J,
+            comment=self._block_label(instr.target or ""),
+        )
 
     def _select_br_if(self, instr: Instruction) -> None:
-        cond = self._op(instr, 0)
         targets = (instr.target or ",").split(",")
-        true_target = targets[0] if len(targets) > 0 else ""
-        false_target = targets[1] if len(targets) > 1 else ""
+        true_target = self._block_label(
+            targets[0].strip() if len(targets) > 0 else ""
+        )
+        false_target = self._block_label(
+            targets[1].strip() if len(targets) > 1 else ""
+        )
 
-        # bnez cond, true_label; j false_label
-        self._emit(MachineOp.BNEZ, cond, comment=true_target)
+        if len(instr.operands) == 2 and "cmp_op" in instr.attrs:
+            lhs = self._op(instr, 0)
+            rhs = self._op(instr, 1)
+            operator = instr.attrs["cmp_op"]
+            branches = {
+                "==": (MachineOp.BEQ, lhs, rhs),
+                "!=": (MachineOp.BNE, lhs, rhs),
+                "<": (MachineOp.BLT, lhs, rhs),
+                ">": (MachineOp.BLT, rhs, lhs),
+                "<=": (MachineOp.BGE, rhs, lhs),
+                ">=": (MachineOp.BGE, lhs, rhs),
+            }
+            if operator not in branches:
+                raise ValueError(
+                    f"unsupported comparison operator: {operator}"
+                )
+            branch_op, first, second = branches[operator]
+            self._emit(
+                branch_op, first, second, comment=true_target,
+            )
+        elif len(instr.operands) == 1:
+            cond = self._op(instr, 0)
+            self._emit(MachineOp.BNEZ, cond, comment=true_target)
+        else:
+            raise ValueError(
+                "br_if expects a boolean or comparison operands"
+            )
         self._emit(MachineOp.J, comment=false_target)
+
+    @staticmethod
+    def _block_label(name: str) -> str:
+        if not name or name.startswith("."):
+            return name
+        return f".{name}"
 
     def _select_return(self, instr: Instruction) -> None:
         if instr.operands:
