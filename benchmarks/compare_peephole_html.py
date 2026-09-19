@@ -1,4 +1,3 @@
-# flake8: noqa
 """Compare assembly size and optimizer activity with peephole disabled/enabled.
 
 The comparison deliberately keeps the input assembly identical in both modes.
@@ -26,22 +25,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 # Direct script execution omits the repository root from sys.path.
 # Put this worktree first so the benchmark measures the checked-out code.
 if __package__ is None:
-    _REPO_ROOT = Path(__file__).resolve().parents[1]
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
 
-from scratchv.backend.asm_peephole import AsmPeepholeOptimizer
-from scratchv.standalone.bench_report import HTML_CSS
-
-from benchmarks.bench_asm_peephole import (
+from benchmarks.bench_asm_peephole import (  # noqa: E402
     PR39_RULES,
     BenchmarkCase,
     count_instructions,
     default_cases,
+    validate_default_rules,
 )
+from scratchv.backend.asm_peephole import AsmPeepholeOptimizer  # noqa: E402
+from scratchv.standalone.bench_report import HTML_CSS  # noqa: E402
 
 
 def _validate_repeats(repeats: int) -> int:
@@ -57,10 +57,11 @@ def _sha256(text: str) -> str:
 def _git_commit() -> str:
     try:
         completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "-c", f"safe.directory={_REPO_ROOT}", "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             check=True,
+            cwd=_REPO_ROOT,
         )
     except (OSError, subprocess.CalledProcessError):
         return ""
@@ -75,6 +76,8 @@ def _optimize_with_timing(
     output = assembly
     changes = 0
     rule_matches: dict[str, int] = {}
+    probe = AsmPeepholeOptimizer()
+    validate_default_rules(rule.name for rule in probe.rules)
 
     for _ in range(_validate_repeats(repeats)):
         optimizer = AsmPeepholeOptimizer()
@@ -123,7 +126,7 @@ def compare_cases(
                     "enabled": False,
                     "instructions": before,
                     "changes": 0,
-                    "elapsed_ms_median": 0.0,
+                    "elapsed_ms_median": None,
                 },
                 "peephole_on": {
                     "enabled": True,
@@ -155,7 +158,7 @@ def compare_cases(
 
     positive_count = sum(item["category"] != "negative" for item in results)
     negative_count = sum(item["category"] == "negative" for item in results)
-    unchanged_count = sum(item["reduced_instructions"] == 0 for item in results)
+    unchanged_count = sum(item["changes"] == 0 for item in results)
 
     return {
         "schema_version": 1,
@@ -232,7 +235,7 @@ def _bar_row(
         '<td class="bar-cell"><div class="bar-bg">'
         f'<div class="bar-fill {color}" style="width:{width:.1f}%"></div>'
         "</div></td>"
-        f'<td class="bar-value">{value:,.3f}{_escape(suffix)}</td>'
+        f'<td class="bar-value">{int(value):,}{_escape(suffix)}</td>'
         "</tr>"
     )
 
@@ -285,7 +288,9 @@ def generate_html_report(report: dict) -> str:
         _metric_card("优化后指令", f"{after:,}", "green"),
         _metric_card("静态节省", f"{saved:,} ({reduction:.1f}%)", "orange"),
         _metric_card("规则命中", f"{int(summary.get('changes', 0)):,}", "purple"),
-        _metric_card("未变化样例", f"{int(summary.get('unchanged_cases', 0)):,}", "red"),
+        _metric_card(
+            "未变化样例", f"{int(summary.get('unchanged_cases', 0)):,}", "red"
+        ),
         "</div>",
     ]
 
@@ -307,13 +312,9 @@ def generate_html_report(report: dict) -> str:
         ]
     )
     rule_matches = summary.get("rule_matches", {})
-    maximum_matches = max(
-        [int(rule_matches.get(name, 0)) for name in PR39_RULES] or [1]
-    )
+    maximum_matches = max(int(rule_matches.get(name, 0)) for name in PR39_RULES)
     for index, name in enumerate(PR39_RULES):
-        color = ("compute", "memory", "branch", "upper", "shift", "neutral")[
-            index % 6
-        ]
+        color = ("compute", "memory", "branch", "upper", "shift", "neutral")[index % 6]
         parts.append(
             _bar_row(
                 name,
@@ -334,8 +335,12 @@ def generate_html_report(report: dict) -> str:
     )
     for item in cases:
         expected = item.get("expected_rule")
-        hit = "是" if item.get("expected_rule_hit") else "否"
-        hit_class = "ok" if item.get("expected_rule_hit") else "muted"
+        if expected is None:
+            hit = "—"
+            hit_class = "tag muted"
+        else:
+            hit = "是" if item.get("expected_rule_hit") else "否"
+            hit_class = "tag ok" if item.get("expected_rule_hit") else "tag muted"
         category = item.get("category", "")
         digest = str(item.get("input_sha256", ""))
         digest_short = digest[:12] if digest else "-"
@@ -349,7 +354,7 @@ def generate_html_report(report: dict) -> str:
             f'<td class="delta">{int(item.get("reduced_instructions", 0)):,} '
             f'({float(item.get("reduction_percent", 0.0)):.1f}%)</td>'
             f'<td class="{hit_class}">{_escape(hit)}'
-            f'<br><span class="muted">{_escape(expected or "-")}</span></td>'
+            f'<br><span class="muted">{_escape(expected or "不适用")}</span></td>'
             f"<td><code>{_escape(digest_short)}</code></td>"
             "</tr>"
         )
