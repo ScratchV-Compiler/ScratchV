@@ -1,6 +1,6 @@
 # 课题 01：DSL 前端增强器开发文档
 
-> 状态：开发与验收计划，尚未实施。配套：[设计文档](01-DSL前端增强器-设计文档.md)。
+> 状态：控制流语义、专项测试与 CI benchmark 已实施。配套：[设计文档](01-DSL前端增强器-设计文档.md)。
 > 基线：`99538fe5059599b337d4ab3da81be5406c29d8c4`，2026-09-18。
 
 ## 1. 开发原则与环境
@@ -22,7 +22,7 @@ Stub 测试仅验证模拟器包装接口，不能验收控制流结果。开发
 
 ## 2. 文件与职责
 
-所有“拟新增”路径仅为后续实现计划，本次不创建空模块或占位测试。
+以下路径记录当前实现及其职责。
 
 | 文件 | 修改职责 |
 | --- | --- |
@@ -34,11 +34,11 @@ Stub 测试仅验证模拟器包装接口，不能验收控制流结果。开发
 | `scratchv/ir/builder.py` | 明确 br_compare 与标量槽位接口 |
 | `scratchv/backend/instruction_select.py`、`llvm_codegen.py` | 比较双形式、标签和槽位降级契约 |
 | `scratchv/compiler.py` | 必要的集成与不支持组合诊断，保持 CLI API |
-| `tests/test_dsl_control_flow.py`（拟新增） | 结构、变量路径及后端契约回归 |
-| `tests/test_dsl_control_flow_execution.py`（拟新增） | LLVM/真实 TinyFive 执行与超时 |
-| `examples/topic01/`（拟新增） | 三个可终止、自包含的完整示例 |
-| `benchmarks/bench_dsl_frontend.py`（拟新增） | 本课题专用正确性/规模报告 |
-| `.github/workflows/ci.yml` | 仅在实现阶段接入原有 jobs |
+| `tests/test_dsl_control_flow.py` | 结构、变量路径、LLVM 执行及后端契约回归 |
+| `tests/test_dsl_control_flow_benchmark.py` | benchmark CLI、报告产物与日志折叠回归 |
+| `examples/topic01/` | 三个可终止、自包含的完整示例 |
+| `benchmarks/bench_dsl_control_flow.py` | 本课题专用语义、规模和耗时报告 |
+| `.github/workflows/ci.yml` | 在原有 test/benchmark jobs 中执行课题 01 |
 
 涉及 IRVerifier、优化器或寄存器分配的修复须有最小失败用例，独立说明必要性；不借本课题重写其他负责人的模块。未合并的 PR 只用于协作参考，不作为已经可用的依赖。
 
@@ -188,17 +188,19 @@ LLVM 执行除 verify 外，还应通过标量 JIT 或既有执行适配器核�
 
 ## 7. PR 验证与审查清单
 
-后续每个实现 PR 运行：
+每个实现 PR 运行：
 
 ```bash
 python -m pytest tests/test_parser.py tests/test_dsl_extended.py tests/test_dsl_validator.py tests/test_dsl_errors.py tests/test_dsl_diagnostics_cli.py tests/test_dsl_diagnostics_benchmark.py -q
+python -m pytest tests/test_dsl_control_flow.py tests/test_dsl_control_flow_benchmark.py -q
+python -m benchmarks.bench_dsl_control_flow --repeats 20 --json-output benchmark_reports/topic01_control_flow.json --markdown benchmark_reports/topic01_control_flow.md --html benchmark_reports/topic01_control_flow.html
 python -m pytest tests/ -q --tb=short --ignore=tests/test_simulator.py
 python -m pytest tests/test_simulator.py::TestStubProfiledMachine -q
 python -m pytest benchmarks/test_benchmark.py -q
 git diff --check
 ```
 
-新增控制流执行测试自动包含在 tests/ 内；应额外报告其独立结果。若工作区提供 `.Codex/harness/verify/run.py`，提交前还须运行 `python .Codex/harness/verify/run.py --level L2`。本次基线没有该文件，不能写成 L2 已通过。
+控制流测试会被 tests/ 自动发现，CI 仍用 `Topic 01 DSL frontend regressions` 独立步骤明确展示结果。`Topic 01 DSL frontend benchmark` 在原 benchmark job 中真实执行三个示例并生成 JSON、Markdown、HTML；Markdown/HTML 的源码、LLVM IR 和 RISC-V 汇编默认折叠，汇总表保持可见。报告继续使用现有 benchmark-reports artifact 和 Job Summary。若工作区提供 `.Codex/harness/verify/run.py`，提交前还须运行 `python .Codex/harness/verify/run.py --level L2`；缺少该文件时不能写成 L2 已通过。
 
 自审项目：
 
