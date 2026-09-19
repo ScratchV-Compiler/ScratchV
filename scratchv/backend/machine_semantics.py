@@ -257,9 +257,10 @@ def linear_scan_operands(instr: "MachineInstr") -> tuple[list[str], str]:
     semantics = get_machine_semantics(instr.op)
     comment = instr.comment
     if semantics.target_from_comment:
-        if semantics.target_required and not comment:
+        target = instr.target or comment
+        if semantics.target_required and not target:
             raise ValueError(f"{instr.op.value} requires a target label")
-        if comment:
-            operands.append(comment)
+        if target:
+            operands.append(target)
             comment = ""
     return operands, comment
