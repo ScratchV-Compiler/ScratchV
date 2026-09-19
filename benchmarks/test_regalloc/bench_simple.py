@@ -66,14 +66,16 @@ def bench_allocate(
 
     # One final run for stable stats
     alloc = LinearScanAllocator(phys_regs=phys_regs)
-    alloc.allocate(alloc.compute_live_intervals(block))
+    intervals = alloc.compute_live_intervals(block)
+    alloc.allocate(intervals)
     code = alloc.get_allocated_code(block)
     validation = validate_straight_line_allocation(block, code)
 
     return {
         "mean_s": statistics.mean(times),
         "stdev_s": statistics.stdev(times) if len(times) > 1 else 0,
-        "vreg_count": len(alloc.alloc_map),
+        "vreg_count": len(intervals),
+        "phys_reg_count": len(phys_regs),
         "spills": alloc.spill_store_count,
         "spill_slots": alloc.spill_slot_count,
         "spill_stores": alloc.spill_store_count,

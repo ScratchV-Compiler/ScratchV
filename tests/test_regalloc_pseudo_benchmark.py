@@ -73,6 +73,34 @@ def test_pseudo_metrics_are_report_serializable() -> None:
     assert "4. Pseudo Instructions" in markdown
     assert "Pseudo-instruction detail" in markdown
     assert "legacy positional" in markdown
+    assert "Metric definitions" in markdown
+    assert "`Spills`/`Reloads`" in markdown
+    assert "Physical-register banks used" in markdown
+
+
+def test_summary_uses_total_vregs_and_true_pressure_peak() -> None:
+    results = {
+        "2. Dense Computation": {
+            "mean_s": 0.001,
+            "stdev_s": 0.0,
+            "vreg_count": 30,
+            "phys_reg_count": 5,
+            "reg_spill_count": 60,
+            "peak_active": 5,
+            "pressure_peak": 30,
+            "reloads": 74,
+            "asm_lines": 214,
+            "valid": True,
+        }
+    }
+
+    markdown = bench_regalloc_linear._make_markdown(results)
+    html = bench_regalloc_linear._make_html(results, 0.0)
+
+    assert "| 2. Dense Computation | 1.000 | 0.000 | 30 | 60 | 30 | 74 |" in markdown
+    assert "Dense Computation=5" in markdown
+    assert "<td>30</td><td>60</td><td>30</td><td>74</td>" in html
+    assert "This is not the number of spilled virtual registers" in html
 
 
 def test_bnez_detail_exposes_the_fixed_operand_semantics() -> None:

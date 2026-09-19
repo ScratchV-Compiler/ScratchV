@@ -46,6 +46,123 @@ def _format_improvement(value: float | None) -> str:
     return "unchanged"
 
 
+def _physical_register_summary(results: dict) -> str:
+    """Describe the register-bank size used by each benchmark row."""
+
+    entries = []
+    for name, result in results.items():
+        if not isinstance(result, dict) or "phys_reg_count" not in result:
+            continue
+        short_name = name.split(". ", 1)[-1]
+        entries.append(f"{short_name}={result['phys_reg_count']}")
+    return ", ".join(entries)
+
+
+def _metric_definitions_markdown(results: dict) -> list[str]:
+    """Explain every summary-table column using its exact implementation."""
+
+    register_summary = _physical_register_summary(results)
+    lines = [
+        "",
+        "## Metric definitions",
+        "",
+        "- **Benchmark**: benchmark case name; rows use different workloads.",
+        (
+            "- **Mean(ms)**: arithmetic mean of the timed region. "
+            "Simple/Dense/CNN time liveness plus allocation; Pseudo also "
+            "includes assembly generation and encoding."
+        ),
+        "- **Std(ms)**: sample standard deviation of that timed region.",
+        (
+            "- **Vregs**: total virtual-register live intervals in the case, "
+            "not the number simultaneously live or the number of physical "
+            "registers. The Pseudo row sums its independent cases."
+        ),
+        (
+            "- **Spills**: static register-allocation spill-store sites "
+            "(`sw` instructions). It is not the number of spilled virtual "
+            "registers; one value may be stored more than once."
+        ),
+        (
+            "- **Peak**: maximum number of simultaneously live virtual "
+            "registers before allocation (`pressure_peak`). Compare this "
+            "with the physical-register count below."
+        ),
+        (
+            "- **Reloads**: static register-allocation reload-load sites "
+            "(`lw` instructions); repeated reloads of one value are counted "
+            "separately."
+        ),
+        (
+            "- **Asm**: case-reported output size. Simple/Dense/CNN report "
+            "emitted assembly lines; Pseudo reports encoded RV32 "
+            "instructions, so compare this value primarily within a row."
+        ),
+        (
+            "- **Valid**: correctness gate for that case, including its "
+            "allocation invariants and assembly/emulator checks."
+        ),
+    ]
+    if register_summary:
+        lines.extend(
+            [
+                "",
+                f"**Physical-register banks used:** {register_summary}.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            (
+                "> `Spills`/`Reloads` count generated instruction sites; "
+                "`Peak` counts simultaneous live virtual registers. These "
+                "metrics intentionally use different units."
+            ),
+        ]
+    )
+    return lines
+
+
+def _metric_definitions_html(results: dict) -> str:
+    """HTML version of the summary-table metric glossary."""
+
+    register_summary = _physical_register_summary(results)
+    register_note = (
+        f"<p><strong>Physical-register banks used:</strong> "
+        f"{register_summary}.</p>"
+        if register_summary else ""
+    )
+    return f"""
+<h2>Metric definitions</h2>
+<dl>
+<dt>Benchmark</dt><dd>Benchmark case name; rows use different workloads.</dd>
+<dt>Mean(ms)</dt><dd>Arithmetic mean of the timed region. Simple, Dense, and
+CNN time liveness plus allocation; Pseudo also includes assembly generation
+and encoding.</dd>
+<dt>Std(ms)</dt><dd>Sample standard deviation of that timed region.</dd>
+<dt>Vregs</dt><dd>Total virtual-register live intervals in the case, not the
+simultaneously-live or physical-register count. Pseudo sums its independent
+cases.</dd>
+<dt>Spills</dt><dd>Static register-allocation spill-store sites
+(<code>sw</code>). This is not the number of spilled virtual registers; one
+value may be stored more than once.</dd>
+<dt>Peak</dt><dd>Maximum simultaneously-live virtual registers before
+allocation (<code>pressure_peak</code>). Compare it with the physical-register
+count below.</dd>
+<dt>Reloads</dt><dd>Static register-allocation reload-load sites
+(<code>lw</code>); repeated reloads are counted separately.</dd>
+<dt>Asm</dt><dd>Case-reported output size. Simple/Dense/CNN report emitted
+assembly lines; Pseudo reports encoded RV32 instructions, so compare it
+primarily within a row.</dd>
+<dt>Valid</dt><dd>Correctness gate, including the case's allocation invariants
+and assembly/emulator checks.</dd>
+</dl>
+{register_note}
+<p><strong>Important:</strong> Spills/Reloads count generated instruction
+sites; Peak counts simultaneously-live virtual registers. They intentionally
+use different units.</p>"""
+
+
 def _comparison_markdown(results: dict) -> list[str]:
     comparison = _optimization_comparison(results)
     if comparison is None:
@@ -241,13 +358,14 @@ def _make_html(results: dict, total_time: float) -> str:
             f"<tr><td>{name}</td><td>{ms}</td><td>{sd}</td>"
             f"<td>{r.get('vreg_count', '-')}</td>"
             f"<td>{r.get('reg_spill_count', r.get('spills', '-'))}</td>"
-            f"<td>{r.get('peak_active', '-')}</td>"
+            f"<td>{r.get('pressure_peak', r.get('peak_active', '-'))}</td>"
             f"<td>{r.get('reloads', '-')}</td>"
             f"<td>{r.get('asm_lines', '-')}</td>"
             f"<td style='color:{c}'>{v}</td></tr>\n"
         )
     comparison_html = _comparison_html(results)
     pseudo_detail_html = _pseudo_detail_html(results)
+    metric_definitions_html = _metric_definitions_html(results)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -261,6 +379,8 @@ def _make_html(results: dict, total_time: float) -> str:
   th, td {{ border: 1px solid #ddd; padding: 6px 10px; text-align: left; }}
   th {{ background: #f6f8fa; font-weight: 600; }}
   tr:nth-child(even) {{ background: #f6f8fa; }}
+  dt {{ font-weight: 600; margin-top: 8px; }}
+  dd {{ margin: 2px 0 8px 20px; }}
 </style>
 </head>
 <body>
@@ -271,6 +391,7 @@ def _make_html(results: dict, total_time: float) -> str:
 <th>Spills</th><th>Peak</th><th>Reloads</th><th>Asm</th><th>Valid</th></tr>
 {rows}
 </table>
+{metric_definitions_html}
 {comparison_html}
 {pseudo_detail_html}
 </body>
@@ -298,10 +419,11 @@ def _make_markdown(results: dict) -> str:
         lines.append(
             f"| {name} | {ms} | {sd} | {r.get('vreg_count', '-')} | "
             f"{r.get('reg_spill_count', r.get('spills', '-'))} | "
-            f"{r.get('peak_active', '-')} | "
+            f"{r.get('pressure_peak', r.get('peak_active', '-'))} | "
             f"{r.get('reloads', '-')} | {r.get('asm_lines', '-')} | "
             f"{v} |"
         )
+    lines.extend(_metric_definitions_markdown(results))
     lines.extend(_comparison_markdown(results))
     lines.extend(_pseudo_detail_markdown(results))
     return "\n".join(lines)

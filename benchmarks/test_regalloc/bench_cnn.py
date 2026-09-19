@@ -353,7 +353,8 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
 
     # Final run for stable stats + assembly validation
     alloc = LinearScanAllocator(phys_regs=phys_regs)
-    alloc.allocate(alloc.compute_live_intervals(block))
+    intervals = alloc.compute_live_intervals(block)
+    alloc.allocate(intervals)
     code = apply_abi_frames(
         alloc.get_allocated_code(block), alloc.spill_slot_count
     )
@@ -387,7 +388,8 @@ def bench_allocate(cnn_path: str, phys_regs: list[str], repeats: int = 30) -> di
         "vreg_total": vreg_total,
         "ir_inst_count": ir_count,
         "machine_instrs": len(machine),
-        "vreg_count": len(alloc.alloc_map),
+        "vreg_count": len(intervals),
+        "phys_reg_count": len(phys_regs),
         "spill_slots": alloc.spill_slot_count,
         "spill_stores": alloc.spill_store_count,
         "reg_spill_count": alloc.spill_store_count,

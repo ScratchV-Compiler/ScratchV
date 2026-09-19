@@ -43,6 +43,8 @@ def test_dense_benchmark_separates_sites_slots_reloads_and_pressure():
     stats = bench_dense.bench_allocate(block, list(ALL_REGS[:5]), 1)
 
     assert stats["reg_spill_count"] == stats["spill_stores"]
+    assert stats["vreg_count"] == 30
+    assert stats["phys_reg_count"] == 5
     assert stats["spill_stores"] > stats["spill_slots"] > 0
     assert stats["reloads"] > 0
     assert stats["pressure_peak"] > 5
@@ -58,6 +60,7 @@ def test_topic17_cnn_uses_19_regs_and_passes_real_assembly_validation():
 
     assert stats["asm_valid"], stats["asm_errors"]
     assert len(stats["_alloc"].phys_regs) == 19
+    assert stats["phys_reg_count"] == 19
     assert stats["pressure_peak"] == 11
     assert stats["pressure_excess_peak"] == 0
     assert stats["spill_slots"] == 0

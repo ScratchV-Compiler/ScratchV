@@ -413,6 +413,7 @@ def run_bench(repeats: int = 30) -> dict[str, object]:
         "mean_s": statistics.mean(all_times),
         "stdev_s": statistics.stdev(all_times) if len(all_times) > 1 else 0.0,
         "vreg_count": sum(result.virtual_registers for result in results),
+        "phys_reg_count": len(ALL_REGS),
         "spills": sum(result.spill_stores for result in results),
         "spill_slots": sum(result.spill_slots for result in results),
         "spill_stores": sum(result.spill_stores for result in results),
