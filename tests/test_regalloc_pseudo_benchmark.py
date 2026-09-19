@@ -5,7 +5,13 @@ import json
 import pytest
 
 from benchmarks.test_regalloc import bench_cnn, bench_pseudo, bench_regalloc_linear
+from benchmarks.test_regalloc.semantics_compare import (
+    compare_semantics,
+    legacy_positional_block,
+)
+from scratchv.backend.machine_types import ALL_REGS, MachineInstr, MachineOperand
 from scratchv.backend.machine_types import MachineOp
+from scripts import bench_single_ops
 
 
 EXPECTED_MACHINE_PSEUDOS = {
@@ -65,6 +71,94 @@ def test_pseudo_metrics_are_report_serializable() -> None:
     markdown = bench_regalloc_linear._make_markdown(results)
     assert "4. Pseudo Instructions" in html
     assert "4. Pseudo Instructions" in markdown
+    assert "Pseudo-instruction detail" in markdown
+    assert "legacy positional" in markdown
+
+
+def test_bnez_detail_exposes_the_fixed_operand_semantics() -> None:
+    case = next(case for case in bench_pseudo.machine_pseudo_cases()
+                if case.opcode is MachineOp.BNEZ)
+    target = next(instruction for instruction in case.instructions
+                  if instruction.op is MachineOp.BNEZ)
+    legacy = legacy_positional_block([target])[0]
+
+    assert legacy.defines == {"condition"}
+    assert legacy.uses == set()
+
+    result = next(
+        result for result in bench_pseudo.run_bench(repeats=1)["cases"]
+        if result["name"] == "bnez"
+    )
+    assert result["legacy_defs"] == ("condition",)
+    assert result["semantic_defs"] == ()
+    assert result["semantic_uses"] == ("condition",)
+    assert result["expanded_rv32_instructions"] == 1
+    assert [point["physical_register_count"]
+            for point in result["pressure_sweep"]] == [2, 3, 5, 8, 12, 19]
+    tight = result["pressure_sweep"][0]
+    assert tight["before"]["pressure_peak"] == 2
+    assert tight["after"]["pressure_peak"] == 3
+    assert not tight["before"]["valid"]
+    assert tight["after"]["valid"]
+    assert tight["after"]["spill_stores"] > 0
+
+
+def test_semantics_comparison_uses_one_allocator_and_input() -> None:
+    vreg = MachineOperand.vreg
+    instructions = [
+        MachineInstr(MachineOp.LI, vreg("condition"), MachineOperand.immediate(1)),
+        MachineInstr(MachineOp.BNEZ, vreg("condition"), comment=".done"),
+        MachineInstr(MachineOp.LABEL, comment=".done"),
+    ]
+
+    comparison = compare_semantics(instructions, list(ALL_REGS[:2]))
+
+    assert comparison["baseline"] == "legacy positional dst/src inference"
+    assert comparison["current"] == "machine_semantics.py"
+    assert comparison["before"]["intervals"]["condition"]["uses"] == []
+    assert comparison["after"]["intervals"]["condition"]["uses"] == [1]
+
+
+def test_single_operator_report_exposes_pressure_sweep() -> None:
+    counts = bench_single_ops._parse_pressure_regs("2,3,5,19")
+    aggregates = {
+        "relu": {
+            "model_count": 1,
+            "machine_instructions": 4,
+            "semantics_differences": 1,
+            "pseudo_counts": {"max": 1},
+            "pressure_sweep": {
+                str(count): {
+                    "before_valid": True,
+                    "after_valid": True,
+                    "before": {
+                        "pressure_peak": 2,
+                        "spill_slots": 1,
+                        "spill_stores": 1,
+                        "reloads": 1,
+                        "static_instructions": 6,
+                        "encoded_instructions": 7,
+                    },
+                    "after": {
+                        "pressure_peak": 3,
+                        "spill_slots": 2,
+                        "spill_stores": 2,
+                        "reloads": 2,
+                        "static_instructions": 8,
+                        "encoded_instructions": 9,
+                    },
+                }
+                for count in counts
+            },
+        }
+    }
+
+    markdown = bench_single_ops._regalloc_markdown(aggregates, counts)
+
+    assert counts == (2, 3, 5, 19)
+    assert "Changed semantics" in markdown
+    assert "Pressure before/after" in markdown
+    assert "| relu | 2 | 1 | 4 | 1 | max:1 | 2 / 3 |" in markdown
 
 
 def test_reports_show_comparable_before_after_optimization() -> None:
@@ -92,7 +186,7 @@ def test_reports_show_comparable_before_after_optimization() -> None:
     markdown = bench_regalloc_linear._make_markdown(results)
     html = bench_regalloc_linear._make_html(results, 0.0)
 
-    assert "CNN Register Allocation: Before vs After" in markdown
+    assert "CNN allocator comparison: Greedy vs LinearScan" in markdown
     assert "Before (Greedy allocator)" in markdown
     assert "After (Topic17 LinearScan)" in markdown
     assert "| Allocation mean | 2.000 ms | 1.000 ms | 50.00% better |" in markdown
@@ -101,7 +195,7 @@ def test_reports_show_comparable_before_after_optimization() -> None:
         "25.00% better |"
     ) in markdown
     assert "Correctness (assembly + emulator): **PASS -> PASS**" in markdown
-    assert "CNN Register Allocation: Before vs After" in html
+    assert "CNN allocator comparison: Greedy vs LinearScan" in html
     assert "25.00% better" in html
 
 

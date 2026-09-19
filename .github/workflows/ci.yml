@@ -344,7 +344,9 @@ jobs:
       - name: Single-operator benchmarks
         run: |
           $PY scripts/bench_single_ops.py \
-            || echo "WARNING: bench_single_ops failed"
+            --output-json benchmark_reports/single_op_bench.json \
+            --output-md benchmark_reports/single_op_bench.md \
+            --pressure-regs 2,3,5,8,12,19
 
       # ── 3.7 生成仪表盘 HTML (版本vsLLVM + 指令分类 + 算子对比) ─────
       - name: Generate dashboard
@@ -450,13 +452,17 @@ jobs:
             tail -20 benchmark_reports/llvm_vs_scratchv.md >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Topic 17 Register Allocation: Before vs After" >> $GITHUB_STEP_SUMMARY
+          echo "### Topic 17 Register Allocation" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/regalloc_bench.md ]; then
             cat benchmark_reports/regalloc_bench.md >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/regalloc_spill_compare.md ]; then
             cat benchmark_reports/regalloc_spill_compare.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f benchmark_reports/single_op_bench.md ]; then
+            cat benchmark_reports/single_op_bench.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
   # ═════════════════════════════════════════════════════════════════════════

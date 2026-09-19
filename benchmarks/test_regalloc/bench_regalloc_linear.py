@@ -55,7 +55,7 @@ def _comparison_markdown(results: dict) -> list[str]:
     optimized = comparison["optimized"]
     lines = [
         "",
-        "## CNN Register Allocation: Before vs After",
+        "## CNN allocator comparison: Greedy vs LinearScan",
         "",
         (
             "Both allocators receive the same selected Machine IR in the same "
@@ -85,6 +85,65 @@ def _comparison_markdown(results: dict) -> list[str]:
     return lines
 
 
+def _pseudo_detail_markdown(results: dict) -> list[str]:
+    """Render instruction-level pseudo semantics and pressure metrics."""
+
+    pseudo = results.get("4. Pseudo Instructions", {})
+    cases = pseudo.get("cases", []) if isinstance(pseudo, dict) else []
+    if not cases:
+        return []
+
+    lines = [
+        "",
+        "## Pseudo-instruction detail",
+        "",
+        (
+            "`Before` reproduces the legacy positional `dst/src` inference; "
+            "`After` uses `machine_semantics.py`. The pressure columns use "
+            "a two-register bank."
+        ),
+        "",
+        "| Pseudo | Before def/use | After def/use | RV32 instructions | "
+        "Pressure before/after | Spill stores before/after | "
+        "Pressure case before/after | Execute |",
+        "|---|---|---|---:|---:|---:|---|---|",
+    ]
+    for case in cases:
+        sweep = case.get("pressure_sweep", [])
+        pressure = next(
+            (
+                point for point in sweep
+                if point.get("physical_register_count") == 2
+            ),
+            None,
+        )
+        before = pressure.get("before", {}) if pressure else {}
+        after = pressure.get("after", {}) if pressure else {}
+
+        def fmt_semantics(prefix: str) -> str:
+            defs = ",".join(case.get(f"{prefix}_defs", [])) or "-"
+            uses = ",".join(case.get(f"{prefix}_uses", [])) or "-"
+            return f"{defs} / {uses}"
+
+        execute = "PASS" if case.get("valid") else "FAIL"
+        pressure_valid = (
+            f"{'PASS' if before.get('valid') else 'FAIL'} / "
+            f"{'PASS' if after.get('valid') else 'FAIL'}"
+            if pressure else "-"
+        )
+        lines.append(
+            f"| `{case['name']}` | {fmt_semantics('legacy')} | "
+            f"{fmt_semantics('semantic')} | "
+            f"{case.get('expanded_rv32_instructions', '-')} | "
+            f"{before.get('pressure_peak', '-')} / "
+            f"{after.get('pressure_peak', '-')} | "
+            f"{before.get('spill_stores', '-')} / "
+            f"{after.get('spill_stores', '-')} | {pressure_valid} | "
+            f"{execute} |"
+        )
+    return lines
+
+
 def _comparison_html(results: dict) -> str:
     comparison = _optimization_comparison(results)
     if comparison is None:
@@ -102,7 +161,7 @@ def _comparison_html(results: dict) -> str:
     before_status = "PASS" if correctness["before"] else "FAIL"
     after_status = "PASS" if correctness["after"] else "FAIL"
     return f"""
-<h2>CNN Register Allocation: Before vs After</h2>
+<h2>CNN allocator comparison: Greedy vs LinearScan</h2>
 <p>Both allocators receive the same selected Machine IR in the same process.
 Lower is better for every metric below.</p>
 <table>
@@ -112,6 +171,60 @@ Lower is better for every metric below.</p>
 </table>
 <p>Correctness (assembly + emulator): <strong>{before_status} &rarr;
 {after_status}</strong>.</p>"""
+
+
+def _pseudo_detail_html(results: dict) -> str:
+    """Render the instruction-level pseudo table for the HTML artifact."""
+
+    pseudo = results.get("4. Pseudo Instructions", {})
+    cases = pseudo.get("cases", []) if isinstance(pseudo, dict) else []
+    if not cases:
+        return ""
+
+    rows = []
+    for case in cases:
+        sweep = case.get("pressure_sweep", [])
+        point = next(
+            (
+                item for item in sweep
+                if item.get("physical_register_count") == 2
+            ),
+            {},
+        )
+        before = point.get("before", {})
+        after = point.get("after", {})
+        legacy_defs = ",".join(case.get("legacy_defs", [])) or "-"
+        legacy_uses = ",".join(case.get("legacy_uses", [])) or "-"
+        semantic_defs = ",".join(case.get("semantic_defs", [])) or "-"
+        semantic_uses = ",".join(case.get("semantic_uses", [])) or "-"
+        execute = "PASS" if case.get("valid") else "FAIL"
+        pressure_valid = (
+            f"{'PASS' if before.get('valid') else 'FAIL'} / "
+            f"{'PASS' if after.get('valid') else 'FAIL'}"
+            if point else "-"
+        )
+        rows.append(
+            f"<tr><td><code>{case['name']}</code></td>"
+            f"<td>{legacy_defs} / {legacy_uses}</td>"
+            f"<td>{semantic_defs} / {semantic_uses}</td>"
+            f"<td>{case.get('expanded_rv32_instructions', '-')}</td>"
+            f"<td>{before.get('pressure_peak', '-')} / "
+            f"{after.get('pressure_peak', '-')}</td>"
+            f"<td>{before.get('spill_stores', '-')} / "
+            f"{after.get('spill_stores', '-')}</td>"
+            f"<td>{pressure_valid}</td><td>{execute}</td></tr>"
+        )
+    return f"""
+<h2>Pseudo-instruction detail</h2>
+<p><code>Before</code> uses legacy positional inference; <code>After</code>
+uses <code>machine_semantics.py</code>. Pressure metrics use two registers.</p>
+<table>
+<tr><th>Pseudo</th><th>Before def/use</th><th>After def/use</th>
+<th>RV32 instructions</th><th>Pressure before/after</th>
+<th>Spill stores before/after</th><th>Pressure case before/after</th>
+<th>Execute</th></tr>
+{''.join(rows)}
+</table>"""
 
 
 def _make_html(results: dict, total_time: float) -> str:
@@ -134,6 +247,7 @@ def _make_html(results: dict, total_time: float) -> str:
             f"<td style='color:{c}'>{v}</td></tr>\n"
         )
     comparison_html = _comparison_html(results)
+    pseudo_detail_html = _pseudo_detail_html(results)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -158,6 +272,7 @@ def _make_html(results: dict, total_time: float) -> str:
 {rows}
 </table>
 {comparison_html}
+{pseudo_detail_html}
 </body>
 </html>"""
 
@@ -188,6 +303,7 @@ def _make_markdown(results: dict) -> str:
             f"{v} |"
         )
     lines.extend(_comparison_markdown(results))
+    lines.extend(_pseudo_detail_markdown(results))
     return "\n".join(lines)
 
 

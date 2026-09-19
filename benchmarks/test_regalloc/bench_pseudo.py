@@ -7,6 +7,13 @@ import statistics
 import time
 from dataclasses import asdict, dataclass
 
+from benchmarks.test_regalloc.semantics_compare import (
+    DEFAULT_PRESSURE_REGS,
+    compare_semantics,
+)
+from scratchv.backend.machine_semantics import (
+    virtual_register_defs_uses,
+)
 from scratchv.backend.machine_types import (
     ALL_REGS,
     MachineInstr,
@@ -74,6 +81,12 @@ class PseudoCaseResult:
     expected_a0: int
     actual_a0: int
     assembly: str
+    semantic_defs: tuple[str, ...] = ()
+    semantic_uses: tuple[str, ...] = ()
+    legacy_defs: tuple[str, ...] = ()
+    legacy_uses: tuple[str, ...] = ()
+    expanded_rv32_instructions: int = 0
+    pressure_sweep: tuple[dict[str, object], ...] = ()
 
     @property
     def valid(self) -> bool:
@@ -238,6 +251,80 @@ def _execute(binary: bytes, instruction_limit: int) -> int:
     return machine.get_reg(10)  # a0
 
 
+def _legacy_defs_uses(instruction: MachineInstr) -> tuple[set[str], set[str]]:
+    """Reproduce the positional inference used before machine_semantics.py."""
+
+    defines: set[str] = set()
+    uses: set[str] = set()
+    for position, operand in enumerate(
+        (instruction.dst, instruction.src1, instruction.src2)
+    ):
+        if operand is None or operand.kind != "vreg":
+            continue
+        target = defines if position == 0 else uses
+        target.add(str(operand.value))
+    return defines, uses
+
+
+def _expanded_instruction_count(name: str) -> int:
+    """Return the exact RV32 instruction count for one pseudo expansion."""
+
+    snippets = {
+        "mv": "mv t0, t1",
+        "li": "li t0, 0x12345",
+        "max": "max t0, t1, t2",
+        "bnez": "bnez t0, .target\n.target:",
+        "j": "j .target\n.target:",
+        "call": "call .target\n.target:",
+        "label": ".target:",
+        "nop": "nop",
+        "ret": "ret",
+    }
+    return len(RISCVAEncoder().assemble(snippets[name])) // 4
+
+
+def _pressure_instructions(case: MachinePseudoCase) -> tuple[MachineInstr, ...]:
+    """Return a pressure-sensitive stream for semantics that need one.
+
+    The ordinary execution cases intentionally stay small.  For ``bnez`` we
+    keep two unrelated values live across the branch so treating its first
+    operand as a definition visibly under-reports pressure and spill traffic.
+    """
+
+    if case.opcode is not MachineOp.BNEZ:
+        return case.instructions
+
+    vreg = MachineOperand.vreg
+    reg = MachineOperand.reg
+    imm = MachineOperand.immediate
+    return (
+        MachineInstr(MachineOp.LI, vreg("condition"), imm(1)),
+        MachineInstr(MachineOp.LI, vreg("carry_zero"), imm(0)),
+        MachineInstr(MachineOp.LI, vreg("carry_three"), imm(3)),
+        MachineInstr(MachineOp.BNEZ, vreg("condition"), comment=".taken"),
+        MachineInstr(MachineOp.LI, reg("a0"), imm(-1)),
+        MachineInstr(MachineOp.J, comment=".done"),
+        MachineInstr(MachineOp.LABEL, comment=".taken"),
+        MachineInstr(
+            MachineOp.ADD,
+            reg("a0"),
+            vreg("carry_zero"),
+            vreg("carry_three"),
+        ),
+        *_done_loop(),
+    )
+
+
+def _pressure_sweep(case: MachinePseudoCase) -> tuple[dict[str, object], ...]:
+    """Compare legacy/current semantics at several register-bank sizes."""
+
+    instructions = _pressure_instructions(case)
+    return tuple(
+        compare_semantics(instructions, list(ALL_REGS[:count]))
+        for count in DEFAULT_PRESSURE_REGS
+    )
+
+
 def _run_machine_case(case: MachinePseudoCase, repeats: int) -> PseudoCaseResult:
     times: list[float] = []
     final: tuple[LinearScanAllocator, str, bytes, int] | None = None
@@ -254,6 +341,10 @@ def _run_machine_case(case: MachinePseudoCase, repeats: int) -> PseudoCaseResult
 
     assert final is not None
     allocator, assembly, binary, virtual_registers = final
+    target = next(instruction for instruction in case.instructions
+                  if instruction.op is case.opcode)
+    semantic_defs, semantic_uses = virtual_register_defs_uses(target)
+    legacy_defs, legacy_uses = _legacy_defs_uses(target)
     return PseudoCaseResult(
         name=case.name,
         opcode=case.opcode.value,
@@ -269,6 +360,12 @@ def _run_machine_case(case: MachinePseudoCase, repeats: int) -> PseudoCaseResult
         expected_a0=case.expected_a0,
         actual_a0=_execute(binary, case.instruction_limit),
         assembly=assembly,
+        semantic_defs=tuple(sorted(semantic_defs)),
+        semantic_uses=tuple(sorted(semantic_uses)),
+        legacy_defs=tuple(sorted(legacy_defs)),
+        legacy_uses=tuple(sorted(legacy_uses)),
+        expanded_rv32_instructions=_expanded_instruction_count(case.name),
+        pressure_sweep=_pressure_sweep(case),
     )
 
 
@@ -298,6 +395,7 @@ def _run_assembler_case(
         expected_a0=case.expected_a0,
         actual_a0=_execute(binary, case.instruction_limit),
         assembly=case.assembly,
+        expanded_rv32_instructions=_expanded_instruction_count(case.name),
     )
 
 
