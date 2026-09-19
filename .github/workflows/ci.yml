@@ -106,6 +106,20 @@ jobs:
         run: |
           python3.12 -m pytest tests/test_pr37_regression.py -v --tb=short
 
+      - name: Run Topic 17 register-allocation regressions
+        run: |
+          python3.12 -m pytest \
+            tests/test_regalloc_pseudo.py \
+            tests/test_regalloc_pseudo_benchmark.py \
+            tests/test_regalloc_p1.py \
+            tests/test_regalloc_metrics.py \
+            tests/test_regalloc_spill_compare.py \
+            tests/test_abi_frame.py \
+            tests/test_riscv_encoder_validation.py \
+            tests/test_rv32_emulator.py \
+            tests/test_simulator.py::TestRealProfiledMachine::test_lw_preserves_all_four_bytes \
+            -v --tb=short
+
       - name: Generate test visualization page
         if: github.ref == 'refs/heads/main'
         run: |
@@ -283,6 +297,12 @@ jobs:
             --output-html benchmark_reports/regalloc_bench.html \
             --output-md benchmark_reports/regalloc_bench.md
 
+      - name: Topic 17 spill-pressure comparison
+        run: |
+          python3.12 -m benchmarks.bench_regalloc_spill_compare \
+            --json-output benchmark_reports/regalloc_spill_compare.json \
+            --markdown benchmark_reports/regalloc_spill_compare.md
+
       # ── 上报 ──────────────────────────────────────────────────────────
       - name: Upload benchmark reports
         if: always()
@@ -358,6 +378,10 @@ jobs:
           echo "### Register Allocation Benchmarks" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/regalloc_bench.md ]; then
             cat benchmark_reports/regalloc_bench.md >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/regalloc_spill_compare.md ]; then
+            cat benchmark_reports/regalloc_spill_compare.md >> $GITHUB_STEP_SUMMARY
           fi
 
   # ═════════════════════════════════════════════════════════════════════════
