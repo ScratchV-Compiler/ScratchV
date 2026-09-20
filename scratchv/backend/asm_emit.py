@@ -6,6 +6,8 @@ or ``riscv64-linux-gnu-gcc``.
 
 from __future__ import annotations
 
+import re
+
 from scratchv.backend.machine_types import (
     MachineInstr, MachineOp, MachineOperand,
 )
@@ -79,6 +81,20 @@ def _fmt_op(op: MachineOperand | None) -> str:
     return str(op).lstrip("%")
 
 
+def _memory_address(op: MachineOperand) -> str:
+    address = _fmt_op(op)
+    legacy = re.fullmatch(r"([A-Za-z][A-Za-z0-9]*)\((-?\d+)\)", address)
+    if legacy:
+        return f"{legacy.group(2)}({legacy.group(1)})"
+    if "(" not in address:
+        return f"0({address})"
+    return address
+
+
+def _comment_suffix(instr: MachineInstr) -> str:
+    return f"  # {instr.comment}" if instr.comment else ""
+
+
 class AsmEmitter:
     """Emit RISC-V assembly text from machine instructions."""
 
@@ -131,6 +147,22 @@ class AsmEmitter:
 
         # Branch/jump/call target: structured target, fallback to comment
         target = instr.target if instr.target is not None else instr.comment
+
+        if instr.op == MachineOp.LW and instr.dst and instr.src1:
+            address = _memory_address(instr.src1)
+            return (
+                f"  lw {_fmt_op(instr.dst)}, {address}"
+                f"{_comment_suffix(instr)}"
+            )
+
+        if instr.op == MachineOp.SW and instr.dst and instr.src1:
+            address = _memory_address(instr.src1)
+            return (
+                f"  sw {_fmt_op(instr.dst)}, {address}"
+                f"{_comment_suffix(instr)}"
+            )
+
+        # Branch/jump/call use the structured target resolved above.
         if instr.op in (MachineOp.CALL, MachineOp.J, MachineOp.JAL,
                         MachineOp.BNEZ, MachineOp.BEQ, MachineOp.BNE,
                         MachineOp.BLT, MachineOp.BGE) and target:

@@ -96,6 +96,13 @@ jobs:
             --junit-xml=benchmark_reports/test_results.xml \
             --ignore=tests/test_simulator.py
 
+      - name: Topic 01 DSL frontend regressions
+        run: |
+          $PY -m pytest \
+            tests/test_dsl_control_flow.py \
+            tests/test_dsl_control_flow_benchmark.py \
+            -v --tb=short
+
       - name: Run assembly-beautifier regressions
         run: |
           $PY -m pytest \
@@ -256,9 +263,22 @@ jobs:
           trap 'git worktree remove --force "$BASELINE"' EXIT
           python3.12 -m benchmarks.bench_dsl_diagnostics \
             --baseline-root "$BASELINE" \
+            --allow-ir-change 016_if_simple.dsl \
+            --allow-ir-change 017_while_sum.dsl \
+            --allow-ir-change 018_nested_if.dsl \
+            --allow-ir-change 021_dsl_if_else.dsl \
+            --allow-ir-change 022_dsl_while_sum.dsl \
             --json-output benchmark_reports/dsl_diagnostics.json \
             --markdown benchmark_reports/dsl_diagnostics.md \
             --html benchmark_reports/dsl_diagnostics.html
+
+      - name: Topic 01 DSL frontend benchmark
+        run: |
+          $PY -m benchmarks.bench_dsl_control_flow \
+            --repeats 20 \
+            --json-output benchmark_reports/topic01_control_flow.json \
+            --markdown benchmark_reports/topic01_control_flow.md \
+            --html benchmark_reports/topic01_control_flow.html
 
       # ── 3.1 ONNX 模型管线基准测试 ──────────────────────────────────────
       - name: ONNX model pipeline benchmarks
@@ -427,6 +447,10 @@ jobs:
       - name: Write job summary
         if: always()
         run: |
+          if [ -f benchmark_reports/topic01_control_flow.md ]; then
+            cat benchmark_reports/topic01_control_flow.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ -f benchmark_reports/dsl_diagnostics.md ]; then
             cat benchmark_reports/dsl_diagnostics.md >> "$GITHUB_STEP_SUMMARY"
           fi

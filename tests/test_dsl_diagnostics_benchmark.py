@@ -143,6 +143,32 @@ def test_changed_ir_fails_the_report_even_if_both_parsers_succeed(tmp_path):
     assert report["parsing"]["ir_equal"] is False
 
 
+def test_expected_ir_change_can_be_allowed_for_one_named_case(tmp_path):
+    baseline = tmp_path / "baseline"
+    frontend = baseline / "scratchv" / "frontend"
+    frontend.mkdir(parents=True)
+    (baseline / "scratchv" / "__init__.py").write_text("", encoding="utf-8")
+    (frontend / "__init__.py").write_text("", encoding="utf-8")
+    (frontend / "dsl_extended.py").write_text(
+        "class ExtendedDSLParser:\n"
+        "    def parse(self, source):\n"
+        "        return self\n"
+        "    def dump(self):\n"
+        "        return 'deliberately different IR'\n",
+        encoding="utf-8",
+    )
+    result, report = run_report(
+        tmp_path,
+        "--baseline-root", str(baseline),
+        "--allow-ir-change", "valid.dsl",
+    )
+    assert result.returncode == 0, result.stderr
+    assert report["status"] == "passed"
+    assert report["parsing"]["ir_equal"] is False
+    assert report["parsing"]["ir_changed_cases"] == ["valid.dsl"]
+    assert report["parsing"]["unexpected_ir_changes"] == []
+
+
 def test_html_escapes_diagnostic_source(tmp_path):
     result, _ = run_report(tmp_path)
     assert result.returncode == 0, result.stderr

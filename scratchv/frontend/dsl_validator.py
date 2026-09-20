@@ -64,11 +64,13 @@ _FOR = re.compile(
     r"^for\s+(?P<var>[^\s=]+)\s*=\s*(?P<start>\d+)\s*,\s*"
     r"(?P<end>\d+)\s*$",
 )
-_CONDITION = re.compile(
-    r"^(?P<kind>if|while)\s*\(\s*.+?\s*"
-    r"(?:==|!=|<=|>=|<|>)\s*.+?\s*\)\s*:?\s*$"
-)
 _NUMBER = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
+_CONDITION_ATOM = r"(?:[^\W\d]\w*|[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
+_CONDITION = re.compile(
+    rf"^(?P<kind>if|while)\s*\(\s*{_CONDITION_ATOM}\s*"
+    rf"(?:==|!=|<=|>=|<|>)\s*{_CONDITION_ATOM}\s*\)\s*:?\s*$",
+    re.UNICODE,
+)
 
 
 @dataclass
