@@ -32,6 +32,7 @@ from scratchv.ir.types import (
     Value,
 )
 from scratchv.backend.machine_types import MachineInstr, MachineOp
+from scratchv.backend.machine_semantics import get_machine_semantics
 
 from scratchv.analysis.cfg import CFGAdapter
 from scratchv.analysis.usedef import IRUseDefProvider, MachineUseDefProvider
@@ -316,7 +317,7 @@ def _strip_function_label(
     if not instrs or instrs[0].op is not MachineOp.LABEL:
         return instrs
 
-    first_target = instrs[0].target or ""
+    first_target = instrs[0].target or instrs[0].comment or ""
     if first_target.startswith("."):
         return instrs
     return instrs[1:]
@@ -342,7 +343,7 @@ def _partition_machine_stream(
                     _MachineBlock(name=current_name, instructions=current)
                 )
                 auto_id += 1
-            current_name = instr.target or f"b{auto_id}"
+            current_name = instr.target or instr.comment or f"b{auto_id}"
             current = []
             continue
 
@@ -399,7 +400,10 @@ class MachineCFGAdapter:
         return instr.op in _MACHINE_TERMINATORS
 
     def branch_targets(self, instr: MachineInstr) -> Sequence[str]:
-        return [instr.target] if instr.target else []
+        target = instr.target
+        if not target and get_machine_semantics(instr.op).target_from_comment:
+            target = instr.comment
+        return [target] if target else []
 
     def has_fallthrough(self, instr: MachineInstr) -> bool:
         return instr.op in _MACHINE_CONDITIONAL_BRANCHES
