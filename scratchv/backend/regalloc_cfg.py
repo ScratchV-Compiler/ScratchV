@@ -194,20 +194,20 @@ def analyze_control_flow(instructions: list[Any]) -> MachineCFG:
     if not instructions:
         return MachineCFG([], {}, {})
 
-    cfg = build_cfg(_LsCFGAdapter(instructions))
+    adapter = _LsCFGAdapter(instructions)
+    cfg = build_cfg(adapter)
     liveness = analyze_liveness(cfg, _LsUseDefProvider())
+    full_blocks = {
+        adapter.block_name(block): list(adapter.instructions(block))
+        for block in adapter.blocks()
+    }
 
     blocks: list[MachineBasicBlock] = []
     by_name: dict[str, MachineBasicBlock] = {}
     instruction_to_block: dict[int, str] = {}
 
-    for block_id, node in cfg.nodes.items():
-        block_instructions = (
-            list(node.instructions)
-            if not isinstance(node.instructions, int)
-            else []
-        )
-        body = block_instructions
+    for block_id in cfg.nodes:
+        body = full_blocks.get(block_id, [])
         if not body:
             start = 0
             end = 0
