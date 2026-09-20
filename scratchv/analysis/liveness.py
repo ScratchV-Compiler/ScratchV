@@ -5,6 +5,12 @@ supplies a :class:`UseDefProvider` that knows how to read a concrete
 instruction representation.  The solver then computes block-level and
 instruction-level live sets over the unified CFG.
 
+This module intentionally keeps a dedicated reverse worklist rather than
+calling :func:`scratchv.analysis.dataflow.run_dataflow`.  The generic
+``DataflowAnalysis`` contract exposes only one meet value per block, while
+Phi-aware liveness needs a different meet for each predecessor edge
+(``edge_live[B, S]``).  The two solvers are deliberately not mixed.
+
 Data-flow equations
 -------------------
 Without Phi nodes::

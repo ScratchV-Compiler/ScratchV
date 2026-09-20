@@ -103,15 +103,17 @@ def _run_forward(
                 else analysis.initial()
             )
 
-        if new_in != in_values[block]:
+        new_out = analysis.transfer(block, new_in)
+        in_changed = new_in != in_values[block]
+        out_changed = new_out != out_values[block]
+        if in_changed:
             in_values[block] = new_in
-            new_out = analysis.transfer(block, new_in)
-            if new_out != out_values[block]:
-                out_values[block] = new_out
-                for succ in sorted(cfg.successors(block)):
-                    if succ not in in_worklist:
-                        worklist.append(succ)
-                        in_worklist.add(succ)
+        if out_changed:
+            out_values[block] = new_out
+            for succ in sorted(cfg.successors(block)):
+                if succ not in in_worklist:
+                    worklist.append(succ)
+                    in_worklist.add(succ)
 
     return DataflowResult(in_values=in_values, out_values=out_values)
 
@@ -147,15 +149,17 @@ def _run_backward(
         else:
             new_out = analysis.boundary(block)
 
-        if new_out != out_values[block]:
+        new_in = analysis.transfer(block, new_out)
+        out_changed = new_out != out_values[block]
+        in_changed = new_in != in_values[block]
+        if out_changed:
             out_values[block] = new_out
-            new_in = analysis.transfer(block, new_out)
-            if new_in != in_values[block]:
-                in_values[block] = new_in
-                for pred in sorted(cfg.predecessors(block)):
-                    if pred not in in_worklist:
-                        worklist.append(pred)
-                        in_worklist.add(pred)
+        if in_changed:
+            in_values[block] = new_in
+            for pred in sorted(cfg.predecessors(block)):
+                if pred not in in_worklist:
+                    worklist.append(pred)
+                    in_worklist.add(pred)
 
     return DataflowResult(in_values=in_values, out_values=out_values)
 

@@ -19,11 +19,15 @@ from scratchv.analysis.cfg_validation import verify_cfg
 from scratchv.analysis.liveness import analyze_liveness
 from scratchv.analysis.usedef import IRUseDefProvider, MachineUseDefProvider
 from scratchv.analysis.dataflow import ConstantPropagation
+import pytest
+
+from scratchv.backend import regalloc_linear, regalloc_linear_v1_5
 from scratchv.backend.machine_types import (
     MachineInstr,
     MachineOp,
     MachineOperand,
 )
+from scratchv.backend.riscv_encoder import RISCVAEncoder
 from scratchv.backend.inst_scheduler import (
     SchedInst,
     machine_instrs_from_scheduled,
@@ -206,3 +210,204 @@ def test_for_loop_is_normalized_and_detected():
     assert "for_body" in loops[0].body or any(
         name.startswith("for_body") for name in loops[0].body
     )
+
+
+def test_machine_use_def_provider_uses_central_semantics():
+    v = MachineOperand.vreg
+    provider = MachineUseDefProvider()
+
+    bnez = MachineInstr(MachineOp.BNEZ, v("cond"), target=".taken")
+    assert provider.uses(bnez) == frozenset({"cond"})
+    assert provider.defs(bnez) == frozenset()
+
+    sw = MachineInstr(MachineOp.SW, v("value"), v("addr"))
+    assert provider.uses(sw) == frozenset({"value", "addr"})
+
+    call = MachineInstr(MachineOp.CALL, target="helper")
+    assert provider.implicit_defs(call) == frozenset({"ra"})
+    assert {"ra", "a0", "t0"} <= provider.clobbers(call)
+
+
+def test_forward_solver_transfers_when_input_equals_initial():
+    cfg = CFG("f")
+    cfg.entry = "entry"
+    cfg.nodes = {
+        "entry": CFGNode("entry"),
+        "b1": CFGNode(
+            "b1",
+            instructions=[_inst(OpCode.LOAD_CONST, "x", attrs={"value": 7})],
+        ),
+    }
+    cfg.edges = [CFGEdge("entry", "b1", EdgeType.FALLTHROUGH)]
+
+    result = ConstantPropagation(cfg).run()
+    assert result.out_values["b1"]["x"].value == 7
+
+
+def test_machine_cross_block_liveness_diamond_join():
+    v = MachineOperand.vreg
+    imm = MachineOperand.immediate
+    machine = [
+        MachineInstr(MachineOp.LABEL, target="main"),
+        MachineInstr(MachineOp.LABEL, target=".entry"),
+        MachineInstr(MachineOp.BNEZ, v("cond"), target=".then"),
+        MachineInstr(MachineOp.LI, v("y"), imm(1)),
+        MachineInstr(MachineOp.J, target=".join"),
+        MachineInstr(MachineOp.LABEL, target=".then"),
+        MachineInstr(MachineOp.LI, v("y"), imm(2)),
+        MachineInstr(MachineOp.LABEL, target=".join"),
+        MachineInstr(MachineOp.ADDI, v("z"), v("y"), imm(0)),
+    ]
+    cfg = build_cfg(MachineCFGAdapter("main", machine))
+    result = analyze_liveness(cfg, MachineUseDefProvider())
+
+    assert result.blocks[".join"].live_in == frozenset({"y"})
+    assert result.blocks[".then"].live_out == frozenset({"y"})
+    assert result.blocks[".entry"].live_in == frozenset({"cond"})
+
+
+def test_machine_liveness_loop_with_multiple_backedges():
+    v = MachineOperand.vreg
+    imm = MachineOperand.immediate
+    cfg = CFG("f")
+    cfg.entry = "entry"
+    cfg.nodes = {
+        "entry": CFGNode("entry"),
+        "header": CFGNode("header"),
+        "body_a": CFGNode(
+            "body_a",
+            instructions=[MachineInstr(MachineOp.ADD, v("a"), v("x"), v("y"))],
+        ),
+        "body_b": CFGNode(
+            "body_b",
+            instructions=[MachineInstr(MachineOp.ADD, v("b"), v("x"), v("y"))],
+        ),
+        "exit": CFGNode(
+            "exit",
+            instructions=[MachineInstr(MachineOp.ADD, v("z"), v("a"), v("b"))],
+        ),
+    }
+    cfg.edges = [
+        CFGEdge("entry", "header", EdgeType.FALLTHROUGH),
+        CFGEdge("header", "body_a", EdgeType.BRANCH, "true"),
+        CFGEdge("header", "body_b", EdgeType.BRANCH, "false"),
+        CFGEdge("header", "exit", EdgeType.FALLTHROUGH),
+        CFGEdge("body_a", "header", EdgeType.JUMP),
+        CFGEdge("body_b", "header", EdgeType.JUMP),
+    ]
+
+    result = analyze_liveness(cfg, MachineUseDefProvider())
+    assert {"a", "b", "x", "y"} <= result.blocks["header"].live_in
+    assert "b" in result.blocks["body_a"].live_in
+    assert "a" in result.blocks["body_b"].live_in
+
+
+def test_machine_liveness_phi_edge_uses():
+    class PhiProvider(MachineUseDefProvider):
+        def phi_defs(self, block):
+            return frozenset({"p"}) if block == "join" else frozenset()
+
+        def edge_uses(self, pred, succ):
+            if (pred, succ) == ("then", "join"):
+                return frozenset({"p_then"})
+            if (pred, succ) == ("else", "join"):
+                return frozenset({"p_else"})
+            return frozenset()
+
+    cfg = CFG("f")
+    cfg.entry = "entry"
+    cfg.nodes = {
+        "entry": CFGNode("entry"),
+        "then": CFGNode("then"),
+        "else": CFGNode("else"),
+        "join": CFGNode("join"),
+    }
+    cfg.edges = [
+        CFGEdge("entry", "then", EdgeType.BRANCH, "true"),
+        CFGEdge("entry", "else", EdgeType.BRANCH, "false"),
+        CFGEdge("then", "join", EdgeType.FALLTHROUGH),
+        CFGEdge("else", "join", EdgeType.FALLTHROUGH),
+    ]
+
+    result = analyze_liveness(cfg, PhiProvider())
+    assert result.edge_live[("then", "join")] == frozenset({"p_then"})
+    assert result.edge_live[("else", "join")] == frozenset({"p_else"})
+
+
+def test_machine_call_live_after_instruction():
+    v = MachineOperand.vreg
+    machine = [
+        MachineInstr(MachineOp.CALL, target="helper"),
+        MachineInstr(MachineOp.ADDI, v("z"), v("x"), MachineOperand.immediate(1)),
+    ]
+    cfg = build_cfg(MachineCFGAdapter("f", machine))
+    result = analyze_liveness(cfg, MachineUseDefProvider())
+
+    assert result.live_after["entry:0"] == frozenset({"x"})
+    assert result.live_before["entry:0"] == frozenset({"x"})
+    assert result.live_after["entry:1"] == frozenset()
+
+
+@pytest.mark.parametrize("module", [regalloc_linear, regalloc_linear_v1_5])
+def test_linear_scan_consumes_unified_cfg_liveness(module):
+    v = MachineOperand.vreg
+    imm = MachineOperand.immediate
+    machine = [
+        MachineInstr(MachineOp.LABEL, comment="main"),
+        MachineInstr(MachineOp.LI, v("condition"), imm(1)),
+        MachineInstr(MachineOp.LI, v("carried"), imm(7)),
+        MachineInstr(MachineOp.BNEZ, v("condition"), comment=".then"),
+        MachineInstr(MachineOp.ADDI, v("else_value"), v("carried"), imm(1)),
+        MachineInstr(MachineOp.J, comment=".join"),
+        MachineInstr(MachineOp.LABEL, comment=".then"),
+        MachineInstr(MachineOp.ADDI, v("then_value"), v("carried"), imm(2)),
+        MachineInstr(MachineOp.LABEL, comment=".join"),
+        MachineInstr(MachineOp.MV, v("result"), v("carried")),
+    ]
+    block = module.block_from_machine_instrs(machine)
+    allocator = module.LinearScanAllocator(["t0", "t1", "s0"])
+    allocator.compute_live_intervals(block)
+
+    assert ".then" in allocator.cfg.by_name
+    assert ".join" in allocator.cfg.by_name
+    assert "carried" in allocator.cfg.by_name[".then"].live_in
+    assert "carried" in allocator.cfg.by_name[".join"].live_in
+
+
+@pytest.mark.parametrize("module", [regalloc_linear, regalloc_linear_v1_5])
+def test_unified_cfg_spill_reload_executes_in_simulator(module):
+    pytest.importorskip("tinyfive")
+    from scratchv.simulator.tinyfive import ProfiledMachine
+
+    v = MachineOperand.vreg
+    imm = MachineOperand.immediate
+    machine = [
+        MachineInstr(MachineOp.LABEL, comment="main"),
+        MachineInstr(MachineOp.LI, v("left"), imm(7)),
+        MachineInstr(MachineOp.LI, v("right"), imm(9)),
+        MachineInstr(MachineOp.LI, v("condition"), imm(1)),
+        MachineInstr(MachineOp.BNEZ, v("condition"), comment=".then"),
+        MachineInstr(MachineOp.ADD, v("result"), v("left"), v("right")),
+        MachineInstr(MachineOp.J, comment=".join"),
+        MachineInstr(MachineOp.LABEL, comment=".then"),
+        MachineInstr(MachineOp.SUB, v("result"), v("left"), v("right")),
+        MachineInstr(MachineOp.LABEL, comment=".join"),
+        MachineInstr(MachineOp.MV, MachineOperand.reg("a0"), v("result")),
+        MachineInstr(MachineOp.JALR, MachineOperand.reg("zero"),
+                     MachineOperand.reg("ra"), comment="ret"),
+    ]
+    block = module.block_from_machine_instrs(machine)
+    allocator = module.LinearScanAllocator(["t0", "t1"])
+    asm = allocator.emit(block)
+    binary = RISCVAEncoder().assemble(
+        "li sp, 4096\n" + asm + "\n.done:\nj .done"
+    )
+    words = [
+        int.from_bytes(binary[offset:offset + 4], "little")
+        for offset in range(0, len(binary), 4)
+    ]
+    profile = ProfiledMachine(mem_size=8192)
+    profile.load_binary(words, origin=0)
+    profile.run(instructions=len(words) + 2, start=0, strict=True)
+
+    assert profile.get_reg(10) & 0xFFFFFFFF == 0xFFFFFFFE

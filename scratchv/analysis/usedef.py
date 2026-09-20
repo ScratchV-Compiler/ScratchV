@@ -10,7 +10,8 @@ from __future__ import annotations
 from typing import Any, AbstractSet
 
 from scratchv.analysis.cfg import BlockId, ValueId
-from scratchv.backend.machine_types import MachineInstr, MachineOp
+from scratchv.backend.machine_semantics import get_machine_semantics
+from scratchv.backend.machine_types import MachineInstr
 
 
 def ir_value_id(value: Any) -> ValueId | None:
@@ -62,25 +63,34 @@ class MachineUseDefProvider:
     """Use/def semantics for ``MachineInstr``.
 
     Only virtual registers participate in value liveness.  Physical registers,
-    immediates, labels, and jump targets are not virtual values.  Caller-saved
-    clobber information is exposed separately by :meth:`clobbers`.
+    immediates, labels, and jump targets are not virtual values.  Operand roles
+    come from :mod:`scratchv.backend.machine_semantics`, which is the single
+    source of truth for explicit and implicit uses/defs and ABI clobbers.
     """
 
     def uses(self, instr: MachineInstr) -> AbstractSet[ValueId]:
-        result: set[ValueId] = set()
-        for operand in (instr.src1, instr.src2):
+        semantics = get_machine_semantics(instr.op)
+        operands = (instr.dst, instr.src1, instr.src2)
+        return self._names_at(operands, semantics.uses)
+
+    def defs(self, instr: MachineInstr) -> AbstractSet[ValueId]:
+        semantics = get_machine_semantics(instr.op)
+        operands = (instr.dst, instr.src1, instr.src2)
+        return self._names_at(operands, semantics.defs)
+
+    @staticmethod
+    def _names_at(
+        operands: tuple[Any, Any, Any],
+        positions: AbstractSet[int] | tuple[int, ...],
+    ) -> frozenset[ValueId]:
+        names: set[ValueId] = set()
+        for position in positions:
+            operand = operands[position]
             if operand is not None and operand.kind == "vreg":
                 value = operand.value
                 if isinstance(value, str):
-                    result.add(value)
-        return frozenset(result)
-
-    def defs(self, instr: MachineInstr) -> AbstractSet[ValueId]:
-        if instr.dst is not None and instr.dst.kind == "vreg":
-            value = instr.dst.value
-            if isinstance(value, str):
-                return frozenset({value})
-        return frozenset()
+                    names.add(value)
+        return frozenset(names)
 
     def edge_uses(
         self,
@@ -98,19 +108,21 @@ class MachineUseDefProvider:
         """Return physical register names clobbered by ``instr``.
 
         This is kept out of :meth:`defs` so CALL clobbers cannot be mixed into
-        virtual-register liveness.
+        virtual-register liveness.  The set is taken from the central machine
+        semantics table.
         """
 
-        if instr.op is not MachineOp.CALL:
-            return frozenset()
+        return get_machine_semantics(instr.op).clobbers
 
-        # RISC-V caller-saved registers used by ScratchV's backend.
-        return frozenset(
-            {
-                "ra", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
-                "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
-            }
-        )
+    def implicit_uses(self, instr: MachineInstr) -> AbstractSet[ValueId]:
+        """Return implicit physical-register uses from the semantics table."""
+
+        return get_machine_semantics(instr.op).implicit_uses
+
+    def implicit_defs(self, instr: MachineInstr) -> AbstractSet[ValueId]:
+        """Return implicit physical-register defs from the semantics table."""
+
+        return get_machine_semantics(instr.op).implicit_defs
 
 
 __all__ = [

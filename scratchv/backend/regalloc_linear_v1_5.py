@@ -785,9 +785,10 @@ def block_from_machine_instrs(
         operands, comment = linear_scan_operands(mi)
 
         if mi.op.value == ".label":
+            label = mi.target if mi.target is not None else mi.comment
             result.append(LsInstruction(
-                id=i, opcode=".label", operands=[mi.comment],
-                comment=mi.comment,
+                id=i, opcode=".label", operands=[label],
+                comment=label,
             ))
         else:
             result.append(LsInstruction(
