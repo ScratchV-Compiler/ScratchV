@@ -249,6 +249,23 @@ jobs:
           $PY -m pip install -e ".[all]"
           $PY -m pip install markdown "pytest>=7,<10"
 
+      - name: Prepare standalone RISC-V execution tools
+        run: |
+          set -euo pipefail
+          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y clang lld qemu-user
+          fi
+
+      - name: Standalone CNN execution regressions
+        env:
+          PYTHONHASHSEED: "0"
+          SCRATCHV_REQUIRE_RISCV_EXECUTION: "1"
+        run: |
+          mkdir -p benchmark_reports
+          $PY -m pytest tests/test_standalone_execution.py tests/test_standalone_const_merge.py \
+            -q --junit-xml=benchmark_reports/standalone_execution_tests.xml
+
       - name: Topic 9 DSL diagnostics benchmark
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
