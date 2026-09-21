@@ -27,6 +27,7 @@ class InstructionSelector:
         self._stack_offset = 0
         self._max_temp_counter = 0
         self._loop_stack: list[dict] = []
+        self._temp_counter = 0
         self._reserved_vreg_names = self._collect_ir_value_names()
 
     def _collect_ir_value_names(self) -> set[str]:
@@ -57,10 +58,19 @@ class InstructionSelector:
         self._label_counter += 1
         return f".L{prefix}_{self._label_counter}"
 
+    def _fresh_vreg(self, prefix: str) -> MachineOperand:
+        while True:
+            self._temp_counter += 1
+            name = f"__scratchv_{prefix}_{self._temp_counter}"
+            if name not in self._reserved_vreg_names:
+                self._reserved_vreg_names.add(name)
+                return MachineOperand.vreg(name)
+
     def _select_function(self, func: Function) -> None:
         # Function prologue label
         self._emit_label(func.name)
         self._stack_offset = 0
+        self._loop_stack = []
 
         for block in func.blocks:
             self._emit_label(f".{block.name}")
@@ -299,11 +309,14 @@ class InstructionSelector:
             "exit": exit_label,
         })
 
+        # Materialize the bound before allocation so its register is accounted
+        # for; assembler expansion cannot safely borrow a live temporary.
+        end_reg = self._fresh_vreg("loop_bound")
+        self._emit(MachineOp.LI, end_reg, MachineOperand.immediate(end))
         self._emit_label(header_label)
 
         # Check condition: if iv >= end, exit
-        end_val = MachineOperand.immediate(int(end))  # type: ignore[arg-type]
-        self._emit(MachineOp.BGE, iv, end_val, target=exit_label)
+        self._emit(MachineOp.BGE, iv, end_reg, target=exit_label)
         self._emit_label(body_label)
 
     def _select_endfor(self, instr: Instruction) -> None:

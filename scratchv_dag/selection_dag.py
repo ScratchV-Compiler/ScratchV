@@ -469,7 +469,7 @@ class DAGScheduler:
         # Constants
         if opcode == SDNodeOpcode.Constant:
             val = node.get_constant_int() or 0
-            dst = MachineOperand.vreg(f"t{node.node_id}")
+            dst = MachineOperand.vreg(f"__dag_v{node.node_id}")
             result.append(MachineInstr(
                 MachineOp.LI, dst,
                 MachineOperand.immediate(val),
@@ -479,7 +479,7 @@ class DAGScheduler:
 
         if opcode == SDNodeOpcode.ConstantFP:
             val = node.get_constant_fp() or 0.0
-            dst = MachineOperand.vreg(f"t{node.node_id}")
+            dst = MachineOperand.vreg(f"__dag_v{node.node_id}")
             result.append(MachineInstr(
                 MachineOp.LI, dst,
                 MachineOperand.immediate(int(val)),
@@ -489,7 +489,7 @@ class DAGScheduler:
 
         if opcode == SDNodeOpcode.CopyFromReg:
             reg = node.get_attr("reg_name", "zero")
-            dst = MachineOperand.vreg(f"t{node.node_id}")
+            dst = MachineOperand.vreg(f"__dag_v{node.node_id}")
             result.append(MachineInstr(
                 MachineOp.MV, dst,
                 MachineOperand.reg(reg),
@@ -499,7 +499,7 @@ class DAGScheduler:
 
         # Memory
         if opcode == SDNodeOpcode.LOAD:
-            dst = MachineOperand.vreg(f"t{node.node_id}")
+            dst = MachineOperand.vreg(f"__dag_v{node.node_id}")
             addr = _op_to_operand(node.operands[1])
             result.append(MachineInstr(
                 MachineOp.LW, dst, addr, comment="load"))
@@ -530,8 +530,8 @@ class DAGScheduler:
 
         if opcode == SDNodeOpcode.RET:
             result.append(MachineInstr(
-                MachineOp.JALR, MachineOperand.vreg("zero"),
-                MachineOperand.vreg("ra"),
+                MachineOp.JALR, MachineOperand.reg("zero"),
+                MachineOperand.reg("ra"),
                 comment="ret",
             ))
             return
@@ -540,7 +540,7 @@ class DAGScheduler:
             callee = node.get_attr("callee", "unknown")
             result.append(MachineInstr(MachineOp.CALL, comment=callee))
             if node.num_values > 0:
-                dst = MachineOperand.vreg(f"t{node.node_id}")
+                dst = MachineOperand.vreg(f"__dag_v{node.node_id}")
                 result.append(MachineInstr(
                     MachineOp.MV, dst, MachineOperand.vreg("a0"),
                 ))
@@ -551,7 +551,7 @@ class DAGScheduler:
         gen_src1: MachineOperand | None = None
         gen_src2: MachineOperand | None = None
         if node.num_values > 0 and node._num_types > node.num_chain_results:
-            gen_dst = MachineOperand.vreg(f"t{node.node_id}")
+            gen_dst = MachineOperand.vreg(f"__dag_v{node.node_id}")
         if len(node.operands) >= 2:
             gen_src1 = _op_to_operand(node.operands[0])
             gen_src2 = _op_to_operand(node.operands[1])
@@ -570,7 +570,7 @@ def _op_to_operand(sdval: SDValue) -> MachineOperand:
         return MachineOperand.immediate(val)
     if opc == SDNodeOpcode.Register:
         return MachineOperand.reg(sdval.node.get_attr("reg_name", "zero"))
-    return MachineOperand.vreg(f"t{sdval.node.node_id}")
+    return MachineOperand.vreg(f"__dag_v{sdval.node.node_id}")
 
 
 # ── SDNode -> MachineOp lookup table ──────────────────────────────────

@@ -42,3 +42,6 @@ docs/topics/html/
 *.dot
 *.png
 .idea/
+
+# Local tool session state
+/:memory:.ses
