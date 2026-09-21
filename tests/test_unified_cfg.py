@@ -26,6 +26,8 @@ from scratchv.analysis.dataflow import (
 import pytest
 
 from scratchv.backend import regalloc_linear, regalloc_linear_v1_5
+from scratchv.backend.asm_emit import AsmEmitter
+from scratchv.backend.register_alloc import RegisterAllocator
 from scratchv.backend.machine_types import (
     MachineInstr,
     MachineOp,
@@ -415,6 +417,76 @@ def test_linear_scan_consumes_unified_cfg_liveness(module):
     assert ".join" in allocator.cfg.by_name
     assert "carried" in allocator.cfg.by_name[".then"].live_in
     assert "carried" in allocator.cfg.by_name[".join"].live_in
+
+
+def test_greedy_consumes_unified_cfg_liveness():
+    v = MachineOperand.vreg
+    imm = MachineOperand.immediate
+    machine = [
+        MachineInstr(MachineOp.LABEL, comment="main"),
+        MachineInstr(MachineOp.LI, v("condition"), imm(1)),
+        MachineInstr(MachineOp.LI, v("carried"), imm(7)),
+        MachineInstr(MachineOp.BNEZ, v("condition"), comment=".then"),
+        MachineInstr(MachineOp.ADDI, v("unused"), v("carried"), imm(1)),
+        MachineInstr(MachineOp.J, comment=".join"),
+        MachineInstr(MachineOp.LABEL, comment=".then"),
+        MachineInstr(MachineOp.ADDI, v("also_unused"), v("carried"), imm(2)),
+        MachineInstr(MachineOp.LABEL, comment=".join"),
+        MachineInstr(MachineOp.MV, MachineOperand.reg("a0"), v("carried")),
+    ]
+
+    allocator = RegisterAllocator(machine, mode="greedy")
+    allocated = allocator.run()
+
+    assert allocator.cfg is not None
+    assert allocator.liveness is not None
+    assert ".then" in allocator.cfg.nodes
+    assert ".join" in allocator.cfg.nodes
+    assert "carried" in allocator.liveness.blocks[".then"].live_in
+    assert "carried" in allocator.liveness.blocks[".join"].live_in
+
+    spill_comments = [
+        instr.comment
+        for instr in allocated
+        if "[regalloc:spill]" in instr.comment
+    ]
+    assert spill_comments
+    assert all("carried" in comment for comment in spill_comments)
+
+
+def test_greedy_unified_cfg_executes_branch_in_simulator():
+    pytest.importorskip("tinyfive")
+    from scratchv.simulator.tinyfive import ProfiledMachine
+
+    v = MachineOperand.vreg
+    imm = MachineOperand.immediate
+    machine = [
+        MachineInstr(MachineOp.LABEL, comment="main"),
+        MachineInstr(MachineOp.LI, v("left"), imm(7)),
+        MachineInstr(MachineOp.LI, v("right"), imm(9)),
+        MachineInstr(MachineOp.LI, v("condition"), imm(1)),
+        MachineInstr(MachineOp.BNEZ, v("condition"), comment=".then"),
+        MachineInstr(MachineOp.ADD, v("result"), v("left"), v("right")),
+        MachineInstr(MachineOp.J, comment=".join"),
+        MachineInstr(MachineOp.LABEL, comment=".then"),
+        MachineInstr(MachineOp.SUB, v("result"), v("left"), v("right")),
+        MachineInstr(MachineOp.LABEL, comment=".join"),
+        MachineInstr(MachineOp.MV, MachineOperand.reg("a0"), v("result")),
+    ]
+    allocated = RegisterAllocator(machine, mode="greedy").run()
+    asm = AsmEmitter(allocated).emit()
+    binary = RISCVAEncoder().assemble(
+        "li sp, 4096\n" + asm + "\n.done:\nj .done"
+    )
+    words = [
+        int.from_bytes(binary[offset:offset + 4], "little")
+        for offset in range(0, len(binary), 4)
+    ]
+    profile = ProfiledMachine(mem_size=8192)
+    profile.load_binary(words, origin=0)
+    profile.run(instructions=len(words) + 2, start=0, strict=True)
+
+    assert profile.get_reg(10) & 0xFFFFFFFF == 0xFFFFFFFE
 
 
 @pytest.mark.parametrize("module", [regalloc_linear, regalloc_linear_v1_5])

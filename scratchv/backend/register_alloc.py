@@ -11,7 +11,7 @@ backward compatibility.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from scratchv.backend.machine_semantics import (
     get_machine_semantics,
@@ -29,6 +29,10 @@ from scratchv.backend.machine_types import (  # noqa: F401 — re-export
     TEMP_REGS,
     ZERO_REG,
 )
+
+if TYPE_CHECKING:
+    from scratchv.analysis.cfg import ControlFlowGraph
+    from scratchv.analysis.liveness import LivenessResult
 
 # Re-export for backward compatibility — new code should import directly
 # from scratchv.backend.machine_types.
@@ -63,6 +67,9 @@ class RegisterAllocator:
         self._reg_pool: dict[str, Optional[str]] = {r: None for r in ALL_REGS}
         self._output: list[MachineInstr] = []
         self._remaining_uses: dict[str, int] = {}
+        self.cfg: Optional["ControlFlowGraph"] = None
+        self.liveness: Optional["LivenessResult"] = None
+        self._current_live_after: frozenset[str] = frozenset()
 
     @property
     def spill_slot_count(self) -> int:
@@ -172,7 +179,14 @@ class RegisterAllocator:
         return self._output
 
     def _allocate_greedy(self) -> list[MachineInstr]:
-        """Allocate locally, with real spill reloads and block barriers."""
+        """Allocate locally using unified CFG liveness at block barriers."""
+        # Keep analysis imports local: analysis adapters depend on backend
+        # machine types, while backend.__init__ re-exports this allocator.
+        from scratchv.analysis.adapters import MachineCFGAdapter
+        from scratchv.analysis.cfg import build_cfg
+        from scratchv.analysis.liveness import analyze_liveness
+        from scratchv.analysis.usedef import MachineUseDefProvider
+
         self._output = []
         self._vreg_map.clear()
         self._spill_slots.clear()
@@ -183,6 +197,19 @@ class RegisterAllocator:
             _, uses = virtual_register_defs_uses(instr)
             for vreg in uses:
                 self._remaining_uses[vreg] = self._remaining_uses.get(vreg, 0) + 1
+
+        self.cfg = build_cfg(MachineCFGAdapter("greedy", self.instructions))
+        self.liveness = analyze_liveness(self.cfg, MachineUseDefProvider())
+        live_after_by_instr: dict[int, frozenset[str]] = {}
+        for node in self.cfg.nodes.values():
+            if isinstance(node.instructions, int):
+                continue
+            for instr_id, block_instr in zip(
+                node.instruction_ids, node.instructions
+            ):
+                live_after_by_instr[id(block_instr)] = self.liveness.live_after[
+                    instr_id
+                ]
 
         fallthrough_boundaries = {
             index - 1
@@ -198,6 +225,8 @@ class RegisterAllocator:
                 continue
 
             semantics = get_machine_semantics(instr.op)
+            live_after = live_after_by_instr.get(id(instr), frozenset())
+            self._current_live_after = live_after
             operands = [instr.dst, instr.src1, instr.src2]
             resolved = list(operands)
             explicit_uses = {
@@ -216,7 +245,7 @@ class RegisterAllocator:
             }
             for phys_reg in explicit_defs:
                 owner = self._reg_pool[phys_reg]
-                if owner is not None and self._remaining_uses.get(owner, 0) > 0:
+                if owner is not None and owner in live_after:
                     self._emit_spill(owner, phys_reg)
             reserved: set[str] = set(explicit_uses)
 
@@ -238,7 +267,7 @@ class RegisterAllocator:
                     if operands[position] is not None
                     and operands[position].kind == "vreg"
                 )
-                if self._remaining_uses.get(vreg, 0) <= 1
+                if vreg not in live_after
                 and vreg in self._vreg_map
             }
 
@@ -260,11 +289,10 @@ class RegisterAllocator:
             )
 
             # A call is not a CFG terminator, but it invalidates caller-saved
-            # mappings.  Ordinary branches retain their stable global mapping;
-            # eager block-boundary flushing would manufacture spills even when
-            # peak pressure is below the register bank (the CNN case).
+            # mappings.  At calls and CFG boundaries, only values reported
+            # live by the unified analysis need a canonical stack copy.
             if semantics.is_call:
-                self._flush_clobbered(semantics.clobbers)
+                self._flush_clobbered(semantics.clobbers, live_after)
             elif semantics.is_terminator:
                 defines, _ = virtual_register_defs_uses(instr)
                 if defines:
@@ -272,7 +300,7 @@ class RegisterAllocator:
                         "greedy regalloc does not support a control-flow "
                         "terminator defining a virtual register"
                     )
-                self._flush_regs()
+                self._flush_regs(live_after)
             self._emit(allocated)
 
             # A fixed physical destination overwrites any virtual value that
@@ -284,21 +312,19 @@ class RegisterAllocator:
                 self._reg_pool[phys_reg] = None
 
             _, uses = virtual_register_defs_uses(instr)
-            defines, _ = virtual_register_defs_uses(instr)
             for vreg in uses:
                 self._remaining_uses[vreg] -= 1
-                if self._remaining_uses[vreg] == 0 and vreg not in defines:
-                    self._release_vreg(vreg)
-            for vreg in defines:
-                if self._remaining_uses.get(vreg, 0) == 0:
+            for vreg in list(self._vreg_map):
+                if vreg not in live_after:
                     self._release_vreg(vreg)
 
             # A label may be reached either by fallthrough or by another CFG
             # edge.  Canonicalize the fallthrough predecessor before the label
             # so every incoming edge observes initialized spill slots.
             if index in fallthrough_boundaries and not semantics.is_terminator:
-                self._flush_regs()
+                self._flush_regs(live_after)
 
+        self._current_live_after = frozenset()
         return self._output
 
     def _resolve_src(
@@ -374,7 +400,7 @@ class RegisterAllocator:
         lru_reg = min(candidates, key=remaining)
         lru_vreg = self._reg_pool[lru_reg]
         if lru_vreg:
-            if self._remaining_uses.get(lru_vreg, 0) > 0:
+            if lru_vreg in self._current_live_after:
                 self._emit_spill(lru_vreg, lru_reg)
             self._vreg_map.pop(lru_vreg, None)
         self._reg_pool[lru_reg] = vreg_name
@@ -383,16 +409,20 @@ class RegisterAllocator:
             self._emit_reload(vreg_name, lru_reg)
         return lru_reg
 
-    def _flush_regs(self) -> None:
+    def _flush_regs(self, live_values: frozenset[str]) -> None:
         """Spill all registers at basic block boundaries."""
         for phys_reg, vreg_name in list(self._reg_pool.items()):
             if vreg_name is not None:
-                if self._remaining_uses.get(vreg_name, 0) > 0:
+                if vreg_name in live_values:
                     self._emit_spill(vreg_name, phys_reg)
                 self._reg_pool[phys_reg] = None
         self._vreg_map.clear()
 
-    def _flush_clobbered(self, clobbers: frozenset[str]) -> None:
+    def _flush_clobbered(
+        self,
+        clobbers: frozenset[str],
+        live_values: frozenset[str],
+    ) -> None:
         """Canonicalize values held in ABI-clobbered registers before call."""
         for phys_reg in clobbers:
             if phys_reg not in self._reg_pool:
@@ -400,7 +430,7 @@ class RegisterAllocator:
             vreg_name = self._reg_pool[phys_reg]
             if vreg_name is None:
                 continue
-            if self._remaining_uses.get(vreg_name, 0) > 0:
+            if vreg_name in live_values:
                 self._emit_spill(vreg_name, phys_reg)
             self._vreg_map.pop(vreg_name, None)
             self._reg_pool[phys_reg] = None
