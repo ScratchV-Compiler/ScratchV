@@ -125,17 +125,12 @@ def _run_backward(
     in_values = {block: analysis.initial() for block in cfg.nodes}
     out_values = {block: analysis.initial() for block in cfg.nodes}
 
-    worklist = deque()
-    in_worklist = set()
-
-    for block in cfg.nodes:
-        if not cfg.successors(block):
-            out_values[block] = analysis.boundary(block)
-            in_values[block] = analysis.transfer(block, out_values[block])
-            for pred in cfg.predecessors(block):
-                if pred not in in_worklist:
-                    worklist.append(pred)
-                    in_worklist.add(pred)
+    # Seed every block, not just exit blocks.  A CFG may be a pure cycle
+    # (every block has a successor); seeding only exits would leave the
+    # worklist empty and never run a transfer.  Exit blocks receive their
+    # boundary value when they are popped below.
+    worklist = deque(cfg.nodes)
+    in_worklist = set(cfg.nodes)
 
     while worklist:
         block = worklist.popleft()

@@ -18,7 +18,11 @@ from scratchv.analysis.adapters import IRCFGAdapter, MachineCFGAdapter
 from scratchv.analysis.cfg_validation import verify_cfg
 from scratchv.analysis.liveness import analyze_liveness
 from scratchv.analysis.usedef import IRUseDefProvider, MachineUseDefProvider
-from scratchv.analysis.dataflow import ConstantPropagation
+from scratchv.analysis.dataflow import (
+    ConstantPropagation,
+    Direction,
+    run_dataflow,
+)
 import pytest
 
 from scratchv.backend import regalloc_linear, regalloc_linear_v1_5
@@ -242,6 +246,45 @@ def test_forward_solver_transfers_when_input_equals_initial():
 
     result = ConstantPropagation(cfg).run()
     assert result.out_values["b1"]["x"].value == 7
+
+
+def test_backward_solver_processes_cycle_without_exit_block():
+    cfg = CFG("loop")
+    cfg.entry = "A"
+    cfg.nodes = {
+        "A": CFGNode("A"),
+        "B": CFGNode("B"),
+        "C": CFGNode("C"),
+    }
+    cfg.edges = [
+        CFGEdge("A", "B", EdgeType.FALLTHROUGH),
+        CFGEdge("B", "C", EdgeType.FALLTHROUGH),
+        CFGEdge("C", "A", EdgeType.JUMP),
+    ]
+
+    class BackwardMarker:
+        direction = Direction.BACKWARD
+
+        def initial(self):
+            return frozenset()
+
+        def boundary(self, block):
+            return frozenset()
+
+        def meet(self, values):
+            result = set()
+            for value in values:
+                result |= value
+            return frozenset(result)
+
+        def transfer(self, block, value):
+            return frozenset(set(value) | {block})
+
+    result = run_dataflow(cfg, BackwardMarker())
+
+    assert result.in_values["A"] == frozenset({"A", "B", "C"})
+    assert result.in_values["B"] == frozenset({"A", "B", "C"})
+    assert result.in_values["C"] == frozenset({"A", "B", "C"})
 
 
 def test_machine_cross_block_liveness_diamond_join():
