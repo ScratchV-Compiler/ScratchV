@@ -44,11 +44,15 @@ pytest tests/ -v            # run all tests
 ## Adding a New Optimization Pass
 
 1. Create `scratchv/optimizer/my_pass.py`.
-2. Implement a class with a `run(program) → int` method (returns number of
-   transformations applied).
-3. Register it in `scratchv/main.py` → `run_optimizer()`.
-4. Add test cases (positive: should transform; negative: should not).
-5. Run `pytest` to verify.
+2. Subclass `OptimizationPass` and define a stable, lowercase, kebab-case
+   `name` such as `"constant-folding"`. The manager uses this identifier in
+   ordered reports and failure diagnostics.
+3. Implement `optimize(program) → int`. It must return a non-negative count
+   of transformations made by that invocation, not a lifetime total.
+4. Register it in `create_optimization_pass_manager()` in
+   `scratchv/compiler.py`.
+5. Add test cases (positive: should transform; negative: should not).
+6. Run `pytest` to verify.
 
 ## Documentation
 

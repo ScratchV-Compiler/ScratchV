@@ -17,8 +17,8 @@ class TestConstantFolder:
         r = builder.add(c1, c2)
         builder.ret(r)
 
-        folder = ConstantFolder(builder.program)
-        count = folder.run()
+        folder = ConstantFolder()
+        count = folder.optimize(builder.program)
         assert count == 1
 
         block = builder.program.functions[0].blocks[0]
@@ -36,8 +36,8 @@ class TestConstantFolder:
         r = builder.mul(c1, c2)
         builder.ret(r)
 
-        folder = ConstantFolder(builder.program)
-        count = folder.run()
+        folder = ConstantFolder()
+        count = folder.optimize(builder.program)
         assert count == 1
         # The mul (index 2) was replaced by load_const 10.0
         block = builder.program.functions[0].blocks[0]
@@ -53,8 +53,8 @@ class TestConstantFolder:
         r = builder.add(a, c)
         builder.ret(r)
 
-        folder = ConstantFolder(builder.program)
-        count = folder.run()
+        folder = ConstantFolder()
+        count = folder.optimize(builder.program)
         assert count == 0  # cannot fold because 'a' is not constant
 
 
@@ -70,13 +70,16 @@ class TestDeadCodeEliminator:
         d = builder.load_const(3.0)
         builder.ret(d)
 
-        elim = DeadCodeEliminator(builder.program)
-        count = elim.run()
-        assert count == 1  # the add should be eliminated
+        elim = DeadCodeEliminator()
+        count = elim.optimize(builder.program)
+        assert count == 3  # the add and its two dead inputs are eliminated
 
         block = builder.program.functions[0].blocks[0]
         instrs = block.instructions
-        assert all(i.opcode != OpCode.ADD for i in instrs)
+        assert [instr.opcode for instr in instrs] == [
+            OpCode.LOAD_CONST,
+            OpCode.RETURN,
+        ]
 
     def test_keep_used_value(self):
         builder = IRBuilder()
@@ -88,6 +91,6 @@ class TestDeadCodeEliminator:
         c = builder.add(a, b)  # used by ret
         builder.ret(c)
 
-        elim = DeadCodeEliminator(builder.program)
-        count = elim.run()
+        elim = DeadCodeEliminator()
+        count = elim.optimize(builder.program)
         assert count == 0  # nothing eliminated

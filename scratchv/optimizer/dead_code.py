@@ -1,65 +1,22 @@
-"""Dead code elimination pass.
+"""Dead-code elimination for ScratchV IR.
 
-Removes instructions whose result is never used.
-
+The pass traces value definitions backwards from observable instructions, then
+removes pure instructions that do not contribute to those roots.
 """
 
 from __future__ import annotations
 
-from scratchv.ir.types import (
-    OpCode, Instruction, BasicBlock, Function, Program,
-)
+from scratchv.ir.types import BasicBlock, Function, Instruction, OpCode, Program
+from scratchv.pass_interface import OptimizationPass
 
 
-class DeadCodeEliminator:
+class DeadCodeEliminator(OptimizationPass):
     """Remove unused instructions from an IR Program."""
 
-    def __init__(self, program: Program):
-        self.program = program
-        self._stats = {"eliminated": 0}
+    name = "dead-code-elim"
 
-    def run(self) -> int:
-        """Run dead code elimination.
-
-        Returns number of eliminated instructions.
-        """
-        for func in self.program.functions:
-            self._eliminate_function(func)
-        return self._stats["eliminated"]
-
-    def _eliminate_function(self, func: Function) -> None:
-        for block in func.blocks:
-            self._eliminate_block(block)
-
-    def _eliminate_block(self, block: BasicBlock) -> None:
-        # Collect all used value names
-        used: set[str | None] = set()
-        # Return values and branch targets are always live
-        for instr in block.instructions:
-            if instr.opcode in (
-                    OpCode.RETURN, OpCode.BR,
-                    OpCode.BR_IF, OpCode.STORE,
-                    OpCode.ENDFOR, OpCode.FOR):
-                used.add(instr.dest.name if instr.dest else None)
-            for op in instr.operands:
-                used.add(op.name)
-
-        # Filter: keep instructions with side effects or whose dest is used
-        new_instrs: list[Instruction] = []
-        for instr in block.instructions:
-            if self._is_side_effect(instr):
-                new_instrs.append(instr)
-            elif instr.dest is None or instr.dest.name in used:
-                new_instrs.append(instr)
-            else:
-                self._stats["eliminated"] += 1
-
-        block.instructions = new_instrs
-
-    @staticmethod
-    def _is_side_effect(instr: Instruction) -> bool:
-        """Check if an instruction has side effects and must be kept."""
-        return instr.opcode in (
+    _EFFECT_ROOTS = frozenset(
+        {
             OpCode.STORE,
             OpCode.RETURN,
             OpCode.BR,
@@ -67,4 +24,66 @@ class DeadCodeEliminator:
             OpCode.FOR,
             OpCode.ENDFOR,
             OpCode.ALLOCA,
-        )
+        }
+    )
+
+    def optimize(self, program: Program) -> int:
+        """Eliminate dead instructions and return this invocation's count."""
+        return sum(self._eliminate_function(func) for func in program.functions)
+
+    def _eliminate_function(self, func: Function) -> int:
+        if len(func.blocks) != 1:
+            return 0
+        return self._eliminate_block(func.blocks[0])
+
+    def _eliminate_block(self, block: BasicBlock) -> int:
+        if block.phi_nodes:
+            return 0
+        definitions = self._build_definitions(block.instructions)
+        if definitions is None:
+            return 0
+        live_ids: set[int] = set()
+
+        for instr in block.instructions:
+            if self._is_effect_root(instr):
+                self._mark_used(instr, definitions, live_ids)
+
+        original_count = len(block.instructions)
+        block.instructions = [
+            instr for instr in block.instructions if id(instr) in live_ids
+        ]
+        return original_count - len(block.instructions)
+
+    @staticmethod
+    def _build_definitions(
+        instructions: list[Instruction],
+    ) -> dict[str, Instruction] | None:
+        definitions: dict[str, Instruction] = {}
+        for instr in instructions:
+            if instr.dest is None:
+                continue
+            if instr.dest.name in definitions:
+                return None
+            definitions[instr.dest.name] = instr
+        return definitions
+
+    def _mark_used(
+        self,
+        instr: Instruction,
+        definitions: dict[str, Instruction],
+        live_ids: set[int],
+    ) -> None:
+        instr_id = id(instr)
+        if instr_id in live_ids:
+            return
+        live_ids.add(instr_id)
+
+        for operand in instr.operands:
+            producer = definitions.get(operand.name)
+            if producer is not None:
+                self._mark_used(producer, definitions, live_ids)
+
+    @classmethod
+    def _is_effect_root(cls, instr: Instruction) -> bool:
+        """Return whether an instruction must remain observable."""
+        return instr.dest is None or instr.opcode in cls._EFFECT_ROOTS

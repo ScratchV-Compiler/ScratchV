@@ -1,5 +1,8 @@
 # Topic: IR 优化器框架 (Optimizer Framework)
 
+> **归档说明：** 本文保留为课题历史摘要；当前公共接口以
+> [`docs/topics/04-IR优化器框架.md`](../04-IR优化器框架.md) 和实际代码为准。
+
 > **源文件**: `scratchv/optimizer/`
 > **层级**: IR → IR (源和目标都是 IR Program)
 > **策略**: 所有 pass 原地修改 Program, 返回变更计数
@@ -98,7 +101,34 @@ if changes > 0:
     print(f"Folded {changes} constants")
 ```
 
-所有 pass 遵循相同接口，可在 `PassManager` 中链式调用。
+所有 pass 遵循相同接口。当前实现的默认三级管线通过唯一工厂函数创建：
+
+```python
+from scratchv.compiler import create_optimization_pass_manager
+
+manager = create_optimization_pass_manager("all")
+report = manager.run(program)
+print(report.total_changes)
+```
+
+编译器入口和 benchmark 共用该工厂，当前映射为：
+
+- `none`：空管线
+- `basic`：`constant-folding` → `dead-code-elim`
+- `all`：`constant-folding` → `dead-code-elim` → `ir-peephole` →
+  `muladd-fusion` → `licm`
+
+`manager.run()` 返回不可变的
+`OptimizationReport`；其 `executions` 按执行顺序记录 pass 名称、变更数和耗时，
+`total_changes` 与 `elapsed_seconds` 提供总计。
+
+主 CLI 使用 `--opt-level none|basic|all`。`--optimize` 只是参数名的兼容别名，
+仍须显式提供 `none`、`basic` 或 `all`；裸 `--optimize` 不合法。
+
+```bash
+scratchv model.onnx --opt-level all
+scratchv model.onnx --optimize all
+```
 
 ## 相关 Topic
 

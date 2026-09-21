@@ -38,7 +38,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # ── Optimizations ───────────────────────────────────────────────────
     parser.add_argument(
-        "--optimize", choices=["none", "basic", "all"],
+        "--opt-level", "--optimize", dest="optimize_level",
+        choices=["none", "basic", "all"],
         default="none",
         help="Optimization level (none, basic, all)",
     )
@@ -136,7 +137,7 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
     """Translate parsed CLI arguments to a CompilerConfig."""
     return CompilerConfig(
         backend=args.backend,
-        optimize_level=args.optimize,
+        optimize_level=args.optimize_level,
         reg_alloc=args.reg_alloc,
         dump_ir=args.dump_ir,
         verify=args.verify,

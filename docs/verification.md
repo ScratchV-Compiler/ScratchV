@@ -201,10 +201,10 @@ Add verification to your workflow:
 
 ```bash
 # 1. Compile with ScratchV (RISC-V backend)
-scratchv model.onnx -o output.s --optimize
+scratchv model.onnx -o output.s --opt-level all
 
 # 2. Compile with LLVM backend
-scratchv model.onnx --backend llvm -o model.ll --optimize
+scratchv model.onnx --backend llvm -o model.ll --opt-level all
 
 # 3. Verify against ONNX Runtime
 scratchv model.onnx --verify
@@ -217,6 +217,10 @@ lli model.ll                       # LLVM JIT execution
 # 5. Compare instruction counts
 #    (before vs after optimization)
 ```
+
+> **Note:** 核心 CLI 中 `--optimize` 只是 `--opt-level` 的参数名兼容别名，
+> 仍须显式提供 `none`、`basic` 或 `all`。例如 `--optimize all` 等价于
+> `--opt-level all`；裸 `--optimize` 不合法。新文档优先使用后者。
 
 ---
 
