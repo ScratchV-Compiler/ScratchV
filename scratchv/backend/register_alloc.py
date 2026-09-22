@@ -57,6 +57,7 @@ class RegisterAllocator:
         self.instructions = instructions
         self.mode = mode
         self._vreg_map: dict[str, str] = {}  # vreg_name -> phys_reg
+        self._allocation_map: dict[str, str] = {}
         self._spill_slots: dict[str, int] = {}  # vreg_name -> stack offset
         self._next_spill = 0
         # Track which physical registers are currently allocated
@@ -76,9 +77,15 @@ class RegisterAllocator:
         else:
             return self._allocate_greedy()
 
+    @property
+    def register_map(self) -> dict[str, str]:
+        """Return the entry register first assigned to each virtual register."""
+        return dict(self._allocation_map)
+
     def _allocate_naive(self) -> list[MachineInstr]:
         """Spill every virtual register to the stack."""
         self._output = []
+        self._allocation_map.clear()
         self._spill_slots.clear()
         self._next_spill = 0
         for instr in self.instructions:
@@ -174,6 +181,7 @@ class RegisterAllocator:
         """Allocate locally, with real spill reloads and block barriers."""
         self._output = []
         self._vreg_map.clear()
+        self._allocation_map.clear()
         self._spill_slots.clear()
         self._next_spill = 0
         self._reg_pool = {r: None for r in ALL_REGS}
@@ -183,18 +191,44 @@ class RegisterAllocator:
             for vreg in uses:
                 self._remaining_uses[vreg] = self._remaining_uses.get(vreg, 0) + 1
 
+        # Values used before any definition are function live-ins.  Reserve
+        # their entry registers up front so a later live-in cannot reuse a
+        # register whose earlier value is still supplied by the caller.
+        defined: set[str] = set()
+        live_ins: list[str] = []
+        seen_live_ins: set[str] = set()
+        for instr in self.instructions:
+            semantics = get_machine_semantics(instr.op)
+            operands = [instr.dst, instr.src1, instr.src2]
+            for position in sorted(semantics.uses):
+                operand = operands[position]
+                if operand is None or operand.kind != "vreg":
+                    continue
+                vreg = str(operand.value)
+                if vreg not in defined and vreg not in seen_live_ins:
+                    live_ins.append(vreg)
+                    seen_live_ins.add(vreg)
+            defs, _ = virtual_register_defs_uses(instr)
+            defined.update(defs)
+        for vreg in live_ins:
+            self._assign_reg(vreg)
+
         fallthrough_boundaries = {
             index - 1
             for index, instr in enumerate(self.instructions)
             if index > 0 and instr.op == MachineOp.LABEL
         }
 
+        saw_executable_instruction = False
         for index, instr in enumerate(self.instructions):
             if instr.op == MachineOp.LABEL:
-                self._vreg_map.clear()
-                self._reg_pool = {r: None for r in ALL_REGS}
+                if saw_executable_instruction:
+                    self._vreg_map.clear()
+                    self._reg_pool = {r: None for r in ALL_REGS}
                 self._emit(instr)
                 continue
+
+            saw_executable_instruction = True
 
             semantics = get_machine_semantics(instr.op)
             operands = [instr.dst, instr.src1, instr.src2]
@@ -285,6 +319,9 @@ class RegisterAllocator:
                     self._release_vreg(vreg)
             for vreg in defines:
                 if self._remaining_uses.get(vreg, 0) == 0:
+                    phys_reg = self._vreg_map.get(vreg)
+                    if phys_reg is not None and vreg in self._spill_slots:
+                        self._emit_spill(vreg, phys_reg)
                     self._release_vreg(vreg)
 
             # A label may be reached either by fallthrough or by another CFG
@@ -349,6 +386,7 @@ class RegisterAllocator:
             if occupant is None and phys_reg not in avoid:
                 self._reg_pool[phys_reg] = vreg_name
                 self._vreg_map[vreg_name] = phys_reg
+                self._allocation_map.setdefault(vreg_name, phys_reg)
                 if reload:
                     self._emit_reload(vreg_name, phys_reg)
                 return phys_reg
@@ -373,6 +411,7 @@ class RegisterAllocator:
             self._vreg_map.pop(lru_vreg, None)
         self._reg_pool[lru_reg] = vreg_name
         self._vreg_map[vreg_name] = lru_reg
+        self._allocation_map.setdefault(vreg_name, lru_reg)
         if reload:
             self._emit_reload(vreg_name, lru_reg)
         return lru_reg

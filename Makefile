@@ -1,7 +1,7 @@
 # ScratchV developer makefile
 .POSIX:
 
-.PHONY: quick-start install test test-peephole ci-peephole bench bench-cnn clean lint
+.PHONY: quick-start install test test-peephole ci-peephole bench bench-topic06 bench-cnn clean lint
 
 # ── Beginner quick-start ─────────────────────────────────────────────────────
 
@@ -63,6 +63,12 @@ bench:
 	python3 benchmarks/bench_runner.py benchmarks/cases \
 		--output-json benchmark_reports/dsl_bench.json \
 		--output-html benchmark_reports/dsl_bench.html
+
+# ── Topic 06 DSL correctness + TinyFive benchmark ─────────────────────────
+
+bench-topic06:
+	python3 scripts/run_topic06_benchmarks.py
+	python3 scripts/generate_topic06_report.py
 
 # ── CNN RISC-V 编译 + 估算 ────────────────────────────────────────────────
 

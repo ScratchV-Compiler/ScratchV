@@ -1,0 +1,250 @@
+{
+  "primary_metric": "dynamic_instructions",
+  "generated_at": "2026-09-21T16:51:35",
+  "environment": {
+    "python": "3.11.7",
+    "platform": "Windows-10-10.0.26200-SP0"
+  },
+  "cases": {
+    "add_relu_relu": {
+      "category": "activation",
+      "dynamic_instruction_count": 7,
+      "cost_model": {
+        "static_asm_instructions": 5,
+        "machine_instructions": 11,
+        "code_size_bytes": 44,
+        "dynamic_instructions": 7,
+        "dynamic_load": 0,
+        "dynamic_store": 0,
+        "dynamic_mul": 0,
+        "dynamic_add": 4,
+        "dynamic_madd": 0,
+        "dynamic_branch": 2
+      }
+    },
+    "relu_add": {
+      "category": "activation",
+      "dynamic_instruction_count": 5,
+      "cost_model": {
+        "static_asm_instructions": 4,
+        "machine_instructions": 7,
+        "code_size_bytes": 28,
+        "dynamic_instructions": 5,
+        "dynamic_load": 0,
+        "dynamic_store": 0,
+        "dynamic_mul": 0,
+        "dynamic_add": 3,
+        "dynamic_madd": 0,
+        "dynamic_branch": 1
+      }
+    },
+    "relu_only": {
+      "category": "activation",
+      "dynamic_instruction_count": 5,
+      "cost_model": {
+        "static_asm_instructions": 3,
+        "machine_instructions": 6,
+        "code_size_bytes": 24,
+        "dynamic_instructions": 5,
+        "dynamic_load": 0,
+        "dynamic_store": 0,
+        "dynamic_mul": 0,
+        "dynamic_add": 2,
+        "dynamic_madd": 0,
+        "dynamic_branch": 1
+      }
+    },
+    "relu_twice": {
+      "category": "activation",
+      "dynamic_instruction_count": 6,
+      "cost_model": {
+        "static_asm_instructions": 4,
+        "machine_instructions": 10,
+        "code_size_bytes": 40,
+        "dynamic_instructions": 6,
+        "dynamic_load": 0,
+        "dynamic_store": 0,
+        "dynamic_mul": 0,
+        "dynamic_add": 3,
+        "dynamic_madd": 0,
+        "dynamic_branch": 2
+      }
+    },
+    "if_else": {
+      "category": "branch",
+      "dynamic_instruction_count": 18,
+      "cost_model": {
+        "static_asm_instructions": 29,
+        "machine_instructions": 29,
+        "code_size_bytes": 116,
+        "dynamic_instructions": 18,
+        "dynamic_load": 4,
+        "dynamic_store": 6,
+        "dynamic_mul": 0,
+        "dynamic_add": 5,
+        "dynamic_madd": 0,
+        "dynamic_branch": 1
+      }
+    },
+    "if_relu": {
+      "category": "branch",
+      "dynamic_instruction_count": 22,
+      "cost_model": {
+        "static_asm_instructions": 25,
+        "machine_instructions": 28,
+        "code_size_bytes": 112,
+        "dynamic_instructions": 22,
+        "dynamic_load": 4,
+        "dynamic_store": 7,
+        "dynamic_mul": 0,
+        "dynamic_add": 7,
+        "dynamic_madd": 0,
+        "dynamic_branch": 2
+      }
+    },
+    "if_then": {
+      "category": "branch",
+      "dynamic_instruction_count": 20,
+      "cost_model": {
+        "static_asm_instructions": 29,
+        "machine_instructions": 29,
+        "code_size_bytes": 116,
+        "dynamic_instructions": 20,
+        "dynamic_load": 4,
+        "dynamic_store": 9,
+        "dynamic_mul": 0,
+        "dynamic_add": 5,
+        "dynamic_madd": 0,
+        "dynamic_branch": 1
+      }
+    },
+    "add_chain": {
+      "category": "elementwise",
+      "dynamic_instruction_count": 4,
+      "cost_model": {
+        "static_asm_instructions": 4,
+        "machine_instructions": 4,
+        "code_size_bytes": 16,
+        "dynamic_instructions": 4,
+        "dynamic_load": 0,
+        "dynamic_store": 0,
+        "dynamic_mul": 0,
+        "dynamic_add": 3,
+        "dynamic_madd": 0,
+        "dynamic_branch": 0
+      }
+    },
+    "add_chain_3": {
+      "category": "elementwise",
+      "dynamic_instruction_count": 5,
+      "cost_model": {
+        "static_asm_instructions": 5,
+        "machine_instructions": 5,
+        "code_size_bytes": 20,
+        "dynamic_instructions": 5,
+        "dynamic_load": 0,
+        "dynamic_store": 0,
+        "dynamic_mul": 0,
+        "dynamic_add": 4,
+        "dynamic_madd": 0,
+        "dynamic_branch": 0
+      }
+    },
+    "add_fan_in_4": {
+      "category": "elementwise",
+      "dynamic_instruction_count": 5,
+      "cost_model": {
+        "static_asm_instructions": 5,
+        "machine_instructions": 5,
+        "code_size_bytes": 20,
+        "dynamic_instructions": 5,
+        "dynamic_load": 0,
+        "dynamic_store": 0,
+        "dynamic_mul": 0,
+        "dynamic_add": 4,
+        "dynamic_madd": 0,
+        "dynamic_branch": 0
+      }
+    },
+    "add_reuse": {
+      "category": "elementwise",
+      "dynamic_instruction_count": 4,
+      "cost_model": {
+        "static_asm_instructions": 4,
+        "machine_instructions": 4,
+        "code_size_bytes": 16,
+        "dynamic_instructions": 4,
+        "dynamic_load": 0,
+        "dynamic_store": 0,
+        "dynamic_mul": 0,
+        "dynamic_add": 3,
+        "dynamic_madd": 0,
+        "dynamic_branch": 0
+      }
+    },
+    "vector_add": {
+      "category": "elementwise",
+      "dynamic_instruction_count": 3,
+      "cost_model": {
+        "static_asm_instructions": 3,
+        "machine_instructions": 3,
+        "code_size_bytes": 12,
+        "dynamic_instructions": 3,
+        "dynamic_load": 0,
+        "dynamic_store": 0,
+        "dynamic_mul": 0,
+        "dynamic_add": 2,
+        "dynamic_madd": 0,
+        "dynamic_branch": 0
+      }
+    },
+    "loop_add_4": {
+      "category": "loop",
+      "dynamic_instruction_count": 44,
+      "cost_model": {
+        "static_asm_instructions": 15,
+        "machine_instructions": 16,
+        "code_size_bytes": 64,
+        "dynamic_instructions": 44,
+        "dynamic_load": 10,
+        "dynamic_store": 11,
+        "dynamic_mul": 0,
+        "dynamic_add": 13,
+        "dynamic_madd": 0,
+        "dynamic_branch": 5
+      }
+    },
+    "loop_add_chain_4": {
+      "category": "loop",
+      "dynamic_instruction_count": 61,
+      "cost_model": {
+        "static_asm_instructions": 20,
+        "machine_instructions": 21,
+        "code_size_bytes": 84,
+        "dynamic_instructions": 61,
+        "dynamic_load": 18,
+        "dynamic_store": 16,
+        "dynamic_mul": 0,
+        "dynamic_add": 17,
+        "dynamic_madd": 0,
+        "dynamic_branch": 5
+      }
+    },
+    "loop_relu_add_4": {
+      "category": "loop",
+      "dynamic_instruction_count": 60,
+      "cost_model": {
+        "static_asm_instructions": 18,
+        "machine_instructions": 22,
+        "code_size_bytes": 88,
+        "dynamic_instructions": 60,
+        "dynamic_load": 14,
+        "dynamic_store": 15,
+        "dynamic_mul": 0,
+        "dynamic_add": 17,
+        "dynamic_madd": 0,
+        "dynamic_branch": 9
+      }
+    }
+  }
+}
