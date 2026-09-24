@@ -26,6 +26,7 @@ class InstructionSelector:
         self._label_counter = 0
         self._stack_offset = 0
         self._max_temp_counter = 0
+        self._loop_stack: list[dict] = []
         self._reserved_vreg_names = self._collect_ir_value_names()
 
     def _collect_ir_value_names(self) -> set[str]:
@@ -288,14 +289,15 @@ class InstructionSelector:
         )
 
         # Branch to loop body
-        # Store loop context for endfor to use
-        self._loop_context = {
+        # Store loop context for endfor to use.  Nested loops must keep a
+        # stack so the inner ENDFOR cannot clobber the outer loop's labels.
+        self._loop_stack.append({
             "iv": iv,
             "end": end,
             "header": header_label,
             "body": body_label,
             "exit": exit_label,
-        }
+        })
 
         self._emit_label(header_label)
 
@@ -306,9 +308,9 @@ class InstructionSelector:
 
     def _select_endfor(self, instr: Instruction) -> None:
         """End a for loop: increment and branch back."""
-        ctx = getattr(self, "_loop_context", None)
-        if ctx is None:
+        if not self._loop_stack:
             raise ValueError("endfor without matching for")
+        ctx = self._loop_stack.pop()
 
         iv = ctx["iv"]
         # Increment: addi iv, iv, 1

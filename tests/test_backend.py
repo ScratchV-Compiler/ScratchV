@@ -137,3 +137,27 @@ class TestConstMergeIntegration:
         result = driver._run_asm_passes(source, warnings)
         assert result == source
         assert warnings == []
+
+
+def test_nested_for_loop_selects_unique_labels_and_allocates():
+    dsl = """\
+for i = 0, 4
+  for j = 0, 2
+    t1 = mul(x, y)
+    acc = add(acc, t1)
+  endfor
+endfor
+return acc
+"""
+    program = DSLParser().parse(dsl)
+    machine = InstructionSelector(program).run()
+
+    labels = [
+        instr.target
+        for instr in machine
+        if instr.op == MachineOp.LABEL
+    ]
+    assert len(labels) == len(set(labels))
+
+    allocated = RegisterAllocator(machine, mode="greedy").run()
+    assert allocated
