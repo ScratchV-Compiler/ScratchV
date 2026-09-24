@@ -35,6 +35,8 @@ riscv = ["tinyfive"]
 llvm = ["llvmlite"]      # optional: LLVM IR JIT execution
 verify = ["onnxruntime"] # optional: ONNX Runtime comparison
 all = ["tinyfive", "llvmlite", "onnxruntime"]
+topic06 = ["tinyfive", "pytest"]
+topic06-report = ["tinyfive", "pytest", "jinja2", "matplotlib"]
 
 [project.urls]
 Source = "https://github.com/kinsomwang/ScratchV"

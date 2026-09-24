@@ -221,6 +221,7 @@ class CompilerDriver:
 
     def __init__(self, config: CompilerConfig | None = None):
         self.config = config or CompilerConfig()
+        self._last_register_map: dict[str, str] = {}
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -238,6 +239,7 @@ class CompilerDriver:
         """
         errors: list[str] = []
         warnings: list[str] = []
+        self._last_register_map = {}
 
         # Resolve output path
         if output_path is None:
@@ -353,7 +355,11 @@ class CompilerDriver:
             output_text=asm_text,
             output_path=output_path,
             ir_dump=ir_dump,
-            stats={"opt_message": opt_message, "cycle_report": cycle_report},
+            stats={
+                "opt_message": opt_message,
+                "cycle_report": cycle_report,
+                "register_map": dict(self._last_register_map),
+            },
             warnings=warnings,
         )
 
@@ -447,6 +453,7 @@ class CompilerDriver:
             ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
             assembly = lsa.emit(ls_insts)
+            self._last_register_map = dict(lsa.alloc_map)
             from scratchv.backend.abi_frame import apply_abi_frames
             return apply_abi_frames(assembly, lsa.spill_slot_count)
 
@@ -455,7 +462,7 @@ class CompilerDriver:
         ) else "greedy"
         alloc = RegisterAllocator(machine_instrs, mode=mode)
         allocated = alloc.run()
-
+        self._last_register_map = alloc.register_map
         emitter = AsmEmitter(allocated)
         assembly = emitter.emit()
         from scratchv.backend.abi_frame import apply_abi_frames
@@ -483,6 +490,7 @@ class CompilerDriver:
             ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
             assembly = lsa.emit(ls_insts)
+            self._last_register_map = dict(lsa.alloc_map)
             from scratchv.backend.abi_frame import apply_abi_frames
             return apply_abi_frames(assembly, lsa.spill_slot_count)
 
@@ -491,6 +499,7 @@ class CompilerDriver:
         ) else "greedy"
         alloc = RegisterAllocator(machine_instrs, mode=mode)
         allocated = alloc.run()
+        self._last_register_map = alloc.register_map
 
         emitter = AsmEmitter(allocated)
         assembly = emitter.emit()

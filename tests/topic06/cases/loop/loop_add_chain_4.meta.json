@@ -1,0 +1,10 @@
+{
+  "description": "Run a four-iteration loop whose body computes two chained adds; final returned value is the last loop-body result.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "a": 2,
+    "b": 3,
+    "c": 4
+  },
+  "expected_return": 9
+}

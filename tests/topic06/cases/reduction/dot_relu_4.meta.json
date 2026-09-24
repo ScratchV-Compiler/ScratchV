@@ -1,0 +1,9 @@
+{
+  "description": "Compute a length-4 dot product and pass it through ReLU.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "a": [1, -2, 3, -4],
+    "b": [2, 3, 4, 5]
+  },
+  "expected_return": 0
+}

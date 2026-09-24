@@ -1,0 +1,9 @@
+{
+  "description": "Single add over two symbolic vector inputs.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "a": 2,
+    "b": 3
+  },
+  "expected_return": 5
+}
