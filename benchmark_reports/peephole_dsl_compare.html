@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ScratchV 窥孔优化器 DSL Benchmark</title>
+
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #f5f7fa; color: #2d3748; padding: 24px; max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 24px; margin-bottom: 8px; color: #1a202c; }
+  .subtitle { color: #718096; font-size: 14px; margin-bottom: 24px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+           gap: 16px; margin-bottom: 24px; }
+  .card { background: #fff; border-radius: 10px; padding: 18px 20px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-left: 4px solid #4299e1; }
+  .card.green { border-left-color: #48bb78; }
+  .card.orange { border-left-color: #ed8936; }
+  .card.purple { border-left-color: #9f7aea; }
+  .card.red { border-left-color: #fc8181; }
+  .card .label { font-size: 12px; text-transform: uppercase; color: #a0aec0;
+                 letter-spacing: 0.5px; margin-bottom: 4px; }
+  .card .value { font-size: 28px; font-weight: 700; color: #1a202c; }
+  .card .unit { font-size: 13px; color: #718096; }
+  section { background: #fff; border-radius: 10px; padding: 24px;
+            margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  section h2 { font-size: 18px; margin-bottom: 16px; padding-bottom: 8px;
+               border-bottom: 2px solid #e2e8f0; color: #2d3748; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 10px 12px; font-size: 12px; text-transform: uppercase;
+       letter-spacing: 0.5px; color: #a0aec0; border-bottom: 2px solid #e2e8f0; }
+  td { padding: 10px 12px; font-size: 14px; border-bottom: 1px solid #edf2f7; }
+  tr:hover td { background: #f7fafc; }
+  .bar-cell { width: 100%; min-width: 120px; }
+  .bar-bg { height: 18px; background: #edf2f7; border-radius: 9px; overflow: hidden;
+            position: relative; }
+  .bar-fill { height: 100%; border-radius: 9px; transition: width 0.3s ease; }
+  .bar-fill.compute { background: linear-gradient(90deg, #4299e1, #3182ce); }
+  .bar-fill.memory { background: linear-gradient(90deg, #ed8936, #dd6b20); }
+  .bar-fill.branch { background: linear-gradient(90deg, #48bb78, #38a169); }
+  .bar-fill.upper { background: linear-gradient(90deg, #9f7aea, #805ad5); }
+  .bar-fill.shift { background: linear-gradient(90deg, #38b2ac, #319795); }
+  .bar-fill.neutral { background: linear-gradient(90deg, #a0aec0, #718096); }
+  .bar-label { font-size: 12px; color: #4a5568; margin-left: 8px; white-space: nowrap; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+         font-weight: 600; }
+  .tag.ok { background: #c6f6d5; color: #22543d; }
+  .tag.warn { background: #fefcbf; color: #744210; }
+  .tag.info { background: #bee3f8; color: #2a4365; }
+  .progress-ring { display: flex; align-items: center; gap: 16px; }
+  .cm-gauge { width: 120px; height: 120px; position: relative; }
+  .cm-gauge svg { transform: rotate(-90deg); }
+  .cm-gauge .bg { fill: none; stroke: #edf2f7; stroke-width: 10; }
+  .cm-gauge .fg { fill: none; stroke: #4299e1; stroke-width: 10; stroke-linecap: round;
+                  transition: stroke-dashoffset 0.5s ease; }
+  .cm-gauge .pct { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                   font-size: 22px; font-weight: 700; }
+  .footer { text-align: center; color: #a0aec0; font-size: 12px; margin-top: 32px; }
+  @media (max-width: 600px) {
+    body { padding: 12px; }
+    .cards { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+
+<style>
+          .comparison-note { color:#718096; margin:0 0 16px; line-height:1.6; }
+          .bar-value { width:120px; text-align:right; font-weight:600; white-space:nowrap; }
+          .delta { color:#2f855a; font-weight:700; }
+          .muted { color:#718096; }
+          .case-table { table-layout:fixed; }
+          .case-table td, .case-table th { vertical-align:top; }
+          .case-table th:first-child, .case-table td:first-child {
+            width:32%; text-align:left; white-space:normal; overflow-wrap:anywhere;
+          }
+          .case-table th:nth-child(2), .case-table td:nth-child(2),
+          .case-table th:nth-child(3), .case-table td:nth-child(3),
+          .case-table th:nth-child(4), .case-table td:nth-child(4) {
+            width:12%; text-align:right; white-space:nowrap;
+          }
+          .case-table th:last-child, .case-table td:last-child {
+            width:32%; text-align:left; white-space:normal; overflow-wrap:anywhere;
+          }
+          code { color:#2b6cb0; }
+        </style>
+</head><body>
+<h1>ScratchV 窥孔优化器 DSL Benchmark</h1>
+<div class="subtitle">样例: 23 | 生成时间: 2026-09-24T11:23:52.235732+00:00</div>
+<div class="cards">
+<div class="card blue"><div class="label">优化前指令</div><div class="value">336</div></div>
+<div class="card green"><div class="label">优化后指令</div><div class="value">335</div></div>
+<div class="card orange"><div class="label">静态节省</div><div class="value">1 (0.3%)</div></div>
+<div class="card purple"><div class="label">规则应用次数</div><div class="value">1</div></div>
+<div class="card red"><div class="label">未变化样例</div><div class="value">22</div></div>
+</div>
+<section><h2>peephole 开关对比</h2>
+<p class="comparison-note">每个 DSL 案例的关闭/开启结果均基于同一份输入汇编；关闭表示跳过汇编窥孔优化，开启表示执行窥孔优化规则。</p>
+<table><tr><th>指标</th><th>对比</th><th>结果</th></tr>
+<tr><td>优化前指令</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill compute" style="width:100.0%"></div></div></td><td class="bar-value">336 条</td></tr>
+<tr><td>优化后指令</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill branch" style="width:99.7%"></div></div></td><td class="bar-value">335 条</td></tr>
+<tr><td>静态节省</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill memory" style="width:0.5%"></div></div></td><td class="bar-value">1 条</td></tr>
+</table></section>
+<section><h2>各规则应用次数</h2>
+<table><tr><th>规则</th><th>应用次数</th><th>结果</th></tr>
+<tr><td>addi+addi fusion</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill compute" style="width:0.0%"></div></div></td><td class="bar-value">0 次</td></tr>
+<tr><td>li+addi fusion</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill memory" style="width:0.0%"></div></div></td><td class="bar-value">0 次</td></tr>
+<tr><td>beq zero-zero to jump</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill branch" style="width:0.0%"></div></div></td><td class="bar-value">0 次</td></tr>
+<tr><td>redundant mv elimination</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill upper" style="width:100.0%"></div></div></td><td class="bar-value">1 次</td></tr>
+<tr><td>addi-zero self elimination</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill shift" style="width:0.0%"></div></div></td><td class="bar-value">0 次</td></tr>
+<tr><td>addi-zero to mv</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill neutral" style="width:0.0%"></div></div></td><td class="bar-value">0 次</td></tr>
+<tr><td>nop elimination</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill compute" style="width:0.0%"></div></div></td><td class="bar-value">0 次</td></tr>
+<tr><td>mv-self elimination</td><td class="bar-cell"><div class="bar-bg"><div class="bar-fill memory" style="width:0.0%"></div></div></td><td class="bar-value">0 次</td></tr>
+</table></section>
+<section><h2>样例明细</h2>
+<table class="case-table"><tr><th>样例</th><th>关闭</th><th>开启</th><th>节省</th><th>应用规则</th></tr>
+<tr><td>001_simple_add<br><span class="muted"></span></td><td>3</td><td>3</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>002_simple_mul<br><span class="muted"></span></td><td>3</td><td>3</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>003_sub_div<br><span class="muted"></span></td><td>4</td><td>4</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>004_relu<br><span class="muted"></span></td><td>3</td><td>3</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>005_gelu<br><span class="muted"></span></td><td>5</td><td>5</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>006_softmax<br><span class="muted"></span></td><td>3</td><td>2</td><td class="delta">1 (33.3%)</td><td class="rule-list">redundant mv elimination</td></tr>
+<tr><td>007_matmul<br><span class="muted"></span></td><td>3</td><td>3</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>008_dot<br><span class="muted"></span></td><td>3</td><td>3</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>009_maxpool<br><span class="muted"></span></td><td>14</td><td>14</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>010_exp_neg<br><span class="muted"></span></td><td>5</td><td>5</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>011_multi_op_chain<br><span class="muted"></span></td><td>5</td><td>5</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>012_nn_pipeline<br><span class="muted"></span></td><td>5</td><td>5</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>013_for_sum<br><span class="muted"></span></td><td>19</td><td>19</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>014_for_dot<br><span class="muted"></span></td><td>22</td><td>22</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>015_for_relu<br><span class="muted"></span></td><td>20</td><td>20</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>016_if_simple<br><span class="muted"></span></td><td>27</td><td>27</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>017_while_sum<br><span class="muted"></span></td><td>24</td><td>24</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>018_nested_if<br><span class="muted"></span></td><td>43</td><td>43</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>019_nested_loop<br><span class="muted"></span></td><td>31</td><td>31</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>020_constant_propagation<br><span class="muted"></span></td><td>7</td><td>7</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>021_dsl_if_else<br><span class="muted"></span></td><td>45</td><td>45</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>022_dsl_while_sum<br><span class="muted"></span></td><td>32</td><td>32</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+<tr><td>023_large_chain<br><span class="muted"></span></td><td>10</td><td>10</td><td class="delta">0 (0.0%)</td><td class="rule-list">—</td></tr>
+</table></section>
+<section><h2>环境与结论</h2>
+<table>
+<tr><td>Python</td><td>3.10.12</td></tr>
+<tr><td>结论</td><td>观察到静态指令减少</td></tr>
+</table></section>
+<div class="footer">ScratchV 窥孔优化器报告 · 2026-09-24T11:23:52.235732+00:00</div>
+</body></html>

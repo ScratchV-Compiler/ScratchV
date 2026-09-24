@@ -296,9 +296,14 @@ jobs:
       - name: Topic 13 peephole compare report
         run: |
           mkdir -p benchmark_reports
+          $PY benchmarks/bench_asm_peephole.py \
+            --sizes 1 2 100 --fusion-ratio 0.3 --repeats 2 \
+            --output benchmark_reports/peephole_raw.json
           $PY benchmarks/compare_peephole.py \
             --json benchmark_reports/peephole_compare.json \
             --markdown benchmark_reports/peephole_compare.md
+          $PY benchmarks/compare_peephole_html.py \
+            --repeats 2 --output-dir benchmark_reports
 
       # ── 3.2 DSL 用例编译 + 模拟基准 ────────────────────────────────────
       - name: DSL case compilation benchmarks
