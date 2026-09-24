@@ -248,6 +248,16 @@ class RegisterAllocator:
                 if owner is not None and owner in live_after:
                     self._emit_spill(owner, phys_reg)
             reserved: set[str] = set(explicit_uses)
+            # Protect all resident virtual sources before the first reload.
+            # A later source may be dead in live_after but is still needed by
+            # this instruction; evicting it now would lose its current value.
+            reserved.update(
+                self._vreg_map[str(operand.value)]
+                for position in semantics.uses
+                if (operand := operands[position]) is not None
+                and operand.kind == "vreg"
+                and str(operand.value) in self._vreg_map
+            )
 
             # Resolve every use first so a destination can safely alias a
             # source whose last use is this instruction.

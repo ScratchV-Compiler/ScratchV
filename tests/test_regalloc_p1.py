@@ -9,7 +9,9 @@ import pytest
 
 from scratchv.backend import regalloc_linear, regalloc_linear_v1_5
 from scratchv.backend.asm_emit import AsmEmitter
-from scratchv.backend.machine_types import MachineInstr, MachineOp, MachineOperand
+from scratchv.backend.machine_types import (
+    ALL_REGS, MachineInstr, MachineOp, MachineOperand,
+)
 from scratchv.backend.register_alloc import RegisterAllocator
 from scratchv.backend.riscv_encoder import RISCVAEncoder
 
@@ -329,6 +331,58 @@ def test_greedy_spill_reload_executes_correctly():
     machine.run(instructions=len(words) + 2, start=0, strict=True)
 
     assert machine.get_reg(10) == sum(range(20))
+
+
+@pytest.mark.parametrize("opcode", [MachineOp.ADD, MachineOp.SUB])
+@pytest.mark.parametrize("reverse_sources", [False, True])
+def test_greedy_reload_preserves_unresolved_source(opcode, reverse_sources):
+    """A source that dies after this instruction must survive its reloads."""
+    pytest.importorskip("tinyfive")
+    from scratchv.simulator.tinyfive import ProfiledMachine
+
+    v = MachineOperand.vreg
+    imm = MachineOperand.immediate
+    count = len(ALL_REGS) + 1
+    instructions = [
+        MachineInstr(MachineOp.LI, v(f"v{i}"), imm(i + 1))
+        for i in range(count)
+    ]
+    # The bank is full: v0 is spilled and the last value occupies its register.
+    # Both sources die at the binary instruction, but must remain intact until
+    # it executes. Keep all other values live to force an eviction on reload.
+    left, right = (count - 1, 0) if reverse_sources else (0, count - 1)
+    instructions.append(
+        MachineInstr(opcode, v("acc"), v(f"v{left}"), v(f"v{right}"))
+    )
+    instructions.extend(
+        MachineInstr(MachineOp.ADD, v("acc"), v("acc"), v(f"v{i}"))
+        for i in range(1, count - 1)
+    )
+    instructions.append(
+        MachineInstr(MachineOp.MV, MachineOperand.reg("a0"), v("acc"))
+    )
+
+    if opcode == MachineOp.ADD:
+        expected = (left + 1) + (right + 1)
+    else:
+        expected = (left + 1) - (right + 1)
+    expected += sum(range(2, count))
+    allocated = RegisterAllocator(instructions, mode="greedy").run()
+    assert any("[regalloc:spill]" in instr.comment for instr in allocated)
+    assert any("[regalloc:reload]" in instr.comment for instr in allocated)
+    assembly = AsmEmitter(allocated).emit()
+    binary = RISCVAEncoder().assemble(
+        "li sp, 4096\n" + assembly + "\n.done:\nj .done"
+    )
+    words = [
+        int.from_bytes(binary[offset:offset + 4], "little")
+        for offset in range(0, len(binary), 4)
+    ]
+    machine = ProfiledMachine(mem_size=8192)
+    machine.load_binary(words, origin=0)
+    machine.run(instructions=len(words) + 3, start=0, strict=True)
+
+    assert machine.get_reg(10) & 0xFFFFFFFF == expected & 0xFFFFFFFF
 
 
 def test_call_encodes_as_local_jal_and_rejects_missing_target():
