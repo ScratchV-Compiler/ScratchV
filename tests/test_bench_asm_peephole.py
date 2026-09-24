@@ -5,21 +5,12 @@ from __future__ import annotations
 import json
 import random
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 import benchmarks.bench_asm_peephole as bench
-from benchmarks.bench_asm_peephole import (
-    PR39_RULES,
-    BenchmarkCase,
-    _gen_synthetic_asm,
-    bench_optimize,
-    count_instructions,
-    default_cases,
-    measure_case,
-    run_benchmark,
-    save_json,
-)
+import benchmarks.compare_peephole_html as compare_html
 from scratchv.backend.asm_peephole import AsmPeepholeOptimizer
 
 
@@ -33,20 +24,20 @@ label: nop
   ret
 """
 
-    assert count_instructions(asm) == 3
+    assert bench.count_instructions(asm) == 3
 
 
 def test_default_cases_cover_all_pr39_rules():
-    cases = default_cases()
+    cases = bench.default_cases()
 
     assert {case.expected_rule for case in cases if case.expected_rule} == set(
-        PR39_RULES
+        bench.PR39_RULES
     )
-    assert {rule.name for rule in AsmPeepholeOptimizer().rules} == set(PR39_RULES)
+    assert {rule.name for rule in AsmPeepholeOptimizer().rules} == set(bench.PR39_RULES)
 
 
 def test_default_expected_cases_hit_and_negative_cases_do_not_change():
-    results = [measure_case(case, repeats=1) for case in default_cases()]
+    results = [bench.measure_case(case, repeats=1) for case in bench.default_cases()]
 
     assert all(
         result["expected_rule_hit"]
@@ -59,13 +50,13 @@ def test_default_expected_cases_hit_and_negative_cases_do_not_change():
 
 
 def test_measure_case_reports_static_reduction_and_rule_hits():
-    case = BenchmarkCase(
+    case = bench.BenchmarkCase(
         case_id="addi",
         assembly="addi t0, t0, 1\naddi t0, t0, 2\n",
         expected_rule="addi+addi fusion",
     )
 
-    result = measure_case(case, repeats=2)
+    result = bench.measure_case(case, repeats=2)
 
     assert result["before_instructions"] == 2
     assert result["after_instructions"] == 1
@@ -76,13 +67,13 @@ def test_measure_case_reports_static_reduction_and_rule_hits():
 
 
 def test_run_benchmark_handles_zero_change_case_without_division_error():
-    case = BenchmarkCase(
+    case = bench.BenchmarkCase(
         case_id="clean",
         assembly="add t0, t1, t2\nret\n",
         expected_rule=None,
     )
 
-    report = run_benchmark([case], repeats=1)
+    report = bench.run_benchmark([case], repeats=1)
 
     assert report["summary"]["before_instructions"] == 2
     assert report["summary"]["after_instructions"] == 2
@@ -91,10 +82,10 @@ def test_run_benchmark_handles_zero_change_case_without_division_error():
 
 
 def test_save_json_writes_stable_machine_readable_fields(tmp_path):
-    report = run_benchmark(default_cases()[:1], repeats=1)
+    report = bench.run_benchmark(bench.default_cases()[:1], repeats=1)
     output = tmp_path / "raw.json"
 
-    save_json(report, output)
+    bench.save_json(report, output)
 
     data = json.loads(output.read_text())
     assert data["schema_version"] == 1
@@ -103,7 +94,7 @@ def test_save_json_writes_stable_machine_readable_fields(tmp_path):
 
 
 def test_legacy_bench_helper_keeps_line_and_instruction_metrics():
-    stats = bench_optimize("addi t0, t0, 1\naddi t0, t0, 2\n", repeats=2)
+    stats = bench.bench_optimize("addi t0, t0, 1\naddi t0, t0, 2\n", repeats=2)
 
     assert stats["input_lines"] == 2
     assert stats["output_lines"] == 1
@@ -115,7 +106,7 @@ def test_legacy_bench_helper_keeps_line_and_instruction_metrics():
 
 def test_synthetic_size_includes_the_final_ret_instruction():
     for size in (1, 2, 100):
-        assert count_instructions(_gen_synthetic_asm(size)) == size
+        assert bench.count_instructions(bench._gen_synthetic_asm(size)) == size
 
 
 def test_synthetic_fusion_ratio_controls_addi_pair_instructions_only():
@@ -123,12 +114,12 @@ def test_synthetic_fusion_ratio_controls_addi_pair_instructions_only():
     body_size = size - 1
 
     for ratio in (0.0, 0.3, 1.0):
-        assembly = _gen_synthetic_asm(size, seed=7, fusion_ratio=ratio)
+        assembly = bench._gen_synthetic_asm(size, seed=7, fusion_ratio=ratio)
         addi_count = sum(
             line.strip().startswith("addi ") for line in assembly.splitlines()
         )
         expected_addi = int(body_size * ratio) // 2 * 2
-        assert count_instructions(assembly) == size
+        assert bench.count_instructions(assembly) == size
         assert addi_count == expected_addi
 
         optimizer = AsmPeepholeOptimizer()
@@ -145,37 +136,71 @@ def test_synthetic_generation_is_seeded_without_global_random_state():
     expected_random = [random.random() for _ in range(3)]
     random.seed(12345)
 
-    first = _gen_synthetic_asm(101, seed=99, fusion_ratio=0.3)
+    first = bench._gen_synthetic_asm(101, seed=99, fusion_ratio=0.3)
     actual_random = [random.random() for _ in range(3)]
 
     assert actual_random == expected_random
-    assert _gen_synthetic_asm(101, seed=99, fusion_ratio=0.3) == first
+    assert bench._gen_synthetic_asm(101, seed=99, fusion_ratio=0.3) == first
 
 
-def test_git_commit_is_worktree_head_even_when_cwd_is_elsewhere(tmp_path, monkeypatch):
-    expected = subprocess.run(
-        [
-            "git",
-            "-c",
-            f"safe.directory={bench._REPO_ROOT}",
-            "rev-parse",
-            "HEAD",
-        ],
-        cwd=bench._REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+@pytest.mark.parametrize("module", [bench, compare_html], ids=["raw", "html"])
+@pytest.mark.parametrize(
+    ("porcelain", "expected"),
+    [
+        ("", "abc123"),
+        (" M tracked.s", "abc123-dirty"),
+        ("?? untracked.s", "abc123-dirty"),
+    ],
+    ids=["clean", "tracked-dirty", "untracked-dirty"],
+)
+def test_git_commit_marks_dirty_state_from_repo(
+    module,
+    porcelain,
+    expected,
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
 
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        assert kwargs["cwd"] == module._REPO_ROOT
+        if command[-2:] == ["rev-parse", "HEAD"]:
+            return SimpleNamespace(stdout="abc123\n")
+        assert command[-2:] == ["status", "--porcelain"]
+        return SimpleNamespace(stdout=porcelain)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
     monkeypatch.chdir(tmp_path)
 
-    assert bench._git_commit() == expected
+    assert module._git_commit() == expected
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("module", [bench, compare_html], ids=["raw", "html"])
+@pytest.mark.parametrize("failed_command", ["rev-parse", "status"])
+def test_git_commit_returns_empty_when_git_fails(
+    module,
+    failed_command,
+    tmp_path,
+    monkeypatch,
+):
+    def fake_run(command, **kwargs):
+        assert kwargs["cwd"] == module._REPO_ROOT
+        if command[-2] == failed_command:
+            raise subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(stdout="abc123\n")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.chdir(tmp_path)
+
+    assert module._git_commit() == ""
 
 
 def test_bench_rejects_invalid_repeats_size_and_ratio():
     with pytest.raises(ValueError, match="repeats"):
-        measure_case(default_cases()[0], repeats=0)
+        bench.measure_case(bench.default_cases()[0], repeats=0)
     with pytest.raises(ValueError, match="num_instrs"):
-        _gen_synthetic_asm(0)
+        bench._gen_synthetic_asm(0)
     with pytest.raises(ValueError, match="fusion_ratio"):
-        _gen_synthetic_asm(2, fusion_ratio=1.1)
+        bench._gen_synthetic_asm(2, fusion_ratio=1.1)

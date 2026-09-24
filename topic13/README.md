@@ -66,9 +66,11 @@ make ci-peephole
 # 或：
 python -m pytest tests/test_asm_peephole*.py -q
 python -m pytest tests/test_bench_asm_peephole.py tests/test_compare_peephole.py -q
-python benchmarks/compare_peephole.py --json benchmark_reports/peephole_compare.json --markdown benchmark_reports/peephole_compare.md
+python benchmarks/compare_peephole.py --json benchmark_reports/peephole_compare.json --markdown benchmark_reports/peephole_compare.md --html benchmark_reports/peephole_dsl_compare.html
 python benchmarks/compare_peephole_html.py --repeats 5 --output-dir benchmark_reports
 ```
+
+其中 `peephole_compare.html` 展示 14 个规则微型案例，`peephole_dsl_compare.html` 展示 `benchmarks/cases/` 中全部 23 个 DSL 案例；synthetic 案例仍保留在终端、JSON 和 Markdown 报告中。
 
 GitHub Actions：PR 到 `main` 会在 `test` job 中运行 peephole regression/CLI smoke，并在 `benchmark` job 中生成 Topic 13 对比报告（不依赖 self-hosted mirror）。
 
@@ -86,5 +88,5 @@ GitHub Actions：PR 到 `main` 会在 `test` job 中运行 peephole regression/C
 1. 本页（定位课题与路径）  
 2. [新手教程](../docs/topics/13-窥孔优化器.md)  
 3. [设计文档](../docs/topics/13-窥孔优化器-设计文档.md)  
-4. 运行后生成的 DSL/HTML 对比报告：`benchmark_reports/peephole_compare.md`、`benchmark_reports/peephole_compare.html`（CI artifact）
+4. 运行后生成的 DSL/HTML 对比报告：`benchmark_reports/peephole_compare.md`、`benchmark_reports/peephole_dsl_compare.html`、`benchmark_reports/peephole_compare.html`（CI artifact）
 5. 改代码时再看 [AI 开发文档](../docs/topics/archive/topic13_asm_peephole_guide.md)  

@@ -56,7 +56,8 @@ ci-peephole: test-peephole
 		--output benchmark_reports/peephole_raw.json
 	python3 benchmarks/compare_peephole.py \
 		--json benchmark_reports/peephole_compare.json \
-		--markdown benchmark_reports/peephole_compare.md
+		--markdown benchmark_reports/peephole_compare.md \
+		--html benchmark_reports/peephole_dsl_compare.html
 	python3 benchmarks/compare_peephole_html.py \
 		--repeats 2 --output-dir benchmark_reports
 	@echo "Peephole CI checks done."
