@@ -88,8 +88,22 @@ jobs:
           $PY -m pip install -e ".[all]"
           $PY -m pip install "pytest>=7,<10"
 
-      # Includes Topic 9 parser, diagnostic, CLI and benchmark regression tests.
+      - name: Prepare standalone RISC-V execution tools
+        run: |
+          set -euo pipefail
+          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y clang lld qemu-user
+          fi
+          command -v clang
+          command -v ld.lld
+          command -v qemu-riscv32
+
+      # Includes Topic 9 diagnostics and standalone CNN execution regressions.
       - name: Run all topic tests
+        env:
+          PYTHONHASHSEED: "0"
+          SCRATCHV_REQUIRE_RISCV_EXECUTION: "1"
         run: |
           mkdir -p benchmark_reports
           $PY -m pytest tests/ -v --tb=short \
