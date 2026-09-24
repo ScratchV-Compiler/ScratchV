@@ -23,7 +23,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,13 +33,7 @@ if __package__ is None:
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
 
-from benchmarks.bench_asm_peephole import (  # noqa: E402
-    PR39_RULES,
-    BenchmarkCase,
-    count_instructions,
-    default_cases,
-    validate_default_rules,
-)
+from benchmarks import bench_asm_peephole as peephole_bench  # noqa: E402
 from scratchv.backend.asm_peephole import AsmPeepholeOptimizer  # noqa: E402
 from scratchv.standalone.bench_report import HTML_CSS  # noqa: E402
 
@@ -56,8 +50,16 @@ def _sha256(text: str) -> str:
 
 def _git_commit() -> str:
     try:
+        git_args = ["git", "-c", f"safe.directory={_REPO_ROOT}"]
         completed = subprocess.run(
-            ["git", "-c", f"safe.directory={_REPO_ROOT}", "rev-parse", "HEAD"],
+            [*git_args, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=_REPO_ROOT,
+        )
+        status = subprocess.run(
+            [*git_args, "status", "--porcelain"],
             capture_output=True,
             text=True,
             check=True,
@@ -65,7 +67,8 @@ def _git_commit() -> str:
         )
     except (OSError, subprocess.CalledProcessError):
         return ""
-    return completed.stdout.strip()
+    commit = completed.stdout.strip()
+    return f"{commit}-dirty" if status.stdout.strip() else commit
 
 
 def _optimize_with_timing(
@@ -77,7 +80,7 @@ def _optimize_with_timing(
     changes = 0
     rule_matches: dict[str, int] = {}
     probe = AsmPeepholeOptimizer()
-    validate_default_rules(rule.name for rule in probe.rules)
+    peephole_bench.validate_default_rules(rule.name for rule in probe.rules)
 
     for _ in range(_validate_repeats(repeats)):
         optimizer = AsmPeepholeOptimizer()
@@ -90,25 +93,27 @@ def _optimize_with_timing(
 
 
 def compare_cases(
-    cases: Optional[Sequence[BenchmarkCase]] = None,
+    cases: Optional[Sequence[peephole_bench.BenchmarkCase]] = None,
     repeats: int = 5,
 ) -> dict:
     """Compare the same assembly cases with peephole off and on."""
 
     repeats = _validate_repeats(repeats)
-    selected = list(cases if cases is not None else default_cases())
+    selected = list(cases if cases is not None else peephole_bench.default_cases())
     results: list[dict] = []
 
     for case in selected:
-        before = count_instructions(case.assembly)
+        before = peephole_bench.count_instructions(case.assembly)
         output, changes, rule_matches, timings = _optimize_with_timing(
             case.assembly,
             repeats,
         )
-        after = count_instructions(output)
+        after = peephole_bench.count_instructions(output)
         reduced = before - after
         reduction_percent = 100.0 * reduced / before if before else 0.0
-        all_rule_matches = {name: rule_matches.get(name, 0) for name in PR39_RULES}
+        all_rule_matches = {
+            name: rule_matches.get(name, 0) for name in peephole_bench.PR39_RULES
+        }
         expected_hit = (
             case.expected_rule is not None
             and all_rule_matches.get(case.expected_rule, 0) > 0
@@ -151,7 +156,7 @@ def compare_cases(
     before_total = sum(item["before_instructions"] for item in results)
     after_total = sum(item["after_instructions"] for item in results)
     reduced_total = before_total - after_total
-    rule_matches = {name: 0 for name in PR39_RULES}
+    rule_matches = {name: 0 for name in peephole_bench.PR39_RULES}
     for item in results:
         for name, count in item["rule_matches"].items():
             rule_matches[name] += count
@@ -248,7 +253,61 @@ def _metric_card(label: str, value: str, color: str = "") -> str:
     )
 
 
-def generate_html_report(report: dict) -> str:
+def _dsl_report_payload(dsl_report: Any) -> dict:
+    """Adapt ``run_dsl_suite()`` output to the shared HTML report schema."""
+    rule_matches = {name: 0 for name in peephole_bench.PR39_RULES}
+    cases = []
+    for case in dsl_report.cases:
+        case_rule_matches = {name: int(count) for name, count in case.rule_hits.items()}
+        for name, count in case_rule_matches.items():
+            rule_matches[name] = rule_matches.get(name, 0) + count
+        cases.append(
+            {
+                "case_id": case.name,
+                "description": "",
+                "peephole_off": {"instructions": case.before_total},
+                "peephole_on": {"instructions": case.after_total},
+                "reduced_instructions": case.saved,
+                "reduction_percent": case.saved_pct,
+                "changes": case.peephole_changes,
+                "rule_matches": case_rule_matches,
+            }
+        )
+
+    before = int(dsl_report.total_before)
+    saved = int(dsl_report.total_saved)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "metadata": {
+            "python": platform.python_version(),
+            "comparison": "DSL suite, optimizer disabled vs enabled",
+        },
+        "summary": {
+            "case_count": len(cases),
+            "unchanged_cases": sum(
+                case.peephole_changes == 0 for case in dsl_report.cases
+            ),
+            "before_instructions": before,
+            "after_instructions": int(dsl_report.total_after),
+            "reduced_instructions": saved,
+            "reduction_percent": round(100.0 * saved / before, 3) if before else 0.0,
+            "changes": sum(case.peephole_changes for case in dsl_report.cases),
+            "rule_matches": rule_matches,
+        },
+        "cases": cases,
+    }
+
+
+def generate_html_report(
+    report: dict,
+    *,
+    title: str = "ScratchV 窥孔优化器 Benchmark",
+    comparison_note: str = (
+        "每个样例的关闭/开启结果均基于同一份输入汇编；"
+        "关闭表示跳过汇编窥孔优化，开启表示执行窥孔优化规则。"
+    ),
+    show_case_polarity: bool = True,
+) -> str:
     """Render a comparison report using the existing ScratchV card/bar style."""
 
     summary = report.get("summary", {})
@@ -259,35 +318,45 @@ def generate_html_report(report: dict) -> str:
     saved = int(summary.get("reduced_instructions", 0))
     reduction = float(summary.get("reduction_percent", 0.0))
     generated_at = _escape(report.get("generated_at", ""))
-    commit = _escape(metadata.get("git_commit") or "工作树")
-    repeats = _escape(metadata.get("repeats", ""))
+    subtitle = f"样例: {len(cases)}"
+    if "repeats" in metadata:
+        subtitle += f" | 重复次数: {_escape(metadata['repeats'])}"
+    subtitle += f" | 生成时间: {generated_at}"
 
     parts = [
         "<!DOCTYPE html>",
         '<html lang="zh-CN"><head><meta charset="UTF-8">',
         '<meta name="viewport" content="width=device-width,initial-scale=1">',
-        "<title>ScratchV 窥孔优化器 Benchmark</title>",
+        f"<title>{_escape(title)}</title>",
         HTML_CSS,
         """<style>
           .comparison-note { color:#718096; margin:0 0 16px; line-height:1.6; }
           .bar-value { width:120px; text-align:right; font-weight:600; white-space:nowrap; }
           .delta { color:#2f855a; font-weight:700; }
           .muted { color:#718096; }
+          .case-table { table-layout:fixed; }
           .case-table td, .case-table th { vertical-align:top; }
-          .case-table td:nth-child(n+4) { text-align:right; white-space:nowrap; }
+          .case-table th:first-child, .case-table td:first-child {
+            width:32%; text-align:left; white-space:normal; overflow-wrap:anywhere;
+          }
+          .case-table th:nth-child(2), .case-table td:nth-child(2),
+          .case-table th:nth-child(3), .case-table td:nth-child(3),
+          .case-table th:nth-child(4), .case-table td:nth-child(4) {
+            width:12%; text-align:right; white-space:nowrap;
+          }
+          .case-table th:last-child, .case-table td:last-child {
+            width:32%; text-align:left; white-space:normal; overflow-wrap:anywhere;
+          }
           code { color:#2b6cb0; }
         </style>""",
         "</head><body>",
-        "<h1>ScratchV 窥孔优化器 Benchmark</h1>",
-        (
-            f'<div class="subtitle">Commit: <code>{commit}</code> | '
-            f"样例: {len(cases)} | 重复次数: {repeats} | 生成时间: {generated_at}</div>"
-        ),
+        f"<h1>{_escape(title)}</h1>",
+        f'<div class="subtitle">{subtitle}</div>',
         '<div class="cards">',
         _metric_card("优化前指令", f"{before:,}", "blue"),
         _metric_card("优化后指令", f"{after:,}", "green"),
         _metric_card("静态节省", f"{saved:,} ({reduction:.1f}%)", "orange"),
-        _metric_card("规则命中", f"{int(summary.get('changes', 0)):,}", "purple"),
+        _metric_card("规则应用次数", f"{int(summary.get('changes', 0)):,}", "purple"),
         _metric_card(
             "未变化样例", f"{int(summary.get('unchanged_cases', 0)):,}", "red"
         ),
@@ -297,23 +366,21 @@ def generate_html_report(report: dict) -> str:
     parts.extend(
         [
             "<section><h2>peephole 开关对比</h2>",
-            (
-                '<p class="comparison-note">所有样例使用同一份输入汇编；'
-                "关闭表示跳过汇编窥孔优化，开启表示执行 PR39 默认规则。"
-                "</p>"
-            ),
+            f'<p class="comparison-note">{_escape(comparison_note)}</p>',
             "<table><tr><th>指标</th><th>对比</th><th>结果</th></tr>",
             _bar_row("优化前指令", before, max(before, after, 1), "compute", " 条"),
             _bar_row("优化后指令", after, max(before, after, 1), "branch", " 条"),
             _bar_row("静态节省", saved, max(before, 1), "memory", " 条"),
             "</table></section>",
-            "<section><h2>规则命中与节省</h2>",
-            "<table><tr><th>规则</th><th>命中次数</th><th>结果</th></tr>",
+            "<section><h2>各规则应用次数</h2>",
+            "<table><tr><th>规则</th><th>应用次数</th><th>结果</th></tr>",
         ]
     )
     rule_matches = summary.get("rule_matches", {})
-    maximum_matches = max(int(rule_matches.get(name, 0)) for name in PR39_RULES)
-    for index, name in enumerate(PR39_RULES):
+    maximum_matches = max(
+        int(rule_matches.get(name, 0)) for name in peephole_bench.PR39_RULES
+    )
+    for index, name in enumerate(peephole_bench.PR39_RULES):
         color = ("compute", "memory", "branch", "upper", "shift", "neutral")[index % 6]
         parts.append(
             _bar_row(
@@ -329,45 +396,49 @@ def generate_html_report(report: dict) -> str:
     parts.extend(
         [
             "<section><h2>样例明细</h2>",
-            '<table class="case-table"><tr><th>样例</th><th>类别</th>'
-            "<th>关闭</th><th>开启</th><th>节省</th><th>命中</th><th>输入摘要</th></tr>",
+            '<table class="case-table"><tr><th>样例</th>'
+            "<th>关闭</th><th>开启</th><th>节省</th><th>应用规则</th></tr>",
         ]
     )
     for item in cases:
-        expected = item.get("expected_rule")
-        if expected is None:
-            hit = "—"
-            hit_class = "tag muted"
-        else:
-            hit = "是" if item.get("expected_rule_hit") else "否"
-            hit_class = "tag ok" if item.get("expected_rule_hit") else "tag muted"
-        category = item.get("category", "")
-        digest = str(item.get("input_sha256", ""))
-        digest_short = digest[:12] if digest else "-"
+        applied_rules = [
+            name
+            for name, count in item.get("rule_matches", {}).items()
+            if int(count) > 0
+        ]
+        applied_rules_html = "<br>".join(_escape(name) for name in applied_rules) or "—"
         parts.append(
             "<tr>"
             f"<td>{_escape(item.get('case_id', ''))}<br>"
             f'<span class="muted">{_escape(item.get("description", ""))}</span></td>'
-            f"<td>{_escape(category)}</td>"
             f"<td>{int(item.get('peephole_off', {}).get('instructions', 0)):,}</td>"
             f"<td>{int(item.get('peephole_on', {}).get('instructions', 0)):,}</td>"
             f'<td class="delta">{int(item.get("reduced_instructions", 0)):,} '
             f'({float(item.get("reduction_percent", 0.0)):.1f}%)</td>'
-            f'<td class="{hit_class}">{_escape(hit)}'
-            f'<br><span class="muted">{_escape(expected or "不适用")}</span></td>'
-            f"<td><code>{_escape(digest_short)}</code></td>"
+            f'<td class="rule-list">{applied_rules_html}</td>'
             "</tr>"
         )
     parts.append("</table></section>")
 
-    elapsed = float(summary.get("optimizer_elapsed_ms_median_sum", 0.0))
+    environment_rows = [
+        f"<tr><td>Python</td><td>{_escape(metadata.get('python', ''))}</td></tr>",
+    ]
+    if "optimizer_elapsed_ms_median_sum" in summary:
+        elapsed = float(summary["optimizer_elapsed_ms_median_sum"])
+        environment_rows.append(
+            f"<tr><td>优化器参考耗时（样例中位数之和）</td><td>{elapsed:.3f} ms</td></tr>"
+        )
+    if show_case_polarity:
+        environment_rows.append(
+            f"<tr><td>正向样例 / 负向样例</td><td>"
+            f"{int(summary.get('positive_cases', 0))} / "
+            f"{int(summary.get('negative_cases', 0))}</td></tr>"
+        )
     parts.extend(
         [
             "<section><h2>环境与结论</h2>",
             "<table>",
-            f"<tr><td>Python</td><td>{_escape(metadata.get('python', ''))}</td></tr>",
-            f"<tr><td>优化器参考耗时（样例中位数之和）</td><td>{elapsed:.3f} ms</td></tr>",
-            f"<tr><td>正向样例 / 负向样例</td><td>{int(summary.get('positive_cases', 0))} / {int(summary.get('negative_cases', 0))}</td></tr>",
+            *environment_rows,
             f"<tr><td>结论</td><td>{'观察到静态指令减少' if saved > 0 else '未观察到静态指令减少'}</td></tr>",
             "</table></section>",
             f'<div class="footer">ScratchV 窥孔优化器报告 · {generated_at}</div>',
@@ -375,6 +446,19 @@ def generate_html_report(report: dict) -> str:
         ]
     )
     return "\n".join(parts)
+
+
+def generate_dsl_html_report(dsl_report: Any) -> str:
+    """Render the 23-case DSL suite with the shared HTML renderer."""
+    return generate_html_report(
+        _dsl_report_payload(dsl_report),
+        title="ScratchV 窥孔优化器 DSL Benchmark",
+        comparison_note=(
+            "每个 DSL 案例的关闭/开启结果均基于同一份输入汇编；"
+            "关闭表示跳过汇编窥孔优化，开启表示执行窥孔优化规则。"
+        ),
+        show_case_polarity=False,
+    )
 
 
 def _print_summary(report: dict, json_path: Path, html_path: Path) -> None:

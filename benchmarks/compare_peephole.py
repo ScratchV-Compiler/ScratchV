@@ -18,9 +18,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scratchv.backend.asm_peephole import AsmPeepholeOptimizer
-from scratchv.backend.inst_counter import count_instructions
-from scratchv.compiler import CompilerConfig, CompilerDriver
+from scratchv.backend.asm_peephole import AsmPeepholeOptimizer  # noqa: E402
+from scratchv.backend.inst_counter import count_instructions  # noqa: E402
+from scratchv.compiler import CompilerConfig, CompilerDriver  # noqa: E402
 
 
 def _total_static(counts: dict) -> int:
@@ -67,10 +67,12 @@ class CompareReport:
 
 
 def compile_dsl(path: Path, *, peephole: bool) -> str:
-    driver = CompilerDriver(CompilerConfig(
-        peephole_asm=peephole,
-        optimize_level="none",
-    ))
+    driver = CompilerDriver(
+        CompilerConfig(
+            peephole_asm=peephole,
+            optimize_level="none",
+        )
+    )
     out = path.with_suffix(".s")
     result = driver.compile(str(path), str(out))
     if not result.success:
@@ -126,9 +128,13 @@ def to_markdown(report: CompareReport, synthetic: list[CaseCompare]) -> str:
         "",
         "## 汇总",
         "",
-        f"| 指标 | 优化前 | 优化后 | 变化 |",
-        f"|------|--------|--------|------|",
-        f"| DSL 基准静态指令合计 | {report.total_before} | {report.total_after} | **-{report.total_saved}** ({report.total_saved/report.total_before*100:.2f}%) |" if report.total_before else "",
+        "| 指标 | 优化前 | 优化后 | 变化 |",
+        "|------|--------|--------|------|",
+        (
+            f"| DSL 基准静态指令合计 | {report.total_before} | {report.total_after} | **-{report.total_saved}** ({report.total_saved/report.total_before*100:.2f}%) |"
+            if report.total_before
+            else ""
+        ),
         f"| 有节省的用例 | {report.cases_with_savings} / {len(report.cases)} | — | — |",
         "",
         "## DSL 基准（23 个用例）",
@@ -142,13 +148,15 @@ def to_markdown(report: CompareReport, synthetic: list[CaseCompare]) -> str:
             f"| {c.name} | {c.before_total} | {c.after_total} | {c.saved} | {c.saved_pct}% | {hits} |"
         )
 
-    lines.extend([
-        "",
-        "## 合成汇编（高 fusion 密度）",
-        "",
-        "| 规模 | 优化前 | 优化后 | 节省 | 节省% | addi 前→后 |",
-        "|------|--------|--------|------|-------|------------|",
-    ])
+    lines.extend(
+        [
+            "",
+            "## 合成汇编（高 fusion 密度）",
+            "",
+            "| 规模 | 优化前 | 优化后 | 节省 | 节省% | addi 前→后 |",
+            "|------|--------|--------|------|-------|------------|",
+        ]
+    )
     for c in synthetic:
         addi_b = c.before_opcodes.get("addi", 0)
         addi_a = c.after_opcodes.get("addi", 0)
@@ -176,6 +184,7 @@ def main() -> None:
     parser.add_argument("--cases", default="benchmarks/cases", help="DSL cases dir")
     parser.add_argument("--json", help="Write JSON report")
     parser.add_argument("--markdown", help="Write Markdown report")
+    parser.add_argument("--html", help="Write DSL HTML report")
     args = parser.parse_args()
 
     cases_dir = ROOT / args.cases
@@ -188,20 +197,28 @@ def main() -> None:
     print(f"\nDSL suite ({len(report.cases)} cases):")
     print(f"  Before: {report.total_before} static instructions")
     print(f"  After:  {report.total_after} static instructions")
-    print(f"  Saved:  {report.total_saved} ({report.total_saved/report.total_before*100:.2f}%)" if report.total_before else "")
+    print(
+        f"  Saved:  {report.total_saved} ({report.total_saved/report.total_before*100:.2f}%)"
+        if report.total_before
+        else ""
+    )
     print(f"  Cases with savings: {report.cases_with_savings}/{len(report.cases)}")
 
     print(f"\n{'Case':<28} {'Before':>8} {'After':>8} {'Saved':>8} {'%':>7}")
     print("-" * 72)
     for c in sorted(report.cases, key=lambda x: -x.saved):
         if c.saved > 0:
-            print(f"{c.name:<28} {c.before_total:>8} {c.after_total:>8} {c.saved:>8} {c.saved_pct:>6.1f}%")
+            print(
+                f"{c.name:<28} {c.before_total:>8} {c.after_total:>8} {c.saved:>8} {c.saved_pct:>6.1f}%"
+            )
 
     print("\nSynthetic (fusion_ratio=0.3):")
     print(f"{'Case':<20} {'Before':>8} {'After':>8} {'Saved':>8} {'%':>7}")
     print("-" * 56)
     for c in synthetic:
-        print(f"{c.name:<20} {c.before_total:>8} {c.after_total:>8} {c.saved:>8} {c.saved_pct:>6.1f}%")
+        print(
+            f"{c.name:<20} {c.before_total:>8} {c.after_total:>8} {c.saved:>8} {c.saved_pct:>6.1f}%"
+        )
 
     payload = {
         "dsl_suite": {
@@ -222,6 +239,12 @@ def main() -> None:
     if args.markdown:
         Path(args.markdown).write_text(md, encoding="utf-8")
         print(f"Markdown: {args.markdown}")
+
+    if args.html:
+        from benchmarks.compare_peephole_html import generate_dsl_html_report
+
+        Path(args.html).write_text(generate_dsl_html_report(report), encoding="utf-8")
+        print(f"HTML: {args.html}")
 
 
 if __name__ == "__main__":

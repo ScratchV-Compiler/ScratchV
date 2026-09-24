@@ -287,8 +287,16 @@ def measure_case(case: BenchmarkCase, repeats: int = 5) -> dict:
 
 def _git_commit() -> str:
     try:
+        git_args = ["git", "-c", f"safe.directory={_REPO_ROOT}"]
         completed = subprocess.run(
-            ["git", "-c", f"safe.directory={_REPO_ROOT}", "rev-parse", "HEAD"],
+            [*git_args, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=_REPO_ROOT,
+        )
+        status = subprocess.run(
+            [*git_args, "status", "--porcelain"],
             capture_output=True,
             text=True,
             check=True,
@@ -296,7 +304,8 @@ def _git_commit() -> str:
         )
     except (OSError, subprocess.CalledProcessError):
         return ""
-    return completed.stdout.strip()
+    commit = completed.stdout.strip()
+    return f"{commit}-dirty" if status.stdout.strip() else commit
 
 
 def run_benchmark(
