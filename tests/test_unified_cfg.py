@@ -454,6 +454,49 @@ def test_greedy_consumes_unified_cfg_liveness():
     assert all("carried" in comment for comment in spill_comments)
 
 
+def test_greedy_loop_does_not_respill_loop_invariant_inputs():
+    """Loop-invariant operands are spilled once, not on every back edge."""
+    v = MachineOperand.vreg
+    imm = MachineOperand.immediate
+    machine = [
+        MachineInstr(MachineOp.LABEL, target="main"),
+        MachineInstr(MachineOp.LABEL, target=".entry"),
+        MachineInstr(MachineOp.LI, v("iv"), imm(0)),
+        MachineInstr(MachineOp.LABEL, target=".loop_header"),
+        MachineInstr(MachineOp.BGE, v("iv"), imm(4), target=".loop_exit"),
+        MachineInstr(MachineOp.LABEL, target=".loop_body"),
+        MachineInstr(MachineOp.ADD, v("x"), v("input_a"), v("input_b")),
+        MachineInstr(MachineOp.ADD, v("y"), v("x"), v("input_c")),
+        MachineInstr(MachineOp.ADDI, v("iv"), v("iv"), imm(1)),
+        MachineInstr(MachineOp.J, target=".loop_header"),
+        MachineInstr(MachineOp.LABEL, target=".loop_exit"),
+        MachineInstr(MachineOp.MV, MachineOperand.reg("a0"), v("y")),
+        MachineInstr(
+            MachineOp.JALR,
+            MachineOperand.reg("zero"),
+            MachineOperand.reg("ra"),
+            imm(0),
+        ),
+    ]
+
+    allocated = RegisterAllocator(machine, mode="greedy").run()
+
+    def spill_count(name: str) -> int:
+        return sum(
+            1
+            for instr in allocated
+            if instr.op is MachineOp.SW
+            and instr.comment == f"spill {name} [regalloc:spill]"
+        )
+
+    # Loop-invariant inputs are canonicalized to their stack slot once and
+    # then reused from that slot on every iteration.  A redundant back-edge
+    # spill per iteration would make these counts grow with the trip count.
+    assert spill_count("input_a") == 1
+    assert spill_count("input_b") == 1
+    assert spill_count("input_c") == 1
+
+
 def test_greedy_unified_cfg_executes_branch_in_simulator():
     pytest.importorskip("tinyfive")
     from scratchv.simulator.tinyfive import ProfiledMachine

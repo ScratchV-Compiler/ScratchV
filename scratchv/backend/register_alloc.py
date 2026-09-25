@@ -71,6 +71,11 @@ class RegisterAllocator:
         self.cfg: Optional["ControlFlowGraph"] = None
         self.liveness: Optional["LivenessResult"] = None
         self._current_live_after: frozenset[str] = frozenset()
+        # Virtual registers whose spill slot currently mirrors the value in
+        # their physical register.  Block-boundary flushes skip emitting a
+        # redundant spill for these values, so loop-invariant operands are
+        # not written back to memory on every back edge.
+        self._clean_slots: set[str] = set()
 
     @property
     def spill_slot_count(self) -> int:
@@ -201,6 +206,7 @@ class RegisterAllocator:
         self._next_spill = 0
         self._reg_pool = {r: None for r in ALL_REGS}
         self._remaining_uses = {}
+        self._clean_slots.clear()
         for instr in self.instructions:
             _, uses = virtual_register_defs_uses(instr)
             for vreg in uses:
@@ -279,7 +285,11 @@ class RegisterAllocator:
             }
             for phys_reg in explicit_defs:
                 owner = self._reg_pool[phys_reg]
-                if owner is not None and owner in live_after:
+                if (
+                    owner is not None
+                    and owner in live_after
+                    and owner not in self._clean_slots
+                ):
                     self._emit_spill(owner, phys_reg)
             reserved: set[str] = set(explicit_uses)
             # Protect all resident virtual sources before the first reload.
@@ -347,6 +357,12 @@ class RegisterAllocator:
                 self._flush_regs(live_after)
             self._emit(allocated)
 
+            # A value written by this instruction is now out of sync with its
+            # spill slot until the next spill/reload canonicalizes it again.
+            defines, uses = virtual_register_defs_uses(instr)
+            for vreg in defines:
+                self._clean_slots.discard(vreg)
+
             # A fixed physical destination overwrites any virtual value that
             # happened to occupy that register.
             for phys_reg in explicit_defs:
@@ -355,7 +371,6 @@ class RegisterAllocator:
                     self._vreg_map.pop(owner, None)
                 self._reg_pool[phys_reg] = None
 
-            _, uses = virtual_register_defs_uses(instr)
             for vreg in uses:
                 self._remaining_uses[vreg] -= 1
             for vreg in list(self._vreg_map):
@@ -445,7 +460,10 @@ class RegisterAllocator:
         lru_reg = min(candidates, key=remaining)
         lru_vreg = self._reg_pool[lru_reg]
         if lru_vreg:
-            if lru_vreg in self._current_live_after:
+            if (
+                lru_vreg in self._current_live_after
+                and lru_vreg not in self._clean_slots
+            ):
                 self._emit_spill(lru_vreg, lru_reg)
             self._vreg_map.pop(lru_vreg, None)
         self._reg_pool[lru_reg] = vreg_name
@@ -459,7 +477,10 @@ class RegisterAllocator:
         """Spill all registers at basic block boundaries."""
         for phys_reg, vreg_name in list(self._reg_pool.items()):
             if vreg_name is not None:
-                if vreg_name in live_values:
+                if (
+                    vreg_name in live_values
+                    and vreg_name not in self._clean_slots
+                ):
                     self._emit_spill(vreg_name, phys_reg)
                 self._reg_pool[phys_reg] = None
         self._vreg_map.clear()
@@ -476,7 +497,10 @@ class RegisterAllocator:
             vreg_name = self._reg_pool[phys_reg]
             if vreg_name is None:
                 continue
-            if vreg_name in live_values:
+            if (
+                vreg_name in live_values
+                and vreg_name not in self._clean_slots
+            ):
                 self._emit_spill(vreg_name, phys_reg)
             self._vreg_map.pop(vreg_name, None)
             self._reg_pool[phys_reg] = None
@@ -495,6 +519,7 @@ class RegisterAllocator:
             MachineOperand.reg(mem),
             comment=f"spill {vreg_name} [regalloc:spill]",
         ))
+        self._clean_slots.add(vreg_name)
 
     def _emit_reload(self, vreg_name: str, phys_reg: str) -> None:
         slot = self._get_spill_slot(vreg_name)
@@ -505,6 +530,7 @@ class RegisterAllocator:
             MachineOperand.reg(mem),
             comment=f"reload {vreg_name} [regalloc:reload]",
         ))
+        self._clean_slots.add(vreg_name)
 
     def _get_spill_slot(self, vreg_name: str) -> int:
         if vreg_name not in self._spill_slots:
