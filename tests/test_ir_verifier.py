@@ -1,13 +1,40 @@
 """Tests for the IR verifier module."""
 
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
 from scratchv.frontend.dsl_parser import DSLParser
 from scratchv.frontend.dsl_extended import ExtendedDSLParser
 from scratchv.analysis.ir_verifier import (
     IRVerifier, VerificationError, ErrorLevel, verify_ir,
 )
 from scratchv.ir.types import (
-    Program, Function, Instruction, OpCode, Value, DataType,
+    BasicBlock, Program, Function, Instruction, OpCode, Value, DataType,
 )
+
+
+def _program(*functions: Function) -> Program:
+    program = Program()
+    program.functions.extend(functions)
+    return program
+
+
+def _function(*blocks: BasicBlock, name: str = "main",
+              params: list[Value] | None = None) -> Function:
+    return Function(name=name, params=list(params or ()), blocks=list(blocks))
+
+
+def _block(name: str, *instructions: Instruction) -> BasicBlock:
+    block = BasicBlock(name)
+    block.instructions.extend(instructions)
+    return block
+
+
+def _rules(issues: list[VerificationError]) -> set[str | None]:
+    return {issue.rule for issue in issues}
 
 
 class TestVerificationError:
@@ -344,3 +371,381 @@ class TestIRVerifierWithExtendedParser:
         errors = verifier.verify()
         real_errors = [e for e in errors if e.level == ErrorLevel.ERROR]
         assert len(real_errors) == 0, f"IR verification failed: {real_errors}"
+
+
+class TestIRVerifierHardening:
+    """Regression tests for structural, CFG, and pipeline verification."""
+
+    def test_verify_program_and_function_are_public_entry_points(self):
+        program = _program(_function(
+            _block("entry", Instruction(opcode=OpCode.RETURN))))
+        verifier = IRVerifier(program)
+
+        assert verifier.verify_program() == []
+        assert verifier.verify_function(program.functions[0]) == []
+
+    def test_use_before_later_definition_is_rejected(self):
+        value = Value("later")
+        program = _program(_function(_block(
+            "entry",
+            Instruction(opcode=OpCode.RETURN, operands=[value]),
+            Instruction(opcode=OpCode.ADD, dest=value, operands=[
+                Value("one", is_constant=True, const_value=1),
+                Value("two", is_constant=True, const_value=2),
+            ]),
+        )))
+
+        assert "def-before-use" in _rules(IRVerifier(program).verify())
+
+    def test_branch_local_definition_does_not_dominate_merge(self):
+        cond = Value("cond")
+        branch_value = Value("branch_value")
+        program = _program(_function(
+            _block("entry", Instruction(
+                opcode=OpCode.BR_IF, operands=[cond], target="yes,no")),
+            _block(
+                "yes",
+                Instruction(
+                    opcode=OpCode.ADD,
+                    dest=branch_value,
+                    operands=[
+                        Value("one", is_constant=True, const_value=1),
+                        Value("two", is_constant=True, const_value=2),
+                    ],
+                ),
+                Instruction(opcode=OpCode.BR, target="done"),
+            ),
+            _block("no", Instruction(opcode=OpCode.BR, target="done")),
+            _block("done", Instruction(
+                opcode=OpCode.RETURN, operands=[branch_value])),
+            params=[cond],
+        ))
+
+        assert "def-before-use" in _rules(IRVerifier(program).verify())
+
+    def test_dominating_definition_is_independent_of_block_order(self):
+        result = Value("result")
+        program = _program(_function(
+            _block("entry", Instruction(opcode=OpCode.BR, target="define")),
+            _block("use", Instruction(opcode=OpCode.RETURN, operands=[result])),
+            _block(
+                "define",
+                Instruction(
+                    opcode=OpCode.ADD,
+                    dest=result,
+                    operands=[
+                        Value("one", is_constant=True, const_value=1),
+                        Value("two", is_constant=True, const_value=2),
+                    ],
+                ),
+                Instruction(opcode=OpCode.BR, target="use"),
+            ),
+        ))
+
+        assert "def-before-use" not in _rules(IRVerifier(program).verify())
+
+    def test_definition_after_terminator_does_not_dominate_successor(self):
+        result = Value("result")
+        program = _program(_function(
+            _block(
+                "entry",
+                Instruction(opcode=OpCode.BR, target="use"),
+                Instruction(
+                    opcode=OpCode.ADD,
+                    dest=result,
+                    operands=[
+                        Value("one", is_constant=True, const_value=1),
+                        Value("two", is_constant=True, const_value=2),
+                    ],
+                ),
+            ),
+            _block("use", Instruction(opcode=OpCode.RETURN, operands=[result])),
+        ))
+
+        assert "def-before-use" in _rules(IRVerifier(program).verify())
+
+    def test_duplicate_block_names_are_rejected(self):
+        program = _program(_function(
+            _block("entry", Instruction(opcode=OpCode.RETURN)),
+            _block("entry", Instruction(opcode=OpCode.RETURN)),
+        ))
+
+        assert "label-existence" in _rules(IRVerifier(program).verify())
+
+    def test_conditional_branch_requires_a_condition_operand(self):
+        program = _program(_function(
+            _block("entry", Instruction(
+                opcode=OpCode.BR_IF,
+                target="yes,no",
+            )),
+            _block("yes", Instruction(opcode=OpCode.RETURN)),
+            _block("no", Instruction(opcode=OpCode.RETURN)),
+        ))
+
+        assert "control-flow-integrity" in _rules(
+            IRVerifier(program).verify()
+        )
+
+    def test_binary_operation_requires_exactly_two_operands(self):
+        program = _program(_function(_block(
+            "entry",
+            Instruction(
+                opcode=OpCode.ADD,
+                dest=Value("result"),
+                operands=[Value("one", is_constant=True, const_value=1)],
+            ),
+            Instruction(opcode=OpCode.RETURN),
+        )))
+
+        assert "type-consistency" in _rules(IRVerifier(program).verify())
+
+    def test_convolution_accepts_input_weights_and_bias(self):
+        operands = [Value("input"), Value("weights"), Value("bias")]
+        program = _program(_function(_block(
+            "entry",
+            Instruction(
+                opcode=OpCode.CONV,
+                dest=Value("output"),
+                operands=operands,
+            ),
+            Instruction(opcode=OpCode.RETURN),
+        )))
+
+        passed, issues = verify_ir(program)
+
+        assert passed, issues
+
+    def test_malformed_nested_ir_reports_structure_error(self):
+        function = Function(name="main")
+        function.blocks = [42]  # type: ignore[list-item]
+        program = _program(function)
+
+        issues = IRVerifier(program).verify()
+
+        assert "program-structure" in _rules(issues)
+
+    def test_operand_missing_constant_flag_reports_structure_error(self):
+        class MalformedValue:
+            name = "broken"
+            dtype = DataType.FLOAT32
+
+        program = _program(_function(_block(
+            "entry",
+            Instruction(
+                opcode=OpCode.RETURN,
+                operands=[MalformedValue()],  # type: ignore[list-item]
+            ),
+        )))
+
+        issues = IRVerifier(program).verify()
+
+        assert "program-structure" in _rules(issues)
+
+    def test_unknown_opcode_reports_structure_error(self):
+        program = _program(_function(_block(
+            "entry",
+            Instruction(opcode="mystery"),  # type: ignore[arg-type]
+            Instruction(opcode=OpCode.RETURN),
+        )))
+
+        issues = IRVerifier(program).verify()
+
+        assert "program-structure" in _rules(issues)
+
+    def test_instruction_missing_destination_field_reports_structure_error(self):
+        class MalformedInstruction:
+            opcode = OpCode.RETURN
+            operands: list[Value] = []
+
+        block = _block("entry")
+        block.instructions = [MalformedInstruction()]  # type: ignore[list-item]
+        program = _program(_function(block))
+
+        issues = IRVerifier(program).verify()
+
+        assert "program-structure" in _rules(issues)
+
+    def test_pass_pipeline_stops_before_running_on_invalid_ir(self):
+        from scratchv.analysis import ir_verifier
+
+        called: list[str] = []
+        program = _program(_function(_block("entry")))
+
+        def should_not_run(current: Program) -> None:
+            called.append("ran")
+
+        with __import__("pytest").raises(
+            ir_verifier.IRVerificationFailure, match="before pass"
+        ):
+            ir_verifier.run_optimization_pipeline(
+                program, [should_not_run], verify_ir_enabled=True)
+        assert called == []
+
+    def test_pass_pipeline_stops_after_pass_corrupts_ir(self):
+        from scratchv.analysis import ir_verifier
+
+        called: list[str] = []
+        program = _program(_function(_block(
+            "entry", Instruction(opcode=OpCode.RETURN))))
+
+        def corrupt(current: Program) -> None:
+            called.append("corrupt")
+            current.functions[0].blocks[0].instructions.clear()
+
+        def next_pass(current: Program) -> None:
+            called.append("next")
+
+        with __import__("pytest").raises(
+            ir_verifier.IRVerificationFailure, match="after pass #1"
+        ):
+            ir_verifier.run_optimization_pipeline(
+                program, [corrupt, next_pass], verify_ir_enabled=True)
+        assert called == ["corrupt"]
+
+    def test_pass_pipeline_supports_legacy_zero_argument_pass(self):
+        from scratchv.analysis import ir_verifier
+
+        program = _program(_function(_block(
+            "entry", Instruction(opcode=OpCode.RETURN))))
+
+        class LegacyPass:
+            name = "legacy"
+
+            def __init__(self) -> None:
+                self.called = False
+
+            def run(self) -> int:
+                self.called = True
+                return 1
+
+        optimization_pass = LegacyPass()
+
+        result = ir_verifier.run_optimization_pipeline(
+            program, [optimization_pass], verify_ir_enabled=True
+        )
+
+        assert result is program
+        assert optimization_pass.called
+
+    def test_pass_pipeline_unwraps_compiler_pass_result(self):
+        from scratchv.analysis import ir_verifier
+        from scratchv.pass_interface import PassResult
+
+        program = _program(_function(_block(
+            "entry", Instruction(opcode=OpCode.RETURN))))
+
+        class ModernPass:
+            name = "modern"
+
+            def run(self, current: Program) -> PassResult:
+                return PassResult(data=current, changes=0)
+
+        result = ir_verifier.run_optimization_pipeline(
+            program, [ModernPass()], verify_ir_enabled=True
+        )
+
+        assert result is program
+
+    def test_failed_pass_result_stops_pipeline_with_message(self):
+        import pytest
+
+        from scratchv.analysis import ir_verifier
+        from scratchv.pass_interface import PassResult
+
+        program = _program(_function(_block(
+            "entry", Instruction(opcode=OpCode.RETURN))))
+        called: list[str] = []
+
+        class FailedPass:
+            name = "failed"
+
+            def run(self, current: Program) -> PassResult:
+                return PassResult(data=None, changes=0, message="bad transform")
+
+        def next_pass(current: Program) -> None:
+            called.append("next")
+
+        with pytest.raises(RuntimeError, match="bad transform"):
+            ir_verifier.run_optimization_pipeline(
+                program,
+                [FailedPass(), next_pass],
+                verify_ir_enabled=False,
+            )
+
+        assert called == []
+
+    def test_failure_report_contains_rule_and_ir_location(self):
+        from scratchv.analysis import ir_verifier
+
+        missing = Value("missing")
+        later = Value("missing")
+        program = _program(_function(
+            _block(
+                "entry",
+                Instruction(opcode=OpCode.RETURN, operands=[missing]),
+                Instruction(
+                    opcode=OpCode.ADD,
+                    dest=later,
+                    operands=[
+                        Value("one", is_constant=True, const_value=1),
+                        Value("two", is_constant=True, const_value=2),
+                    ],
+                ),
+            ),
+            name="worker",
+        ))
+
+        with __import__("pytest").raises(
+            ir_verifier.IRVerificationFailure
+        ) as raised:
+            ir_verifier.verify_or_raise(program, "test phase")
+
+        report = str(raised.value)
+        assert "test phase" in report
+        assert "def-before-use" in report
+        assert "worker" in report
+        assert "entry" in report
+        assert "instruction #0" in report
+
+
+class TestIRVerifierCommandLine:
+    def run_cli(
+        self, payload: object, *options: str
+    ) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "program.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, "-m", "scratchv.analysis.ir_verifier",
+                 *options, str(path)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def test_valid_ir_returns_zero(self):
+        payload = {"functions": [{"name": "main", "blocks": [{
+            "name": "entry", "instructions": [{"opcode": "RETURN"}],
+        }]}]}
+
+        result = self.run_cli(payload, "--verify-ir")
+
+        assert result.returncode == 0, result.stderr
+        assert "passed" in result.stdout
+
+    def test_invalid_ir_returns_one_with_rule(self):
+        payload = {"functions": [{"name": "main", "blocks": [{
+            "name": "entry", "instructions": [],
+        }]}]}
+
+        result = self.run_cli(payload, "--verify-ir")
+
+        assert result.returncode == 1
+        assert "block-termination" in result.stderr
+
+    def test_malformed_json_shape_returns_load_error(self):
+        result = self.run_cli([], "--verify-ir")
+
+        assert result.returncode == 2
+        assert "cannot load IR file" in result.stderr
+        assert "Traceback" not in result.stderr

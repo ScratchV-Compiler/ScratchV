@@ -1,75 +1,33 @@
-"""IR verification pass for ScratchV.
-
-Validates IR programs against a set of correctness rules, producing
-a list of verification errors or warnings. Designed to be run before
-and after optimization passes to catch bugs early.
-
-Verification rules:
-    1. Def-before-use: All value operands must be defined before use.
-    2. Label existence: Branch/jump targets must exist as block labels.
-    3. Block termination: Every basic block must end with a terminator
-       (return, branch, or jump).
-    4. Type consistency: Operands of arithmetic/nn ops must have
-       compatible types.
-    5. Control flow integrity: Blocks after unconditional jumps must
-       be unreachable. Conditional branches must have exactly two
-       targets specified.
-    6. SSA validity: Each value must be assigned exactly once (SSA).
-
-Usage::
-
-    from scratchv.analysis.ir_verifier import IRVerifier
-
-    verifier = IRVerifier(program)
-    errors = verifier.verify()
-    if errors:
-        for err in errors:
-            print(err)
-    else:
-        print("IR verification passed.")
-"""
+"""IR verification and optimization-pipeline checks for ScratchV."""
 
 from __future__ import annotations
 
+import argparse
 import enum
+import inspect
+import json
+import sys
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Any, Callable, Iterable, Optional, Sequence
 
-# moved import above
 from scratchv.ir.types import (
-    OpCode,
-    Function,
-    Program,
+    BasicBlock, DataType, Function, Instruction, OpCode, Program, Value,
 )
+from scratchv.pass_interface import PassResult
 
-
-# ---------------------------------------------------------------------------
-# Error level
-# ---------------------------------------------------------------------------
 
 class ErrorLevel(enum.Enum):
-    """Severity level for verification issues."""
+    """Severity level for a verification issue."""
+
     ERROR = "error"
     WARNING = "warning"
 
 
-# ---------------------------------------------------------------------------
-# VerificationError
-# ---------------------------------------------------------------------------
-
 @dataclass
 class VerificationError:
-    """A single verification issue found in IR.
+    """One verifier diagnostic with its IR location and violated rule."""
 
-    Attributes:
-        level: Severity (ERROR or WARNING).
-        message: Human-readable description of the issue.
-        function_name: Name of the function containing the issue.
-        block_name: Name of the basic block (if applicable).
-        instruction_index: Index of the instruction (if applicable).
-        value_name: Name of the problematic value (if applicable).
-        rule: Identifier for the verification rule violated.
-    """
     level: ErrorLevel
     message: str
     function_name: Optional[str] = None
@@ -79,426 +37,757 @@ class VerificationError:
     rule: Optional[str] = None
 
     def __str__(self) -> str:
-        parts = [f"[{self.level.value.upper()}]"]
-        if self.rule:
-            parts.append(f"({self.rule})")
-        if self.function_name:
-            parts.append(f"in '{self.function_name}'")
-        if self.block_name:
-            parts.append(f", block '{self.block_name}'")
+        location: list[str] = []
+        if self.function_name is not None:
+            location.append(f"function '{self.function_name}'")
+        if self.block_name is not None:
+            location.append(f"block '{self.block_name}'")
         if self.instruction_index is not None:
-            parts.append(f", instr #{self.instruction_index}")
-        if self.value_name:
-            parts.append(f", value '{self.value_name}'")
-        parts.append(f": {self.message}")
-        return " ".join(parts)
+            location.append(f"instruction #{self.instruction_index}")
+        if self.value_name is not None:
+            location.append(f"value '{self.value_name}'")
+        where = f" in {', '.join(location)}" if location else ""
+        rule = f" [{self.rule}]" if self.rule else ""
+        return f"{self.level.value.upper()}{rule}{where}: {self.message}"
 
 
-# ---------------------------------------------------------------------------
-# IRVerifier
-# ---------------------------------------------------------------------------
+class IRVerificationFailure(RuntimeError):
+    """Raised when pipeline verification finds invalid IR."""
+
+    def __init__(self, phase: str, issues: Sequence[VerificationError]) -> None:
+        self.phase = phase
+        self.issues = list(issues)
+        details = "\n".join(f"  {issue}" for issue in self.issues)
+        super().__init__(
+            f"IR verification failed during {phase} "
+            f"({len(self.issues)} issue(s)):\n{details}"
+        )
+
+
+def _opcode_name(opcode: object) -> str:
+    raw = getattr(opcode, "name", getattr(opcode, "value", opcode))
+    return str(raw).upper()
+
+
+def _type_name(dtype: object) -> str:
+    return str(getattr(dtype, "value", dtype))
+
+
+def _targets(instruction: Instruction) -> list[str]:
+    target = getattr(instruction, "target", None)
+    if target is None:
+        return []
+    if isinstance(target, str):
+        return [part.strip() for part in target.split(",") if part.strip()]
+    if isinstance(target, (list, tuple)):
+        return [str(part).strip() for part in target if str(part).strip()]
+    text = str(target).strip()
+    return [text] if text else []
+
+
+BINARY_OPS = {"ADD", "SUB", "MUL", "DIV", "MATMUL", "DOT"}
+TERNARY_OPS = {"CONV"}
+CONDITIONAL_BRANCHES = {"BR_IF"}
+UNCONDITIONAL_BRANCHES = {"BR"}
+RETURNS = {"RETURN"}
+TERMINATORS = CONDITIONAL_BRANCHES | UNCONDITIONAL_BRANCHES | RETURNS
+
 
 class IRVerifier:
-    """Verify the correctness of a ScratchV IR Program.
-
-    Usage::
-
-        from scratchv.analysis.ir_verifier import IRVerifier
-        verifier = IRVerifier(program)
-        errors = verifier.verify()
-        if errors:
-            for e in errors:
-                print(e)
-            raise SystemExit(1)
-
-    The verifier can be run repeatedly on the same program as it does
-    not mutate any state.
-    """
+    """Validate a ScratchV IR program without mutating it."""
 
     def __init__(self, program: Program):
-        """Initialize the verifier.
-
-        Args:
-            program: The IR Program to verify.
-        """
         self.program = program
         self._errors: list[VerificationError] = []
 
-    # -------------------------------------------------------------------
-    # Main verification entry point
-    # -------------------------------------------------------------------
-
     def verify(self) -> list[VerificationError]:
-        """Run all verification checks on the program.
+        """Backward-compatible alias for :meth:`verify_program`."""
+        return self.verify_program()
 
-        Returns:
-            A list of VerificationError objects. An empty list means
-            the program passed all checks.
-        """
+    def verify_program(self) -> list[VerificationError]:
+        """Verify every function in the configured program."""
         self._errors = []
-
-        for func in self.program.functions:
-            self._verify_function(func)
-
-        return self._errors
-
-    # -------------------------------------------------------------------
-    # Per-function verification
-    # -------------------------------------------------------------------
-
-    def _verify_function(self, func: Function) -> None:
-        """Run all checks on a single function.
-
-        Args:
-            func: The function to verify.
-        """
-        # Collect all block names for label checks
-        block_names: set[str] = {b.name for b in func.blocks}
-
-        # Check 1: Def-before-use per function
-        self._check_def_before_use(func)
-
-        # Check 2: Block termination
-        self._check_block_termination(func)
-
-        # Check 3: Label existence in branches/jumps
-        self._check_label_existence(func, block_names)
-
-        # Check 4: Type consistency
-        self._check_type_consistency(func)
-
-        # Check 5: Control flow integrity
-        self._check_control_flow_integrity(func, block_names)
-
-        # Check 6: SSA validity
-        self._check_ssa_validity(func)
-
-        # Check 7: Entry block existence
-        if len(func.blocks) == 0:
+        functions = getattr(self.program, "functions", None)
+        if not self._is_sequence(functions):
             self._add_error(
-                ErrorLevel.ERROR,
-                "function has no basic blocks",
-                func_name=func.name,
-                rule="entry-existence",
+                "program must contain a sequence of functions",
+                rule="program-structure",
             )
-
-    # -------------------------------------------------------------------
-    # Rule 1: Def-before-use
-    # -------------------------------------------------------------------
-
-    def _check_def_before_use(self, func: Function) -> None:
-        """Ensure all value operands are defined before use.
-
-        Uses a two-pass approach:
-        1. First pass: collect all values that are assigned (appear as
-           instruction destinations) across all blocks.
-        2. Second pass: flag operands that are never assigned and aren't
-           constants or function params.
-
-        Values that appear as operands but are never assigned are treated
-        as implicit input variables (not flagged as errors).
-
-        Args:
-            func: The function to check.
-        """
-        # Pass 1: collect all defined names (instruction destinations)
-        defined: set[str] = set()
-
-        # Function parameters are pre-defined
-        for param in func.params:
-            defined.add(param.name)
-
-        for block in func.blocks:
-            for instr in block.instructions:
-                if instr.dest is not None:
-                    defined.add(instr.dest.name)
-
-        # Pass 2: flag uses of undefined values
-        for block in func.blocks:
-            for instr in block.instructions:
-                for op in instr.operands:
-                    if op.name not in defined:
-                        # Allow constants (auto-defined) and implicit inputs
-                        if op.is_constant:
-                            continue
-                        # Treat as implicit input (not an error)
-                        # Mark so it's not flagged again
-                        defined.add(op.name)
-                        continue
-
-                # Also track values created mid-block for intra-block checks
-                if instr.dest is not None:
-                    defined.add(instr.dest.name)
-
-    # -------------------------------------------------------------------
-    # Rule 2: Block termination
-    # -------------------------------------------------------------------
-
-    def _check_block_termination(self, func: Function) -> None:
-        """Ensure every basic block ends with a terminator instruction.
-
-        Valid terminators: RETURN, BR, BR_IF. Empty blocks are flagged.
-
-        Args:
-            func: The function to check.
-        """
-        terminators = {OpCode.RETURN, OpCode.BR, OpCode.BR_IF}
-
-        for block in func.blocks:
-            if not block.instructions:
+            return list(self._errors)
+        for function in functions:
+            if not isinstance(getattr(function, "name", None), str):
                 self._add_error(
-                    ErrorLevel.WARNING,
-                    "block has no instructions (no terminator)",
-                    func_name=func.name,
-                    block_name=block.name,
-                    rule="block-termination",
+                    "program entry must be a function with a name",
+                    rule="program-structure",
                 )
                 continue
+            self._verify_function(function)
+        return list(self._errors)
 
-            last_instr = block.instructions[-1]
-            if last_instr.opcode not in terminators:
+    def verify_function(self, function: Function) -> list[VerificationError]:
+        """Verify one function, independently of the configured program."""
+        self._errors = []
+        self._verify_function(function)
+        return list(self._errors)
+
+    def verify_basic_block(
+        self,
+        block: BasicBlock,
+        function: Function,
+        *,
+        defined: Optional[set[str]] = None,
+        block_names: Optional[set[str]] = None,
+    ) -> list[VerificationError]:
+        """Verify one block with optional surrounding definition context."""
+        self._errors = []
+        known = set(defined or (param.name for param in function.params))
+        labels = set(block_names or (item.name for item in function.blocks))
+        self._verify_basic_block(block, function, known, labels, {})
+        return list(self._errors)
+
+    @staticmethod
+    def _is_sequence(value: object) -> bool:
+        return isinstance(value, Sequence) and not isinstance(
+            value, (str, bytes)
+        )
+
+    def _verify_function(self, function: Function) -> None:
+        blocks_value = getattr(function, "blocks", None)
+        params_value = getattr(function, "params", None)
+        if not self._is_sequence(blocks_value):
+            self._add_error(
+                "function must contain a sequence of basic blocks",
+                function=function,
+                rule="program-structure",
+            )
+            return
+        if not self._is_sequence(params_value):
+            self._add_error(
+                "function parameters must be a sequence",
+                function=function,
+                rule="program-structure",
+            )
+            return
+        blocks = list(blocks_value)
+        params = list(params_value)
+        if not blocks:
+            self._add_error(
+                "function has no basic blocks",
+                function=function,
+                rule="entry-existence",
+            )
+            return
+        if not self._validate_structure(function, blocks, params):
+            return
+
+        names = [block.name for block in blocks]
+        seen: set[str] = set()
+        for block in blocks:
+            if block.name in seen:
                 self._add_error(
-                    ErrorLevel.ERROR,
-                    f"block does not end with a terminator "
-                    f"(last instruction is '{last_instr.opcode.value}')",
-                    func_name=func.name,
-                    block_name=block.name,
-                    instruction_index=len(block.instructions) - 1,
-                    rule="block-termination",
+                    f"duplicate basic-block name '{block.name}'",
+                    function=function,
+                    block=block,
+                    rule="label-existence",
                 )
+            seen.add(block.name)
 
-    # -------------------------------------------------------------------
-    # Rule 3: Label existence
-    # -------------------------------------------------------------------
+        definition_sites = self._collect_definition_sites(blocks)
+        all_defined_names = {
+            instruction.dest.name
+            for block in blocks
+            for instruction in block.instructions
+            if instruction.dest is not None
+        }
+        dominators = self._compute_dominators(blocks)
+        parameter_names = {param.name for param in params}
+        assigned: dict[str, tuple[str, int]] = {}
+        for block in blocks:
+            defined = set(parameter_names)
+            for name, (definition_block, _) in definition_sites.items():
+                if (
+                    definition_block != block.name
+                    and definition_block in dominators.get(block.name, set())
+                ):
+                    defined.add(name)
+            self._verify_basic_block(
+                block, function, defined, set(names), assigned,
+                all_defined_names,
+            )
 
-    def _check_label_existence(
-        self, func: Function, block_names: set[str],
-    ) -> None:
-        """Ensure all branch/jump targets refer to existing blocks.
+    def _validate_structure(
+        self,
+        function: Function,
+        blocks: Sequence[object],
+        params: Sequence[object],
+    ) -> bool:
+        valid = True
 
-        Args:
-            func: The function to check.
-            block_names: Set of valid block names in this function.
-        """
-        for block in func.blocks:
-            for i, instr in enumerate(block.instructions):
-                target = instr.target
-                if target is None:
+        def valid_value(candidate: object) -> bool:
+            return (
+                isinstance(getattr(candidate, "name", None), str)
+                and bool(getattr(candidate, "name", ""))
+                and isinstance(getattr(candidate, "dtype", None), DataType)
+                and isinstance(
+                    getattr(candidate, "is_constant", None), bool
+                )
+            )
+
+        for parameter in params:
+            if not valid_value(parameter):
+                self._add_error(
+                    "function parameter must have a non-empty name and type",
+                    function=function,
+                    rule="program-structure",
+                )
+                valid = False
+        for block in blocks:
+            if not isinstance(getattr(block, "name", None), str) or not getattr(
+                block, "name", ""
+            ):
+                self._add_error(
+                    "basic block must have a non-empty name",
+                    function=function,
+                    rule="program-structure",
+                )
+                valid = False
+                continue
+            instructions = getattr(block, "instructions", None)
+            if not self._is_sequence(instructions):
+                self._add_error(
+                    "basic-block instructions must be a sequence",
+                    function=function,
+                    block=block,
+                    rule="program-structure",
+                )
+                valid = False
+                continue
+            for index, instruction in enumerate(instructions):
+                if not isinstance(getattr(instruction, "opcode", None), OpCode):
+                    self._add_error(
+                        "instruction must define a recognized OpCode",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="program-structure",
+                    )
+                    valid = False
                     continue
-
-                # BR_IF has comma-separated targets
-                if instr.opcode == OpCode.BR_IF:
-                    parts = target.split(",")
-                    for part in parts:
-                        part = part.strip()
-                        if part and part not in block_names:
-                            self._add_error(
-                                ErrorLevel.ERROR,
-                                f"branch target '{part}' does not exist",
-                                func_name=func.name,
-                                block_name=block.name,
-                                instruction_index=i,
-                                rule="label-existence",
-                            )
-                else:
-                    if target not in block_names:
+                if not hasattr(instruction, "dest"):
+                    self._add_error(
+                        "instruction must define a destination field",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="program-structure",
+                    )
+                    valid = False
+                    continue
+                operands = getattr(instruction, "operands", None)
+                if not self._is_sequence(operands):
+                    self._add_error(
+                        "instruction operands must be a sequence",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="program-structure",
+                    )
+                    valid = False
+                    continue
+                destination = getattr(instruction, "dest", None)
+                if destination is not None and not valid_value(destination):
+                    self._add_error(
+                        "instruction destination must have a name and type",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="program-structure",
+                    )
+                    valid = False
+                for operand in operands:
+                    if not valid_value(operand):
                         self._add_error(
-                            ErrorLevel.ERROR,
-                            f"jump target '{target}' does not exist",
-                            func_name=func.name,
-                            block_name=block.name,
-                            instruction_index=i,
-                            rule="label-existence",
+                            "instruction operand must have a name and type",
+                            function=function,
+                            block=block,
+                            index=index,
+                            rule="program-structure",
                         )
+                        valid = False
+        return valid
 
-    # -------------------------------------------------------------------
-    # Rule 4: Type consistency
-    # -------------------------------------------------------------------
+    @staticmethod
+    def _collect_definition_sites(
+        blocks: Sequence[BasicBlock],
+    ) -> dict[str, tuple[str, int]]:
+        definitions: dict[str, tuple[str, int]] = {}
+        for block in blocks:
+            for index, instruction in enumerate(block.instructions):
+                if instruction.dest is not None:
+                    definitions.setdefault(
+                        instruction.dest.name, (block.name, index)
+                    )
+                if _opcode_name(instruction.opcode) in TERMINATORS:
+                    break
+        return definitions
 
-    def _check_type_consistency(self, func: Function) -> None:
-        """Ensure operands of binary/arithmetic ops have consistent types.
+    @staticmethod
+    def _compute_dominators(
+        blocks: Sequence[BasicBlock],
+    ) -> dict[str, set[str]]:
+        names = [block.name for block in blocks]
+        known = set(names)
+        successors: dict[str, set[str]] = {name: set() for name in names}
+        for block in blocks:
+            for instruction in block.instructions:
+                opcode = _opcode_name(instruction.opcode)
+                if opcode in CONDITIONAL_BRANCHES | UNCONDITIONAL_BRANCHES:
+                    successors[block.name].update(
+                        target for target in _targets(instruction)
+                        if target in known
+                    )
+                if opcode in TERMINATORS:
+                    break
 
-        Args:
-            func: The function to check.
-        """
-        binary_ops = {
-            OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV,
+        entry = names[0]
+        reachable: set[str] = set()
+        pending = [entry]
+        while pending:
+            name = pending.pop()
+            if name in reachable:
+                continue
+            reachable.add(name)
+            pending.extend(successors.get(name, set()) - reachable)
+        predecessors: dict[str, set[str]] = {name: set() for name in names}
+        for source, targets in successors.items():
+            for target in targets:
+                predecessors[target].add(source)
+        dominators = {
+            name: ({name} if name == entry or name not in reachable
+                   else set(reachable))
+            for name in names
         }
-        nn_ops = {
-            OpCode.MATMUL, OpCode.DOT, OpCode.CONV,
-        }
+        changed = True
+        while changed:
+            changed = False
+            for name in names:
+                if name == entry or name not in reachable:
+                    continue
+                incoming = [
+                    dominators[pred]
+                    for pred in predecessors[name]
+                    if pred in reachable
+                ]
+                common = set.intersection(*incoming) if incoming else set()
+                updated = {name} | common
+                if updated != dominators[name]:
+                    dominators[name] = updated
+                    changed = True
+        return dominators
 
-        for block in func.blocks:
-            for i, instr in enumerate(block.instructions):
-                if instr.opcode in binary_ops and len(instr.operands) >= 2:
-                    lhs, rhs = instr.operands[0], instr.operands[1]
-                    if lhs.dtype != rhs.dtype:
-                        self._add_error(
-                            ErrorLevel.WARNING,
-                            f"operand type mismatch: '{lhs.name}' is "
-                            f"{lhs.dtype.value}, '{rhs.name}' is "
-                            f"{rhs.dtype.value}",
-                            func_name=func.name,
-                            block_name=block.name,
-                            instruction_index=i,
-                            rule="type-consistency",
-                        )
-
-                if instr.opcode in nn_ops and len(instr.operands) >= 2:
-                    lhs, rhs = instr.operands[0], instr.operands[1]
-                    if lhs.dtype != rhs.dtype:
-                        self._add_error(
-                            ErrorLevel.WARNING,
-                            f"NN op operand type mismatch: '{lhs.name}' is "
-                            f"{lhs.dtype.value}, '{rhs.name}' is "
-                            f"{rhs.dtype.value}",
-                            func_name=func.name,
-                            block_name=block.name,
-                            instruction_index=i,
-                            rule="type-consistency",
-                        )
-
-    # -------------------------------------------------------------------
-    # Rule 5: Control flow integrity
-    # -------------------------------------------------------------------
-
-    def _check_control_flow_integrity(
-        self, func: Function, block_names: set[str],
+    def _verify_basic_block(
+        self,
+        block: BasicBlock,
+        function: Function,
+        defined: set[str],
+        block_names: set[str],
+        assigned: dict[str, tuple[str, int]],
+        all_defined_names: Optional[set[str]] = None,
     ) -> None:
-        """Check control flow integrity.
+        instructions = list(block.instructions)
+        definitions = all_defined_names or {
+            instruction.dest.name
+            for instruction in instructions
+            if instruction.dest is not None
+        }
+        for index, instruction in enumerate(instructions):
+            opcode = _opcode_name(instruction.opcode)
+            operands = list(instruction.operands)
+            for operand in operands:
+                if operand.is_constant or operand.name in defined:
+                    continue
+                # Never-assigned names are implicit DSL inputs. Names assigned
+                # in the function must dominate each use.
+                if operand.name in definitions:
+                    self._add_error(
+                        f"value '{operand.name}' is used before definition",
+                        function=function,
+                        block=block,
+                        index=index,
+                        value=operand.name,
+                        rule="def-before-use",
+                    )
+            if opcode in BINARY_OPS:
+                if len(operands) != 2:
+                    self._add_error(
+                        f"binary operation {opcode} has {len(operands)} "
+                        "operand(s), expected 2",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="type-consistency",
+                    )
+                elif operands[0].dtype != operands[1].dtype:
+                    self._add_error(
+                        f"operand types differ: "
+                        f"{operands[0].name}:{_type_name(operands[0].dtype)} "
+                        f"vs {operands[1].name}:{_type_name(operands[1].dtype)}",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="type-consistency",
+                        level=ErrorLevel.WARNING,
+                    )
+            elif opcode in TERNARY_OPS:
+                if len(operands) != 3:
+                    self._add_error(
+                        f"operation {opcode} has {len(operands)} operand(s), "
+                        "expected 3",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="type-consistency",
+                    )
+                elif any(
+                    operand.dtype != operands[0].dtype
+                    for operand in operands[1:]
+                ):
+                    self._add_error(
+                        f"{opcode} operand types are inconsistent",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="type-consistency",
+                        level=ErrorLevel.WARNING,
+                    )
+            targets = _targets(instruction)
+            if opcode in CONDITIONAL_BRANCHES:
+                if not 1 <= len(operands) <= 2:
+                    self._add_error(
+                        f"conditional branch has {len(operands)} condition "
+                        "operand(s), expected 1 or 2",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="control-flow-integrity",
+                    )
+                if len(targets) != 2:
+                    self._add_error(
+                        f"conditional branch has {len(targets)} target(s), "
+                        "expected exactly 2",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="control-flow-integrity",
+                    )
+                self._check_targets(
+                    targets, block_names, function, block, index
+                )
+            elif opcode in UNCONDITIONAL_BRANCHES:
+                if len(targets) != 1:
+                    self._add_error(
+                        f"unconditional branch has {len(targets)} target(s), "
+                        "expected exactly 1",
+                        function=function,
+                        block=block,
+                        index=index,
+                        rule="control-flow-integrity",
+                    )
+                self._check_targets(
+                    targets, block_names, function, block, index
+                )
+            if opcode in TERMINATORS and index != len(instructions) - 1:
+                self._add_error(
+                    "instruction after terminator is unreachable",
+                    function=function,
+                    block=block,
+                    index=index + 1,
+                    rule="control-flow-integrity",
+                )
+            if instruction.dest is not None:
+                destination = instruction.dest
+                if destination.name in assigned:
+                    first_block, first_index = assigned[destination.name]
+                    self._add_error(
+                        "value is assigned more than once; first assignment "
+                        f"was in block '{first_block}', instruction "
+                        f"#{first_index}",
+                        function=function,
+                        block=block,
+                        index=index,
+                        value=destination.name,
+                        rule="ssa-validity",
+                    )
+                else:
+                    assigned[destination.name] = (block.name, index)
+                defined.add(destination.name)
+        if not instructions:
+            self._add_error(
+                "basic block is empty and has no terminator",
+                function=function,
+                block=block,
+                rule="block-termination",
+            )
+        elif _opcode_name(instructions[-1].opcode) not in TERMINATORS:
+            self._add_error(
+                "basic block must end with BR, BR_IF, or RETURN; found "
+                f"{_opcode_name(instructions[-1].opcode)}",
+                function=function,
+                block=block,
+                index=len(instructions) - 1,
+                rule="block-termination",
+            )
 
-        - Unconditional jump (BR) must not be followed by instructions
-          in the same block.
-        - Conditional branch (BR_IF) must have exactly two targets.
-        - RETURN must be the last instruction in a block.
-
-        Args:
-            func: The function to check.
-            block_names: Valid block names.
-        """
-        for block in func.blocks:
-            for i, instr in enumerate(block.instructions):
-                if instr.opcode == OpCode.BR:
-                    # Cannot have instructions after unconditional jump
-                    if i < len(block.instructions) - 1:
-                        self._add_error(
-                            ErrorLevel.ERROR,
-                            "unreachable instructions after unconditional "
-                            "branch",
-                            func_name=func.name,
-                            block_name=block.name,
-                            instruction_index=i,
-                            rule="control-flow-integrity",
-                        )
-
-                elif instr.opcode == OpCode.BR_IF:
-                    # Must have exactly two targets
-                    target = instr.target or ""
-                    targets = [
-                        t.strip() for t in target.split(",") if t.strip()
-                    ]
-                    if len(targets) != 2:
-                        self._add_error(
-                            ErrorLevel.ERROR,
-                            f"conditional branch has {len(targets)} "
-                            f"targets, expected 2",
-                            func_name=func.name,
-                            block_name=block.name,
-                            instruction_index=i,
-                            rule="control-flow-integrity",
-                        )
-
-                elif instr.opcode == OpCode.RETURN:
-                    if i < len(block.instructions) - 1:
-                        self._add_error(
-                            ErrorLevel.ERROR,
-                            "unreachable instructions after return",
-                            func_name=func.name,
-                            block_name=block.name,
-                            instruction_index=i,
-                            rule="control-flow-integrity",
-                        )
-
-    # -------------------------------------------------------------------
-    # Rule 6: SSA validity
-    # -------------------------------------------------------------------
-
-    def _check_ssa_validity(self, func: Function) -> None:
-        """Check SSA validity: each value must be assigned exactly once.
-
-        Args:
-            func: The function to check.
-        """
-        assigned: dict[str, int] = {}  # value name -> first assignment index
-
-        for block in func.blocks:
-            for i, instr in enumerate(block.instructions):
-                if instr.dest is not None:
-                    if instr.dest.name in assigned:
-                        self._add_error(
-                            ErrorLevel.ERROR,
-                            f"value '{instr.dest.name}' assigned multiple "
-                            f"times (SSA violation)",
-                            func_name=func.name,
-                            block_name=block.name,
-                            instruction_index=i,
-                            value_name=instr.dest.name,
-                            rule="ssa-validity",
-                        )
-                    else:
-                        assigned[instr.dest.name] = i
-
-    # -------------------------------------------------------------------
-    # Helper
-    # -------------------------------------------------------------------
+    def _check_targets(
+        self,
+        targets: Iterable[str],
+        block_names: set[str],
+        function: Function,
+        block: BasicBlock,
+        index: int,
+    ) -> None:
+        for target in targets:
+            if target not in block_names:
+                self._add_error(
+                    f"branch target '{target}' does not exist",
+                    function=function,
+                    block=block,
+                    index=index,
+                    value=target,
+                    rule="label-existence",
+                )
 
     def _add_error(
         self,
-        level: ErrorLevel,
         message: str,
-        func_name: Optional[str] = None,
-        block_name: Optional[str] = None,
-        instruction_index: Optional[int] = None,
-        value_name: Optional[str] = None,
+        *,
+        function: Optional[Function] = None,
+        block: Optional[BasicBlock] = None,
+        index: Optional[int] = None,
+        value: Optional[str] = None,
         rule: Optional[str] = None,
+        level: ErrorLevel = ErrorLevel.ERROR,
     ) -> None:
-        """Add a verification error to the internal list.
-
-        Args:
-            level: Error severity.
-            message: Error description.
-            func_name: Function name context.
-            block_name: Block name context.
-            instruction_index: Instruction index context.
-            value_name: Value name context.
-            rule: Rule identifier.
-        """
         self._errors.append(VerificationError(
             level=level,
             message=message,
-            function_name=func_name,
-            block_name=block_name,
-            instruction_index=instruction_index,
-            value_name=value_name,
+            function_name=getattr(function, "name", None),
+            block_name=getattr(block, "name", None),
+            instruction_index=index,
+            value_name=value,
             rule=rule,
         ))
 
 
-# ---------------------------------------------------------------------------
-# Convenience function
-# ---------------------------------------------------------------------------
-
 def verify_ir(program: Program) -> tuple[bool, list[VerificationError]]:
-    """Quick verification function for programmatic use.
+    """Return ``(passed, issues)``; warnings do not fail verification."""
+    issues = IRVerifier(program).verify_program()
+    return not any(issue.level == ErrorLevel.ERROR for issue in issues), issues
 
-    Args:
-        program: The IR Program to verify.
 
-    Returns:
-        A tuple (passed, errors) where passed is True if no errors
-        (only warnings at most), and errors is the list of all issues.
-    """
-    verifier = IRVerifier(program)
-    errors = verifier.verify()
-    real_errors = [e for e in errors if e.level == ErrorLevel.ERROR]
-    return len(real_errors) == 0, errors
+def verify_or_raise(program: Program, phase: str) -> None:
+    """Raise a detailed failure when ``program`` contains verifier errors."""
+    passed, issues = verify_ir(program)
+    if not passed:
+        raise IRVerificationFailure(phase, issues)
+
+
+OptimizationPass = Callable[[Program], Optional[Program]]
+
+
+def run_optimization_pipeline(
+    program: Program,
+    passes: Iterable[OptimizationPass | object],
+    *,
+    verify_ir_enabled: bool = False,
+) -> Program:
+    """Run passes and optionally verify immediately before and after each."""
+    current = program
+    for number, optimization_pass in enumerate(passes, start=1):
+        pass_name = getattr(
+            optimization_pass,
+            "name",
+            getattr(optimization_pass, "__name__",
+                    type(optimization_pass).__name__),
+        )
+        if verify_ir_enabled:
+            verify_or_raise(current, f"before pass #{number} ({pass_name})")
+        runner = getattr(optimization_pass, "run", optimization_pass)
+        if not callable(runner):
+            raise TypeError(f"optimization pass {pass_name!r} is not callable")
+        accepts_input = bool(inspect.signature(runner).parameters)
+        result = runner(current) if accepts_input else runner()
+        if isinstance(result, PassResult):
+            if result.data is None:
+                detail = result.message or "pass returned no output data"
+                raise RuntimeError(f"optimization pass {pass_name!r} failed: {detail}")
+            current = result.data
+        elif isinstance(result, Program):
+            current = result
+        elif result is not None and accepts_input:
+            current = result
+        if verify_ir_enabled:
+            verify_or_raise(current, f"after pass #{number} ({pass_name})")
+    return current
+
+
+def _expect_object(data: object, location: str) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError(f"{location} must be a JSON object")
+    return data
+
+
+def _list_field(data: dict[str, Any], key: str, location: str) -> list[Any]:
+    value = data.get(key, [])
+    if not isinstance(value, list):
+        raise ValueError(f"{location}.{key} must be a JSON array")
+    return value
+
+
+def _required_text(data: dict[str, Any], key: str, location: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{location}.{key} must be a non-empty string")
+    return value
+
+
+def _parse_type(raw: object) -> DataType:
+    text = str(raw)
+    for data_type in DataType:
+        if text.lower() in {data_type.name.lower(), data_type.value.lower()}:
+            return data_type
+    raise ValueError(f"unknown IR data type {text!r}")
+
+
+def _parse_opcode(raw: object) -> OpCode:
+    text = str(raw)
+    for opcode in OpCode:
+        if text.lower() in {opcode.name.lower(), opcode.value.lower()}:
+            return opcode
+    raise ValueError(f"unknown IR opcode {text!r}")
+
+
+def _load_value(data: object, location: str) -> Value:
+    value_data = _expect_object(data, location)
+    constant = value_data.get("is_constant", False)
+    if not isinstance(constant, bool):
+        raise ValueError(f"{location}.is_constant must be a boolean")
+    dtype = value_data.get("dtype", DataType.FLOAT32.value)
+    if not isinstance(dtype, str):
+        raise ValueError(f"{location}.dtype must be a string")
+    return Value(
+        name=_required_text(value_data, "name", location),
+        dtype=_parse_type(dtype),
+        is_constant=constant,
+        const_value=value_data.get("value"),
+    )
+
+
+def load_program_json(path: str | Path) -> Program:
+    """Load the verifier's compact JSON representation into ScratchV IR."""
+    with Path(path).open("r", encoding="utf-8") as source:
+        data = _expect_object(json.load(source), "root")
+    program = Program()
+    for function_index, raw_function in enumerate(
+        _list_field(data, "functions", "root")
+    ):
+        function_location = f"root.functions[{function_index}]"
+        function_data = _expect_object(raw_function, function_location)
+        function = Function(
+            name=_required_text(function_data, "name", function_location),
+            params=[
+                _load_value(item, f"{function_location}.params[{index}]")
+                for index, item in enumerate(
+                    _list_field(function_data, "params", function_location)
+                )
+            ],
+        )
+        for block_index, raw_block in enumerate(
+            _list_field(function_data, "blocks", function_location)
+        ):
+            block_location = f"{function_location}.blocks[{block_index}]"
+            block_data = _expect_object(raw_block, block_location)
+            block = BasicBlock(
+                _required_text(block_data, "name", block_location)
+            )
+            for instruction_index, raw_instruction in enumerate(
+                _list_field(block_data, "instructions", block_location)
+            ):
+                instruction_location = (
+                    f"{block_location}.instructions[{instruction_index}]"
+                )
+                instruction_data = _expect_object(
+                    raw_instruction, instruction_location
+                )
+                destination = instruction_data.get("dest")
+                operands = _list_field(
+                    instruction_data, "operands", instruction_location
+                )
+                target = instruction_data.get("target")
+                if isinstance(target, list):
+                    if not all(isinstance(item, str) for item in target):
+                        raise ValueError(
+                            f"{instruction_location}.target items must be strings"
+                        )
+                    target = ",".join(target)
+                if target is not None and not isinstance(target, str):
+                    raise ValueError(
+                        f"{instruction_location}.target must be a string or array"
+                    )
+                block.add(Instruction(
+                    opcode=_parse_opcode(_required_text(
+                        instruction_data, "opcode", instruction_location
+                    )),
+                    dest=(
+                        _load_value(destination, f"{instruction_location}.dest")
+                        if destination is not None else None
+                    ),
+                    operands=[
+                        _load_value(
+                            item,
+                            f"{instruction_location}.operands[{index}]",
+                        )
+                        for index, item in enumerate(operands)
+                    ],
+                    target=target,
+                ))
+            function.add_block(block)
+        program.add_function(function)
+    return program
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Validate ScratchV IR")
+    parser.add_argument("ir_file", type=Path, help="IR program in JSON format")
+    parser.add_argument(
+        "--verify-ir", action="store_true",
+        help="verify IR and return status 1 when invalid",
+    )
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_argument_parser().parse_args(argv)
+    try:
+        program = load_program_json(args.ir_file)
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(f"cannot load IR file '{args.ir_file}': {exc}", file=sys.stderr)
+        return 2
+    if not args.verify_ir:
+        print("IR loaded; verification disabled (use --verify-ir to enable it)")
+        return 0
+    passed, issues = verify_ir(program)
+    if not passed:
+        print(
+            f"IR verification failed ({len(issues)} issue(s)):",
+            file=sys.stderr,
+        )
+        for issue in issues:
+            print(f"  {issue}", file=sys.stderr)
+        return 1
+    print("IR verification passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
