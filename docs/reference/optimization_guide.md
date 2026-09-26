@@ -24,6 +24,30 @@ The main CLI accepts `--opt-level none|basic|all`; `--optimize` remains a
 compatibility alias. The standalone LLVM tool has a separate numeric
 `--opt-level 0|1|2|3` option.
 
+## Pass selection and switches
+
+Constant folding is included in `basic` and `all`. To keep those presets but
+skip folding, use `--opt-level basic --disable-pass constant-folding`.
+Use `--passes constant-folding,dead-code-elim` for an explicit ordered pipeline;
+this replaces the preset even when the level is `none`. `--passes ""` selects
+an empty pipeline. Repeated names run repeatedly; `--disable-pass` removes all
+occurrences and can itself be repeated. Unknown names are errors.
+
+In Python, guard `manager.register(pass_)` with `if`, or use
+`manager.register(pass_, enabled=False)`. For lazy construction, register a
+factory in `PassRegistry` and select names with `registry.build(...)`.
+Registration alone does not schedule execution.
+
+Functional passes implement `CompilerPass.run(data) -> PassResult`. Use
+`manager.run_pipeline(data)` to receive the final data, warnings and report.
+`manager.run(program)` retains PR #48's in-place IR and report contract.
+Assembly passes use a separate registry and retain the existing
+`--peephole-asm`, `--const-merge`, `--schedule`, `--beautify` and `--count-instr`
+switches. `--disable-pass` only controls IR passes.
+
+The current design and historical Topic 04 documents are archived at the
+[repository root](../../Topic04-PassManager-设计文档.md).
+
 ---
 
 ## 1. Constant Folding (⭐)

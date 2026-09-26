@@ -17,10 +17,10 @@ from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import Program
 from scratchv.main import args_to_config, build_arg_parser
 from scratchv.optimizer import (
+    LICM,
     ConstantFolder,
     DeadCodeEliminator,
     IRPeepholeOptimizer,
-    LICM,
     MulAddFusion,
 )
 from scratchv.pass_interface import (
@@ -76,9 +76,7 @@ class TestOptimizationPass:
             LICM,
         ],
     )
-    def test_production_passes_share_the_interface_and_local_counts(
-        self, pass_type
-    ):
+    def test_production_passes_share_the_interface_and_local_counts(self, pass_type):
         pass_ = pass_type()
         program = Program()
 
@@ -108,9 +106,7 @@ class TestPassManager:
             "second",
         ]
         assert [execution.changes for execution in report.executions] == [2, 3]
-        assert all(
-            execution.elapsed_seconds >= 0 for execution in report.executions
-        )
+        assert all(execution.elapsed_seconds >= 0 for execution in report.executions)
 
     def test_allows_duplicate_pass_names(self):
         manager = PassManager()
@@ -239,9 +235,7 @@ class TestOptimizationLevels:
 
         assert report == OptimizationReport("optimizer", (), 0, 0.0)
         assert tuple(block.instructions) == instructions_before
-        assert tuple(map(id, block.instructions)) == tuple(
-            map(id, instructions_before)
-        )
+        assert tuple(map(id, block.instructions)) == tuple(map(id, instructions_before))
 
         assert _optimize(builder.program, "none") == 0.0
         assert tuple(block.instructions) == instructions_before
@@ -292,9 +286,10 @@ class TestCompilerOptimizationIntegration:
         assert result.success
         assert result.stats["optimization"]["level"] == "basic"
         assert result.stats["optimization"]["total_changes"] == 0
-        assert [
-            item["name"] for item in result.stats["optimization"]["passes"]
-        ] == ["constant-folding", "dead-code-elim"]
+        assert [item["name"] for item in result.stats["optimization"]["passes"]] == [
+            "constant-folding",
+            "dead-code-elim",
+        ]
         assert result.stats["opt_message"]
 
     def test_invalid_driver_level_stops_before_codegen_and_output(self, tmp_path):
@@ -309,17 +304,15 @@ class TestCompilerOptimizationIntegration:
         assert not output_path.exists()
 
     @pytest.mark.parametrize("level", ["none", "basic", "all"])
-    def test_driver_and_benchmark_use_the_same_factory(
-        self, monkeypatch, level
-    ):
+    def test_driver_and_benchmark_use_the_same_factory(self, monkeypatch, level):
         from benchmarks.run_benchmark import _optimize
 
         requested_levels: list[str] = []
         real_factory = compiler_module.create_optimization_pass_manager
 
-        def recording_factory(requested_level: str) -> PassManager:
+        def recording_factory(requested_level: str, **kwargs) -> PassManager:
             requested_levels.append(requested_level)
-            return real_factory(requested_level)
+            return real_factory(requested_level, **kwargs)
 
         monkeypatch.setattr(
             compiler_module,
@@ -342,7 +335,7 @@ class TestCompilerOptimizationIntegration:
         monkeypatch.setattr(
             compiler_module,
             "create_optimization_pass_manager",
-            lambda level: manager,
+            lambda level, **kwargs: manager,
         )
         output_path = tmp_path / "must-not-exist.s"
         driver = _ProgramDriver(CompilerConfig(optimize_level="all"))

@@ -1,3 +1,5 @@
+> 历史归档：保留 PR #48 的课题材料，不代表当前全部实现状态。当前接口、范围和用法以 [PassManager 设计文档](Topic04-PassManager-设计文档.md) 为准。
+
 # Topic: IR 优化器框架 (Optimizer Framework)
 
 > **源文件**: `scratchv/optimizer/`
@@ -125,4 +127,4 @@ scratchv model.onnx --optimize all
 - Topic 12: 后端指令计数统计器 → 评估优化效果
 - Topic 13: 后端窥孔优化器 → 汇编层 peephole
 - Topic 21: IR 验证器 → 优化后验证 IR 正确性
-- [ARCHITECTURE.md](../ARCHITECTURE.md) — 完整管线
+- [ARCHITECTURE.md](docs/reference/ARCHITECTURE.md) — 完整管线

@@ -1,8 +1,8 @@
 """Unified compiler pass interfaces for ScratchV.
 
 IR optimization passes use the strongly typed ``OptimizationPass`` contract.
-The older generic ``CompilerPass`` and ``PassResult`` types remain available
-for compatibility with non-optimization callers.
+Functional and analysis passes use ``CompilerPass.run`` and ``PassResult``.
+Both interfaces can be scheduled by PassManager.
 
 Usage::
 
@@ -128,14 +128,13 @@ class OptimizationPassError(RuntimeError):
         self.completed_report = completed_report
         self.cause = cause
 
-        super().__init__(
-            f"optimization pass #{pass_index} '{pass_name}' failed: {cause}"
-        )
+        super().__init__(f"compiler pass #{pass_index} '{pass_name}' failed: {cause}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PassResult — uniform return value for all passes
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class PassResult:
@@ -163,6 +162,7 @@ class PassResult:
 # ═══════════════════════════════════════════════════════════════════════════════
 # CompilerPass — abstract base
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class CompilerPass(ABC):
     """Abstract base for all compiler passes.

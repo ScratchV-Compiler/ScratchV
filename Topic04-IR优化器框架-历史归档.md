@@ -1,3 +1,5 @@
+> 历史归档：保留 PR #48 的课题材料，不代表当前全部实现状态。当前接口、范围和用法以 [PassManager 设计文档](Topic04-PassManager-设计文档.md) 为准。
+
 # 课题4：IR 优化器框架（5 Passes）
 
 > **难度**：中 | **类型**：项目实战 | **源文件**：`scratchv/optimizer/` (5 passes)
@@ -188,7 +190,7 @@ def _is_loop_invariant(self, instr, loop_var):
 
 - 龙书第 9 章：Machine-Independent Optimizations
 - LLVM Pass 框架：[Writing an LLVM Pass](https://llvm.org/docs/WritingAnLLVMPass.html)
-- 相关 topic: [课题3 — IR 系统](03-IR系统.md) | [课题13 — 窥孔优化器](13-窥孔优化器.md) | [课题8 — 指令选择](08-指令选择.md)
+- 相关 topic: [课题3 — IR 系统](docs/reference/ARCHITECTURE.md) | [课题13 — 窥孔优化器](docs/topics/13-窥孔优化器/13-窥孔优化器.md) | [课题8 — 指令选择](docs/reference/ARCHITECTURE.md)
 
 ---
 

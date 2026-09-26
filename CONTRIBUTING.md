@@ -49,8 +49,10 @@ pytest tests/ -v            # run all tests
    ordered reports and failure diagnostics.
 3. Implement `optimize(program) → int`. It must return a non-negative count
    of transformations made by that invocation, not a lifetime total.
-4. Register it in `create_optimization_pass_manager()` in
-   `scratchv/compiler.py`.
+4. Register its factory in `create_optimization_registry()` in
+   `scratchv/pass_manager.py`. Registration makes it available to `--passes`;
+   adding it to a preset is a separate, explicit scheduling decision.
+   See [Topic 04 design](Topic04-PassManager-设计文档.md) for switches and functional passes.
 5. Add test cases (positive: should transform; negative: should not).
 6. Run `pytest` to verify.
 

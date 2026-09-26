@@ -129,3 +129,7 @@ ScratchV 是零基础友好的教育项目。查看 [CONTRIBUTING.md](CONTRIBUTI
 ## 📄 许可
 
 MIT License — 详见 [LICENSE](LICENSE)
+
+## Topic 04 PassManager
+
+[设计文档与历史归档入口](Topic04-PassManager-设计文档.md)：Pass 注册、开关、常量折叠管线及功能性 Pass。
