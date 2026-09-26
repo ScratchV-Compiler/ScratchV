@@ -48,11 +48,11 @@ COURSE = {
             "icon": "📘",
             "desc": "环境搭建、编译器概念、快速上手、指标解读、故障排除",
             "docs": [
-                {"file": "docs/00-环境搭建指南.md", "num": "00", "title": "环境搭建指南", "time": "15 min"},
-                {"file": "docs/01-编译器概念入门.md", "num": "01", "title": "编译器概念入门", "time": "15 min"},
-                {"file": "docs/02-快速上手教程.md", "num": "02", "title": "快速上手教程", "time": "30 min"},
-                {"file": "docs/03-指标解读指南.md", "num": "03", "title": "指标解读指南", "time": "15 min"},
-                {"file": "docs/04-故障排除FAQ.md", "num": "04", "title": "故障排除 FAQ", "time": "10 min"},
+                {"file": "docs/guide/00-环境搭建指南.md", "num": "00", "title": "环境搭建指南", "time": "15 min"},
+                {"file": "docs/guide/01-编译器概念入门.md", "num": "01", "title": "编译器概念入门", "time": "15 min"},
+                {"file": "docs/guide/02-快速上手教程.md", "num": "02", "title": "快速上手教程", "time": "30 min"},
+                {"file": "docs/guide/03-指标解读指南.md", "num": "03", "title": "指标解读指南", "time": "15 min"},
+                {"file": "docs/guide/04-故障排除FAQ.md", "num": "04", "title": "故障排除 FAQ", "time": "10 min"},
             ],
         },
         {
@@ -61,13 +61,13 @@ COURSE = {
             "icon": "🔰",
             "desc": "从零开始实现编译器的基础工具：美化器、日志、CFG、窥孔、调度",
             "docs": [
-                {"file": "docs/topics/05-汇编代码美化器.md", "num": "05", "title": "汇编代码美化器"},
-                {"file": "docs/topics/07-编译器日志增强器.md", "num": "07", "title": "编译器日志增强器"},
-                {"file": "docs/topics/09-DSL错误提示美化器.md", "num": "09", "title": "DSL 错误提示美化器"},
-                {"file": "docs/topics/11-控制流图生成器.md", "num": "11", "title": "控制流图 (CFG) 生成器"},
-                {"file": "docs/topics/13-窥孔优化器.md", "num": "13", "title": "窥孔优化器"},
-                {"file": "docs/topics/18-指令调度器.md", "num": "18", "title": "指令调度器"},
-                {"file": "docs/topics/20-代码规范.md", "num": "20", "title": "代码规范与格式化"},
+                {"file": "docs/topics/05-汇编代码美化器/05-汇编代码美化器.md", "num": "05", "title": "汇编代码美化器"},
+                {"file": "docs/topics/07-编译器日志增强器/07-编译器日志增强器.md", "num": "07", "title": "编译器日志增强器"},
+                {"file": "docs/topics/09-DSL错误提示美化器/09-DSL错误提示美化器.md", "num": "09", "title": "DSL 错误提示美化器"},
+                {"file": "docs/topics/11-控制流图生成器/11-控制流图生成器.md", "num": "11", "title": "控制流图 (CFG) 生成器"},
+                {"file": "docs/topics/13-窥孔优化器/13-窥孔优化器.md", "num": "13", "title": "窥孔优化器"},
+                {"file": "docs/topics/18-指令调度器/18-指令调度器.md", "num": "18", "title": "指令调度器"},
+                {"file": "docs/topics/20-代码规范/20-代码规范.md", "num": "20", "title": "代码规范与格式化"},
             ],
         },
         {
@@ -76,14 +76,14 @@ COURSE = {
             "icon": "📊",
             "desc": "学习使用性能分析和可视化工具：Benchmark、Cache、Spike、LLVM/TinyFive 对比",
             "docs": [
-                {"file": "docs/topics/06-性能基准套件.md", "num": "06", "title": "性能基准套件"},
-                {"file": "docs/topics/12-指令计数统计器.md", "num": "12", "title": "指令计数统计器"},
-                {"file": "docs/topics/23-Cache模型.md", "num": "23", "title": "Cache 行为分析"},
-                {"file": "docs/topics/24-Spike仿真.md", "num": "24", "title": "Spike 仿真集成"},
-                {"file": "docs/topics/25-LLVM对比工具.md", "num": "25", "title": "LLVM vs ScratchV 对比"},
-                {"file": "docs/topics/26-TinyFive对比.md", "num": "26", "title": "TinyFive 对比工具"},
-                {"file": "docs/topics/27-RV32全量Benchmark.md", "num": "27", "title": "RV32 全量 Benchmark"},
-                {"file": "docs/topics/30-CI-Dashboard.md", "num": "30", "title": "性能仪表盘 (Dashboard)"},
+                {"file": "docs/topics/06-性能基准套件/06-性能基准套件.md", "num": "06", "title": "性能基准套件"},
+                {"file": "docs/topics/12-指令计数统计器/12-指令计数统计器.md", "num": "12", "title": "指令计数统计器"},
+                {"file": "docs/topics/23-Cache模型/23-Cache模型.md", "num": "23", "title": "Cache 行为分析"},
+                {"file": "docs/topics/24-Spike仿真/24-Spike仿真.md", "num": "24", "title": "Spike 仿真集成"},
+                {"file": "docs/topics/25-LLVM对比工具/25-LLVM对比工具.md", "num": "25", "title": "LLVM vs ScratchV 对比"},
+                {"file": "docs/topics/26-TinyFive对比/26-TinyFive对比.md", "num": "26", "title": "TinyFive 对比工具"},
+                {"file": "docs/topics/27-RV32全量Benchmark/27-RV32全量Benchmark.md", "num": "27", "title": "RV32 全量 Benchmark"},
+                {"file": "docs/topics/30-CI-Dashboard/30-CI-Dashboard.md", "num": "30", "title": "性能仪表盘 (Dashboard)"},
             ],
         },
         {
@@ -92,15 +92,15 @@ COURSE = {
             "icon": "📗",
             "desc": "核心编译器管线：DSL 增强、ONNX 解析、IR 系统、优化器、指令选择、寄存器分配",
             "docs": [
-                {"file": "docs/topics/01-DSL前端增强器.md", "num": "01", "title": "DSL 前端增强器"},
-                {"file": "docs/topics/02-ONNX解析器.md", "num": "02", "title": "ONNX 解析器"},
-                {"file": "docs/topics/03-IR系统.md", "num": "03", "title": "IR 中间表示系统"},
-                {"file": "docs/topics/04-IR优化器框架.md", "num": "04", "title": "IR 优化器框架"},
-                {"file": "docs/topics/08-指令选择.md", "num": "08", "title": "后端指令选择"},
-                {"file": "docs/topics/14-常量加载合并.md", "num": "14", "title": "常量加载合并优化"},
-                {"file": "docs/topics/16-LLVM代码生成.md", "num": "16", "title": "LLVM 代码生成后端"},
-                {"file": "docs/topics/17-寄存器分配.md", "num": "17", "title": "寄存器分配"},
-                {"file": "docs/topics/19-Standalone-RISC-V编译器.md", "num": "19", "title": "Standalone RISC-V 编译器"},
+                {"file": "docs/topics/01-DSL前端增强器/01-DSL前端增强器.md", "num": "01", "title": "DSL 前端增强器"},
+                {"file": "docs/topics/02-ONNX解析器/02-ONNX解析器.md", "num": "02", "title": "ONNX 解析器"},
+                {"file": "docs/topics/03-IR系统/03-IR系统.md", "num": "03", "title": "IR 中间表示系统"},
+                {"file": "docs/topics/04-IR优化器框架/04-IR优化器框架.md", "num": "04", "title": "IR 优化器框架"},
+                {"file": "docs/topics/08-指令选择/08-指令选择.md", "num": "08", "title": "后端指令选择"},
+                {"file": "docs/topics/14-常量加载合并/14-常量加载合并.md", "num": "14", "title": "常量加载合并优化"},
+                {"file": "docs/topics/16-LLVM代码生成/16-LLVM代码生成.md", "num": "16", "title": "LLVM 代码生成后端"},
+                {"file": "docs/topics/17-寄存器分配/17-寄存器分配.md", "num": "17", "title": "寄存器分配"},
+                {"file": "docs/topics/19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md", "num": "19", "title": "Standalone RISC-V 编译器"},
             ],
         },
         {
@@ -109,9 +109,9 @@ COURSE = {
             "icon": "📕",
             "desc": "深入实现：IR 验证、LLVM Standalone 编译器、扩展指令选择",
             "docs": [
-                {"file": "docs/topics/21-IR验证器.md", "num": "21", "title": "IR 验证器"},
-                {"file": "docs/topics/22-Standalone-LLVM编译器.md", "num": "22", "title": "Standalone LLVM 编译器"},
-                {"file": "docs/topics/28-扩展指令选择.md", "num": "28", "title": "扩展指令选择 (F/D/abs/sqrt)"},
+                {"file": "docs/topics/21-IR验证器/21-IR验证器.md", "num": "21", "title": "IR 验证器"},
+                {"file": "docs/topics/22-Standalone-LLVM编译器/22-Standalone-LLVM编译器.md", "num": "22", "title": "Standalone LLVM 编译器"},
+                {"file": "docs/topics/28-扩展指令选择/28-扩展指令选择.md", "num": "28", "title": "扩展指令选择 (F/D/abs/sqrt)"},
             ],
         },
         {
@@ -120,9 +120,9 @@ COURSE = {
             "icon": "⬜",
             "desc": "未来将开发的模块：循环展开、函数内联、SIMD 向量化",
             "docs": [
-                {"file": "docs/topics/10-循环展开优化.md", "num": "10", "title": "循环展开优化", "planned": True},
-                {"file": "docs/topics/15-函数内联.md", "num": "15", "title": "函数内联", "planned": True},
-                {"file": "docs/topics/29-SIMD向量化.md", "num": "29", "title": "SIMD 向量化", "planned": True},
+                {"file": "docs/topics/10-循环展开优化/10-循环展开优化.md", "num": "10", "title": "循环展开优化", "planned": True},
+                {"file": "docs/topics/15-函数内联/15-函数内联.md", "num": "15", "title": "函数内联", "planned": True},
+                {"file": "docs/topics/29-SIMD向量化/29-SIMD向量化.md", "num": "29", "title": "SIMD 向量化", "planned": True},
             ],
         },
     ],
@@ -264,10 +264,12 @@ def _md_link_to_html(md_path: str) -> str:
         cleaned = cleaned[3:]
     cleaned = cleaned.lstrip("./")
 
+    # Deliberately no bare-basename fallback: several docs legitimately share a
+    # basename (e.g. INDEX.md), and a basename match would silently point a link
+    # at the wrong page.  An unmatched link degrades to an un-rewritten .md path,
+    # which check_docs_links.py catches, instead of mis-resolving.
     for key, val in _MD_TO_HTML.items():
         if key.endswith(cleaned) or cleaned.endswith(key) or key == cleaned:
-            return val
-        if Path(key).name == Path(cleaned).name:
             return val
 
     if cleaned.endswith(".md"):
@@ -932,11 +934,18 @@ def build_section_page(sec: dict):
     )
 
 
+# Docs listed in COURSE whose markdown is missing on disk.  A miss produces a
+# sidebar entry pointing at an HTML file that was never written, so main()
+# turns a non-empty list into a non-zero exit code.
+MISSES: list[str] = []
+
+
 def build_doc_page(doc: dict):
     """Build a single topic page."""
     md_path = PROJ / doc["file"]
     if not md_path.exists():
         print(f"  WARNING: {doc['file']} not found, skipping")
+        MISSES.append(doc["file"])
         return None
 
     md_text = md_path.read_text(encoding="utf-8")
@@ -974,6 +983,12 @@ def main(output_dir: str = "docs/topics/html"):
     out = PROJ / output_dir
     out.mkdir(parents=True, exist_ok=True)
 
+    # Wipe stale pages: the build only overwrites files it regenerates, so
+    # anything renamed or dropped from COURSE would otherwise linger and be
+    # mistaken for current output.
+    for stale in out.glob("*.html"):
+        stale.unlink()
+
     built = 0
 
     # Course home
@@ -998,8 +1013,18 @@ def main(output_dir: str = "docs/topics/html"):
 
     # Copy CSS/JS if needed (currently inline, nothing to copy)
 
+    expected = 1 + len(COURSE["sections"]) + len(ALL_DOCS)
     print(f"\n✅ Built {built} HTML pages → {out}")
     print(f"   Open: {out}/index.html")
+
+    if MISSES:
+        print(f"\n❌ {len(MISSES)} COURSE doc(s) missing on disk:", file=sys.stderr)
+        for m in MISSES:
+            print(f"     {m}", file=sys.stderr)
+        sys.exit(1)
+    if built != expected:
+        print(f"\n❌ built {built} pages, expected {expected}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

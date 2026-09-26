@@ -73,8 +73,11 @@ scratchv/
   ci/               CI 基准测试编排器 + 仪表盘生成器
   standalone/       ONNX→RISC-V编译器、仿真器、分析工具
 docs/
-  ARCHITECTURE.md   总架构文档 (ONNX→RISC-V 双路径)
-  topics/           30 个 topic 模块文档
+  guide/            新手入门 00~04
+  topics/<NN-课题>/  30 个课题，每课题一个文件夹（指南/设计/开发）
+  reference/        架构、开发指南、规范等参考文档
+  reports/          课题报告与排期
+  archive/          归档提案与旧版本
 ```
 
 ## 代码风格

@@ -415,10 +415,10 @@ jobs:
           path: benchmark_reports/
           retention-days: 30
 
-      # ── 保留推广主页（docs/ScratchV.html 不会被顶替） ────────────────
+      # ── 保留推广主页（docs/promo/ScratchV.html 不会被顶替） ───────────
       - name: Copy promotional page into Pages artifact
         if: github.ref == 'refs/heads/main'
-        run: cp docs/ScratchV.html benchmark_reports/ScratchV.html
+        run: cp docs/promo/ScratchV.html benchmark_reports/ScratchV.html
 
       # ── 文档课程 HTML 站点 ──────────────────────────────────────────────
       - name: Build docs HTML course site
@@ -426,6 +426,7 @@ jobs:
         run: |
           $PY -m pip install markdown
           $PY scripts/build_docs_html.py --output-dir benchmark_reports/docs
+          $PY scripts/check_docs_links.py --html-dir benchmark_reports/docs
           echo "Docs site built: benchmark_reports/docs/index.html"
 
       # ── 优化历史页面 ──────────────────────────────────────────────────
