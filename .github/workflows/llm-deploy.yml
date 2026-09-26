@@ -1,0 +1,152 @@
+name: LLM Deploy v1.0
+
+# CI for the Qwen3-0.6B-on-RISC-V project (docs/llm-deploy-v1.0/).
+#
+# Separate from ci.yml on purpose: that one tests the ScratchV compiler, this
+# one tests the deployment project. A failure here should not read as "the
+# compiler is broken".
+#
+# ONE job, steps in sequence. Every step maps to an item in the plan's W1
+# acceptance list (开发计划.md §4.3):
+#
+#   docs:interfaces  docs:risks
+#   probe:qemu-matmul  probe:small-transformer  probe:qwen3-onnx
+#
+# Trade-off being made deliberately: one job means one sidebar row and one
+# thing to look at, at the cost of knowing only the FIRST failure per run —
+# steps after a failed one are skipped. If that becomes annoying, split them
+# back out; the step groups below are the seams.
+#
+# Later weeks' gates (numeric:ir-full-qwen3 at W3, numeric:qemu-full-qwen3 at
+# W4, e2e:qemu-paris at W5, release:gate at W8) are NOT stubbed here. They get
+# added when their week arrives, from the plan's §4.3 table.
+
+on:
+  pull_request:
+    paths:
+      - 'docs/llm-deploy-v1.0/**'
+      - 'probes/**'
+      - 'scripts/check_llm_deploy_docs.py'
+      - 'export_qwen3_onnx.py'
+      - 'scratchv/**'
+      - '.github/workflows/llm-deploy.yml'
+  schedule:
+    # Nightly, off the hour: 19:23 UTC = 03:23 北京时间.
+    - cron: '23 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Deliverables the probes are expected to provide. A probe step only runs
+  # once its script exists, so the pipeline is green while a week's work is in
+  # flight and goes hard-red the moment the script is there but wrong.
+  PROBE_MATMUL: probes/w1_matmul_4x4/run.py
+  PROBE_TRANSFORMER: probes/w1_tiny_transformer/run.py
+  PROBE_QWEN3_EXPORT: probes/w1_qwen3_export/run.py
+
+jobs:
+  llm-deploy:
+    name: "LLM Deploy v1.0 / W1"
+    runs-on: ubuntu-latest
+    # Sized for the whole sequence. The Qwen3 export is the long pole; if it
+    # ever needs more than a hosted runner has (7 GB RAM, 2 cores), that step
+    # has to move to the self-hosted runner and this job splits in two.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── 前置：RISC-V 工具链 + Python 依赖 ──────────────────────────────
+      - name: Install RISC-V toolchain and QEMU
+        run: |
+          set -euo pipefail
+          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y clang lld qemu-user
+          fi
+          missing=""
+          for tool in clang ld.lld qemu-riscv32; do
+            command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing tools:$missing"
+            exit 1
+          fi
+          clang --version | head -1
+          qemu-riscv32 --version | head -1
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e ".[all]"
+          python3 -m pip install numpy
+
+      # ── docs:interfaces / docs:risks ──────────────────────────────────
+      - name: "docs:interfaces + docs:risks"
+        run: python3 scripts/check_llm_deploy_docs.py --week W1
+
+      # ── probe:qemu-matmul ─────────────────────────────────────────────
+      - name: "probe:qemu-matmul"
+        # The file check lives inside the step rather than in an `if`, because
+        # a job-level condition is evaluated before the repository is on disk.
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PROBE_MATMUL" ]; then
+            echo "::notice::$PROBE_MATMUL not delivered yet — W1 probe pending"
+            exit 0
+          fi
+          python3 "$PROBE_MATMUL"
+
+      # ── probe:small-transformer ───────────────────────────────────────
+      - name: "probe:small-transformer"
+        run: |
+          set -euo pipefail
+          python3 -m pip install onnxruntime torch
+          if [ ! -f "$PROBE_TRANSFORMER" ]; then
+            echo "::notice::$PROBE_TRANSFORMER not delivered yet — W1 probe pending"
+            exit 0
+          fi
+          python3 "$PROBE_TRANSFORMER"
+
+      # ── probe:qwen3-onnx ──────────────────────────────────────────────
+      - name: "probe:qwen3-onnx"
+        # Skipped on PRs so the fast gate stays fast; it is the heavy one.
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          python3 -m pip install onnxruntime transformers
+          if [ ! -f "$PROBE_QWEN3_EXPORT" ]; then
+            echo "::notice::$PROBE_QWEN3_EXPORT not delivered yet — W1 probe pending"
+            exit 0
+          fi
+          python3 "$PROBE_QWEN3_EXPORT"
+
+      - name: Upload probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w1-probe-output
+          path: probes/**/out/
+          if-no-files-found: ignore
+
+      # ── 状态汇总 ──────────────────────────────────────────────────────
+      - name: W1 交付物状态
+        if: always()
+        run: |
+          echo "## W1 交付物状态" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 交付物 | 状态 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          for f in docs/llm-deploy-v1.0/W1/interfaces.md \
+                   docs/llm-deploy-v1.0/W1/risks.md \
+                   probes/w1_matmul_4x4/run.py \
+                   probes/w1_tiny_transformer/run.py \
+                   probes/w1_qwen3_export/run.py ; do
+            if [ -f "$f" ]; then
+              echo "| \`$f\` | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$f\` | ❌ 未交付 |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice::W1 交付物未完成: $f"
+            fi
+          done
