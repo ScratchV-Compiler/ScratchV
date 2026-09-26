@@ -1,7 +1,12 @@
 name: Topic 06 Compiler Benchmark
 
 on:
+  # Both events were unfiltered, so pushing to a branch with an open PR fired
+  # two runs of this workflow for the same commit: one for the push, one for
+  # the pull_request synchronize. ci.yml avoids this by restricting push to the
+  # branches that matter, leaving pull_request to cover everything else.
   push:
+    branches: [main]
   pull_request:
 
 jobs:
