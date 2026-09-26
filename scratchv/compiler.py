@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
+from scratchv.ir.types import Program
 from scratchv.pass_interface import CompilerPass, PassResult
 
 
@@ -40,6 +41,7 @@ class CompilerConfig:
         reg_alloc:      ``"naive"`` or ``"greedy"`` (also ``"linear"``).
         dump_ir:        Print IR dumps during compilation.
         verify:         Run ONNX Runtime / numpy verification.
+        verify_ir:      Validate shared IR at parse/pass/codegen boundaries.
         rtol:           Relative tolerance for verification.
         atol:           Absolute tolerance for verification.
         use_logger:     Use structured logger instead of print().
@@ -73,6 +75,7 @@ class CompilerConfig:
     cycle_stats: bool = False
     enable_forwarding: bool = True
     branch_predictor: str = "always_not_taken"
+    verify_ir: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -88,13 +91,19 @@ class PassManager:
     Usage::
 
         pm = PassManager()
-        pm.add(ConstantFolder(program))
-        pm.add(DeadCodeEliminator(program))
+        pm.add(_PassAdapter("constant-folding", ConstantFolder))
+        pm.add(_PassAdapter("dead-code-elim", DeadCodeEliminator))
         result = pm.run(program)
     """
 
-    def __init__(self, name: str = "pipeline"):
+    def __init__(self, name: str = "pipeline", *,
+                 before_pass: Optional[Callable] = None,
+                 after_pass: Optional[Callable] = None,
+                 data_type: Optional[type] = None):
         self._name = name
+        self.before_pass = before_pass
+        self.after_pass = after_pass
+        self.data_type = data_type
         self._passes: list[CompilerPass] = []
 
     @property
@@ -116,6 +125,8 @@ class PassManager:
         Returns the final ``PassResult``.  If any pass returns ``None``
         data the pipeline stops early and returns the last result.
         """
+        if self.data_type is not None and not isinstance(input_data, self.data_type):
+            return PassResult(data=None, message=f"Pipeline requires {self.data_type.__name__}")
         data = input_data
         total_changes = 0
         messages: list[str] = []
@@ -123,6 +134,8 @@ class PassManager:
         timings: dict[str, float] = {}
 
         for p in self._passes:
+            if self.before_pass is not None:
+                self.before_pass(p, data)
             t0 = time.perf_counter()
             try:
                 result = p.run(data)
@@ -136,6 +149,9 @@ class PassManager:
             elapsed = time.perf_counter() - t0
             timings[p.name] = elapsed
 
+            if not isinstance(result, PassResult):
+                return PassResult(data=None, message=f"Pass '{p.name}' did not return PassResult",
+                                  warnings=all_warnings)
             if result.data is None:
                 return PassResult(
                     data=None,
@@ -144,6 +160,12 @@ class PassManager:
                     warnings=all_warnings + result.warnings,
                 )
 
+            if self.data_type is not None and not isinstance(result.data, self.data_type):
+                return PassResult(data=None,
+                                  message=f"Pass '{p.name}' must return {self.data_type.__name__}",
+                                  warnings=all_warnings + result.warnings)
+            if self.after_pass is not None:
+                self.after_pass(p, result.data)
             data = result.data
             total_changes += result.changes
             if result.message:
@@ -193,12 +215,21 @@ class CompileResult:
     diagnostics: list[Any] = field(default_factory=list)
     diagnostic_limit_reached: bool = False
     diagnostic_limit: int = 20
+    ir_diagnostics: list[Any] = field(default_factory=list)
 
     def summary(self) -> str:
         """Return a one-line summary."""
         if self.success:
             return f"OK → {self.output_path} ({len(self.output_text)} bytes)"
         return f"FAILED: {'; '.join(self.errors)}"
+
+
+class _IRValidationFailed(Exception):
+    """Internal control transfer; converted at the compilation boundary."""
+
+    def __init__(self, issues):
+        self.issues = issues
+        super().__init__("IR verification failed")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -227,6 +258,26 @@ class CompilerDriver:
 
     def compile(self, input_path: str, output_path: str | None = None,
                 dsl_source: str | None = None) -> CompileResult:
+        """Compile an ONNX/DSL input, returning diagnostics before output on failure.
+
+        ``dsl_source`` supplies inline DSL; otherwise ``input_path`` is read.
+        ``output_path`` defaults to output.s or output.ll for the chosen backend.
+        """
+        self._ir_warnings = []
+        self._ir_diagnostics = []
+        try:
+            result = self._compile(input_path, output_path, dsl_source)
+        except _IRValidationFailed as exc:
+            result = CompileResult(
+                success=False,
+                errors=[str(issue) for issue in exc.issues if issue.level.value == "error"],
+            )
+        result.ir_diagnostics = list(self._ir_diagnostics)
+        result.warnings = self._ir_warnings + result.warnings
+        return result
+
+    def _compile(self, input_path: str, output_path: str | None = None,
+                 dsl_source: str | None = None) -> CompileResult:
         """Compile an input file and write output.
 
         Args:
@@ -287,19 +338,23 @@ class CompilerDriver:
                 success=False, errors=[f"Parse error: {e}"],
             )
 
+        if self.config.verify_ir:
+            self._check_ir(program, "after-parse")
+
         ir_dump_before = ""
         if self.config.dump_ir:
             from scratchv.ir.printer import IRPrinter
             ir_dump_before = IRPrinter(program).dump()
 
-        # --- 2. Verify IR (if configured) ---
-        if self.config.use_logger:
-            self._verify_ir(program, warnings)
-
         # --- 3. Optimize ---
         opt_message = ""
         if self.config.optimize_level != "none":
             opt_result = self._run_optimizations(program)
+            warnings.extend(opt_result.warnings)
+            if not isinstance(opt_result.data, Program):
+                return CompileResult(success=False, warnings=warnings,
+                                     errors=[opt_result.message or "IR pipeline did not return Program"])
+            program = opt_result.data
             opt_message = opt_result.message
 
         ir_dump_after = ""
@@ -317,6 +372,8 @@ class CompilerDriver:
             )
 
         # --- 4. Code generation ---
+        if self.config.verify_ir:
+            self._check_ir(program, "before-codegen")
         try:
             asm_text = self._generate_code(program)
         except Exception as e:
@@ -387,17 +444,16 @@ class CompilerDriver:
 
     # ── Internal: verify IR ─────────────────────────────────────────────────
 
-    def _verify_ir(self, program, warnings: list[str]) -> None:
-        """Run IR verifier and collect warnings."""
-        from scratchv.analysis.ir_verifier import IRVerifier
-        verifier = IRVerifier(program)
-        issues = verifier.verify()
-        for issue in issues:
-            msg = str(issue)
-            if issue.level.value == "error":
-                warnings.append(f"IR: {msg}")
-            else:
-                warnings.append(f"IR(warning): {msg}")
+    def _check_ir(self, program, stage: str) -> None:
+        """Check the current Program and stop before any backend/output action."""
+        from scratchv.analysis.ir_verifier import verify_ir
+        if not isinstance(program, Program):
+            raise TypeError(f"IR pipeline at {stage} must return Program")
+        passed, issues = verify_ir(program, stage=stage)
+        self._ir_diagnostics.extend(issues)
+        self._ir_warnings.extend(str(i) for i in issues if i.level.value == "warning")
+        if not passed:
+            raise _IRValidationFailed(issues)
 
     # ── Internal: optimizations ─────────────────────────────────────────────
 
@@ -406,18 +462,21 @@ class CompilerDriver:
         from scratchv.optimizer.constant_folding import ConstantFolder
         from scratchv.optimizer.dead_code import DeadCodeEliminator
 
-        pm = PassManager("optimizer")
-        pm.add(_PassAdapter("constant-folding", ConstantFolder(program)))
-        pm.add(_PassAdapter("dead-code-elim", DeadCodeEliminator(program)))
+        pm = PassManager("optimizer", data_type=Program)
+        if self.config.verify_ir:
+            pm.before_pass = lambda pass_, data: self._check_ir(data, f"before:{pass_.name}")
+            pm.after_pass = lambda pass_, data: self._check_ir(data, f"after:{pass_.name}")
+        pm.add(_PassAdapter("constant-folding", ConstantFolder))
+        pm.add(_PassAdapter("dead-code-elim", DeadCodeEliminator))
 
         if self.config.optimize_level == "all":
             from scratchv.optimizer.peephole import IRPeepholeOptimizer
             from scratchv.optimizer.muladd_fusion import MulAddFusion
             from scratchv.optimizer.licm import LICM
 
-            pm.add(_PassAdapter("ir-peephole", IRPeepholeOptimizer(program)))
-            pm.add(_PassAdapter("muladd-fusion", MulAddFusion(program)))
-            pm.add(_PassAdapter("licm", LICM(program)))
+            pm.add(_PassAdapter("ir-peephole", IRPeepholeOptimizer))
+            pm.add(_PassAdapter("muladd-fusion", MulAddFusion))
+            pm.add(_PassAdapter("licm", LICM))
 
         return pm.run(program)
 
@@ -563,10 +622,11 @@ class CompilerDriver:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class _PassAdapter(CompilerPass):
-    """Adapter that wraps a legacy pass object into the ``CompilerPass`` API.
+    """Adapter for a legacy pass factory (or an existing pass object).
 
     Legacy passes are expected to have a ``run()`` method that returns an
-    integer (number of changes) and mutate the data in place.
+    integer (number of changes) and mutate the data in place. Factories receive
+    the current Program each time the adapter runs.
     """
 
     def __init__(self, name: str, legacy_pass: Any):
@@ -578,7 +638,10 @@ class _PassAdapter(CompilerPass):
         return self._name
 
     def run(self, input_data: Any) -> PassResult:
-        changes = self._legacy.run()
+        # Construct legacy passes from the actual input, including replacements
+        # returned by a preceding pass. Keep object adapters backward compatible.
+        legacy = self._legacy(input_data) if callable(self._legacy) else self._legacy
+        changes = legacy.run()
         return PassResult(
             data=input_data,
             changes=changes,

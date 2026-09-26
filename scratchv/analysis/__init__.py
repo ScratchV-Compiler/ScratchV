@@ -42,7 +42,8 @@ from scratchv.analysis.usedef import (
     ir_value_id,
 )
 from scratchv.analysis.cfg_validation import CFGDiagnostic, verify_cfg
-from scratchv.analysis.ir_verifier import IRVerifier, VerificationError
+from scratchv.analysis.ir_verifier import IRVerifier, VerificationError, ErrorLevel, verify_ir
+from scratchv.analysis.ir_diagnostics import format_ir_error, render_ir_error
 
 __all__ = [
     "BlockId",
@@ -83,4 +84,8 @@ __all__ = [
     "verify_cfg",
     "IRVerifier",
     "VerificationError",
+    "ErrorLevel",
+    "verify_ir",
+    "format_ir_error",
+    "render_ir_error",
 ]
