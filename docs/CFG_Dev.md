@@ -1,7 +1,7 @@
-﻿# ScratchV 控制流图（CFG）模块 — 开发文档
+# ScratchV 统一控制流图（CFG）基础设施 — 开发文档
 
-> **配套设计文档**: `CFG_Design.md` | **目标文件**: `scratchv/ir/cfg.py`
-> **状态**: 待开发 | **最后更新**: 2026-08-02
+> **配套设计文档**: `CFG_Design.md` | **主实现**: `scratchv/analysis/cfg.py`
+> **状态**: 已实现 | **最后更新**: 2026-09-18
 
 ---
 
@@ -10,7 +10,7 @@
 | 依赖 | 版本 | 用途 |
 |------|------|------|
 | Python | >= 3.12 | 运行时 |
-| ScratchV | main 分支 | IR 类型 (`scratchv/ir/types.py`)、DSL 解析器 |
+| ScratchV | 当前分支 | IR 类型、Machine IR 类型、DSL 解析器 |
 | pytest | >= 8.0 | 测试 |
 | Graphviz | 任意 | DOT -> PNG 渲染（可选） |
 
@@ -23,154 +23,140 @@ pytest tests/ -v --tb=short
 
 ---
 
-## 2. Module Map（符号 -> 职责）
+## 2. Module Map
+
+### 2.1 `scratchv/analysis/cfg.py`
 
 | 符号 | 职责 |
 |------|------|
-| `EdgeType` | 边类型枚举（FALLTHROUGH / BRANCH / JUMP / CALL） |
-| `CFGNode` | 基本块节点数据类；`instructions` 是对原 IR 列表的引用（非拷贝） |
-| `CFGEdge` | 控制流边数据类 |
-| `CFG` | 完整控制流图 + successors / predecessors / to_dot |
-| `NaturalLoop` | 自然循环结构数据类 |
-| `partition_basic_blocks_with_names` | 指令列表 -> 带名称的基本块列表（纯函数） |
-| `build_cfg_from_instructions` | 指令列表 -> 完整 CFG（纯函数；串联块划分 + 节点 + 边） |
-| `eliminate_unreachable` | 从 entry DFS，删除不可达块及关联边（**原地修改**，非纯函数） |
-| `compute_dominators` | 迭代不动点计算支配者集合（纯函数） |
-| `compute_dominator_tree` | 提取每个节点的直接支配者（纯函数） |
-| `detect_loops` | 基于回边检测自然循环；同 header 多条回边合并 body 取并集（纯函数） |
-| `detect_nested_loops` | 计算循环嵌套关系与深度（纯函数） |
+| `EdgeType` | 边类型枚举 |
+| `CFGNode` | 基本块节点；builder 产物 `instructions` 为指令列表 |
+| `CFGEdge` | 控制流边 |
+| `ControlFlowGraph` / `CFG` | 图查询、可达性、DOT |
+| `CFGAdapter` | 指令表示抽象协议 |
+| `build_cfg` | 单函数统一构建入口 |
+| `build_cfg_from_instructions` | 旧 Topic 11 兼容入口 |
+| `partition_basic_blocks_with_names` | 旧 Topic 11 兼容入口 |
+| `compute_dominators` / `compute_dominator_tree` | 支配分析 |
+| `detect_loops` / `detect_nested_loops` | 自然循环检测 |
+| `to_dot` | DOT 输出便捷函数 |
+| `verify_cfg` | `cfg_validation` 的薄封装 |
 
-> **Instruction 类型定义**: 参见 `scratchv/ir/types.py`。核心字段：`opcode`（OpCode 枚举）、`dest`（目标 Value）、`operands`（操作数列表）、`target`（跳转目标字符串）。
+### 2.2 `scratchv/analysis/adapters.py`
 
----
+| 符号 | 职责 |
+|------|------|
+| `IRCFGAdapter` | IR `Function` 接入统一 CFG，规范化 FOR/ENDFOR |
+| `MachineCFGAdapter` | 单函数扁平 `MachineInstr` 接入统一 CFG |
 
-## 3. 12 周开发路线
+### 2.3 分析模块
 
-| 周 | 目标 | 关键产出 |
-|----|------|---------|
-| W1 | 理论：龙书 8.4/9.6 + 手绘 3 张 CFG | 手绘草图 |
-| W2 | `partition_basic_blocks_with_names` | 块划分函数 |
-| W3 | `EdgeType`, `CFGNode`, `CFGEdge`, `CFG` | 数据结构 |
-| W4 | `build_cfg_from_instructions` | 完整 CFG 构建 |
-| W5 | 学习 Graphviz DOT 语法 | 手写 DOT |
-| W6 | `CFG.to_dot()` — 样式与 user guide 一致 | DOT 输出 |
-| W7 | `eliminate_unreachable` | 不可达消除 |
-| W8 | `compute_dominators` + `compute_dominator_tree` | 支配树 |
-| W9 | `detect_loops` + `detect_nested_loops` | 循环检测 |
-| W10 | `visualize_cfg.py` 独立脚本 | 可视化工具 |
-| W11 | 可选：CLI 集成 --cfg | 管线集成 |
-| W12 | 测试完善 + 文档 | 35+ 用例 + 交付 |
+| 模块 | 关键符号 |
+|------|---------|
+| `scratchv/analysis/liveness.py` | `analyze_liveness`, `BlockLiveness`, `LivenessResult`, `UseDefProvider` |
+| `scratchv/analysis/dataflow.py` | `run_dataflow`, `DataflowAnalysis`, `DataflowResult`, `ConstantPropagation` |
+| `scratchv/analysis/usedef.py` | `IRUseDefProvider`, `MachineUseDefProvider` |
+| `scratchv/analysis/cfg_validation.py` | `verify_cfg`, `CFGDiagnostic` |
 
 ---
 
-## 4. API 契约与不变量
+## 3. API 契约与不变量
 
-### 4.1 纯函数（只读分析）
+### 3.1 `build_cfg(adapter) -> ControlFlowGraph`
 
-以下函数不修改输入，多次调用结果一致：
+不变量：
 
-- `partition_basic_blocks_with_names`
-- `build_cfg_from_instructions`
-- `compute_dominators`
-- `compute_dominator_tree`
-- `detect_loops`
-- `detect_nested_loops`
+1. 每个函数始终有唯一 entry 块。
+2. 空函数生成空 entry 块。
+3. 重复块名抛出 `ValueError`。
+4. `instructions` 是 builder 新建列表，元素为原指令对象；不直接引用输入块列表。
+5. `instruction_ids` 与 `instructions` 等长，格式为 `"<block>:<index>"`。
 
-### 4.2 原地修改函数
+### 3.2 边构建规则
 
-- `eliminate_unreachable` — 修改传入的 `CFG` 对象，删除不可达节点和边。调用后应丢弃旧 CFG 引用。
+| 场景 | 边 |
+|------|----|
+| 空块 | FALLTHROUGH 到下一块 |
+| 普通非 terminator 结尾 | FALLTHROUGH 到下一块 |
+| 单 target 条件分支 + fallthrough | BRANCH(true) + FALLTHROUGH(false) |
+| 双 target 条件分支 | BRANCH(true) + BRANCH(false) |
+| 无条件跳转 | JUMP，不加 FALLTHROUGH |
+| return/JALR | 无出边 |
 
-### 4.3 build_cfg_from_instructions
+### 3.3 `analyze_liveness(cfg, provider)`
 
-```python
-def build_cfg_from_instructions(
-    instructions: list[Instruction],
-    function_name: str = "main",
-    entry_name: str = "entry",
-) -> CFG:
-```
+- 反向 worklist 迭代至不动点。
+- `uses[B]` 为首次定义前被读取的值；`defs[B]` 为块内全部定义。
+- 先定义后使用不加入 `uses[B]`；先使用后定义同时属于 `uses[B]` 和 `defs[B]`。
+- label、立即数、jump target 不进入活跃集合。
+- CALL clobber 不混入 vreg defs。
 
-**不变量**:
-1. 纯函数
-2. `cfg.entry` 始终是第一个块的名称
-3. 空指令列表返回含空 entry 块的 CFG（`CFGNode(name=entry_name, instructions=[])`），避免调用方依赖 entry 时出错
-4. 每个块的 `instructions` 是对原列表子序列的**引用**（非拷贝）。CFG 构建期间不应修改原 IR
+### 3.4 `run_dataflow(cfg, analysis)`
 
-### 4.4 自动命名策略
+- `Direction.FORWARD`：从 entry 向后继传播。
+- `Direction.BACKWARD`：从无后继块向前驱传播。
+- `meet` 使用排序后的邻接值，保证确定性。
 
-当 BR/BR_IF/RETURN 后紧跟的指令无 LABEL 时，新块自动命名为 `b0`, `b1`, `b2`...（自增计数器，从 0 开始）。
+### 3.5 `verify_cfg(cfg)`
 
-### 4.5 边构建规则
+返回 `list[CFGDiagnostic]`，不修改 CFG。诊断代码：
 
-| 块类型 | 边 | 说明 |
-|--------|-----|------|
-| 以 `BR target` 结尾 | 1 条 JUMP -> target | **不加** FALLTHROUGH |
-| 以 `BR_IF -> t1,t2` 结尾 | 2 条 BRANCH: true->t1, false->t2 | |
-| 以 `RETURN` 结尾 | 无出边 | |
-| 其他（无终止指令） | 1 条 FALLTHROUGH -> 下一个块 | 仅当不是最后一个块时 |
-
-### 4.6 DOT 样式（与 user guide 一致）
-
-| 节点 | 颜色 | 边类型 | 样式 |
-|------|------|--------|------|
-| 入口 | 绿色 | FALLTHROUGH | 黑色实线 |
-| 出口 | 红色 | BRANCH | 蓝色虚线 + 标签 |
-| 循环头 | 蓝色 | JUMP | 红色实线 |
-| 普通 | 浅黄色 | CALL（预留） | 紫色点线 |
+- `CFG_NO_ENTRY`
+- `CFG_INVALID_ENTRY`
+- `CFG_DANGLING_SOURCE`
+- `CFG_DANGLING_TARGET`
+- `CFG_TERMINATOR_NOT_LAST`
+- `CFG_JUMP_WITH_FALLTHROUGH`
+- `CFG_BAD_PREDECESSOR`
+- `CFG_BAD_SUCCESSOR`
 
 ---
 
-## 5. 常见陷阱
+## 4. 常见陷阱
 
 | 陷阱 | 表现 | 修复 |
 |------|------|------|
-| LABEL 被当成普通指令加入块 | 块内出现 `.L1:` | `continue` 跳过 LABEL |
-| 最后一个块忘记追加 | CFG 缺最后指令 | 循环后加收尾逻辑 |
-| BR 后无 LABEL 导致块名冲突 | 多个块同名 | 自动命名 `b0`, `b1`... |
-| 支配集不收敛 | 迭代超过 100 轮 | 检查 entry 是否在 nodes 中 |
-| BR 块误加 FALLTHROUGH | 无条件跳转后还有额外边 | BR 块只加 JUMP，不加 FALLTHROUGH |
-| DOT 引号未转义 | Graphviz 渲染报错 | 标签中的 `"` 替换为 `\"` |
-| visited 用 list 而非 set | 无限循环 | 必须用 set |
-| CFG 构建后修改原 IR 列表 | CFG 节点内容异常变化 | `instructions` 是引用非拷贝，构建后应冻结原 IR |
+| `CFGNode.instructions` 误当 int 使用 | 类型假设错误 | builder 产物按序列处理；仅旧测试保留 int 兼容 |
+| FOR/ENDFOR 隐式循环规则分叉 | IR 与 Machine CFG 拓扑不一致 | adapter 统一规范化为 BR/BR_IF + label |
+| BNEZ 忘记 fallthrough | 条件分支拓扑错误 | `has_fallthrough=True` 并生成 FALLTHROUGH(false) |
+| J/JAL 后生成 fallthrough | 无条件跳转拓扑错误 | `has_fallthrough=False` |
+| CALL 被当 terminator | 错误切分基本块 | CALL 保持 fallthrough |
+| 空函数没有 entry | 下游依赖 entry 崩溃 | `build_cfg` 生成空 entry 块 |
+| 分析缓存未失效 | 修改 CFG 后使用旧结果 | 本模块不缓存；调用方自行重建 |
 
 ---
 
-## 6. 测试覆盖矩阵
+## 5. 测试覆盖矩阵
 
-| 测试类 | 关键用例 | 断言 |
-|--------|---------|------|
-| TestBasicBlockPartitioning | 纯计算 / if-else / for | 块数正确 |
-| TestEdgeTypes | if-else / while / 线形 | JUMP>=2; BRANCH>=2; 线形无 JUMP |
-| TestDOTOutput | 基础 / 高亮循环 | 含 `digraph`、`CFG_main` |
-| TestUnreachableElimination | 无线形不可达 / 含孤立节点 | removed 正确 |
-| TestDominators | entry 自支配/支配全部/idom=None | 支配集正确 |
-| TestLoopDetection | 无线形 / while / 嵌套for | 循环数正确；嵌套 depth 正确 |
-| TestEdgeCases | 空函数 / 多函数 / 空指令列表 | 不崩溃；entry 节点存在 |
+| 测试文件 | 覆盖内容 |
+|---------|---------|
+| `tests/test_cfg.py` | Topic 11 兼容：partition、edge、DOT、支配、循环 |
+| `tests/test_cfg_builder.py` | 旧 `CFGBuilder` 回归 |
+| `tests/test_unified_cfg.py` | 统一 builder、Machine adapter、liveness、dataflow、validation |
 
----
+关键断言：
 
-## 7. 修改检查清单
-
-**改代码之前**:
-- [ ] 新增函数在 Module Map 中有条目？
-- [ ] 纯函数确认不修改输入；原地修改函数在 Module Map 中已标注？
-- [ ] 覆盖了边界情况（空输入、单节点、无出边）？
-- [ ] DOT 样式符合 user guide？
-
-**改代码之后**:
-- [ ] `pytest tests/test_cfg.py -v` 全通过
-- [ ] `visualize_cfg.py` 对 if_else/while_loop 生成 DOT 正确
-- [ ] Graphviz 渲染图中节点颜色和边样式正确
+- IR/Machine CFG 节点与 successor/predecessor 精确集合
+- 条件分支 BRANCH + FALLTHROUGH 边类型
+- liveness `live_in`/`live_out`/`live_before`/`live_after` 精确集合
+- 常量传播 out 环境精确常量
+- 非法 CFG 诊断码精确
+- FOR 循环规范化后至少检测到 1 个自然循环
 
 ---
 
-## 8. 端到端示例：新增一个分析函数
+## 6. 修改检查清单
 
-以添加 `count_back_edges(cfg) -> int` 为例：
+**改代码之前**：
 
-1. `cfg.py` 中添加函数 -> Module Map 加一行，标注纯函数
-2. 写测试 -> 测试覆盖矩阵加一条
-3. 对 while_loop.dsl 手工验证（回边数应为 1）
-4. `pytest tests/test_cfg.py -v`
-5. 更新本文档
+- [ ] 是否修改 `CFGAdapter` 契约？若是，两个 adapter 是否同步更新？
+- [ ] 是否会影响旧 `ir/cfg.py` 兼容 shim？
+- [ ] 是否影响 `InstructionId` / `ValueId` 稳定性？
 
+**改代码之后**：
+
+- [ ] 更新 Module Map
+- [ ] 更新设计/开发文档
+- [ ] 补充或更新精确断言测试
+- [ ] 最终运行 `pytest tests/ -v --tb=short`
+- [ ] 用 `visualize_cfg.py` 对 if/else、while 示例目视检查 DOT

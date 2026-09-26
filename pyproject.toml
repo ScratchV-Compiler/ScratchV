@@ -50,3 +50,9 @@ include = ["scratchv", "scratchv.*", "scratchv_dag", "scratchv_dag.*", "benchmar
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "benchmarks"]
+markers = [
+    "unit: unit tests",
+    "blackbox: black-box tests",
+    "integration: integration tests",
+    "stress: stress tests",
+]

@@ -7,6 +7,8 @@ virtual registers.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from scratchv.ir.types import Instruction, Function, Program
 from scratchv.backend.machine_types import (
     MachineInstr,
@@ -24,6 +26,7 @@ class InstructionSelector:
         self._label_counter = 0
         self._stack_offset = 0
         self._max_temp_counter = 0
+        self._loop_stack: list[dict] = []
         self._reserved_vreg_names = self._collect_ir_value_names()
 
     def _collect_ir_value_names(self) -> set[str]:
@@ -70,10 +73,10 @@ class InstructionSelector:
             raise ValueError(f"No instruction selection for opcode: {instr.opcode}")
         handler(instr)
 
-    def _emit(
-        self, op: MachineOp, dst=None, src1=None, src2=None, comment: str = ""
-    ) -> None:
-        self._instructions.append(MachineInstr(op, dst, src1, src2, comment))
+    def _emit(self, op: MachineOp, dst=None, src1=None, src2=None,
+              comment: str = "", target: Optional[str] = None) -> None:
+        self._instructions.append(
+            MachineInstr(op, dst, src1, src2, comment, target))
 
     def _emit_move(self, dst: MachineOperand, src: MachineOperand,
                    comment: str = "") -> None:
@@ -130,7 +133,7 @@ class InstructionSelector:
         self._emit(MachineOp.MAX, dst, lhs, rhs, comment=comment)
 
     def _emit_label(self, name: str) -> None:
-        self._instructions.append(MachineInstr(MachineOp.LABEL, comment=name))
+        self._instructions.append(MachineInstr(MachineOp.LABEL, target=name))
 
     def _op(self, instr: Instruction, idx: int):
         """Get an operand from an IR instruction as a machine operand."""
@@ -286,27 +289,28 @@ class InstructionSelector:
         )
 
         # Branch to loop body
-        # Store loop context for endfor to use
-        self._loop_context = {
+        # Store loop context for endfor to use.  Nested loops must keep a
+        # stack so the inner ENDFOR cannot clobber the outer loop's labels.
+        self._loop_stack.append({
             "iv": iv,
             "end": end,
             "header": header_label,
             "body": body_label,
             "exit": exit_label,
-        }
+        })
 
         self._emit_label(header_label)
 
         # Check condition: if iv >= end, exit
         end_val = MachineOperand.immediate(int(end))  # type: ignore[arg-type]
-        self._emit(MachineOp.BGE, iv, end_val, comment=exit_label)
+        self._emit(MachineOp.BGE, iv, end_val, target=exit_label)
         self._emit_label(body_label)
 
     def _select_endfor(self, instr: Instruction) -> None:
         """End a for loop: increment and branch back."""
-        ctx = getattr(self, "_loop_context", None)
-        if ctx is None:
+        if not self._loop_stack:
             raise ValueError("endfor without matching for")
+        ctx = self._loop_stack.pop()
 
         iv = ctx["iv"]
         # Increment: addi iv, iv, 1
@@ -314,14 +318,14 @@ class InstructionSelector:
             MachineOp.ADDI, iv, iv, MachineOperand.immediate(1), comment="loop inc"
         )
         # Jump back to header
-        self._emit(MachineOp.J, comment=ctx["header"])
+        self._emit(MachineOp.J, target=ctx["header"])
         # Exit label
         self._emit_label(ctx["exit"])
 
     def _select_br(self, instr: Instruction) -> None:
         self._emit(
             MachineOp.J,
-            comment=self._block_label(instr.target or ""),
+            target=self._block_label(instr.target or ""),
         )
 
     def _select_br_if(self, instr: Instruction) -> None:
@@ -353,16 +357,16 @@ class InstructionSelector:
                 )
             branch_op, first, second = branches[operator]
             self._emit(
-                branch_op, first, second, comment=true_target,
+                branch_op, first, second, target=true_target,
             )
         elif len(instr.operands) == 1:
             cond = self._op(instr, 0)
-            self._emit(MachineOp.BNEZ, cond, comment=true_target)
+            self._emit(MachineOp.BNEZ, cond, target=true_target)
         else:
             raise ValueError(
                 "br_if expects a boolean or comparison operands"
             )
-        self._emit(MachineOp.J, comment=false_target)
+        self._emit(MachineOp.J, target=false_target)
 
     @staticmethod
     def _block_label(name: str) -> str:
@@ -421,11 +425,11 @@ class InstructionSelector:
             MachineOperand.immediate(1),
             comment="src < 1 ?",
         )
-        self._emit(MachineOp.BNEZ, MachineOperand.vreg("t_sig"), comment=keep_label)
+        self._emit(MachineOp.BNEZ, MachineOperand.vreg("t_sig"), target=keep_label)
         self._emit(MachineOp.LI, dst, MachineOperand.immediate(1), comment="clamp to 1")
         # Branch over the mv
         done_label = self._fresh_label("sig_done")
-        self._emit(MachineOp.J, comment=done_label)
+        self._emit(MachineOp.J, target=done_label)
         self._emit_label(keep_label)
         self._emit_move(dst, src, comment="keep src")
         self._emit_label(done_label)
@@ -438,7 +442,7 @@ class InstructionSelector:
             comment="0 < src ?",
         )
         zero_label = self._fresh_label("sig_zero")
-        self._emit(MachineOp.BNEZ, MachineOperand.vreg("t_sig2"), comment=zero_label)
+        self._emit(MachineOp.BNEZ, MachineOperand.vreg("t_sig2"), target=zero_label)
         self._emit(MachineOp.LI, dst, MachineOperand.immediate(0), comment="clamp to 0")
         self._emit_label(zero_label)
 
@@ -484,10 +488,10 @@ class InstructionSelector:
             src,
             comment="0 < x ?",
         )
-        self._emit(MachineOp.BNEZ, MachineOperand.vreg("t_mp"), comment=gt_label)
+        self._emit(MachineOp.BNEZ, MachineOperand.vreg("t_mp"), target=gt_label)
         self._emit(MachineOp.LI, dst, MachineOperand.immediate(0), comment="result = 0")
         done_label = self._fresh_label("mp_done")
-        self._emit(MachineOp.J, comment=done_label)
+        self._emit(MachineOp.J, target=done_label)
         self._emit_label(gt_label)
         self._emit_move(dst, src, comment="result = x")
         self._emit_label(done_label)

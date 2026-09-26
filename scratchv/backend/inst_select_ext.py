@@ -93,7 +93,7 @@ class ExtendedInstructionSelector(InstructionSelector):
                 self._emit(MachineOp.MV, MachineOperand.reg("a0"), src,
                            comment="sqrt arg -> a0")
             func = "sqrt" if dtype == DataType.FLOAT64 else "sqrtf"
-            self._emit(MachineOp.CALL, comment=func)
+            self._emit(MachineOp.CALL, target=func)
             if dst:
                 self._emit(MachineOp.MV, dst, MachineOperand.reg("a0"),
                            comment="sqrt result")

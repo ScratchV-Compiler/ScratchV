@@ -108,7 +108,7 @@ def _validate_asm(asm: str) -> list[str]:
 def _interpret_machine(machine: list[MachineInstr]) -> int:
     """Independently interpret the integer Machine IR and return ``a0``."""
     labels = {
-        instruction.comment: index
+        instruction.target or instruction.comment: index
         for index, instruction in enumerate(machine)
         if instruction.op == MachineOp.LABEL
     }
@@ -180,7 +180,7 @@ def _interpret_machine(machine: list[MachineInstr]) -> int:
             write(instruction.dst, signed(left) >> (right & 31))
         elif op == MachineOp.BNEZ:
             if read(instruction.dst) != 0:
-                next_pc = labels[instruction.comment]
+                next_pc = labels[instruction.target or instruction.comment]
         elif op in {MachineOp.BEQ, MachineOp.BNE, MachineOp.BLT, MachineOp.BGE}:
             comparisons = {
                 MachineOp.BEQ: left == right,
@@ -189,12 +189,12 @@ def _interpret_machine(machine: list[MachineInstr]) -> int:
                 MachineOp.BGE: signed(left) >= signed(right),
             }
             if comparisons[op]:
-                next_pc = labels[instruction.comment]
+                next_pc = labels[instruction.target or instruction.comment]
         elif op == MachineOp.J:
-            next_pc = labels[instruction.comment]
+            next_pc = labels[instruction.target or instruction.comment]
         elif op in {MachineOp.JAL, MachineOp.CALL}:
             write(instruction.dst or MachineOperand.reg("ra"), pc + 1)
-            next_pc = labels[instruction.comment]
+            next_pc = labels[instruction.target or instruction.comment]
         elif op == MachineOp.JALR:
             if str(instruction.dst.value) in {"zero", "x0"}:
                 break
