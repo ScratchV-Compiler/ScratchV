@@ -47,15 +47,19 @@ class ONNXParser:
             if arr.size == 1:
                 val = self.builder.make_value(
                     name=init.name, dtype=dtype, is_constant=True,
-                    const_value=float(arr.item()),
+                    const_value=arr.item(),
                 )
             # Emit a load_const for scalar initializers
             if arr.size == 1:
-                self.builder.load_const(float(arr.item()), dtype)
+                self.builder.load_const(arr.item(), dtype)
             else:
-                # Multi-element tensor: store pointer info in attrs
+                # Multi-element tensor: retain its element type and shape.
                 val.is_constant = False
                 val.shape = tuple(arr.shape)
+            # Initializers are model-owned definitions, not function inputs.
+            # Register the same Value used by operands in the returned IR;
+            # the parser's private lookup table alone is not a definition.
+            self.builder.program.global_values.append(val)
             self._value_map[init.name] = val
 
         # Map graph inputs to function params

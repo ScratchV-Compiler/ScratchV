@@ -171,6 +171,18 @@ jobs:
             tests/test_simulator.py::TestRealProfiledMachine::test_lw_preserves_all_four_bytes \
             -v --tb=short
 
+      - name: Topic 21 CNN IR verification smoke test
+        run: |
+          mkdir -p benchmark_reports/ir_verifier_smoke
+          for level in none basic all; do
+            $PY -m scratchv models/graph/cnn.onnx \
+              --verify-ir --optimize "$level" --dump-ir \
+              -o "benchmark_reports/ir_verifier_smoke/cnn_${level}.s" \
+              2>&1 | tee "benchmark_reports/ir_verifier_smoke/cnn_${level}.log"
+            test -s "benchmark_reports/ir_verifier_smoke/cnn_${level}.s"
+          done
+        shell: bash
+
       - name: Generate test visualization page
         if: github.ref == 'refs/heads/main'
         run: |
@@ -186,6 +198,7 @@ jobs:
           path: |
             benchmark_reports/test_results.xml
             benchmark_reports/tests.html
+            benchmark_reports/ir_verifier_smoke/
           retention-days: 30
 
   # ═════════════════════════════════════════════════════════════════════════
@@ -297,6 +310,13 @@ jobs:
       # ── 3.1 ONNX 模型管线基准测试 ──────────────────────────────────────
       - name: ONNX model pipeline benchmarks
         run: $PY -m pytest benchmarks/test_benchmark.py -v --tb=short
+
+      - name: Topic 21 CNN compilation with IR verification
+        run: |
+          $PY -m benchmarks.bench_ir_verifier \
+            --model models/graph/cnn.onnx --warmup 1 --repeats 5 \
+            --json-output benchmark_reports/ir_verifier.json \
+            --markdown benchmark_reports/ir_verifier.md
 
       # ── 3.1.1 课题14：固定 case + 真实 TinyFive A/B 报告 ─────────────
       - name: Topic 14 constant-merge case report
@@ -462,6 +482,9 @@ jobs:
       - name: Write job summary
         if: always()
         run: |
+          if [ -f benchmark_reports/ir_verifier.md ]; then
+            cat benchmark_reports/ir_verifier.md >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f benchmark_reports/topic01_control_flow.md ]; then
             cat benchmark_reports/topic01_control_flow.md >> "$GITHUB_STEP_SUMMARY"
           fi
