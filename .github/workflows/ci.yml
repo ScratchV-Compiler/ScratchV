@@ -91,13 +91,50 @@ jobs:
       - name: Prepare standalone RISC-V execution tools
         run: |
           set -euo pipefail
-          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install --no-install-recommends -y clang lld qemu-user
+
+          missing_tools() {
+            for tool in clang ld.lld qemu-riscv32; do
+              command -v "$tool" >/dev/null 2>&1 || printf '%s ' "$tool"
+            done
+          }
+
+          if [ -z "$(missing_tools)" ]; then
+            echo "RISC-V execution tools already available."
+          else
+            echo "Missing tools: $(missing_tools)"
+
+            # CI has no terminal, so a bare `sudo` either prompts forever or
+            # fails outright.  Pick an invocation that cannot block instead:
+            # root needs no sudo at all, and `sudo -n` fails fast rather than
+            # asking for a password.
+            if [ "$(id -u)" -eq 0 ]; then
+              APT=(apt-get)
+            elif sudo -n true 2>/dev/null; then
+              APT=(sudo -n apt-get)
+            else
+              APT=()
+            fi
+
+            if [ "${#APT[@]}" -eq 0 ]; then
+              echo "::error::Cannot install the RISC-V toolchain: this runner is not root and has no passwordless sudo."
+              echo "::error::Tests need clang, ld.lld and qemu-riscv32. Either preinstall them on the runner:"
+              echo "::error::    apt-get install --no-install-recommends clang lld qemu-user"
+              echo "::error::or grant the runner user passwordless sudo for apt-get."
+              exit 1
+            fi
+
+            "${APT[@]}" update
+            "${APT[@]}" install --no-install-recommends -y clang lld qemu-user
           fi
-          command -v clang
-          command -v ld.lld
-          command -v qemu-riscv32
+
+          for tool in clang ld.lld qemu-riscv32; do
+            tool_path="$(command -v "$tool" || true)"
+            if [ -z "$tool_path" ]; then
+              echo "::error::$tool is still missing after the install step"
+              exit 1
+            fi
+            echo "$tool -> $tool_path"
+          done
 
       # Includes Topic 9 diagnostics and standalone CNN execution regressions.
       - name: Run all topic tests
