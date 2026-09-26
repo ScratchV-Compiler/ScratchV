@@ -74,7 +74,7 @@ scratchv/
   standalone/       ONNX→RISC-V编译器、仿真器、分析工具
 docs/
   guide/            新手入门 00~04
-  topics/<NN-课题>/  第一期 14 个课题，每课题一个文件夹（指南/设计/开发/详细教程）
+  topics/<NN-课题>/  第一期 14 个课题，每课题一个文件夹（指南/设计/开发）
   archive/后续课题/ 第一期之后加入的 16 个课题
   reference/        架构、开发指南、规范等参考文档
   reports/          课题报告与排期

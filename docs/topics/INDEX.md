@@ -19,7 +19,7 @@
 | ✅ | 已完成 |
 | ⬜ | 规划中（待开发） |
 
-每个课题一个文件夹，内含**指引**（本目录的 `NN-*.md`）与配套的设计文档、开发文档；若该课题有第一期任务书，原详细教程以 `NN-*-详细教程.md` 保留在同一文件夹内。
+每个课题一个文件夹，内含**指引**（本目录的 `NN-*.md`）与配套的设计文档、开发文档。
 
 ---
 
@@ -82,20 +82,17 @@
 
 ---
 
-## 📦 后续课题（16 个，已归档）
+## 📦 后续课题（已归档）
 
-第一期之后加入的课题，文档在 [`../archive/后续课题/`](../archive/后续课题/)，不再收录进课程站点。
+第一期之后加入的课题，文档在 [`../archive/后续课题/`](../archive/后续课题/)。
+以下 4 个课题保留文档，不再收录进课程站点：
 
 | 编号 | 课题 | 编号 | 课题 |
 |------|------|------|------|
-| [02](../archive/后续课题/02-ONNX解析器/02-ONNX解析器.md) | ONNX 模型解析器 | [19](../archive/后续课题/19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md) | Standalone RISC-V 编译器 |
-| [03](../archive/后续课题/03-IR系统/03-IR系统.md) | 中间表示系统 (IR) | [22](../archive/后续课题/22-Standalone-LLVM编译器/22-Standalone-LLVM编译器.md) | Standalone LLVM 编译器 |
-| [04](../archive/后续课题/04-IR优化器框架/04-IR优化器框架.md) | IR 优化器框架（5 passes） | [23](../archive/后续课题/23-Cache模型/23-Cache模型.md) | Cache 行为分析（组相联 + LRU） |
-| [08](../archive/后续课题/08-指令选择/08-指令选择.md) | 后端指令选择 | [24](../archive/后续课题/24-Spike仿真/24-Spike仿真.md) | Spike 仿真集成 |
-| [10](../archive/后续课题/10-循环展开优化/10-循环展开优化.md) | 循环展开优化 | [25](../archive/后续课题/25-LLVM对比工具/25-LLVM对比工具.md) | LLVM vs ScratchV 对比工具 |
-| [15](../archive/后续课题/15-函数内联/15-函数内联.md) | 函数内联 | [26](../archive/后续课题/26-TinyFive对比/26-TinyFive对比.md) | TinyFive 对比工具 |
-| [16](../archive/后续课题/16-LLVM代码生成/16-LLVM代码生成.md) | LLVM 代码生成后端 | [27](../archive/后续课题/27-RV32全量Benchmark/27-RV32全量Benchmark.md) | RV32 全量 Benchmark |
-| [29](../archive/后续课题/29-SIMD向量化/29-SIMD向量化.md) | SIMD 向量化 | [30](../archive/后续课题/30-CI-Dashboard/30-CI-Dashboard.md) | CI 基准编排 + Dashboard |
+| [02](../archive/后续课题/02-ONNX解析器/02-ONNX解析器.md) | ONNX 模型解析器 | [16](../archive/后续课题/16-LLVM代码生成/16-LLVM代码生成.md) | LLVM 代码生成后端 |
+| [04](../archive/后续课题/04-IR优化器框架/04-IR优化器框架.md) | IR 优化器框架（5 passes） | [22](../archive/后续课题/22-Standalone-LLVM编译器/22-Standalone-LLVM编译器.md) | Standalone LLVM 编译器 |
+
+其余 12 个后续课题（03、08、10、15、19、23–27、29、30）的文档已删除，仅存于 git 历史。
 
 ---
 
