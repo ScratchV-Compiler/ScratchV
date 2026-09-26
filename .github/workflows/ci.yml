@@ -5,6 +5,19 @@ on:
     branches: [main, wjy_dev, jzj_dev]
   pull_request:
     branches: [main]
+  # Both jobs below pick their runner from the event name: pull_request runs on
+  # ubuntu-latest, everything else on self-hosted.  That means nothing in a PR
+  # ever exercises the self-hosted path, so a change that only breaks there --
+  # a missing system package, a toolchain, an environment difference -- passes
+  # review and fails the moment it lands on main (that is how the RISC-V
+  # toolchain step broke in #73).
+  #
+  # Dispatching this workflow runs the same path main runs, on demand.
+  # Uncomment the schedule to check for drift automatically; it will stay red
+  # until the self-hosted runner is provisioned, which is the point.
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '17 3 * * 1'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -17,6 +30,9 @@ jobs:
   # 课题功能测试：所有14个模块的单元测试 + 集成测试
   # ═════════════════════════════════════════════════════════════════════════
   test:
+    # pull_request -> GitHub-hosted ubuntu-latest; anything else -> self-hosted.
+    # The two paths differ in what is preinstalled, so a green PR does not mean
+    # a green push.  Dispatch the workflow to run this job the way main does.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 20
     steps:
@@ -229,6 +245,8 @@ jobs:
   # 模型性能测试：ONNX模型管线 + DSL用例 + CNN RISC-V编译
   # ═════════════════════════════════════════════════════════════════════════
   benchmark:
+    # Same split as the test job above: dispatch the workflow to exercise the
+    # self-hosted path on demand.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'self-hosted' }}
     timeout-minutes: 30
     steps:
