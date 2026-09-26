@@ -1,0 +1,310 @@
+name: LLM Deploy v1.0
+
+# CI for the Qwen3-0.6B-on-RISC-V project (docs/llm-deploy-v1.0/).
+#
+# Separate from ci.yml on purpose: that one tests the ScratchV compiler, this
+# one tests the deployment project. A failure here should not read as "the
+# compiler is broken".
+#
+# Three tiers, per 开发计划.md §4.1:
+#   PR 快速门禁      pull_request    ≤15 min   阻塞合并
+#   Nightly 完整门禁  schedule        2-4 h     阻塞里程碑
+#   Weekly/Release   tag / dispatch  4-8 h     阻塞发布
+#
+# NOTE ON JOB IDS: GitHub job ids may not contain ':'. The ids here use
+# dashes; the plan's notation (numeric:ir-full-qwen3 and friends) is carried in
+# each job's `name:` so the UI and the plan read the same.
+
+on:
+  pull_request:
+    paths:
+      - 'docs/llm-deploy-v1.0/**'
+      - 'probes/**'
+      - 'scripts/check_llm_deploy_docs.py'
+      - 'export_qwen3_onnx.py'
+      - 'verify_ir_numerics.py'
+      - 'compile_to_riscv.sh'
+      - 'run_inference.py'
+      - 'scratchv/**'
+      - '.github/workflows/llm-deploy.yml'
+  schedule:
+    # Nightly, off the hour: 19:23 UTC = 03:23 北京时间.
+    - cron: '23 19 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Which tier to run'
+        type: choice
+        default: fast
+        options: [fast, full, release]
+  push:
+    tags: ['llm-deploy-v*']
+
+permissions:
+  contents: read
+
+env:
+  # Deliverables the probes are expected to provide. A probe job only runs once
+  # its script exists, so the pipeline is green while a week's work is in
+  # flight and goes hard-red the moment the script is there but wrong. The
+  # w1-status job reports what is still missing.
+  PROBE_MATMUL: probes/w1_matmul_4x4/run.py
+  PROBE_TRANSFORMER: probes/w1_tiny_transformer/run.py
+  PROBE_QWEN3_EXPORT: probes/w1_qwen3_export/run.py
+
+jobs:
+  # ═════════════════════════════════════════════════════════════════════════
+  # Tier 1 — PR 快速门禁
+  # ═════════════════════════════════════════════════════════════════════════
+
+  docs-interfaces:
+    name: "docs:interfaces"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check interfaces.md covers the four contracts
+        run: python3 scripts/check_llm_deploy_docs.py --week W1
+
+  docs-risks:
+    name: "docs:risks"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check risks.md has >=15 risks, each with a Plan B
+        run: python3 scripts/check_llm_deploy_docs.py --week W1
+
+  toolchain:
+    name: "setup:riscv-toolchain"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.verify.outputs.ready }}
+    steps:
+      - name: Install RISC-V toolchain and QEMU
+        run: |
+          set -euo pipefail
+          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y clang lld qemu-user
+          fi
+      - name: Verify
+        id: verify
+        run: |
+          set -euo pipefail
+          missing=""
+          for tool in clang ld.lld qemu-riscv32; do
+            command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing tools:$missing"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          clang --version | head -1
+          qemu-riscv32 --version | head -1
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  probe-qemu-matmul:
+    name: "probe:qemu-matmul"
+    needs: [toolchain]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e ".[all]"
+          python3 -m pip install numpy
+      - name: 4x4 MatMul through IR -> RISC-V -> QEMU
+        # Checked inside the step, not via a job-level `if`, because the
+        # repository is not on disk yet when a job-level condition is
+        # evaluated. Runs once W1 delivers the probe.
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PROBE_MATMUL" ]; then
+            echo "::notice::$PROBE_MATMUL not delivered yet — W1 probe pending"
+            exit 0
+          fi
+          python3 "$PROBE_MATMUL"
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-qemu-matmul
+          path: probes/w1_matmul_4x4/out/
+          if-no-files-found: ignore
+
+  probe-small-transformer:
+    name: "probe:small-transformer"
+    needs: [toolchain]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e ".[all]"
+          python3 -m pip install numpy onnxruntime torch
+      - name: 2-layer Transformer ONNX -> IR vs ONNX Runtime
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PROBE_TRANSFORMER" ]; then
+            echo "::notice::$PROBE_TRANSFORMER not delivered yet — W1 probe pending"
+            exit 0
+          fi
+          python3 "$PROBE_TRANSFORMER"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-small-transformer
+          path: probes/w1_tiny_transformer/out/
+          if-no-files-found: ignore
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # Tier 2 — Nightly 完整门禁
+  # ═════════════════════════════════════════════════════════════════════════
+
+  probe-qwen3-onnx:
+    name: "probe:qwen3-onnx"
+    if: github.event_name != 'pull_request'
+    # Needs the model weights and real memory, so it runs on the self-hosted
+    # runner rather than a GitHub-hosted one.
+    runs-on: self-hosted
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export Qwen3-0.6B to ONNX and run it under ONNX Runtime
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PROBE_QWEN3_EXPORT" ]; then
+            echo "::notice::$PROBE_QWEN3_EXPORT not delivered yet — skipping W1 probe"
+            exit 0
+          fi
+          python3 "$PROBE_QWEN3_EXPORT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-qwen3-onnx
+          path: probes/w1_qwen3_export/out/
+          if-no-files-found: ignore
+
+  # Placeholders for the hard gates the plan introduces in W3-W4. They stay
+  # disabled until the matching deliverable exists, so the pipeline does not
+  # carry red jobs for work that has not been scheduled yet.
+  numeric-ir-full-qwen3:
+    name: "numeric:ir-full-qwen3"
+    if: github.event_name != 'pull_request'
+    runs-on: self-hosted
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Full Qwen3 IR vs ONNX Runtime, error < 1e-4
+        # W3 硬门槛。交付物未到位时显式跳过，而非失败。
+        run: |
+          set -euo pipefail
+          if [ ! -f verify_ir_numerics.py ]; then
+            echo "::notice::verify_ir_numerics.py 未交付（W3 交付物）— 跳过"
+            exit 0
+          fi
+          python3 verify_ir_numerics.py --model qwen3-0.6b --rtol 1e-4
+
+  numeric-qemu-full-qwen3:
+    name: "numeric:qemu-full-qwen3"
+    if: github.event_name != 'pull_request'
+    runs-on: self-hosted
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: QEMU single forward vs ONNX Runtime, error < 1e-3
+        # W4 硬门槛。
+        run: |
+          set -euo pipefail
+          for f in compile_to_riscv.sh run_inference.py; do
+            if [ ! -f "$f" ]; then
+              echo "::notice::$f 未交付（W4 交付物）— 跳过"
+              exit 0
+            fi
+          done
+          bash compile_to_riscv.sh --model qwen3-0.6b
+          python3 run_inference.py --backend qemu --compare --rtol 1e-3
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # Tier 3 — Weekly / Release 门禁
+  # ═════════════════════════════════════════════════════════════════════════
+
+  e2e-qemu-paris:
+    name: "e2e:qemu-paris"
+    if: startsWith(github.ref, 'refs/tags/llm-deploy-') || inputs.tier == 'release'
+    runs-on: self-hosted
+    timeout-minutes: 480
+    steps:
+      - uses: actions/checkout@v4
+      - name: Greedy decode must contain "Paris"
+        run: |
+          set -euo pipefail
+          if [ ! -f run_inference.py ]; then
+            echo "::notice::run_inference.py not delivered yet — release tier skipped"
+            exit 0
+          fi
+          python3 run_inference.py \
+            --prompt "The capital of France is" \
+            --greedy --max-new-tokens 16 \
+            --expect-substring Paris
+
+  release-gate:
+    name: "release:gate"
+    # The release gate only asserts on things that exist; until the weekly
+    # tier is scheduled this reports and passes.
+    if: startsWith(github.ref, 'refs/tags/llm-deploy-') || inputs.tier == 'release'
+    runs-on: self-hosted
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the 7 deliverables from 开发计划.md §6
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in export_qwen3_onnx.py verify_ir_numerics.py compile_to_riscv.sh \
+                   run_inference.py docs/llm-deploy-v1.0/DEPLOYMENT.md \
+                   docs/llm-deploy-v1.0/技术报告.md; do
+            if [ -f "$f" ]; then echo "  OK      $f"; else echo "  MISSING $f"; missing=$((missing+1)); fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            echo "::error::$missing of 7 deliverables missing"
+            exit 1
+          fi
+          echo "::notice::7/7 deliverables present"
+
+  # ═════════════════════════════════════════════════════════════════════════
+  # 状态汇总 — 永远运行，报告还差哪些 W1 交付物
+  # ═════════════════════════════════════════════════════════════════════════
+
+  w1-status:
+    name: "W1 status"
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report which W1 deliverables are still missing
+        run: |
+          echo "## W1 交付物状态" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 交付物 | 状态 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          for f in docs/llm-deploy-v1.0/W1/interfaces.md \
+                   docs/llm-deploy-v1.0/W1/risks.md \
+                   probes/w1_matmul_4x4/run.py \
+                   probes/w1_tiny_transformer/run.py \
+                   probes/w1_qwen3_export/run.py ; do
+            if [ -f "$f" ]; then
+              echo "| \`$f\` | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$f\` | ❌ 未交付 |" >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice::W1 交付物未完成: $f"
+            fi
+          done
