@@ -1294,21 +1294,63 @@ class RISCVEmitter:
                     self.code[idx] = rv_j(byte_offset)
         self.pending_fixups.clear()
 
-    def disassemble(self) -> str:
-        """Produce human-readable RISC-V assembly for verification."""
+    def disassemble(self, *, symbolic: bool = False) -> str:
+        """Render numeric debug output or a fixed-width symbolic assembly listing.
+
+        Symbolic targets are decoded from the resolved words, including targets
+        with no original source label. Labels use instruction addresses so names
+        containing ONNX operator paths cannot become invalid assembler symbols.
+        """
+        targets = set(self.labels.values()) if symbolic else set()
+        decoded = [_disasm_one(word) for word in self.code]
+        if symbolic:
+            for i, word in enumerate(self.code):
+                if word & 0x7F in {_RV_BRANCH, _RV_JAL}:
+                    prefix, literal = decoded[i].rsplit(" ", 1)
+                    offset = int(literal)
+                    target = i + offset // 4
+                    if offset % 4 or not 0 <= target <= len(self.code):
+                        raise ValueError(f"Invalid fixed-width branch target at instruction {i}")
+                    targets.add(target)
+                    decoded[i] = f"{prefix} .Lsv_{target}"
         lines = []
         for i, word in enumerate(self.code):
-            # Label?
-            for name, idx in self.labels.items():
-                if idx == i:
-                    lines.append(f"{name}:")
+            if symbolic:
+                if i in targets:
+                    lines.append(f".Lsv_{i}:")
+            else:
+                for name, idx in self.labels.items():
+                    if idx == i:
+                        lines.append(f"{name}:")
 
-            asm = _disasm_one(word)
+            asm = decoded[i]
             comment = self.comments.get(i, "")
             if comment:
                 asm = f"{asm:<32s} # {comment}"
             lines.append(f"  {asm}")
+        if symbolic and len(self.code) in targets:
+            lines.append(f".Lsv_{len(self.code)}:")
         return "\n".join(lines)
+
+    def schedule(self, llvm_mca: str | None = None):
+        """Apply verified local permutations to the exact emitted machine words."""
+        from collections import defaultdict, deque
+        from scratchv.backend.inst_scheduler import ScheduleConfig, parse_instructions, schedule_assembly
+
+        source = self.disassemble(symbolic=True)
+        original = parse_instructions(source)
+        if len(original) != len(self.code):
+            raise ValueError("Scheduling requires a decoded instruction for every machine word")
+        result = schedule_assembly(source, ScheduleConfig(strict=True, llvm_mca=llvm_mca))
+        words = defaultdict(deque)
+        for index, inst in enumerate(original):
+            words[inst.raw_line].append((self.code[index], self.comments.get(index, "")))
+        reordered = [words[inst.raw_line].popleft() for inst in parse_instructions(result.asm_text)]
+        if len(reordered) != len(self.code) or any(words.values()):
+            raise ValueError("Scheduled machine-word permutation is incomplete")
+        self.code = [word for word, _ in reordered]
+        self.comments = {i: comment for i, (_, comment) in enumerate(reordered) if comment}
+        return result
 
     def to_bytes(self) -> bytes:
         """Encode all instructions as little-endian binary."""
@@ -2616,6 +2658,10 @@ def convert_onnx_to_riscv(
     uarch: str = "basic",
     tinyfive_sim: bool = False, tinyfive_max_instr: int = 100_000_000,
     const_merge: bool = False,
+    schedule: bool = False,
+    metadata: dict | None = None,
+    llvm_mca: str | None = None,
+    symbolic_asm: bool = False,
 ) -> int:
     """Full pipeline: ONNX model → RISC-V RV32IM binary.
 
@@ -2790,6 +2836,13 @@ def convert_onnx_to_riscv(
         code_word_list[auipc_word_idx] = rv_auipc(_R_GP, upper & 0xFFFFF)
         code_word_list[addi_word_idx] = rv_addi(_R_GP, _R_GP, lower & 0xFFF)
         code_bytes = struct.pack(f"<{len(code_word_list)}I", *code_word_list)
+        if schedule or symbolic_asm:
+            generator.emit.code = code_word_list
+
+    if schedule:
+        scheduling = generator.emit.schedule(llvm_mca=llvm_mca)
+        code_bytes = generator.emit.to_bytes()
+        print(scheduling.report())
 
     binary = code_bytes + weight_data
     print(f"  Total binary: {len(binary):,} bytes ({len(binary)/1024/1024:.1f} MB)")
@@ -2803,11 +2856,19 @@ def convert_onnx_to_riscv(
     print(f"  Binary: {output_bin} ({len(binary):,} bytes)")
 
     # Disassembly for verification
-    asm_text = generator.emit.disassemble()
+    asm_text = generator.emit.disassemble(symbolic=schedule or symbolic_asm)
     asm_path = output_asm or output_bin.replace(".bin", ".s")
     with open(asm_path, "w") as f:
         f.write(asm_text)
     print(f"  Assembly: {asm_path}")
+    if metadata is not None:
+        output_elements = 1 if model.outputs else 0
+        if model.outputs:
+            for dimension in model.get_shape(model.outputs[0].name):
+                output_elements *= dimension
+        metadata.update(code_bytes=len(code_bytes), workspace_bytes=memory.workspace_size,
+                        input_elements=input_el if model.inputs else 0,
+                        output_elements=output_elements)
 
     # ── Summary ────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
@@ -2974,6 +3035,10 @@ def main() -> int:
         help="Enable constant-load merging and report real baseline/optimized "
              "machine-code size differences"
     )
+    parser.add_argument("--schedule", action="store_true",
+                        help="Schedule physical-register instructions before writing the binary")
+    parser.add_argument("--symbolic-asm", action="store_true",
+                        help="Emit reassemblable symbolic targets for scheduling analysis")
     parser.add_argument(
         "--uarch", default="basic", choices=["single", "fast", "basic", "slow"],
         help="Microarchitecture profile for cycle-accurate emulation: "
@@ -3013,6 +3078,8 @@ def main() -> int:
         tinyfive_sim=args.tinyfive,
         tinyfive_max_instr=args.tinyfive_max_instr,
         const_merge=args.const_merge,
+        schedule=args.schedule,
+        symbolic_asm=args.symbolic_asm,
     )
 
 

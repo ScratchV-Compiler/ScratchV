@@ -88,18 +88,19 @@ jobs:
           $PY -m pip install -e ".[all]"
           $PY -m pip install "pytest>=7,<10"
 
-      - name: Prepare standalone RISC-V execution tools
+      - name: Prepare RISC-V test tools
         run: |
           set -euo pipefail
-          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null; then
+          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null || ! command -v llvm-mca >/dev/null; then
             sudo apt-get update
-            sudo apt-get install --no-install-recommends -y clang lld qemu-user
+            sudo apt-get install --no-install-recommends -y clang lld qemu-user llvm
           fi
           command -v clang
           command -v ld.lld
           command -v qemu-riscv32
+          $PY -c 'from scratchv.backend.llvm_mca import check_version; print(check_version("llvm-mca"))'
 
-      # Includes Topic 9 diagnostics and standalone CNN execution regressions.
+      # Includes scheduling and standalone CNN execution regressions.
       - name: Run all topic tests
         env:
           PYTHONHASHSEED: "0"
@@ -263,6 +264,19 @@ jobs:
           $PY -m pip install -e ".[all]"
           $PY -m pip install markdown "pytest>=7,<10"
 
+      # Topic 18 reports share the existing benchmark job and report artifact.
+      - name: Prepare RISC-V scheduling execution tools
+        run: |
+          set -euo pipefail
+          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null || ! command -v llvm-mca >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y clang lld qemu-user llvm
+          fi
+          command -v clang
+          command -v ld.lld
+          command -v qemu-riscv32
+          $PY -c 'from scratchv.backend.llvm_mca import check_version; print(check_version("llvm-mca"))'
+
       - name: Topic 9 DSL diagnostics benchmark
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -306,6 +320,19 @@ jobs:
             --json benchmark_reports/const_merge_report.json \
             --markdown benchmark_reports/const_merge_report.md
 
+      # ── 课题18：固定用例执行验证与独立合成规模测试 ─────────────────
+      - name: Topic 18 scheduling case report
+        run: |
+          $PY -m benchmarks.run_inst_scheduler_case \
+            --json benchmark_reports/inst_scheduler_report.json \
+            --markdown benchmark_reports/inst_scheduler_report.md
+
+      - name: Topic 18 synthetic scheduling benchmark
+        run: |
+          $PY -m benchmarks.bench_inst_scheduler --repeats 3 \
+            --json benchmark_reports/inst_scheduler_synthetic.json \
+            --markdown benchmark_reports/inst_scheduler_synthetic.md
+
       # ── 3.1.2 课题13：窥孔前后对比报告 ─────────────────────────────
       - name: Topic 13 peephole compare report
         run: |
@@ -328,14 +355,22 @@ jobs:
         run: |
           mkdir -p benchmark_reports models/graph
           MODEL=models/graph/cnn.onnx
-          if [ ! -f "$MODEL" ]; then
-            echo "::warning::cnn.onnx not found, generating minimal CNN test model"
-            $PY scripts/gen_minimal_cnn.py 2>&1
-          fi
-          $PY scratchv/standalone/onnx_to_riscv_standalone.py \
+          test -f "$MODEL"
+          $PY -m scratchv.standalone.onnx_to_riscv_standalone \
             "$MODEL" -o /tmp/cnn_riscv.bin \
             --asm benchmark_reports/cnn_scratchv.s \
             --estimate --report --const-merge
+
+      - name: Topic 18 CNN scheduling benefit and side effects
+        env:
+          PYTHONHASHSEED: "0"
+        run: |
+          $PY -m benchmarks.bench_cnn_schedule \
+            --model models/graph/cnn.onnx \
+            --standalone-asm benchmark_reports/cnn_scratchv.s \
+            --llvm-mca llvm-mca \
+            --json benchmark_reports/inst_scheduler_cnn.json \
+            --markdown benchmark_reports/inst_scheduler_cnn.md
 
       # ── 3.3.1 汇编美化器：真实 CNN 输出 + Actions Summary ───────────
       - name: CNN assembly beautifier benchmark
@@ -472,6 +507,11 @@ jobs:
           if [ -f benchmark_reports/const_merge_report.md ]; then
             cat benchmark_reports/const_merge_report.md >> $GITHUB_STEP_SUMMARY
           fi
+          for report in inst_scheduler_report inst_scheduler_cnn inst_scheduler_synthetic; do
+            if [ -f "benchmark_reports/$report.md" ]; then
+              cat "benchmark_reports/$report.md" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/peephole_compare.md ]; then
             echo "### Topic 13 Peephole Compare" >> $GITHUB_STEP_SUMMARY

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — Topic 18 review iteration (2026-09-27)
+
+- Keep instruction scheduling disabled by default at the assembly-text V1 entry point. Model cycles and llvm-mca estimates are not hardware speedups or dynamic-instruction-count improvements.
+- Use LLVM MCA / SiFive E76 directly for scheduling acceptance and reports. Record the actual LLVM version; the checked-in benchmark was measured with 18.1.3. Remove the custom timing model, parameter table and extractor. Retain raw LLVM timelines.
+- Keep common instruction selection, register allocation, MachineInstr construction and SelectionDAG emission unchanged. Preserve unsupported assembly forms as scheduling boundaries.
+- Report coverage, unsupported opcodes and rejected candidates; restore section-stack state and distinguish quoted text from layout directives.
+- Validate the tracked CNN through standalone scheduling A/B, LLVM timing and full QEMU execution. Run scheduling and standalone regressions in the existing test CI job; retain tool-version checks and performance reports in the benchmark job.
+- Make standalone symbolic assembly explicit via `--symbolic-asm` or `--schedule`; keep default assembly and binary output unchanged.
+- Add a separate-checkout comparison for scheduling-disabled source/machine code, register maps, spills and scalar execution results.
+- Preserve the unified CFG control targets and register-map statistics. Keep CI on `ubuntu-latest` and validate LLVM analysis capabilities without requiring a specific release.
+- API migration: `SchedInst` is immutable and recomputes def/use; `build_dag` rejects multiple regions; `machine_instrs_from_scheduled` rejects lossy conversions. Use `schedule_assembly` for complete assembly, and read the compiler report from `stats["schedule"]["report"]` instead of `warnings`.
+- Structured post-RA/pre-emission scheduling and Fast/BURR strategy selection remain future work; see `docs/topic-18/README.md`.
+
 ## [0.3.0] — 2026-05-18
 
 ### Added
