@@ -2,8 +2,8 @@
 
 > **Audience**: AI coding agents, maintainers extending `asm_peephole.py`  
 > **Source**: `scratchv/backend/asm_peephole.py`  
-> **Topic index**: [../../../topic13/README.md](../../topics/13-窥孔优化器/13-窥孔优化器-完成目录.md)  
-> **Human design doc**: [../13-窥孔优化器-设计文档.md](../../topics/13-窥孔优化器/13-窥孔优化器-设计文档.md)  
+> **Topic index**: [13-窥孔优化器-完成目录.md](../../topics/13-窥孔优化器/13-窥孔优化器-完成目录.md)  
+> **Human design doc**: [13-窥孔优化器-设计文档.md](../../topics/13-窥孔优化器/13-窥孔优化器-设计文档.md)  
 > **Compare report**: [../../../benchmark_reports/peephole_compare.md](../../../benchmark_reports/peephole_compare.md)  
 > **Last verified**: 2026-09-13 — peephole tests + CLI `--json` / `--list-rules`  
 > **Do NOT re-add**: `redundant mv pair elimination` (`mv x,y; mv y,x → delete`) — unsound  
@@ -315,9 +315,9 @@ Before marking task complete:
 
 ## See Also
 
-- [../../../topic13/README.md](../../topics/13-窥孔优化器/13-窥孔优化器-完成目录.md) — Topic 13 completion index  
-- [../13-窥孔优化器.md](../../topics/13-窥孔优化器/13-窥孔优化器.md) — beginner tutorial  
-- [../13-窥孔优化器-设计文档.md](../../topics/13-窥孔优化器/13-窥孔优化器-设计文档.md) — human design spec  
-- [../05-汇编代码美化器.md](../../topics/05-汇编代码美化器/05-汇编代码美化器.md) — downstream asm pass  
-- [../14-常量加载合并.md](../../topics/14-常量加载合并/14-常量加载合并.md) — adjacent pass in pipeline  
+- [13-窥孔优化器-完成目录.md](../../topics/13-窥孔优化器/13-窥孔优化器-完成目录.md) — Topic 13 completion index  
+- [13-窥孔优化器.md](../../topics/13-窥孔优化器/13-窥孔优化器.md) — beginner tutorial  
+- [13-窥孔优化器-设计文档.md](../../topics/13-窥孔优化器/13-窥孔优化器-设计文档.md) — human design spec  
+- [05-汇编代码美化器.md](../../topics/05-汇编代码美化器/05-汇编代码美化器.md) — downstream asm pass  
+- [14-常量加载合并.md](../../topics/14-常量加载合并/14-常量加载合并.md) — adjacent pass in pipeline  
 - `scratchv/backend/_asm_parser.py` — shared parser (future unification target)  
