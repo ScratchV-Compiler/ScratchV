@@ -40,7 +40,7 @@ topic06-report = ["tinyfive", "pytest", "jinja2", "matplotlib"]
 
 [project.urls]
 Source = "https://github.com/kinsomwang/ScratchV"
-Documentation = "https://github.com/kinsomwang/ScratchV/tree/main/docs"
+Documentation = "https://github.com/kinsomwang/ScratchV/tree/main/docs/INDEX.md"
 
 [project.scripts]
 scratchv = "scratchv.main:main"
