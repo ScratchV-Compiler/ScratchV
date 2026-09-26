@@ -19,8 +19,8 @@ class TestIRPeepholeOptimizer:
         builder._emit(OpCode.ADD, c, [a, zero])
         builder.ret(c)
 
-        opt = IRPeepholeOptimizer(builder.program)
-        opt.run()
+        opt = IRPeepholeOptimizer()
+        opt.optimize(builder.program)
         # The addi 0 should have been removed
         block = builder.program.functions[0].blocks[0]
         assert all(i.opcode != OpCode.ADD for i in block.instructions)
@@ -35,8 +35,8 @@ class TestIRPeepholeOptimizer:
         builder._emit(OpCode.MUL, c, [a, one])
         builder.ret(c)
 
-        opt = IRPeepholeOptimizer(builder.program)
-        count = opt.run()
+        opt = IRPeepholeOptimizer()
+        count = opt.optimize(builder.program)
         assert count >= 1
         # MUL with 1 should be replaced
         block = builder.program.functions[0].blocks[0]
@@ -53,8 +53,8 @@ class TestIRPeepholeOptimizer:
         builder._emit(OpCode.MUL, c, [a, zero])
         builder.ret(c)
 
-        opt = IRPeepholeOptimizer(builder.program)
-        opt.run()
+        opt = IRPeepholeOptimizer()
+        opt.optimize(builder.program)
         block = builder.program.functions[0].blocks[0]
         mul_instrs = [i for i in block.instructions if i.opcode == OpCode.MUL]
         assert len(mul_instrs) == 0
@@ -77,8 +77,8 @@ class TestMulAddFusion:
         result = builder.add(tmp, acc)
         builder.ret(result)
 
-        opt = MulAddFusion(builder.program)
-        count = opt.run()
+        opt = MulAddFusion()
+        count = opt.optimize(builder.program)
         assert count == 1
 
         block = builder.program.functions[0].blocks[0]
@@ -97,8 +97,8 @@ class TestMulAddFusion:
         c = builder.add(a, b)
         builder.ret(c)
 
-        opt = MulAddFusion(builder.program)
-        count = opt.run()
+        opt = MulAddFusion()
+        count = opt.optimize(builder.program)
         assert count == 0
 
 
@@ -119,8 +119,8 @@ class TestLICM:
         builder.endfor()
         builder.ret()
 
-        opt = LICM(builder.program)
-        count = opt.run()
+        opt = LICM()
+        count = opt.optimize(builder.program)
         assert count == 1  # mul should be hoisted
 
         block = builder.program.functions[0].blocks[0]
@@ -142,8 +142,8 @@ class TestLICM:
         builder.endfor()
         builder.ret()
 
-        opt = LICM(builder.program)
-        opt.run()
+        opt = LICM()
+        opt.optimize(builder.program)
         # The load_const IS invariant and gets hoisted.
         # But the add depending on iv stays in the loop.
         # Verify the add remains after the FOR.

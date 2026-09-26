@@ -1,6 +1,6 @@
 """Compiler driver and pass manager for ScratchV.
 
-Provides a ``PassManager`` that chains compiler passes together and a
+Provides a ``PassManager`` that runs IR optimization passes and a
 ``CompilerDriver`` that orchestrates the full compilation pipeline:
 parse → optimise → codegen → verify → emit.
 
@@ -19,16 +19,28 @@ Usage::
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
-from scratchv.pass_interface import CompilerPass, PassResult
+from scratchv.ir.types import Program
+from scratchv.pass_interface import (
+    OptimizationPassError,
+    OptimizationReport,
+)
+from scratchv.pass_manager import PassManager, create_optimization_pass_manager
 
+__all__ = [
+    "CompileResult",
+    "CompilerConfig",
+    "CompilerDriver",
+    "PassManager",
+    "create_optimization_pass_manager",
+]
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CompilerConfig
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class CompilerConfig:
@@ -37,6 +49,8 @@ class CompilerConfig:
     Attributes:
         backend:        ``"riscv"`` or ``"llvm"``.
         optimize_level: ``"none"``, ``"basic"``, or ``"all"``.
+        passes:         Explicit ordered IR pass names; None uses the preset.
+        disabled_passes: IR pass names excluded from the selected pipeline.
         reg_alloc:      ``"naive"`` or ``"greedy"`` (also ``"linear"``).
         dump_ir:        Print IR dumps during compilation.
         verify:         Run ONNX Runtime / numpy verification.
@@ -73,101 +87,14 @@ class CompilerConfig:
     cycle_stats: bool = False
     enable_forwarding: bool = True
     branch_predictor: str = "always_not_taken"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# PassManager
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class PassManager:
-    """Manages a sequence of compiler passes and runs them in order.
-
-    Each pass receives the output of the previous pass as its input. The
-    first pass receives the initial ``input_data`` provided to ``run()``.
-
-    Usage::
-
-        pm = PassManager()
-        pm.add(ConstantFolder(program))
-        pm.add(DeadCodeEliminator(program))
-        result = pm.run(program)
-    """
-
-    def __init__(self, name: str = "pipeline"):
-        self._name = name
-        self._passes: list[CompilerPass] = []
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def passes(self) -> list[CompilerPass]:
-        return list(self._passes)
-
-    def add(self, pass_: CompilerPass) -> "PassManager":
-        """Add a pass to the end of the pipeline.  Returns self for chaining."""
-        self._passes.append(pass_)
-        return self
-
-    def run(self, input_data: Any) -> PassResult:
-        """Run all passes sequentially.
-
-        Returns the final ``PassResult``.  If any pass returns ``None``
-        data the pipeline stops early and returns the last result.
-        """
-        data = input_data
-        total_changes = 0
-        messages: list[str] = []
-        all_warnings: list[str] = []
-        timings: dict[str, float] = {}
-
-        for p in self._passes:
-            t0 = time.perf_counter()
-            try:
-                result = p.run(data)
-            except Exception as exc:
-                return PassResult(
-                    data=None,
-                    changes=total_changes,
-                    message=f"Pass '{p.name}' failed: {exc}",
-                    warnings=all_warnings,
-                )
-            elapsed = time.perf_counter() - t0
-            timings[p.name] = elapsed
-
-            if result.data is None:
-                return PassResult(
-                    data=None,
-                    changes=total_changes,
-                    message=f"Pipeline stopped after '{p.name}': {result.message}",
-                    warnings=all_warnings + result.warnings,
-                )
-
-            data = result.data
-            total_changes += result.changes
-            if result.message:
-                messages.append(f"[{p.name}] {result.message}")
-            all_warnings.extend(result.warnings)
-
-        return PassResult(
-            data=data,
-            changes=total_changes,
-            message="; ".join(messages) if messages else "pipeline complete",
-            warnings=all_warnings,
-        )
-
-    def report(self) -> str:
-        """Return a summary of all registered passes."""
-        lines = [f"PassManager '{self._name}' ({len(self._passes)} passes):"]
-        for p in self._passes:
-            lines.append(f"  {p.name}")
-        return "\n".join(lines)
+    passes: tuple[str, ...] | None = None
+    disabled_passes: tuple[str, ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CompileResult
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class CompileResult:
@@ -205,6 +132,7 @@ class CompileResult:
 # CompilerDriver
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class CompilerDriver:
     """Orchestrates the full compilation pipeline.
 
@@ -222,11 +150,16 @@ class CompilerDriver:
     def __init__(self, config: CompilerConfig | None = None):
         self.config = config or CompilerConfig()
         self._last_register_map: dict[str, str] = {}
+        self._assembly_report = OptimizationReport("assembly", (), 0, 0.0)
 
     # ── Public API ──────────────────────────────────────────────────────────
 
-    def compile(self, input_path: str, output_path: str | None = None,
-                dsl_source: str | None = None) -> CompileResult:
+    def compile(
+        self,
+        input_path: str,
+        output_path: str | None = None,
+        dsl_source: str | None = None,
+    ) -> CompileResult:
         """Compile an input file and write output.
 
         Args:
@@ -237,18 +170,15 @@ class CompilerDriver:
         Returns:
             A ``CompileResult`` with output text and statistics.
         """
-        errors: list[str] = []
         warnings: list[str] = []
         self._last_register_map = {}
+        self._assembly_report = OptimizationReport("assembly", (), 0, 0.0)
 
         # Resolve output path
         if output_path is None:
             output_path = "output.ll" if self.config.backend == "llvm" else "output.s"
 
-        use_dsl = (
-            dsl_source is not None
-            or (input_path and input_path.endswith(".dsl"))
-        )
+        use_dsl = dsl_source is not None or (input_path and input_path.endswith(".dsl"))
 
         if use_dsl:
             source = dsl_source
@@ -256,9 +186,11 @@ class CompilerDriver:
                 with open(input_path) as source_file:
                     source = source_file.read()
             from scratchv.frontend.dsl_extended import ExtendedDSLParser
+
             parser = ExtendedDSLParser()
             collector = parser.validate(
-                source or "", filename=input_path or "<dsl>",
+                source or "",
+                filename=input_path or "<dsl>",
             )
             if collector.has_errors:
                 diagnostics = collector.errors
@@ -276,6 +208,7 @@ class CompilerDriver:
         except Exception as e:
             if use_dsl:
                 from scratchv.frontend.dsl_errors import DSLSyntaxError
+
                 if isinstance(e, DSLSyntaxError):
                     return CompileResult(
                         success=False,
@@ -284,12 +217,14 @@ class CompilerDriver:
                     )
                 raise
             return CompileResult(
-                success=False, errors=[f"Parse error: {e}"],
+                success=False,
+                errors=[f"Parse error: {e}"],
             )
 
         ir_dump_before = ""
         if self.config.dump_ir:
             from scratchv.ir.printer import IRPrinter
+
             ir_dump_before = IRPrinter(program).dump()
 
         # --- 2. Verify IR (if configured) ---
@@ -298,42 +233,71 @@ class CompilerDriver:
 
         # --- 3. Optimize ---
         opt_message = ""
-        if self.config.optimize_level != "none":
-            opt_result = self._run_optimizations(program)
-            opt_message = opt_result.message
+        try:
+            optimization_report = self._run_optimizations(program)
+        except (OptimizationPassError, TypeError, ValueError) as exc:
+            if isinstance(exc, OptimizationPassError):
+                completed_report = exc.completed_report
+            else:
+                completed_report = OptimizationReport("optimizer", (), 0, 0.0)
+            optimization_stats = self._optimization_stats(completed_report)
+            return CompileResult(
+                success=False,
+                errors=[f"Optimization error: {exc}"],
+                stats={
+                    "optimization": optimization_stats,
+                    "opt_message": opt_message,
+                    "cycle_report": "",
+                },
+            )
+        opt_message = self._optimization_message(optimization_report)
 
         ir_dump_after = ""
         if self.config.dump_ir:
             from scratchv.ir.printer import IRPrinter
+
             ir_dump_after = IRPrinter(program).dump()
 
         ir_dump = ""
         if self.config.dump_ir:
             ir_dump = (
-                "; --- IR Dump (before) ---\n" + ir_dump_before +
-                "\n; --- IR Dump (after" +
-                (f" {opt_message}" if opt_message else "") +
-                ") ---\n" + ir_dump_after
+                "; --- IR Dump (before) ---\n"
+                + ir_dump_before
+                + "\n; --- IR Dump (after"
+                + (f" {opt_message}" if opt_message else "")
+                + ") ---\n"
+                + ir_dump_after
             )
 
         # --- 4. Code generation ---
         try:
             asm_text = self._generate_code(program)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return CompileResult(
-                success=False, errors=[f"Codegen error: {e}"],
+                success=False,
+                errors=[f"Codegen error: {e}"],
                 ir_dump=ir_dump,
             )
 
         # --- 5. Post-codegen passes ---
-        asm_text = self._run_asm_passes(asm_text, warnings)
+        try:
+            asm_text = self._run_asm_passes(asm_text, warnings)
+        except OptimizationPassError as exc:
+            return CompileResult(
+                success=False,
+                errors=[f"Assembly pass error: {exc}"],
+                stats={"assembly": self._pass_stats(exc.completed_report)},
+                warnings=warnings,
+            )
 
         # --- 6. Cycle estimation ---
         cycle_report = ""
         if self.config.cycle_stats:
             from scratchv.backend.cycle_estimator import (
-                PipelineCycleEstimator, PipelineConfig,
+                PipelineConfig,
+                PipelineCycleEstimator,
             )
+
             pconfig = PipelineConfig(
                 enable_forwarding=self.config.enable_forwarding,
                 branch_predictor=self.config.branch_predictor,
@@ -343,7 +307,7 @@ class CompilerDriver:
                 cstats = estimator.estimate(asm_text)
                 cycle_report = estimator.report(cstats)
                 warnings.append(estimator.report_short(cstats))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 warnings.append(f"Cycle estimation failed: {e}")
 
         # --- 7. Write output ---
@@ -356,9 +320,11 @@ class CompilerDriver:
             output_path=output_path,
             ir_dump=ir_dump,
             stats={
+                "optimization": self._optimization_stats(optimization_report),
                 "opt_message": opt_message,
                 "cycle_report": cycle_report,
                 "register_map": dict(self._last_register_map),
+                "assembly": self._pass_stats(self._assembly_report),
             },
             warnings=warnings,
         )
@@ -367,10 +333,7 @@ class CompilerDriver:
 
     def _parse(self, input_path: str, dsl_source: str | None = None):
         """Parse input into an IR Program."""
-        use_dsl = (
-            dsl_source is not None
-            or (input_path and input_path.endswith(".dsl"))
-        )
+        use_dsl = dsl_source is not None or (input_path and input_path.endswith(".dsl"))
 
         if use_dsl:
             source = dsl_source
@@ -378,11 +341,14 @@ class CompilerDriver:
                 with open(input_path) as f:
                     source = f.read()
             from scratchv.frontend.dsl_extended import ExtendedDSLParser
+
             return ExtendedDSLParser().parse(
-                source or "", filename=input_path or "<dsl>",
+                source or "",
+                filename=input_path or "<dsl>",
             )
         else:
             from scratchv.frontend.onnx_parser import ONNXParser
+
             return ONNXParser().parse(input_path)
 
     # ── Internal: verify IR ─────────────────────────────────────────────────
@@ -390,6 +356,7 @@ class CompilerDriver:
     def _verify_ir(self, program, warnings: list[str]) -> None:
         """Run IR verifier and collect warnings."""
         from scratchv.analysis.ir_verifier import IRVerifier
+
         verifier = IRVerifier(program)
         issues = verifier.verify()
         for issue in issues:
@@ -401,25 +368,42 @@ class CompilerDriver:
 
     # ── Internal: optimizations ─────────────────────────────────────────────
 
-    def _run_optimizations(self, program) -> PassResult:
+    def _run_optimizations(self, program: Program) -> OptimizationReport:
         """Run all configured optimization passes."""
-        from scratchv.optimizer.constant_folding import ConstantFolder
-        from scratchv.optimizer.dead_code import DeadCodeEliminator
+        manager = create_optimization_pass_manager(
+            self.config.optimize_level,
+            passes=self.config.passes,
+            disabled_passes=self.config.disabled_passes,
+        )
+        return manager.run(program)
 
-        pm = PassManager("optimizer")
-        pm.add(_PassAdapter("constant-folding", ConstantFolder(program)))
-        pm.add(_PassAdapter("dead-code-elim", DeadCodeEliminator(program)))
+    def _optimization_stats(self, report: OptimizationReport) -> dict[str, Any]:
+        """Convert an immutable report to the CompileResult stats schema."""
+        return {"level": self.config.optimize_level, **self._pass_stats(report)}
 
-        if self.config.optimize_level == "all":
-            from scratchv.optimizer.peephole import IRPeepholeOptimizer
-            from scratchv.optimizer.muladd_fusion import MulAddFusion
-            from scratchv.optimizer.licm import LICM
+    @staticmethod
+    def _pass_stats(report: OptimizationReport) -> dict[str, Any]:
+        """Serialize ordered execution statistics for either pipeline stage."""
+        return {
+            "total_changes": report.total_changes,
+            "elapsed_seconds": report.elapsed_seconds,
+            "passes": [
+                {
+                    "index": item.index,
+                    "name": item.name,
+                    "changes": item.changes,
+                    "elapsed_seconds": item.elapsed_seconds,
+                }
+                for item in report.executions
+            ],
+        }
 
-            pm.add(_PassAdapter("ir-peephole", IRPeepholeOptimizer(program)))
-            pm.add(_PassAdapter("muladd-fusion", MulAddFusion(program)))
-            pm.add(_PassAdapter("licm", LICM(program)))
-
-        return pm.run(program)
+    @staticmethod
+    def _optimization_message(report: OptimizationReport) -> str:
+        """Build the legacy human-readable optimization summary."""
+        return "; ".join(
+            f"[{item.name}] {item.changes} change(s)" for item in report.executions
+        )
 
     # ── Internal: code generation ───────────────────────────────────────────
 
@@ -427,6 +411,7 @@ class CompilerDriver:
         """Run code generation (instruction selection + regalloc + emit)."""
         if self.config.backend == "llvm":
             from scratchv.backend.llvm_codegen import LLVMCodegen
+
             return LLVMCodegen(program).emit()
 
         # RISC-V backend
@@ -436,9 +421,9 @@ class CompilerDriver:
 
     def _generate_riscv_linear(self, program) -> str:
         """Standard RISC-V pipeline."""
+        from scratchv.backend.asm_emit import AsmEmitter
         from scratchv.backend.instruction_select import InstructionSelector
         from scratchv.backend.register_alloc import RegisterAllocator
-        from scratchv.backend.asm_emit import AsmEmitter
 
         selector = InstructionSelector(program)
         machine_instrs = selector.run()
@@ -448,31 +433,41 @@ class CompilerDriver:
         # fell through to greedy — so LinearScan never saw virtual regs.)
         if self.config.reg_alloc == "linear":
             from scratchv.backend.regalloc_linear import (
-                LinearScanAllocator, block_from_machine_instrs,
+                LinearScanAllocator,
+                block_from_machine_instrs,
             )
+
             ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
             assembly = lsa.emit(ls_insts)
             self._last_register_map = dict(lsa.alloc_map)
             from scratchv.backend.abi_frame import apply_abi_frames
+
             return apply_abi_frames(assembly, lsa.spill_slot_count)
 
-        mode = self.config.reg_alloc if self.config.reg_alloc in (
-            "naive", "greedy",
-        ) else "greedy"
+        mode = (
+            self.config.reg_alloc
+            if self.config.reg_alloc
+            in (
+                "naive",
+                "greedy",
+            )
+            else "greedy"
+        )
         alloc = RegisterAllocator(machine_instrs, mode=mode)
         allocated = alloc.run()
         self._last_register_map = alloc.register_map
         emitter = AsmEmitter(allocated)
         assembly = emitter.emit()
         from scratchv.backend.abi_frame import apply_abi_frames
+
         return apply_abi_frames(assembly, alloc.spill_slot_count)
 
     def _generate_riscv_dag(self, program) -> str:
         """DAG-based instruction selection pipeline."""
-        from scratchv_dag.selection_dag import DAGBuilder, DAGCombiner, DAGScheduler
-        from scratchv.backend.register_alloc import RegisterAllocator
         from scratchv.backend.asm_emit import AsmEmitter
+        from scratchv.backend.register_alloc import RegisterAllocator
+        from scratchv_dag.selection_dag import DAGBuilder, DAGCombiner, DAGScheduler
 
         builder = DAGBuilder(program)
         dag = builder.run()
@@ -485,18 +480,27 @@ class CompilerDriver:
 
         if self.config.reg_alloc == "linear":
             from scratchv.backend.regalloc_linear import (
-                LinearScanAllocator, block_from_machine_instrs,
+                LinearScanAllocator,
+                block_from_machine_instrs,
             )
+
             ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
             assembly = lsa.emit(ls_insts)
             self._last_register_map = dict(lsa.alloc_map)
             from scratchv.backend.abi_frame import apply_abi_frames
+
             return apply_abi_frames(assembly, lsa.spill_slot_count)
 
-        mode = self.config.reg_alloc if self.config.reg_alloc in (
-            "naive", "greedy",
-        ) else "greedy"
+        mode = (
+            self.config.reg_alloc
+            if self.config.reg_alloc
+            in (
+                "naive",
+                "greedy",
+            )
+            else "greedy"
+        )
         alloc = RegisterAllocator(machine_instrs, mode=mode)
         allocated = alloc.run()
         self._last_register_map = alloc.register_map
@@ -504,83 +508,27 @@ class CompilerDriver:
         emitter = AsmEmitter(allocated)
         assembly = emitter.emit()
         from scratchv.backend.abi_frame import apply_abi_frames
+
         return apply_abi_frames(assembly, alloc.spill_slot_count)
 
     # ── Internal: post-codegen passes ───────────────────────────────────────
 
     def _run_asm_passes(self, asm_text: str, warnings: list[str]) -> str:
         """Run assembly-level passes (peephole, const-merge, beautify, etc.)."""
-        if self.config.peephole_asm:
-            from scratchv.backend.asm_peephole import AsmPeepholeOptimizer
-            opt = AsmPeepholeOptimizer()
-            asm_text, changes = opt.optimize(asm_text)
-            if changes:
-                warnings.append(
-                    f"Asm peephole: {changes} changes, "
-                    f"{opt.instructions_saved} instr saved "
-                    f"({opt.instructions_before}->{opt.instructions_after})"
-                )
+        from scratchv.assembly_passes import create_assembly_registry
 
-        if self.config.const_merge:
-            from scratchv.backend.const_merge import merge_constants_detailed
-            asm_text, stats = merge_constants_detailed(asm_text)
-            if stats.total_changes:
-                warnings.append(
-                    f"Const merge: {stats.total_changes} changes "
-                    f"({stats.merged_pairs} pairs, "
-                    f"{stats.redundant_lui_removed} redundant lui)"
-                )
-
-        if self.config.schedule:
-            from scratchv.backend.inst_scheduler import (
-                InstructionScheduler, parse_instructions,
-            )
-            sched = InstructionScheduler()
-            insts = parse_instructions(asm_text)
-            dag = sched.build_dag(insts)
-            scheduled = sched.schedule(dag)
-            asm_text = "\n".join(
-                f"  {inst.opcode} " + ", ".join(inst.operands)
-                for inst in scheduled
-            )
-
-        if self.config.beautify_asm:
-            from scratchv.backend.asm_beautifier import beautify_asm
-            asm_text = beautify_asm(asm_text)
-
-        if self.config.count_instr:
-            from scratchv.backend.inst_counter import count_instructions
-            counts = count_instructions(asm_text)
-            total = sum(v for k, v in counts.items()
-                        if not k.startswith("_") and isinstance(v, int))
-            warnings.append(f"Instruction count: {total}")
-
-        return asm_text
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# _PassAdapter — wraps legacy passes that don't implement CompilerPass
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class _PassAdapter(CompilerPass):
-    """Adapter that wraps a legacy pass object into the ``CompilerPass`` API.
-
-    Legacy passes are expected to have a ``run()`` method that returns an
-    integer (number of changes) and mutate the data in place.
-    """
-
-    def __init__(self, name: str, legacy_pass: Any):
-        self._name = name
-        self._legacy = legacy_pass
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def run(self, input_data: Any) -> PassResult:
-        changes = self._legacy.run()
-        return PassResult(
-            data=input_data,
-            changes=changes,
-            message=f"{changes} change(s)",
-        )
+        selected = []
+        for name, enabled in (
+            ("asm-peephole", self.config.peephole_asm),
+            ("const-merge", self.config.const_merge),
+            ("schedule", self.config.schedule),
+            ("beautify", self.config.beautify_asm),
+            ("count-instr", self.config.count_instr),
+        ):
+            if enabled:
+                selected.append(name)
+        manager = create_assembly_registry().build(selected, pipeline_name="assembly")
+        result = manager.run_pipeline(asm_text)
+        self._assembly_report = result.report
+        warnings.extend(result.warnings)
+        return result.data

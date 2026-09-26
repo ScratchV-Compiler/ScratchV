@@ -18,10 +18,10 @@ from pathlib import Path
 
 from scratchv.compiler import CompilerConfig, CompilerDriver, CompileResult
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI argument parser
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -34,27 +34,34 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # ── Backend ─────────────────────────────────────────────────────────
     parser.add_argument(
-        "--backend", choices=["riscv", "llvm"], default="riscv",
+        "--backend",
+        choices=["riscv", "llvm"],
+        default="riscv",
         help="Target backend (default: riscv)",
     )
 
     # ── Optimizations ───────────────────────────────────────────────────
     parser.add_argument(
-        "--optimize", choices=["none", "basic", "all"],
+        "--opt-level",
+        "--optimize",
+        dest="optimize_level",
+        choices=["none", "basic", "all"],
         default="none",
         help="Optimization level (none, basic, all)",
     )
 
     # ── Register allocation ─────────────────────────────────────────────
     parser.add_argument(
-        "--reg-alloc", choices=["naive", "greedy", "linear"],
+        "--reg-alloc",
+        choices=["naive", "greedy", "linear"],
         default="greedy",
         help="Register allocation strategy (default: greedy)",
     )
 
     # ── Debug ───────────────────────────────────────────────────────────
     parser.add_argument(
-        "--dump-ir", action="store_true",
+        "--dump-ir",
+        action="store_true",
         help="Dump IR before and after optimization",
     )
     parser.add_argument(
@@ -63,73 +70,106 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Write the virtual-to-physical register mapping as JSON",
     )
 
+    parser.add_argument(
+        "--passes",
+        type=lambda value: (
+            tuple(name.strip() for name in value.split(",")) if value.strip() else ()
+        ),
+        metavar="NAME,...",
+        default=None,
+        help="Explicit ordered IR pipeline (overrides --opt-level; empty means none)",
+    )
+    parser.add_argument(
+        "--disable-pass",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Disable every occurrence of a registered IR pass (repeatable)",
+    )
+
     # ── Verification ────────────────────────────────────────────────────
     parser.add_argument(
-        "--verify", action="store_true",
+        "--verify",
+        action="store_true",
         help="Verify output against ONNX Runtime / numpy reference",
     )
-    parser.add_argument("--rtol", type=float, default=1e-5,
-                        help="Relative tolerance for verification")
-    parser.add_argument("--atol", type=float, default=1e-8,
-                        help="Absolute tolerance for verification")
+    parser.add_argument(
+        "--rtol", type=float, default=1e-5, help="Relative tolerance for verification"
+    )
+    parser.add_argument(
+        "--atol", type=float, default=1e-8, help="Absolute tolerance for verification"
+    )
 
     # ── Topic module flags ──────────────────────────────────────────────
     parser.add_argument(
-        "--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         default=None,
         help="Enable structured logging at given level",
     )
     parser.add_argument(
-        "--verify-ir", action="store_true",
+        "--verify-ir",
+        action="store_true",
         help="Run IR verifier before and after optimization (Topic 21)",
     )
     parser.add_argument(
-        "--beautify", action="store_true",
+        "--beautify",
+        action="store_true",
         help="Run assembly beautifier on output (Topic 5)",
     )
     parser.add_argument(
-        "--peephole-asm", action="store_true",
+        "--peephole-asm",
+        action="store_true",
         help="Run assembly-level peephole optimizer (Topic 13)",
     )
     parser.add_argument(
-        "--const-merge", action="store_true",
+        "--const-merge",
+        action="store_true",
         help="Run constant-load merge pass (Topic 14)",
     )
     parser.add_argument(
-        "--schedule", action="store_true",
+        "--schedule",
+        action="store_true",
         help="Run instruction scheduler (Topic 18)",
     )
     parser.add_argument(
-        "--count-instr", action="store_true",
+        "--count-instr",
+        action="store_true",
         help="Print instruction count statistics (Topic 12)",
     )
     parser.add_argument(
-        "--dag-isel", action="store_true",
+        "--dag-isel",
+        action="store_true",
         help="Use DAG-based instruction selection (scratchv_dag)",
     )
     parser.add_argument(
-        "--extended-isel", action="store_true",
+        "--extended-isel",
+        action="store_true",
         help="Use extended instruction selector with fp64/sqrt/min/max/abs support (Topic 28)",
     )
 
     # ── Cycle estimation ──────────────────────────────────────────────
     parser.add_argument(
-        "--cycle-stats", action="store_true",
+        "--cycle-stats",
+        action="store_true",
         help="Run 5-stage pipeline cycle estimator with detailed breakdown",
     )
     parser.add_argument(
-        "--no-forwarding", action="store_true",
+        "--no-forwarding",
+        action="store_true",
         help="Disable forwarding in cycle estimator (default: forwarding on)",
     )
     parser.add_argument(
-        "--branch-predictor", choices=["always_taken", "always_not_taken", "btb"],
+        "--branch-predictor",
+        choices=["always_taken", "always_not_taken", "btb"],
         default="always_not_taken",
         help="Branch predictor mode for cycle estimator (default: always_not_taken)",
     )
 
     # ── Meta ────────────────────────────────────────────────────────────
     parser.add_argument(
-        "--version", action="version",
+        "--version",
+        action="version",
         version="ScratchV 0.3.0",
     )
     return parser
@@ -139,11 +179,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 # Config builder
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def args_to_config(args: argparse.Namespace) -> CompilerConfig:
     """Translate parsed CLI arguments to a CompilerConfig."""
     return CompilerConfig(
         backend=args.backend,
-        optimize_level=args.optimize,
+        optimize_level=args.optimize_level,
+        passes=args.passes,
+        disabled_passes=tuple(args.disable_pass),
         reg_alloc=args.reg_alloc,
         dump_ir=args.dump_ir,
         verify=args.verify,
@@ -167,24 +210,26 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
 # Verification
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def run_verification(args: argparse.Namespace, program) -> None:
     """Run verification if requested."""
     from scratchv.verification.verifier import verify_dsl
 
     input_path = args.input
-    use_dsl = args.dsl is not None or (
-        input_path and input_path.endswith(".dsl"))
+    use_dsl = args.dsl is not None or (input_path and input_path.endswith(".dsl"))
 
     if use_dsl:
         with open(input_path or args.dsl) as f:
             source = f.read()
 
-        import numpy as np
         import re
+
+        import numpy as np
+
         input_vars: set[str] = set()
         op_pat = (
-            r'\b(add|sub|mul|div|relu|gelu|exp|neg|'
-            r'matmul|dot|maxpool|softmax)\(([^)]+)'
+            r"\b(add|sub|mul|div|relu|gelu|exp|neg|"
+            r"matmul|dot|maxpool|softmax)\(([^)]+)"
         )
         for m in re.finditer(op_pat, source):
             args_text = m.group(2)
@@ -193,21 +238,28 @@ def run_verification(args: argparse.Namespace, program) -> None:
                 if arg and not arg[0].isdigit():
                     input_vars.add(arg)
         skip = (
-            "add", "sub", "mul", "div", "relu", "gelu", "exp", "neg",
-            "matmul", "dot", "maxpool", "softmax",
-            "return", "for", "endfor",
+            "add",
+            "sub",
+            "mul",
+            "div",
+            "relu",
+            "gelu",
+            "exp",
+            "neg",
+            "matmul",
+            "dot",
+            "maxpool",
+            "softmax",
+            "return",
+            "for",
+            "endfor",
         )
         input_vars = {v for v in input_vars if v.lower() not in skip}
 
-        feed_dict = {
-            v: np.random.randn(4).astype(np.float32)
-            for v in input_vars
-        }
-        result = verify_dsl(
-            source, feed_dict,
-            rtol=args.rtol, atol=args.atol)
+        feed_dict = {v: np.random.randn(4).astype(np.float32) for v in input_vars}
+        result = verify_dsl(source, feed_dict, rtol=args.rtol, atol=args.atol)
         status = "✓ PASS" if result["success"] else "✗ FAIL"
-        err = result['max_error']
+        err = result["max_error"]
         msg = f"  Verification: {status}  (max error: {err:.6e})"
         print(msg, file=sys.stderr)
     else:
@@ -215,6 +267,7 @@ def run_verification(args: argparse.Namespace, program) -> None:
 
         def compiler_fn(inputs):
             from scratchv.frontend.onnx_parser import ONNXParser
+
             parser = ONNXParser()
             return parser.parse(args.input)
 
@@ -230,6 +283,7 @@ def run_verification(args: argparse.Namespace, program) -> None:
 # Main entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -241,16 +295,14 @@ def main(argv: list[str] | None = None) -> int:
     # Build config and driver
     config = args_to_config(args)
     driver = CompilerDriver(config)
-    use_dsl = args.dsl is not None or bool(
-        args.input and args.input.endswith(".dsl")
-    )
+    use_dsl = args.dsl is not None or bool(args.input and args.input.endswith(".dsl"))
 
     # Compile
     try:
         result: CompileResult = driver.compile(
             input_path=args.input or "",
             output_path=args.output,
-            dsl_source=args.dsl if hasattr(args, 'dsl') else None,
+            dsl_source=args.dsl if hasattr(args, "dsl") else None,
         )
     except Exception as exc:
         if not use_dsl:
@@ -281,8 +333,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Error: failed to write register map: {exc}", file=sys.stderr)
                 return 1
 
-        print(f"OK {args.backend.upper()} output written to {result.output_path}",
-              file=sys.stderr)
+        print(
+            f"OK {args.backend.upper()} output written to {result.output_path}",
+            file=sys.stderr,
+        )
         for w in result.warnings:
             print(f"  note: {w}", file=sys.stderr)
         if result.stats.get("opt_message"):
@@ -298,10 +352,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if result.diagnostics:
             from scratchv.frontend.dsl_errors import render_error
+
             for diagnostic in result.diagnostics:
-                print(render_error(
-                    diagnostic, stream=sys.stderr, use_color=None,
-                ), file=sys.stderr)
+                print(
+                    render_error(
+                        diagnostic,
+                        stream=sys.stderr,
+                        use_color=None,
+                    ),
+                    file=sys.stderr,
+                )
             if result.diagnostic_limit_reached:
                 print(
                     f"note: error limit ({result.diagnostic_limit}) reached; "

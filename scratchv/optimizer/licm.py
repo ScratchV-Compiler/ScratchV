@@ -15,30 +15,27 @@ from __future__ import annotations
 from scratchv.ir.types import (
     OpCode, Instruction, BasicBlock, Function, Program,
 )
+from scratchv.pass_interface import OptimizationPass
 
 
-class LICM:
+class LICM(OptimizationPass):
     """Hoist loop-invariant code out of loops."""
 
-    def __init__(self, program: Program):
-        self.program = program
-        self._stats = {"hoisted": 0}
+    name = "licm"
 
-    def run(self) -> int:
+    def optimize(self, program: Program) -> int:
         """Run LICM on all functions.
 
         Returns number of hoisted instructions.
         """
-        for func in self.program.functions:
-            self._process_function(func)
-        return self._stats["hoisted"]
+        return sum(self._process_function(func) for func in program.functions)
 
-    def _process_function(self, func: Function) -> None:
-        for block in func.blocks:
-            self._process_block(block)
+    def _process_function(self, func: Function) -> int:
+        return sum(self._process_block(block) for block in func.blocks)
 
-    def _process_block(self, block: BasicBlock) -> None:
+    def _process_block(self, block: BasicBlock) -> int:
         """Find FOR/ENDFOR pairs in a block and hoist invariants."""
+        changes = 0
         instrs = block.instructions
         i = 0
         while i < len(instrs):
@@ -84,9 +81,11 @@ class LICM:
                 instrs.pop(idx)
                 instrs.insert(loop_start, instr)
                 loop_end += 1  # adjust for shift
-                self._stats["hoisted"] += 1
+                changes += 1
 
             i = loop_end + 1
+
+        return changes
 
     def _find_matching_endfor(self, instrs: list[Instruction], start: int):
         """Find matching ENDFOR for a FOR at given index."""
