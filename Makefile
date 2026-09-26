@@ -1,7 +1,7 @@
 # ScratchV developer makefile
 .POSIX:
 
-.PHONY: quick-start install test test-peephole ci-peephole bench bench-topic06 bench-cnn clean lint docs
+.PHONY: quick-start install test test-peephole ci-peephole bench bench-topic06 bench-cnn bench-ir-verifier clean lint docs
 
 # ── Beginner quick-start ─────────────────────────────────────────────────────
 
@@ -69,6 +69,11 @@ bench:
 	python3 benchmarks/bench_runner.py benchmarks/cases \
 		--output-json benchmark_reports/dsl_bench.json \
 		--output-html benchmark_reports/dsl_bench.html
+
+# ── Topic 21 IR verification overhead ────────────────────────────────────
+
+bench-ir-verifier:
+	python3 -m benchmarks.bench_ir_verifier
 
 # ── Topic 06 DSL correctness + TinyFive benchmark ─────────────────────────
 
