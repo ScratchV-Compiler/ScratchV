@@ -225,7 +225,7 @@ def parse_while(self):
 
 - 龙书第 4 章：Syntax Analysis（递归下降解析原理）
 - DSL 语法参考：[ScratchV DSL 文档](../../reference/developer_guide.md)
-- 相关 topic: [课题9 — DSL 错误提示美化器](../09-DSL错误提示美化器/09-DSL错误提示美化器.md) | [课题3 — IR 系统](../03-IR系统/03-IR系统.md) | [课题11 — 控制流图生成器](../11-控制流图生成器/11-控制流图生成器.md)
+- 相关 topic: [课题9 — DSL 错误提示美化器](../09-DSL错误提示美化器/09-DSL错误提示美化器.md) | [课题3 — IR 系统](../../archive/后续课题/03-IR系统/03-IR系统.md) | [课题11 — 控制流图生成器](../11-控制流图生成器/11-控制流图生成器.md)
 
 ---
 

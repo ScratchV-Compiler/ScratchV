@@ -159,7 +159,7 @@ def compile_llvm_rv32(onnx_path, output_asm):
 
 ## 进阶阅读
 
-- [ARCHITECTURE.md](../../reference/ARCHITECTURE.md) — 双路径架构
+- [ARCHITECTURE.md](../../../reference/ARCHITECTURE.md) — 双路径架构
 - [llvmlite 文档](https://llvmlite.readthedocs.io/)
 - 相关 topic: [课题25 — LLVM 对比工具](../25-LLVM对比工具/25-LLVM对比工具.md) | [课题26 — TinyFive 对比](../26-TinyFive对比/26-TinyFive对比.md) | [课题19 — Standalone RISC-V](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md)
 

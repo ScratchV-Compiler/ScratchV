@@ -207,8 +207,8 @@ def _get_attr(self, node, name, default=None):
 ## 进阶阅读
 
 - [ONNX 算子规范](https://github.com/onnx/onnx/blob/main/docs/Operators.md) — 所有标准算子的定义
-- [ARCHITECTURE.md](../../reference/ARCHITECTURE.md) — Standalone 路径的 ONNXModel 手工 protobuf 解析原理
-- 相关 topic: [课题1 — DSL 前端增强器](../01-DSL前端增强器/01-DSL前端增强器.md) | [课题8 — 指令选择](../08-指令选择/08-指令选择.md) | [课题19 — Standalone RISC-V 编译器](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md)
+- [ARCHITECTURE.md](../../../reference/ARCHITECTURE.md) — Standalone 路径的 ONNXModel 手工 protobuf 解析原理
+- 相关 topic: [课题1 — DSL 前端增强器](../../../topics/01-DSL前端增强器/01-DSL前端增强器.md) | [课题8 — 指令选择](../08-指令选择/08-指令选择.md) | [课题19 — Standalone RISC-V 编译器](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md)
 
 ---
 

@@ -145,8 +145,8 @@ class LLVMIRBuilder:
 ## 进阶阅读
 
 - [LLVM Language Reference](https://llvm.org/docs/LangRef.html) — LLVM IR 完整语法
-- [ARCHITECTURE.md](../../reference/ARCHITECTURE.md) — 双路径对比详解
-- [03-指标解读指南](../../guide/03-指标解读指南.md) — 如何解读 LLVM vs ScratchV 的性能差距
+- [ARCHITECTURE.md](../../../reference/ARCHITECTURE.md) — 双路径对比详解
+- [03-指标解读指南](../../../guide/03-指标解读指南.md) — 如何解读 LLVM vs ScratchV 的性能差距
 - 相关 topic: [课题8 — 指令选择](../08-指令选择/08-指令选择.md) | [课题19 — Standalone RISC-V 编译器](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md) | [课题22 — Standalone LLVM 编译器](../22-Standalone-LLVM编译器/22-Standalone-LLVM编译器.md)
 
 ---

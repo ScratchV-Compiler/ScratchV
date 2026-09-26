@@ -86,4 +86,4 @@ class OpNode:
 
 - Topic 1: DSL 前端增强器 (`frontend/dsl_extended.py`)
 - Topic 9: DSL 错误提示美化器 (`frontend/dsl_errors.py`)
-- [ARCHITECTURE.md](../../reference/ARCHITECTURE.md) — 完整编译管线
+- [ARCHITECTURE.md](../../../reference/ARCHITECTURE.md) — 完整编译管线

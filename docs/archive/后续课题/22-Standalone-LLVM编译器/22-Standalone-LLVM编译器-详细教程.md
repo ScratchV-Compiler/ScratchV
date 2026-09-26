@@ -135,7 +135,7 @@ class LLVMIRBuilder:
 
 ## 进阶阅读
 
-- [ARCHITECTURE.md](../../reference/ARCHITECTURE.md) — 双路径对比详解
+- [ARCHITECTURE.md](../../../reference/ARCHITECTURE.md) — 双路径对比详解
 - [LLVM Language Reference](https://llvm.org/docs/LangRef.html)
 - 相关 topic: [课题16 — LLVM 代码生成](../16-LLVM代码生成/16-LLVM代码生成.md) | [课题19 — Standalone RISC-V](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md)
 

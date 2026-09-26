@@ -93,18 +93,31 @@ def check_basenames(paths: list[str]) -> list[str]:
     return sorted(n for n, c in counts.items() if c > 1 and n not in BASENAME_EXEMPT)
 
 
+def _dead_blobs_in(page: Path, tracked: set[str]) -> set[str]:
+    text = page.read_bytes().decode("utf-8", "replace")
+    out = set()
+    for m in BLOB_RE.finditer(text):
+        rel = urllib.parse.unquote(m.group(1)).rstrip(".,)")
+        if rel and rel not in tracked:
+            out.add(rel)
+    return out
+
+
 def check_blob_urls(html_dir: Path | None) -> list[str]:
-    """Every blob/main/... path the site emits must exist in the working tree."""
-    if html_dir is None or not html_dir.is_dir():
-        return []
+    """Every self-repo blob URL must point at a file that exists.
+
+    Hand-maintained pages are scanned too: an absolute GitHub URL is exactly
+    the kind of link that rots silently when files move, because no relative
+    path check ever sees it.
+    """
     tracked = set(git_ls_files())
-    dead = set()
-    for page in sorted(html_dir.glob("*.html")):
-        text = page.read_bytes().decode("utf-8", "replace")
-        for m in BLOB_RE.finditer(text):
-            rel = urllib.parse.unquote(m.group(1)).rstrip(".,)")
-            if rel and rel not in tracked:
-                dead.add(rel)
+    pages = [ROOT / p for p in tracked if p.endswith(".html")]
+    if html_dir is not None and html_dir.is_dir():
+        pages += sorted(html_dir.glob("*.html"))
+    dead: set[str] = set()
+    for page in pages:
+        if page.is_file():
+            dead |= _dead_blobs_in(page, tracked)
     return sorted(dead)
 
 
@@ -137,12 +150,12 @@ def main() -> int:
     dead = check_blob_urls(html_dir)
     if dead:
         failed = True
-        print(f"DEAD BLOB: {len(dead)} generated link(s) point at missing files",
+        print(f"DEAD BLOB: {len(dead)} GitHub blob link(s) point at missing files",
               file=sys.stderr)
         for d in dead:
             print(f"  {d}", file=sys.stderr)
-    elif html_dir:
-        print(f"OK: no dead GitHub blob URLs in {html_dir}")
+    else:
+        print("OK: every self-repo GitHub blob URL resolves")
 
     return 1 if failed else 0
 

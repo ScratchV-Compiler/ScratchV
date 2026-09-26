@@ -184,8 +184,8 @@ class CNNRISCVGenerator:
 
 ## 进阶阅读
 
-- [ARCHITECTURE.md](../../reference/ARCHITECTURE.md) — 完整架构文档，包含双路径对比
-- [03-指标解读指南](../../guide/03-指标解读指南.md) — 如何解读动态指令数和缓存指标
+- [ARCHITECTURE.md](../../../reference/ARCHITECTURE.md) — 完整架构文档，包含双路径对比
+- [03-指标解读指南](../../../guide/03-指标解读指南.md) — 如何解读动态指令数和缓存指标
 - Protobuf wire format: [Encoding](https://protobuf.dev/programming-guides/encoding/)
 - 相关 topic: [课题22 — Standalone LLVM 编译器](../22-Standalone-LLVM编译器/22-Standalone-LLVM编译器.md) | [课题3 — IR 系统](../03-IR系统/03-IR系统.md)
 

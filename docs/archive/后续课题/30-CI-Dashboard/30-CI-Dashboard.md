@@ -133,6 +133,6 @@ llvm_cache_compare.py → llvm_vs_scratchv.json
 
 ## 进阶阅读
 
-- [03-指标解读指南](../../guide/03-指标解读指南.md) — 如何解读 Dashboard 中的数据
+- [03-指标解读指南](../../../guide/03-指标解读指南.md) — 如何解读 Dashboard 中的数据
 - GitHub Actions 文档：[Workflow syntax](https://docs.github.com/en/actions/writing-workflows)
-- 相关课题: [课题6 — 性能基准套件](../06-性能基准套件/06-性能基准套件.md) | [课题19 — Standalone RISC-V](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md) | [课题25 — LLVM对比工具](../25-LLVM对比工具/25-LLVM对比工具.md)
+- 相关课题: [课题6 — 性能基准套件](../../../topics/06-性能基准套件/06-性能基准套件.md) | [课题19 — Standalone RISC-V](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md) | [课题25 — LLVM对比工具](../25-LLVM对比工具/25-LLVM对比工具.md)

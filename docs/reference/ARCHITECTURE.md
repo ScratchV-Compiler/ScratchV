@@ -511,6 +511,6 @@ python .claude/harness/verify/run.py --level L2
 
 - 📘 **新手入门**: [00-环境搭建](../guide/00-环境搭建指南.md) → [01-概念入门](../guide/01-编译器概念入门.md) → [02-快速上手](../guide/02-快速上手教程.md)
 - 📊 **指标解读**: [03-指标解读指南](../guide/03-指标解读指南.md)
-- 🎓 **深入学习**: [Topic 03 — IR 系统](../topics/03-IR系统/03-IR系统.md) | [Topic 08 — 指令选择](../topics/08-指令选择/08-指令选择.md) | [Topic 19 — Standalone RISC-V](../topics/19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md)
+- 🎓 **深入学习**: [Topic 03 — IR 系统](../archive/后续课题/03-IR系统/03-IR系统.md) | [Topic 08 — 指令选择](../archive/后续课题/08-指令选择/08-指令选择.md) | [Topic 19 — Standalone RISC-V](../archive/后续课题/19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md)
 - 🌐 **在线课程**: [交互式课程站点](https://scratchv-compiler.github.io/ScratchV/docs/index.html)（本地用 `make docs` 生成）
 - 📖 **全部文档**: [INDEX.md](../INDEX.md)

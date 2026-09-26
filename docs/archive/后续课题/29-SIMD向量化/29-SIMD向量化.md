@@ -50,7 +50,7 @@ SIMD（Single Instruction Multiple Data）向量化将标量运算转换为向�
 ## 进阶阅读
 
 - RISC-V V-extension 规范: [RISC-V Vector Extension](https://github.com/riscv/riscv-v-spec)
-- 相关 topic: [课题19 — Standalone RISC-V 编译器](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md) | [课题28 — 扩展指令选择](../28-扩展指令选择/28-扩展指令选择.md)
+- 相关 topic: [课题19 — Standalone RISC-V 编译器](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md) | [课题28 — 扩展指令选择](../../../topics/28-扩展指令选择/28-扩展指令选择.md)
 
 ---
 

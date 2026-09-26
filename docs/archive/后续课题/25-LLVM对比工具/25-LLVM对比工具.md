@@ -149,8 +149,8 @@ def estimate_dynamic(inner_loop_insns, layer_dims):
 
 ## 进阶阅读
 
-- [03-指标解读指南](../../guide/03-指标解读指南.md) — 如何解读对比数据
-- [ARCHITECTURE.md](../../reference/ARCHITECTURE.md) — 双路径对比详解
+- [03-指标解读指南](../../../guide/03-指标解读指南.md) — 如何解读对比数据
+- [ARCHITECTURE.md](../../../reference/ARCHITECTURE.md) — 双路径对比详解
 - 相关 topic: [课题23 — Cache 模型](../23-Cache模型/23-Cache模型.md) | [课题30 — CI Dashboard](../30-CI-Dashboard/30-CI-Dashboard.md)
 
 ---

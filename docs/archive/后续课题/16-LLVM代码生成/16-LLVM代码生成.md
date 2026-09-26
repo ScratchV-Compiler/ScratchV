@@ -116,6 +116,6 @@ lli output.ll
 
 ## 相关 Topic
 
-- [ARCHITECTURE.md](../../reference/ARCHITECTURE.md) — 双路径对比详解
+- [ARCHITECTURE.md](../../../reference/ARCHITECTURE.md) — 双路径对比详解
 - Backend Instruction Selection — RISC-V 原生代码生成
 - LLVM vs ScratchV Cache Compare — `standalone/llvm_cache_compare.py`

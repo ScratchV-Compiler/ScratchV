@@ -59,4 +59,4 @@ python scratchv/standalone/onnx_to_llvm_standalone.py models/graph/cnn.onnx \
 - Standalone RISC-V 编译器 (`onnx_to_riscv_standalone.py`)
 - LLVM 代码生成后端 (`backend/llvm_codegen.py`)
 - LLVM vs ScratchV Cache Compare (`llvm_cache_compare.py`)
-- [ARCHITECTURE.md](../../reference/ARCHITECTURE.md) — 双路径详解
+- [ARCHITECTURE.md](../../../reference/ARCHITECTURE.md) — 双路径详解

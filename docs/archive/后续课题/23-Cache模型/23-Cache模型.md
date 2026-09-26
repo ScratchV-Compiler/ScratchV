@@ -158,7 +158,7 @@ def access(self, addr, is_read):
 ## 进阶阅读
 
 - Hennessy & Patterson: Computer Architecture, 附录 B（Cache 原理）
-- [03-指标解读指南](../../guide/03-指标解读指南.md) — 如何解读 Cache 指标
+- [03-指标解读指南](../../../guide/03-指标解读指南.md) — 如何解读 Cache 指标
 - 相关 topic: [课题19 — Standalone RISC-V](../19-Standalone-RISC-V编译器/19-Standalone-RISC-V编译器.md) | [课题25 — LLVM vs ScratchV 对比](../25-LLVM对比工具/25-LLVM对比工具.md)
 
 ---
