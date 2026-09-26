@@ -65,7 +65,7 @@ ScratchV/
 │   │                        （指引 / 设计 / 开发 / 报告 / 计划都在其中）
 │   ├── reference/        ← 架构 / 开发 / 规范等参考文档
 │   ├── promo/            ← 招募推广页
-│   ├── archive/          ← 归档提案、后续课题与旧版本文档
+│   ├── archive/          ← 归档的旧版文档
 │   └── topics/html/      ← 🌐 课程站点（make docs 生成，不入库）
 ├── benchmarks/           ← 通用基准与课题 06 性能基线
 ├── tests/                ← 单元测试及课题 06 的 23 个 DSL 用例
