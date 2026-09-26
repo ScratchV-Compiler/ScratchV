@@ -35,10 +35,12 @@ riscv = ["tinyfive"]
 llvm = ["llvmlite"]      # optional: LLVM IR JIT execution
 verify = ["onnxruntime"] # optional: ONNX Runtime comparison
 all = ["tinyfive", "llvmlite", "onnxruntime"]
+topic06 = ["tinyfive", "pytest"]
+topic06-report = ["tinyfive", "pytest", "jinja2", "matplotlib"]
 
 [project.urls]
 Source = "https://github.com/kinsomwang/ScratchV"
-Documentation = "https://github.com/kinsomwang/ScratchV/tree/main/docs"
+Documentation = "https://github.com/kinsomwang/ScratchV/tree/main/docs/INDEX.md"
 
 [project.scripts]
 scratchv = "scratchv.main:main"
@@ -48,3 +50,9 @@ include = ["scratchv", "scratchv.*", "scratchv_dag", "scratchv_dag.*", "benchmar
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "benchmarks"]
+markers = [
+    "unit: unit tests",
+    "blackbox: black-box tests",
+    "integration: integration tests",
+    "stress: stress tests",
+]

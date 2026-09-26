@@ -84,6 +84,7 @@ class SchedInst:
     defines: set[str] = field(default_factory=set)
     uses: set[str] = field(default_factory=set)
     raw_line: str = ""
+    target: Optional[str] = None
 
     def __repr__(self) -> str:
         return (f"SchedInst({self.id}, {self.opcode}, "
@@ -435,6 +436,12 @@ def parse_instructions(asm_text: str) -> list[SchedInst]:
             defines = set()
             uses = set()
 
+        target: Optional[str] = None
+        if opcode in (
+            "j", "jal", "beq", "bne", "blt", "bge", "bnez", "call",
+        ) and operands:
+            target = operands[-1]
+
         result.append(SchedInst(
             id=idx,
             opcode=opcode,
@@ -442,6 +449,7 @@ def parse_instructions(asm_text: str) -> list[SchedInst]:
             defines=defines,
             uses=uses,
             raw_line=line,
+            target=target,
         ))
         idx += 1
 
@@ -467,11 +475,34 @@ def machine_instrs_from_scheduled(
     """
     from scratchv.backend.machine_types import MachineInstr, MachineOp, MachineOperand
 
+    control_ops = {
+        MachineOp.J,
+        MachineOp.JAL,
+        MachineOp.BEQ,
+        MachineOp.BNE,
+        MachineOp.BLT,
+        MachineOp.BGE,
+        MachineOp.BNEZ,
+        MachineOp.CALL,
+    }
+
+    no_dst_ops = {
+        MachineOp.J,
+        MachineOp.JAL,
+        MachineOp.BEQ,
+        MachineOp.BNE,
+        MachineOp.BLT,
+        MachineOp.BGE,
+        MachineOp.BNEZ,
+        MachineOp.CALL,
+    }
+
     result = []
     for inst in scheduled:
         if inst.opcode == ".label":
             result.append(MachineInstr(
-                MachineOp.LABEL, comment="",
+                MachineOp.LABEL, comment=inst.raw_line,
+                target=inst.target,
             ))
             continue
 
@@ -490,12 +521,30 @@ def machine_instrs_from_scheduled(
             except ValueError:
                 return MachineOperand.vreg(s)
 
-        ops = [_to_mop(o) for o in inst.operands]
-        dst = ops[0] if len(ops) >= 1 else None
-        src1 = ops[1] if len(ops) >= 2 else None
-        src2 = ops[2] if len(ops) >= 3 else None
+        raw_ops = list(inst.operands)
+        if (
+            mop in control_ops
+            and inst.target is not None
+            and raw_ops
+            and raw_ops[-1] == inst.target
+        ):
+            raw_ops = raw_ops[:-1]
 
-        result.append(MachineInstr(mop, dst, src1, src2, inst.raw_line))
+        ops = [_to_mop(o) for o in raw_ops]
+        if mop in no_dst_ops:
+            dst = None
+            src1 = ops[0] if len(ops) >= 1 else None
+            src2 = ops[1] if len(ops) >= 2 else None
+        else:
+            dst = ops[0] if len(ops) >= 1 else None
+            src1 = ops[1] if len(ops) >= 2 else None
+            src2 = ops[2] if len(ops) >= 3 else None
+
+        result.append(
+            MachineInstr(
+                mop, dst, src1, src2, inst.raw_line, inst.target,
+            )
+        )
 
     return result
 

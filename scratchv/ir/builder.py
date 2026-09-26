@@ -145,6 +145,26 @@ class IRBuilder:
             OpCode.BR_IF, operands=[cond],
             target=f"{true_block},{false_block}")
 
+    def br_compare(
+        self,
+        lhs: Value,
+        operator: str,
+        rhs: Value,
+        true_block: str,
+        false_block: str,
+    ) -> Instruction:
+        """Branch by comparing two values with a supported DSL operator."""
+        if operator not in {"==", "!=", "<", ">", "<=", ">="}:
+            raise ValueError(f"unsupported comparison operator: {operator}")
+        if lhs.dtype != rhs.dtype:
+            raise ValueError("comparison operands must have the same type")
+        return self._emit(
+            OpCode.BR_IF,
+            operands=[lhs, rhs],
+            target=f"{true_block},{false_block}",
+            cmp_op=operator,
+        )
+
     def ret(self, val: Value | None = None) -> Instruction:
         operands = [val] if val else []
         return self._emit(OpCode.RETURN, operands=operands)

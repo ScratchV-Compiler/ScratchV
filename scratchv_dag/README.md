@@ -2,7 +2,7 @@
 
 **scratchv_dag** is a standalone Python package providing DAG-based instruction selection infrastructure inspired by LLVM's SelectionDAG, paired with a 4 MB L1 cache simulator and a buddy-system memory allocator designed for edge-NPU compiler toolchains.
 
-It operates independently or as part of the [ScratchV](https://github.com/kinsomwang/ScratchV) ONNX→RISC-V compiler.
+It operates independently or as part of the [ScratchV](https://github.com/ScratchV-Compiler/ScratchV) ONNX→RISC-V compiler.
 
 ---
 

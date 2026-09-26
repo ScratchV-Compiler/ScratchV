@@ -1,0 +1,10 @@
+{
+  "description": "if/else branch returns subtraction result when flag is zero.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "flag": 0,
+    "a": 9,
+    "b": 4
+  },
+  "expected_return": 5
+}

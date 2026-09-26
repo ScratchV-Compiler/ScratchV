@@ -1,0 +1,10 @@
+{
+  "description": "if/else branch returns add result when flag is non-zero.",
+  "expected_output_type": "return_value",
+  "inputs": {
+    "flag": 1,
+    "a": 9,
+    "b": 4
+  },
+  "expected_return": 13
+}

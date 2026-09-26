@@ -43,6 +43,7 @@ import sys
 import os
 import argparse
 import math
+import copy
 from typing import Optional, Union
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1170,11 +1171,13 @@ class MemoryPlan:
 class RISCVEmitter:
     """Emits RISC-V instructions into a code buffer with label tracking."""
 
-    def __init__(self):
+    def __init__(self, compact_li32: bool = False):
         self.code: list[int] = []  # list of 32-bit instruction words
         self.labels: dict[str, int] = {}  # label name → instruction index
         self.pending_fixups: list[tuple[int, str, str]] = []  # (idx, kind, label)
         self.comments: dict[int, str] = {}  # instruction index → comment
+        self.compact_li32 = compact_li32
+        self.label_prefix = ""
 
     def _emit(self, word: int, comment: str = "") -> int:
         """Emit one instruction word. Returns its index."""
@@ -1194,24 +1197,27 @@ class RISCVEmitter:
 
     def label(self, name: str) -> None:
         """Define a label at the current position."""
+        name = self.label_prefix + name
+        if name in self.labels:
+            raise ValueError(f"Duplicate label '{name}'")
         self.labels[name] = len(self.code)
 
     def emit_branch(self, op_builder, rs1: int, rs2: int,
                     label: str, comment: str = "") -> int:
         """Emit a branch instruction with label fixup."""
         idx = self._emit(op_builder(rs1, rs2, 0), comment)
-        self.pending_fixups.append((idx, "b", label))
+        self.pending_fixups.append((idx, "b", self.label_prefix + label))
         return idx
 
     def emit_jump(self, op_builder, label: str, comment: str = "") -> int:
         """Emit a jump instruction with label fixup."""
         idx = self._emit(op_builder(0), comment)
-        self.pending_fixups.append((idx, "j", label))
+        self.pending_fixups.append((idx, "j", self.label_prefix + label))
         return idx
 
     def emit_jal(self, rd: int, label: str, comment: str = "") -> int:
         idx = self._emit(rv_jal(rd, 0), comment)
-        self.pending_fixups.append((idx, "j", label))
+        self.pending_fixups.append((idx, "j", self.label_prefix + label))
         return idx
 
     def emit_li(self, rd: int, imm: int, comment: str = "") -> None:
@@ -1222,9 +1228,14 @@ class RISCVEmitter:
     def emit_li32(self, rd: int, imm: int, comment: str = "") -> None:
         """Emit a 32-bit immediate using LUI + ADDI sequence.
 
-        Always emits 2 instructions (even if imm fits in 12 bits),
-        for cases where we need the full 32-bit value.
+        The baseline form always emits two instructions.  With constant-load
+        compaction enabled, it uses the canonical one-or-two instruction
+        lowering used for a merged source-level ``li`` pseudo-instruction.
         """
+        if self.compact_li32:
+            self.emit_li(rd, imm, comment)
+            return
+
         # Split into upper 20 bits and lower 12 bits
         # ADDI sign-extends the 12-bit immediate, so we need to handle carry
         imm_u32 = imm & 0xFFFFFFFF
@@ -1261,10 +1272,12 @@ class RISCVEmitter:
         """Resolve all branch/jump fixups."""
         for idx, kind, label in self.pending_fixups:
             if label not in self.labels:
-                print(f"WARNING: undefined label '{label}' — fixup at instr {idx}")
-                continue
+                raise ValueError(f"Undefined label '{label}' at instruction {idx}")
             target_idx = self.labels[label]
             byte_offset = (target_idx - idx) * 4
+            limit = 4096 if kind == "b" else 1048576
+            if not -limit <= byte_offset < limit:
+                raise ValueError(f"Out-of-range {kind} target '{label}': {byte_offset} bytes")
             word = self.code[idx]
 
             if kind == "b":
@@ -1424,10 +1437,15 @@ def _disasm_one(word: int) -> str:
 class CNNRISCVGenerator:
     """Generates complete RISC-V code for all CNN operators."""
 
-    def __init__(self, model: ONNXModel, memory: MemoryPlan):
+    def __init__(
+        self,
+        model: ONNXModel,
+        memory: MemoryPlan,
+        compact_constants: bool = False,
+    ):
         self.model = model
         self.mem = memory
-        self.emit = RISCVEmitter()
+        self.emit = RISCVEmitter(compact_li32=compact_constants)
 
         # Wide register aliases for readability
         # t0-t6: x5-x7, x28-x31 → temporaries
@@ -1558,7 +1576,13 @@ class CNNRISCVGenerator:
         handler = getattr(self, f"_gen_{op}", None)
         if handler is None:
             raise ValueError(f"Unsupported op: {node.op_type}")
-        handler(node)
+        # Operator-local loop names must never bind to a later operator.
+        previous_prefix = self.emit.label_prefix
+        self.emit.label_prefix = f"_node_{len(self.emit.code)}_"
+        try:
+            handler(node)
+        finally:
+            self.emit.label_prefix = previous_prefix
 
     def _get_weight_addr(self, name: str, dst_reg: int) -> None:
         """Load address of a weight tensor into dst_reg.
@@ -1689,6 +1713,10 @@ class CNNRISCVGenerator:
         COND_REG         = self.T4   # t4: condition / temp
         WT_PTR           = self.T5   # t5: running weight pointer
         T6_REG           = self.T6   # t6: general temporary
+        # Entry saved a0/a1 in s0/s1. Keep spatial bases out of MAC/address
+        # scratch registers, whose values change inside the ow/ic loops.
+        IH_BASE_REG      = _R_A0
+        IW_BASE_REG      = _R_A1
 
         L = self.emit.label
 
@@ -1697,32 +1725,16 @@ class CNNRISCVGenerator:
         C_in_K_K = C_in * K * K
         K_K = K * K
         W_minus_K_times_4 = (W - K) * 4
-        stride_h_W_times_4 = sh * W * 4
-        stride_w_times_4 = sw * 4
 
         # ── oc loop ────────────────────────────────────────────────────
         self.emit.emit(rv_addi(OC_REG, _R_ZERO, 0), f"oc=0 (C_out={C_out})")
-        # oc_weight_step = C_in * K * K (weight offset per oc)
-        WT_OC_STEP_REG = STRIDE_H_REG  # reuse stride_h reg after preload (a3)
-        self.emit.emit_li32(WT_OC_STEP_REG, C_in_K_K, f"oc_wt_step={C_in_K_K}")
         L("_conv_oc_loop")
-
-        # Load bias[oc]
-        self.emit.emit(rv_slli(TMP_REG, OC_REG, 2), "offset = oc*4")
-        self.emit.emit(rv_add(TMP_REG, S4_BIAS_BASE, TMP_REG), "+ bias_base")
-        self.emit.emit(rv_lw(ACC_REG, TMP_REG, 0), "acc = bias[oc]")
-
-        # Compute oc * C_in*K*K for weight base offset (reused per oc)
-        WT_OC_BASE_REG = COND_REG  # t4 reused as oc weight base offset
-        self.emit.emit(rv_mul(WT_OC_BASE_REG, OC_REG, WT_OC_STEP_REG),
-                       f"wt_oc_base = oc * {C_in_K_K}")
 
         # ── oh loop ────────────────────────────────────────────────────
         self.emit.emit(rv_addi(OH_REG, _R_ZERO, 0), f"oh=0 (H_out={H_out})")
         L("_conv_oh_loop")
 
         # ih_base = oh * stride_h (precompute for this oh row)
-        IH_BASE_REG = TMP_REG  # reuse
         self.emit.emit(rv_mul(IH_BASE_REG, OH_REG, STRIDE_H_REG),
                        "ih_base = oh * stride_h")
 
@@ -1731,9 +1743,13 @@ class CNNRISCVGenerator:
         L("_conv_ow_loop")
 
         # iw_base = ow * stride_w (precompute for this column)
-        IW_BASE_REG = T6_REG
         self.emit.emit(rv_mul(IW_BASE_REG, OW_REG, STRIDE_W_REG),
                        "iw_base = ow * stride_w")
+
+        # Each output element starts a new reduction, including its bias.
+        self.emit.emit(rv_slli(TMP_REG, OC_REG, 2), "offset = oc*4")
+        self.emit.emit(rv_add(TMP_REG, S4_BIAS_BASE, TMP_REG), "+ bias_base")
+        self.emit.emit(rv_lw(ACC_REG, TMP_REG, 0), "acc = bias[oc]")
 
         if no_pad and K == 3:
             # ══════════════════════════════════════════════════════════════
@@ -1742,9 +1758,9 @@ class CNNRISCVGenerator:
             # ~7 instr/MAC vs ~12 before.  2026-06-08
             # ══════════════════════════════════════════════════════════════
             # ic_advance = bytes to advance IN_PTR to next ic's same spatial pos
-            # After 3×3 window: ptr moved by K + (K-1)*(W-K) elems forward.
-            # Next ic start is H*W elems ahead.  Net: (H*W - K - (K-1)*(W-K))*4
-            ic_advance_bytes = (H * W - K - (K - 1) * (W - K)) * 4
+            # K*K loads plus K-1 row skips move (K-1)*W + K elements.
+            # The next channel's window starts H*W elements from this one.
+            ic_advance_bytes = (H * W - (K - 1) * W - K) * 4
             IC_ADV_REG = KH_REG   # s10 freed: no kh counter needed
             ROW_ADV_REG = KW_REG  # s11 freed: no kw counter needed
 
@@ -1768,7 +1784,9 @@ class CNNRISCVGenerator:
             self.emit.emit(rv_add(IN_PTR, S2_IN_BASE, T6_REG),
                            "in_ptr = &input[0, ih_base, iw_base]")
             # WT_PTR = weight_base + oc * C_in*K*K * 4
-            self.emit.emit(rv_slli(T6_REG, WT_OC_BASE_REG, 2),
+            self.emit.emit_li32(T6_REG, C_in_K_K, f"oc_wt_step={C_in_K_K}")
+            self.emit.emit(rv_mul(T6_REG, OC_REG, T6_REG), "wt_oc_base")
+            self.emit.emit(rv_slli(T6_REG, T6_REG, 2),
                            f"wtoff = oc * {C_in_K_K} * 4")
             self.emit.emit(rv_add(WT_PTR, S3_W_BASE, T6_REG),
                            "wt_ptr = &weight[oc, 0, 0, 0]")
@@ -1845,7 +1863,7 @@ class CNNRISCVGenerator:
 
         else:
             # ══════════════════════════════════════════════════════════════
-            # Original loop path (K ≠ 3 or padded) — unchanged
+            # General loop path (K ≠ 3 or padded)
             # ══════════════════════════════════════════════════════════════
             # ── ic loop ────────────────────────────────────────────────
             self.emit.emit(rv_addi(IC_REG, _R_ZERO, 0), f"ic=0 (C_in={C_in})")
@@ -1860,7 +1878,9 @@ class CNNRISCVGenerator:
                            "in_ptr = input_base + ic*H*W*4")
 
             # Step 2: WT_PTR = weight_base + oc * C_in*K*K * 4
-            self.emit.emit(rv_slli(VAL_REG, WT_OC_BASE_REG, 2),
+            self.emit.emit_li32(VAL_REG, C_in_K_K, f"oc_wt_step={C_in_K_K}")
+            self.emit.emit(rv_mul(VAL_REG, OC_REG, VAL_REG), "wt_oc_base")
+            self.emit.emit(rv_slli(VAL_REG, VAL_REG, 2),
                            f"wt_oc_byte = {C_in_K_K}*4")
             self.emit.emit(rv_add(WT_PTR, S3_W_BASE, VAL_REG),
                            "wt_ptr = weight_base + oc_wt_byte")
@@ -1913,7 +1933,7 @@ class CNNRISCVGenerator:
                 self.emit.emit_branch(rv_bne, COND_REG, _R_ZERO,
                                       "_conv_kw_loop", "loop kw")
             else:
-                # Padding path (unchanged)
+                # Padding path: check coordinates before any input load.
                 self.emit.emit(rv_mul(TMP_REG, OH_REG, STRIDE_H_REG),
                                "tmp = oh * stride_h")
                 self.emit.emit(rv_add(TMP_REG, TMP_REG, KH_REG), "tmp += kh")
@@ -1957,22 +1977,13 @@ class CNNRISCVGenerator:
                 self.emit.emit(rv_lw(VAL_REG, T6_REG, 0),
                                "load input[ic,ih,iw]")
 
-                self.emit.emit(rv_mul(T6_REG, OC_REG, WT_OC_STEP_REG),
-                               f"addr = oc * {C_in_K_K}")
-                self.emit.emit_li32(T6_REG, K_K, f"reload K*K = {K_K}")
-                self.emit.emit(rv_mul(COND_REG, IC_REG, T6_REG),
-                               f"tmp = ic*{K_K}")
-                self.emit.emit(rv_add(T6_REG, T6_REG, COND_REG),
-                               "addr += ic*K*K")
-                self.emit.emit(rv_mul(COND_REG, KH_REG, K_REG),
-                               "tmp = kh*K")
-                self.emit.emit(rv_add(T6_REG, T6_REG, COND_REG),
-                               "addr += kh*K")
+                # WT_PTR already points at weight[oc, ic, 0, 0].
+                self.emit.emit(rv_mul(T6_REG, KH_REG, K_REG), "addr = kh*K")
                 self.emit.emit(rv_add(T6_REG, T6_REG, KW_REG),
                                "addr += kw")
                 self.emit.emit(rv_slli(T6_REG, T6_REG, 2), "addr *= 4")
-                self.emit.emit(rv_add(T6_REG, S3_W_BASE, T6_REG),
-                               "addr += weight_base")
+                self.emit.emit(rv_add(T6_REG, WT_PTR, T6_REG),
+                               "addr += weight[oc,ic] base")
                 self.emit.emit(rv_lw(COND_REG, T6_REG, 0),
                                "load weight[oc,ic,kh,kw]")
 
@@ -2419,7 +2430,8 @@ class CNNRISCVGenerator:
 
         # Linear: result = 32768 + x/8
         self.emit.emit(rv_srai(dst_reg, val_reg, 3), "x / 8")
-        self.emit.emit(rv_addi(dst_reg, dst_reg, 32768), "+ 0.5 (Q16.16)")
+        self.emit.emit_li(self.T6, 32768, "0.5 (Q16.16)")
+        self.emit.emit(rv_add(dst_reg, dst_reg, self.T6), "+ 0.5 (Q16.16)")
         # Clamp to [0, 65536]
         self.emit.emit(rv_slti(cond_reg, dst_reg, 0), "result < 0?")
         cl_label = f"_sig_cl_{len(self.emit.labels)}"
@@ -2603,6 +2615,7 @@ def convert_onnx_to_riscv(
     estimate: bool = False, report: bool = False,
     uarch: str = "basic",
     tinyfive_sim: bool = False, tinyfive_max_instr: int = 100_000_000,
+    const_merge: bool = False,
 ) -> int:
     """Full pipeline: ONNX model → RISC-V RV32IM binary.
 
@@ -2649,9 +2662,82 @@ def convert_onnx_to_riscv(
 
     # ── Step 3: Generate RISC-V code ───────────────────────────────────
     print(f"\n[3/5] Generating inline RISC-V RV32IM machine code...")
-    generator = CNNRISCVGenerator(model, memory)
-    code_bytes = generator.generate()
+    constant_merge_report = None
+    if const_merge:
+        # Generate both variants from identical pre-codegen memory plans.  The
+        # generator allocates layer workspaces, so sharing one plan would make
+        # the second run observe mutated offsets and invalidate the A/B result.
+        baseline_memory = copy.deepcopy(memory)
+        baseline_generator = CNNRISCVGenerator(model, baseline_memory)
+        baseline_code_bytes = baseline_generator.generate()
+
+        optimized_memory = copy.deepcopy(memory)
+        generator = CNNRISCVGenerator(
+            model, optimized_memory, compact_constants=True,
+        )
+        code_bytes = generator.generate()
+        memory = optimized_memory
+
+        if baseline_memory.workspace_offsets != memory.workspace_offsets:
+            raise AssertionError("constant-merge A/B changed workspace layout")
+
+        # Run the public assembly pass over the exact baseline listing.  Its
+        # categorized statistics describe the source transformation, while
+        # the two generated binaries provide the real machine-code metrics.
+        from scratchv.backend.const_merge import merge_constants_detailed
+
+        asm_before = baseline_generator.emit.disassemble()
+        asm_after, merge_stats = merge_constants_detailed(asm_before)
+
+        def count_listing_instructions(asm_text: str) -> int:
+            count = 0
+            for raw_line in asm_text.splitlines():
+                code = raw_line.split("#", 1)[0].strip()
+                if not code or code.endswith(":") or code.startswith("."):
+                    continue
+                count += 1
+            return count
+
+        source_before = count_listing_instructions(asm_before)
+        source_after = count_listing_instructions(asm_after)
+        if len(code_bytes) > len(baseline_code_bytes):
+            raise AssertionError("constant merge unexpectedly increased code size")
+
+        constant_merge_report = {
+            "enabled": True,
+            "source_transform_path": "backend.const_merge public assembly pass",
+            "machine_codegen_path": "RISCVEmitter(compact_li32=True)",
+            "machine_metrics_are_public_pass_output": False,
+            "used": merge_stats.total_changes > 0,
+            "candidate_pairs": merge_stats.candidate_pairs,
+            "merged_pairs": merge_stats.merged_pairs,
+            "redundant_lui_removed": merge_stats.redundant_lui_removed,
+            "iterations": merge_stats.iterations,
+            "source_instructions_before": source_before,
+            "source_instructions_after": source_after,
+            "source_instruction_reduction": source_before - source_after,
+            "machine_instructions_before": len(baseline_code_bytes) // 4,
+            "machine_instructions_after": len(code_bytes) // 4,
+            "machine_instruction_reduction": (
+                len(baseline_code_bytes) - len(code_bytes)
+            ) // 4,
+            "code_size_before": len(baseline_code_bytes),
+            "code_size_after": len(code_bytes),
+            "code_size_reduction": len(baseline_code_bytes) - len(code_bytes),
+        }
+    else:
+        generator = CNNRISCVGenerator(model, memory)
+        code_bytes = generator.generate()
+
     print(f"  Code size: {len(code_bytes):,} bytes ({len(code_bytes)//4} instructions)")
+    if constant_merge_report is not None:
+        cm = constant_merge_report
+        print(
+            "  Constant merge: "
+            f"{cm['code_size_before']:,} → {cm['code_size_after']:,} bytes; "
+            f"{cm['machine_instructions_before']} → "
+            f"{cm['machine_instructions_after']} machine instructions"
+        )
     print(f"  Workspace: {memory.workspace_size:,} bytes "
           f"({memory.workspace_size/1024/1024:.1f} MB)")
 
@@ -2772,6 +2858,7 @@ def convert_onnx_to_riscv(
                     static_insns=code_len // 4,
                     est_data=est_data,
                     model_name=model_name,
+                    optimization=constant_merge_report,
                 ))
             print(f"  HTML: benchmark_reports/benchmark.html")
 
@@ -2782,6 +2869,7 @@ def convert_onnx_to_riscv(
                     static_insns=code_len // 4,
                     est_data=est_data,
                     model_name=model_name,
+                    optimization=constant_merge_report,
                 ))
             print(f"  JSON: benchmark_reports/benchmark.json")
 
@@ -2791,6 +2879,7 @@ def convert_onnx_to_riscv(
                     code_size=code_len,
                     static_insns=code_len // 4,
                     est_data=est_data,
+                    optimization=constant_merge_report,
                 ))
             print(f"  Summary: benchmark_reports/github_summary.md")
         except ImportError as e:
@@ -2881,6 +2970,11 @@ def main() -> int:
              "in benchmark_reports/ directory"
     )
     parser.add_argument(
+        "--const-merge", action="store_true",
+        help="Enable constant-load merging and report real baseline/optimized "
+             "machine-code size differences"
+    )
+    parser.add_argument(
         "--uarch", default="basic", choices=["single", "fast", "basic", "slow"],
         help="Microarchitecture profile for cycle-accurate emulation: "
              "single (CPI=1), fast (mul=1 div=4), basic (mul=4 div=34), "
@@ -2918,6 +3012,7 @@ def main() -> int:
         uarch=args.uarch,
         tinyfive_sim=args.tinyfive,
         tinyfive_max_instr=args.tinyfive_max_instr,
+        const_merge=args.const_merge,
     )
 
 

@@ -26,6 +26,8 @@ from typing import Optional
 
 # moved import above
 from scratchv.frontend.dsl_parser import DSLParser, DSLParseError
+from scratchv.frontend.dsl_errors import ErrorCollector
+from scratchv.frontend.dsl_validator import DSLValidator
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import OpCode, Program, Value
 
@@ -48,12 +50,32 @@ class CondExpr:
 
     def resolve(self, parser: ExtendedDSLParser) -> tuple[Value, str]:
         """Resolve operands and return (lhs_val, operator, rhs_val)."""
-        lhs_val = parser._resolve(self.lhs)
-        rhs_val = parser._resolve(self.rhs)
+        lhs_number = _numeric_literal(self.lhs)
+        rhs_number = _numeric_literal(self.rhs)
+        if lhs_number is not None and rhs_number is None:
+            rhs_val = parser._resolve(self.rhs)
+            lhs_val = parser.builder.load_const(
+                lhs_number, dtype=rhs_val.dtype,
+            )
+        else:
+            lhs_val = parser._resolve(self.lhs)
+            if rhs_number is not None:
+                rhs_val = parser.builder.load_const(
+                    rhs_number, dtype=lhs_val.dtype,
+                )
+            else:
+                rhs_val = parser._resolve(self.rhs)
         return lhs_val, self.op, rhs_val
 
     def __repr__(self) -> str:
         return f"CondExpr({self.lhs} {self.op} {self.rhs})"
+
+
+def _numeric_literal(text: str) -> float | None:
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +105,8 @@ class ExtendedDSLParser(DSLParser):
         self._label_counter: int = 0
         # Stack for tracking nested while-loop labels
         self._while_stack: list[dict[str, str]] = []
+        self._slots: dict[str, Value] = {}
+        self._initialized_slots: set[str] = set()
 
     # -----------------------------------------------------------------------
     # Label generation
@@ -97,7 +121,16 @@ class ExtendedDSLParser(DSLParser):
     # Core parse method (overrides base)
     # -----------------------------------------------------------------------
 
-    def parse(self, text: str) -> Program:
+    def validate(
+        self, text: str, *, filename: str | None = None,
+        max_errors: int = 20,
+    ) -> ErrorCollector:
+        """Validate base and extended DSL syntax without creating IR."""
+        return DSLValidator(extended=True).validate(
+            text, filename=filename, max_errors=max_errors,
+        )
+
+    def parse(self, text: str, *, filename: str | None = None) -> Program:
         """Parse DSL text into IR Program, supporting if/else and while.
 
         Args:
@@ -106,6 +139,10 @@ class ExtendedDSLParser(DSLParser):
         Returns:
             A Program object containing the generated IR.
         """
+        collector = self.validate(text, filename=filename)
+        if collector.has_errors:
+            raise collector.errors[0]
+
         # Strip comments before splitting to handle block-level constructs
         lines_raw = text.split("\n")
         lines: list[str] = []
@@ -130,9 +167,27 @@ class ExtendedDSLParser(DSLParser):
         self._loop_stack: list[str] = []
         self._label_counter = 0
         self._while_stack = []
+        self._slots = {}
+        self._initialized_slots = set()
 
         self.builder.new_function("main")
         self.builder.new_block("entry")
+
+        # Values assigned around control-flow joins must have one stable
+        # storage location.  Loading at each use lets loop headers observe
+        # values written by the preceding iteration and lets both if arms
+        # contribute to the same result after the merge block.
+        if any(
+            line.startswith("if ") or line.startswith("while ")
+            for line in lines
+        ):
+            assigned_names = {
+                match.group(1)
+                for line in lines
+                if (match := re.match(r"(\w+)\s*=", line)) is not None
+            }
+            for name in sorted(assigned_names):
+                self._slots[name] = self.builder.alloca(1)
 
         idx = 0
         while idx < len(lines):
@@ -183,11 +238,8 @@ class ExtendedDSLParser(DSLParser):
 
         # Resolve condition and emit conditional branch
         lhs_val, op_str, rhs_val = cond.resolve(self)
-        self.builder._emit(
-            OpCode.BR_IF,
-            operands=[lhs_val, rhs_val],
-            target=f"{then_label},{else_label}",
-            cmp_op=op_str,
+        self.builder.br_compare(
+            lhs_val, op_str, rhs_val, then_label, else_label,
         )
 
         # Parse then branch
@@ -210,8 +262,9 @@ class ExtendedDSLParser(DSLParser):
                 self._parse_line(inner_line)
                 idx += 1
 
-        # Terminate then branch with jump to endif
-        self.builder.br(endif_label)
+        then_terminated = self._current_block_terminated()
+        if not then_terminated:
+            self.builder.br(endif_label)
 
         # Check for else branch
         has_else = False
@@ -233,17 +286,21 @@ class ExtendedDSLParser(DSLParser):
                 else:
                     self._parse_line(inner_line)
                     idx += 1
-            self.builder.br(endif_label)
+            else_terminated = self._current_block_terminated()
+            if not else_terminated:
+                self.builder.br(endif_label)
 
         if not has_else:
             # Else block exists but is empty - just jumps to endif
             self.builder.new_block(else_label)
             self.builder.br(endif_label)
+            else_terminated = False
 
         if idx < len(lines) and lines[idx] == "endif":
             idx += 1
 
-        self.builder.new_block(endif_label)
+        if not (then_terminated and else_terminated):
+            self.builder.new_block(endif_label)
         return idx
 
     # -----------------------------------------------------------------------
@@ -275,11 +332,8 @@ class ExtendedDSLParser(DSLParser):
         self.builder.br(header_label)
         self.builder.new_block(header_label)
         lhs_val, op_str, rhs_val = cond.resolve(self)
-        self.builder._emit(
-            OpCode.BR_IF,
-            operands=[lhs_val, rhs_val],
-            target=f"{body_label},{exit_label}",
-            cmp_op=op_str,
+        self.builder.br_compare(
+            lhs_val, op_str, rhs_val, body_label, exit_label,
         )
 
         # Body
@@ -300,8 +354,9 @@ class ExtendedDSLParser(DSLParser):
                 self._parse_line(inner_line)
                 idx += 1
 
-        # Jump back to header
-        self.builder.br(header_label)
+        # Jump back to header unless the body already returned.
+        if not self._current_block_terminated():
+            self.builder.br(header_label)
 
         if idx < len(lines) and lines[idx] == "endwhile":
             idx += 1
@@ -314,9 +369,11 @@ class ExtendedDSLParser(DSLParser):
     # Condition parsing
     # -----------------------------------------------------------------------
 
+    _ATOM = r"(?:[^\W\d]\w*|[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
     _COND_PATTERN = re.compile(
-        r'^(?:if|while)\s*\(\s*(.+?)\s*'
-        r'(==|!=|<=|>=|<|>)\s*(.+?)\s*\)\s*:?\s*$'
+        rf"^(?:if|while)\s*\(\s*({_ATOM})\s*"
+        rf"(==|!=|<=|>=|<|>)\s*({_ATOM})\s*\)\s*:?\s*$",
+        re.UNICODE,
     )
 
     def _parse_condition(self, line: str) -> Optional[CondExpr]:
@@ -364,7 +421,33 @@ class ExtendedDSLParser(DSLParser):
             return
         if line.startswith("if ") or line.startswith("while "):
             return
+        if self._current_block_terminated():
+            return
+        assignment = re.match(r"(\w+)\s*=", line)
         super()._parse_line(line)
+        if assignment is not None:
+            name = assignment.group(1)
+            slot = self._slots.get(name)
+            value = self._vars.get(name)
+            if slot is not None and value is not None:
+                self.builder.store(slot, value)
+                self._initialized_slots.add(name)
+
+    def _resolve(self, name: str) -> Value:
+        """Resolve mutable control-flow variables through their slot."""
+        slot = self._slots.get(name)
+        if slot is not None and name in self._initialized_slots:
+            return self.builder.load(slot)
+        return super()._resolve(name)
+
+    def _current_block_terminated(self) -> bool:
+        block = self.builder.current_block
+        return bool(
+            block
+            and block.instructions
+            and block.instructions[-1].opcode
+            in {OpCode.BR, OpCode.BR_IF, OpCode.RETURN}
+        )
 
     # -----------------------------------------------------------------------
     # Convenience: create a stand-alone label block

@@ -1,6 +1,86 @@
-"""ScratchV analysis package: CFG builder, IR verifier, and analysis passes."""
+"""ScratchV analysis package: unified CFG, adapters, dataflow, and verifier."""
 
-from scratchv.analysis.cfg_builder import CFGBuilder, CFG
+from scratchv.analysis.cfg import (
+    BlockId,
+    InstructionId,
+    ValueId,
+    EdgeType,
+    CFGEdge,
+    CFGNode,
+    NaturalLoop,
+    ControlFlowGraph,
+    CFG,
+    CFGAdapter,
+    build_cfg,
+    build_cfg_from_instructions,
+    partition_basic_blocks_with_names,
+    CFGBuilder,
+    compute_dominators,
+    compute_dominator_tree,
+    detect_loops,
+    detect_nested_loops,
+    to_dot,
+)
+from scratchv.analysis.adapters import IRCFGAdapter, MachineCFGAdapter
+from scratchv.analysis.liveness import (
+    BlockLiveness,
+    LivenessResult,
+    UseDefProvider,
+    analyze_liveness,
+)
+from scratchv.analysis.dataflow import (
+    Direction,
+    DataflowAnalysis,
+    DataflowResult,
+    run_dataflow,
+    ConstantPropagation,
+    OVERDEFINED,
+)
+from scratchv.analysis.usedef import (
+    IRUseDefProvider,
+    MachineUseDefProvider,
+    ir_value_id,
+)
+from scratchv.analysis.cfg_validation import CFGDiagnostic, verify_cfg
 from scratchv.analysis.ir_verifier import IRVerifier, VerificationError
 
-__all__ = ["CFGBuilder", "CFG", "IRVerifier", "VerificationError"]
+__all__ = [
+    "BlockId",
+    "InstructionId",
+    "ValueId",
+    "EdgeType",
+    "CFGEdge",
+    "CFGNode",
+    "NaturalLoop",
+    "ControlFlowGraph",
+    "CFG",
+    "CFGAdapter",
+    "build_cfg",
+    "build_cfg_from_instructions",
+    "partition_basic_blocks_with_names",
+    "CFGBuilder",
+    "compute_dominators",
+    "compute_dominator_tree",
+    "detect_loops",
+    "detect_nested_loops",
+    "to_dot",
+    "IRCFGAdapter",
+    "MachineCFGAdapter",
+    "BlockLiveness",
+    "LivenessResult",
+    "UseDefProvider",
+    "analyze_liveness",
+    "Direction",
+    "DataflowAnalysis",
+    "DataflowResult",
+    "run_dataflow",
+    "ConstantPropagation",
+    "OVERDEFINED",
+    "IRUseDefProvider",
+    "MachineUseDefProvider",
+    "ir_value_id",
+    "CFGDiagnostic",
+    "verify_cfg",
+    "IRVerifier",
+    "VerificationError",
+]

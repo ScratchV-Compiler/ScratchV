@@ -17,18 +17,18 @@
 ```
 1. 克隆代码     git clone https://github.com/ScratchV-Compiler/ScratchV.git
 2. 安装依赖     cd ScratchV && pip install -e .
-3. 打开课程     xdg-open docs/topics/html/index.html
+3. 打开课程     make docs && xdg-open docs/topics/html/index.html
 ```
 
 或者一步步来：
 
 | 步骤 | 看什么 | 时间 |
 |------|--------|------|
-| 🔧 搭环境 | [00-环境搭建指南](docs/00-环境搭建指南.md) | 15 min |
-| 💡 理解概念 | [01-编译器概念入门](docs/01-编译器概念入门.md) | 15 min |
-| 🏃 动手试试 | [02-快速上手教程](docs/02-快速上手教程.md) | 30 min |
-| 📊 看懂数据 | [03-指标解读指南](docs/03-指标解读指南.md) | 15 min |
-| 🐛 遇到问题 | [04-故障排除FAQ](docs/04-故障排除FAQ.md) | 随时查 |
+| 🔧 搭环境 | [00-环境搭建指南](docs/guide/00-环境搭建指南.md) | 15 min |
+| 💡 理解概念 | [01-编译器概念入门](docs/guide/01-编译器概念入门.md) | 15 min |
+| 🏃 动手试试 | [02-快速上手教程](docs/guide/02-快速上手教程.md) | 30 min |
+| 📊 看懂数据 | [03-指标解读指南](docs/guide/03-指标解读指南.md) | 15 min |
+| 🐛 遇到问题 | [04-故障排除FAQ](docs/guide/04-故障排除FAQ.md) | 随时查 |
 
 > 🌐 **在线课程**: [在浏览器中学习](https://scratchv-compiler.github.io/ScratchV/docs/) — 带进度追踪、搜索、深色主题的交互式课程
 
@@ -39,6 +39,7 @@
 ```bash
 make quick-start    # 打印新手引导
 make test           # 运行全部测试
+make bench-topic06  # 运行课题 06 TinyFive 性能测试套件
 make bench-cnn      # 编译 CNN 模型 + 性能估算
 make bench-ci       # 完整 CI 对比 (ScratchV vs LLVM)
 make bench-reports  # 生成 Dashboard + 优化历史
@@ -59,12 +60,16 @@ ScratchV/
 │   ├── ci/               ← CI 编排 + 性能仪表盘
 │   └── analysis/         ← CFG 构建 / IR 验证
 ├── docs/                 ← 📚 完整文档体系
-│   ├── 00~04-*.md        ← 新手入门 5 篇
-│   ├── topics/           ← 30 个模块详解
-│   └── topics/html/      ← 🌐 交互式课程站点
-├── benchmarks/           ← 23 个 DSL 基准用例
-├── tests/                ← 348 个单元测试
-├── scripts/              ← 工具脚本
+│   ├── guide/            ← 新手入门 5 篇 (00~04)
+│   ├── topics/           ← 第一期 14 个课题，每个课题一个文件夹
+│   │                        （指引 / 设计 / 开发 / 报告 / 计划都在其中）
+│   ├── reference/        ← 架构 / 开发 / 规范等参考文档
+│   ├── promo/            ← 招募推广页
+│   ├── archive/          ← 归档的旧版文档
+│   └── topics/html/      ← 🌐 课程站点（make docs 生成，不入库）
+├── benchmarks/           ← 通用基准与课题 06 性能基线
+├── tests/                ← 单元测试及课题 06 的 23 个 DSL 用例
+├── scripts/              ← 工具脚本及课题 06 测试驱动
 └── models/               ← 测试用 ONNX 模型
 ```
 
@@ -100,10 +105,11 @@ ONNX 模型 (.onnx)
 
 | 入口 | 说明 |
 |------|------|
-| [📘 课程首页](docs/topics/html/index.html) | 交互式课程（推荐新手） |
+| [📘 课程首页](https://scratchv-compiler.github.io/ScratchV/docs/index.html) | 交互式课程（推荐新手） |
 | [📖 文档导航](docs/INDEX.md) | 全部 Markdown 文档索引 |
-| [🏗️ 架构总览](docs/ARCHITECTURE.md) | ONNX→RISC-V 双路径详解 |
+| [🏗️ 架构总览](docs/reference/ARCHITECTURE.md) | ONNX→RISC-V 双路径详解 |
 | [📊 性能仪表盘](https://scratchv-compiler.github.io/ScratchV/dashboard.html) | LLVM vs ScratchV 对比 |
+| [课题 06 测试套件](docs/topics/06-性能基准套件/06-性能测试套件使用说明.md) | TinyFive 正确性验证、Benchmark 与回归报告 |
 | [📢 项目海报](https://scratchv-compiler.github.io/ScratchV/ScratchV.html) | 招募信息 + 3个月学习路线 + 课题精选 |
 
 ---

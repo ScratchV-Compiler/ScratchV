@@ -287,7 +287,7 @@ class TestCompilerOptimizationIntegration:
         output_path = tmp_path / "output.s"
         driver = _ProgramDriver(CompilerConfig(optimize_level="basic"))
 
-        result = driver.compile("input.dsl", str(output_path))
+        result = driver.compile("input.onnx", str(output_path))
 
         assert result.success
         assert result.stats["optimization"]["level"] == "basic"
@@ -301,7 +301,7 @@ class TestCompilerOptimizationIntegration:
         output_path = tmp_path / "must-not-exist.s"
         driver = _ProgramDriver(CompilerConfig(optimize_level="fast"))
 
-        result = driver.compile("input.dsl", str(output_path))
+        result = driver.compile("input.onnx", str(output_path))
 
         assert not result.success
         assert "optimization level" in result.errors[0]
@@ -347,7 +347,7 @@ class TestCompilerOptimizationIntegration:
         output_path = tmp_path / "must-not-exist.s"
         driver = _ProgramDriver(CompilerConfig(optimize_level="all"))
 
-        result = driver.compile("input.dsl", str(output_path))
+        result = driver.compile("input.onnx", str(output_path))
 
         assert not result.success
         assert "broken" in result.errors[0]

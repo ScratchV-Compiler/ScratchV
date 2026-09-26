@@ -83,7 +83,7 @@ jobs:
               # ── Escape for JSON ──
               # Use jq to build the payload safely
               PAYLOAD=$(jq -n \
-                --arg model "deepseek-v4-flash" \
+                --arg model "sensenova-6.8-flash-lite" \
                 --arg system "$SYSTEM_PROMPT" \
                 --arg user "$USER_MSG" \
                 '{
@@ -99,11 +99,11 @@ jobs:
               if [ "${FILE_COUNT:-0}" -gt 0 ]; then
                 sleep 1  # rate-limit: 1s gap between files
               fi
-              RESPONSE=$(curl -s --max-time 60 --retry 3 --retry-all-errors -w "\n%{http_code}" \
+              RESPONSE=$(curl -s --max-time 90 --retry 0 -w "\n%{http_code}" \
                 "https://token.sensenova.cn/v1/chat/completions" \
                 -H "Authorization: Bearer $SENSENOVA_API_KEY" \
                 -H "Content-Type: application/json" \
-                -d "$PAYLOAD")
+                -d "$PAYLOAD") || { echo "  [WARN] curl failed for $FILE (exit $?) — skipped (no result)"; continue; }
 
               HTTP_CODE=$(echo "$RESPONSE" | tail -1)
               BODY=$(echo "$RESPONSE" | sed '$d')

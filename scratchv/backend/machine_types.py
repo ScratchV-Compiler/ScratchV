@@ -140,12 +140,15 @@ class MachineInstr:
     src1: Optional[MachineOperand] = None
     src2: Optional[MachineOperand] = None
     comment: str = ""
+    target: Optional[str] = None
 
     def __repr__(self) -> str:
         parts = [self.op.value]
         for op in (self.dst, self.src1, self.src2):
             if op is not None:
                 parts.append(str(op))
+        if self.target:
+            parts.append(self.target)
         s = " ".join(parts)
         if self.comment:
             s += f"  # {self.comment}"
