@@ -19,8 +19,8 @@
     }
   },
   "environment": {
-    "python": "3.14.7",
-    "onnx": "1.22.0",
+    "python": "3.12.13",
+    "onnx": "1.23.0",
     "pythonhashseed": "0",
     "llvm_mca": "Ubuntu LLVM version 18.1.3"
   },
@@ -49,7 +49,6 @@
   },
   "metrics": {
     "peak_parallelism": "max instructions issued in one cycle; region maxima aggregated by max",
-    "critical_path": "unavailable: this adapter does not collect critical-path analysis for this in-order target",
     "bubbles": "zero-issue cycles B = issue_span - count(distinct issue cycles); excludes drain; summed across regions",
     "issue_span": "last issue cycle + 1, with first issue normalized to zero; summed across regions",
     "bubble_ratio": "sum(bubbles) / sum(issue_span)",
@@ -121703,10 +121702,12 @@
       "binary": {
         "code_bytes": 3512,
         "listing_roundtrip_equal": true,
+        "default_binary_equal": true,
+        "default_listing_sha256": "fec6c4ec0dbd00e90c7d81ef49587f960a18504a470b35a9f85e1970cfecb0cc",
         "weights_equal": true,
         "before_sha256": "99868d92b5eb7d43e9f43caa573cdeccaaffaabd1afdf10a5b4726280e48ab81",
         "after_sha256": "314c455fdb8bb9177f5842bd8c7f8f59d07c846fb12435bbdf9959f2372710ca",
-        "code_generator_sha256": "8904e91b42e6a9644b082faaf5908c29731bc2b3463abf9b3b96c6ee3b1479eb"
+        "code_generator_sha256": "e2a983e98fb9b106e40957c28753879f4cd2cac5fa0baa6dcec92c08f72134a0"
       },
       "execution": {
         "status": "passed",
@@ -121808,9 +121809,9 @@
       "schema_version": 1,
       "benchmark_type": "assembly-ab",
       "case": "CompilerDriver/greedy",
-      "input_sha256": "cc412c71db4235cfc5d562f8d85b2ed5355fe378fe521a445199db65641e18ad",
+      "input_sha256": "abdfe8dd707e37b5d9e89296bb8b8a59c99ee8a53a27f45040e29f7ff315fcb4",
       "status": "passed",
-      "comparison_status": "changed",
+      "comparison_status": "no_improvement",
       "errors": [],
       "feature": {
         "name": "RV32 local instruction scheduling",
@@ -121819,9 +121820,9 @@
         "schedule_strict": true,
         "compiler_path": "CompilerDriver._run_asm_passes",
         "pipeline_matches_public_pass": true,
-        "used": true,
+        "used": false,
         "warnings": [
-          "Schedule line 16: scheduling coverage 94.3%; 5/88 instructions unmodeled; see unmodeled_by_opcode and diagnostics"
+          "Schedule line 16: scheduling coverage 89.8%; 9/88 instructions unmodeled; see unmodeled_by_opcode and diagnostics"
         ]
       },
       "source_instructions": {
@@ -121856,15 +121857,15 @@
         "division_policy": "preserve-relative-order",
         "estimate_scope": "sum of local static regions; ready inputs; no cache/branch prediction",
         "input_instructions": 88,
-        "modeled_instructions": 83,
-        "moved_instructions": 8,
-        "applied_regions": 1,
+        "modeled_instructions": 79,
+        "moved_instructions": 0,
+        "applied_regions": 0,
         "skipped_regions": 0,
-        "original_cycles": 130,
-        "candidate_cycles": 129,
-        "final_cycles": 129,
-        "original_stalls": 31,
-        "final_stalls": 31,
+        "original_cycles": 125,
+        "candidate_cycles": 125,
+        "final_cycles": 125,
+        "original_stalls": 28,
+        "final_stalls": 28,
         "regions": [
           {
             "start_line": 6,
@@ -122651,335 +122652,29 @@
             ]
           },
           {
-            "start_line": 17,
+            "start_line": 18,
             "end_line": 26,
-            "instructions": 10,
-            "status": "applied",
-            "moved": 8,
-            "original_cycles": 12,
-            "candidate_cycles": 11,
-            "final_cycles": 11,
+            "instructions": 9,
+            "status": "no_improvement",
+            "moved": 0,
+            "original_cycles": 10,
+            "candidate_cycles": 10,
+            "final_cycles": 10,
             "dependencies": {
               "memory": 7,
-              "RAW": 1,
-              "control": 9
+              "control": 8
             },
             "metrics_before": {
-              "cycles": 12,
+              "cycles": 10,
               "peak_parallelism": 2,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
-              "bubbles": 1,
-              "bubble_ratio": 0.1,
-              "issue_span": 10,
+              "bubbles": 0,
+              "bubble_ratio": 0.0,
+              "issue_span": 8,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.8333333333333334,
-              "issue_cycles": [
-                0,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                9
-              ],
-              "llvm_total_cycles": 13,
-              "source": "slt t1, zero, t0\nsw t0, 76(x2)\nsw t3, 72(x2)\nsw t4, 68(x2)\nsw t5, 64(x2)\nsw t6, 60(x2)\nsw s0, 56(x2)\nsw s1, 52(x2)\nsw s2, 48(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
-              "llvm_output": {
-                "CodeRegions": [
-                  {
-                    "InstructionInfoView": {
-                      "InstructionList": [
-                        {
-                          "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
-                          "Latency": 1,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": true
-                        },
-                        {
-                          "Instruction": 2,
-                          "Latency": 1,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": true
-                        },
-                        {
-                          "Instruction": 3,
-                          "Latency": 1,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": true
-                        },
-                        {
-                          "Instruction": 4,
-                          "Latency": 1,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": true
-                        },
-                        {
-                          "Instruction": 5,
-                          "Latency": 1,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": true
-                        },
-                        {
-                          "Instruction": 6,
-                          "Latency": 1,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": true
-                        },
-                        {
-                          "Instruction": 7,
-                          "Latency": 1,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": true
-                        },
-                        {
-                          "Instruction": 8,
-                          "Latency": 1,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": true
-                        },
-                        {
-                          "Instruction": 9,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        }
-                      ]
-                    },
-                    "Instructions": [
-                      "sgtz\tt1, t0",
-                      "sw\tt0, 76(sp)",
-                      "sw\tt3, 72(sp)",
-                      "sw\tt4, 68(sp)",
-                      "sw\tt5, 64(sp)",
-                      "sw\tt6, 60(sp)",
-                      "sw\ts0, 56(sp)",
-                      "sw\ts1, 52(sp)",
-                      "sw\ts2, 48(sp)",
-                      "bnez\tt1, .Lmca_target"
-                    ],
-                    "Name": "",
-                    "ResourcePressureView": {
-                      "ResourcePressureInfo": [
-                        {
-                          "InstructionIndex": 0,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 1,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 4,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 5,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 6,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 7,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 8,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 9,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 10,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 8
-                        },
-                        {
-                          "InstructionIndex": 10,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
-                        }
-                      ]
-                    },
-                    "SummaryView": {
-                      "BlockRThroughput": 8,
-                      "DispatchWidth": 2,
-                      "IPC": 0.7692307692307693,
-                      "Instructions": 10,
-                      "Iterations": 1,
-                      "TotalCycles": 13,
-                      "TotaluOps": 10,
-                      "uOpsPerCycle": 0.7692307692307693
-                    },
-                    "TimelineView": {
-                      "TimelineInfo": [
-                        {
-                          "CycleDispatched": 0,
-                          "CycleExecuted": 3,
-                          "CycleIssued": 0,
-                          "CycleReady": 0,
-                          "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 3,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 3,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 3,
-                          "CycleReady": 3,
-                          "CycleRetired": 4
-                        },
-                        {
-                          "CycleDispatched": 4,
-                          "CycleExecuted": 5,
-                          "CycleIssued": 4,
-                          "CycleReady": 4,
-                          "CycleRetired": 5
-                        },
-                        {
-                          "CycleDispatched": 5,
-                          "CycleExecuted": 6,
-                          "CycleIssued": 5,
-                          "CycleReady": 5,
-                          "CycleRetired": 6
-                        },
-                        {
-                          "CycleDispatched": 6,
-                          "CycleExecuted": 7,
-                          "CycleIssued": 6,
-                          "CycleReady": 6,
-                          "CycleRetired": 7
-                        },
-                        {
-                          "CycleDispatched": 7,
-                          "CycleExecuted": 8,
-                          "CycleIssued": 7,
-                          "CycleReady": 7,
-                          "CycleRetired": 8
-                        },
-                        {
-                          "CycleDispatched": 8,
-                          "CycleExecuted": 9,
-                          "CycleIssued": 8,
-                          "CycleReady": 8,
-                          "CycleRetired": 9
-                        },
-                        {
-                          "CycleDispatched": 9,
-                          "CycleExecuted": 10,
-                          "CycleIssued": 9,
-                          "CycleReady": 9,
-                          "CycleRetired": 10
-                        },
-                        {
-                          "CycleDispatched": 9,
-                          "CycleExecuted": 12,
-                          "CycleIssued": 9,
-                          "CycleReady": 9,
-                          "CycleRetired": 12
-                        }
-                      ]
-                    }
-                  }
-                ],
-                "SimulationParameters": {
-                  "-march": "riscv32",
-                  "-mcpu": "sifive-e76",
-                  "-mtriple": "riscv32"
-                },
-                "TargetInfo": {
-                  "CPUName": "sifive-e76",
-                  "Resources": [
-                    "SiFive7FDiv",
-                    "SiFive7IDiv",
-                    "SiFive7PipeA",
-                    "SiFive7PipeB",
-                    "SiFive7VA",
-                    "SiFive7VCQ",
-                    "SiFive7VL",
-                    "SiFive7VS"
-                  ]
-                }
-              }
-            },
-            "metrics_after": {
-              "cycles": 11,
-              "peak_parallelism": 2,
-              "critical_path": null,
-              "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
-              "bubbles": 1,
-              "bubble_ratio": 0.1111111111111111,
-              "issue_span": 9,
-              "drain_cycles": 2,
-              "dispatch_width": 2,
-              "ipc": 0.9090909090909091,
+              "ipc": 0.9,
               "issue_cycles": [
                 0,
                 1,
@@ -122988,12 +122683,11 @@
                 4,
                 5,
                 6,
-                6,
-                8,
-                8
+                7,
+                7
               ],
-              "llvm_total_cycles": 12,
-              "source": "sw t0, 76(x2)\nsw t3, 72(x2)\nsw t4, 68(x2)\nsw t5, 64(x2)\nsw t6, 60(x2)\nsw s0, 56(x2)\nsw s1, 52(x2)\nslt t1, zero, t0\nsw s2, 48(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 11,
+              "source": "sw t0, 76(x2)\nsw t3, 72(x2)\nsw t4, 68(x2)\nsw t5, 64(x2)\nsw t6, 60(x2)\nsw s0, 56(x2)\nsw s1, 52(x2)\nsw s2, 48(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -123064,15 +122758,6 @@
                         },
                         {
                           "Instruction": 7,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 8,
                           "Latency": 1,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -123081,7 +122766,7 @@
                           "mayStore": true
                         },
                         {
-                          "Instruction": 9,
+                          "Instruction": 8,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -123099,7 +122784,6 @@
                       "sw\tt6, 60(sp)",
                       "sw\ts0, 56(sp)",
                       "sw\ts1, 52(sp)",
-                      "sgtz\tt1, t0",
                       "sw\ts2, 48(sp)",
                       "bnez\tt1, .Lmca_target"
                     ],
@@ -123143,40 +122827,35 @@
                         },
                         {
                           "InstructionIndex": 7,
-                          "ResourceIndex": 3,
+                          "ResourceIndex": 2,
                           "ResourceUsage": 1
                         },
                         {
                           "InstructionIndex": 8,
-                          "ResourceIndex": 2,
+                          "ResourceIndex": 3,
                           "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 9,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 8
                         },
                         {
                           "InstructionIndex": 9,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 10,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 8
-                        },
-                        {
-                          "InstructionIndex": 10,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
                       "BlockRThroughput": 8,
                       "DispatchWidth": 2,
-                      "IPC": 0.8333333333333334,
-                      "Instructions": 10,
+                      "IPC": 0.8181818181818182,
+                      "Instructions": 9,
                       "Iterations": 1,
-                      "TotalCycles": 12,
-                      "TotaluOps": 10,
-                      "uOpsPerCycle": 0.8333333333333334
+                      "TotalCycles": 11,
+                      "TotaluOps": 9,
+                      "uOpsPerCycle": 0.8181818181818182
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -123230,25 +122909,300 @@
                           "CycleRetired": 7
                         },
                         {
+                          "CycleDispatched": 7,
+                          "CycleExecuted": 8,
+                          "CycleIssued": 7,
+                          "CycleReady": 7,
+                          "CycleRetired": 8
+                        },
+                        {
+                          "CycleDispatched": 7,
+                          "CycleExecuted": 10,
+                          "CycleIssued": 7,
+                          "CycleReady": 7,
+                          "CycleRetired": 10
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "SimulationParameters": {
+                  "-march": "riscv32",
+                  "-mcpu": "sifive-e76",
+                  "-mtriple": "riscv32"
+                },
+                "TargetInfo": {
+                  "CPUName": "sifive-e76",
+                  "Resources": [
+                    "SiFive7FDiv",
+                    "SiFive7IDiv",
+                    "SiFive7PipeA",
+                    "SiFive7PipeB",
+                    "SiFive7VA",
+                    "SiFive7VCQ",
+                    "SiFive7VL",
+                    "SiFive7VS"
+                  ]
+                }
+              }
+            },
+            "metrics_after": {
+              "cycles": 10,
+              "peak_parallelism": 2,
+              "critical_path": null,
+              "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
+              "bubbles": 0,
+              "bubble_ratio": 0.0,
+              "issue_span": 8,
+              "drain_cycles": 2,
+              "dispatch_width": 2,
+              "ipc": 0.9,
+              "issue_cycles": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                7
+              ],
+              "llvm_total_cycles": 11,
+              "source": "sw t0, 76(x2)\nsw t3, 72(x2)\nsw t4, 68(x2)\nsw t5, 64(x2)\nsw t6, 60(x2)\nsw s0, 56(x2)\nsw s1, 52(x2)\nsw s2, 48(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_output": {
+                "CodeRegions": [
+                  {
+                    "InstructionInfoView": {
+                      "InstructionList": [
+                        {
+                          "Instruction": 0,
+                          "Latency": 1,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": true
+                        },
+                        {
+                          "Instruction": 1,
+                          "Latency": 1,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": true
+                        },
+                        {
+                          "Instruction": 2,
+                          "Latency": 1,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": true
+                        },
+                        {
+                          "Instruction": 3,
+                          "Latency": 1,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": true
+                        },
+                        {
+                          "Instruction": 4,
+                          "Latency": 1,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": true
+                        },
+                        {
+                          "Instruction": 5,
+                          "Latency": 1,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": true
+                        },
+                        {
+                          "Instruction": 6,
+                          "Latency": 1,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": true
+                        },
+                        {
+                          "Instruction": 7,
+                          "Latency": 1,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": true
+                        },
+                        {
+                          "Instruction": 8,
+                          "Latency": 3,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": false
+                        }
+                      ]
+                    },
+                    "Instructions": [
+                      "sw\tt0, 76(sp)",
+                      "sw\tt3, 72(sp)",
+                      "sw\tt4, 68(sp)",
+                      "sw\tt5, 64(sp)",
+                      "sw\tt6, 60(sp)",
+                      "sw\ts0, 56(sp)",
+                      "sw\ts1, 52(sp)",
+                      "sw\ts2, 48(sp)",
+                      "bnez\tt1, .Lmca_target"
+                    ],
+                    "Name": "",
+                    "ResourcePressureView": {
+                      "ResourcePressureInfo": [
+                        {
+                          "InstructionIndex": 0,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 1,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 2,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 3,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 4,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 5,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 6,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 7,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 8,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 9,
+                          "ResourceIndex": 2,
+                          "ResourceUsage": 8
+                        },
+                        {
+                          "InstructionIndex": 9,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        }
+                      ]
+                    },
+                    "SummaryView": {
+                      "BlockRThroughput": 8,
+                      "DispatchWidth": 2,
+                      "IPC": 0.8181818181818182,
+                      "Instructions": 9,
+                      "Iterations": 1,
+                      "TotalCycles": 11,
+                      "TotaluOps": 9,
+                      "uOpsPerCycle": 0.8181818181818182
+                    },
+                    "TimelineView": {
+                      "TimelineInfo": [
+                        {
+                          "CycleDispatched": 0,
+                          "CycleExecuted": 1,
+                          "CycleIssued": 0,
+                          "CycleReady": 0,
+                          "CycleRetired": 1
+                        },
+                        {
+                          "CycleDispatched": 1,
+                          "CycleExecuted": 2,
+                          "CycleIssued": 1,
+                          "CycleReady": 1,
+                          "CycleRetired": 2
+                        },
+                        {
+                          "CycleDispatched": 2,
+                          "CycleExecuted": 3,
+                          "CycleIssued": 2,
+                          "CycleReady": 2,
+                          "CycleRetired": 3
+                        },
+                        {
+                          "CycleDispatched": 3,
+                          "CycleExecuted": 4,
+                          "CycleIssued": 3,
+                          "CycleReady": 3,
+                          "CycleRetired": 4
+                        },
+                        {
+                          "CycleDispatched": 4,
+                          "CycleExecuted": 5,
+                          "CycleIssued": 4,
+                          "CycleReady": 4,
+                          "CycleRetired": 5
+                        },
+                        {
+                          "CycleDispatched": 5,
+                          "CycleExecuted": 6,
+                          "CycleIssued": 5,
+                          "CycleReady": 5,
+                          "CycleRetired": 6
+                        },
+                        {
                           "CycleDispatched": 6,
-                          "CycleExecuted": 9,
+                          "CycleExecuted": 7,
                           "CycleIssued": 6,
                           "CycleReady": 6,
-                          "CycleRetired": 9
+                          "CycleRetired": 7
                         },
                         {
-                          "CycleDispatched": 8,
-                          "CycleExecuted": 9,
-                          "CycleIssued": 8,
-                          "CycleReady": 8,
-                          "CycleRetired": 9
+                          "CycleDispatched": 7,
+                          "CycleExecuted": 8,
+                          "CycleIssued": 7,
+                          "CycleReady": 7,
+                          "CycleRetired": 8
                         },
                         {
-                          "CycleDispatched": 8,
-                          "CycleExecuted": 11,
-                          "CycleIssued": 8,
-                          "CycleReady": 8,
-                          "CycleRetired": 11
+                          "CycleDispatched": 7,
+                          "CycleExecuted": 10,
+                          "CycleIssued": 7,
+                          "CycleReady": 7,
+                          "CycleRetired": 10
                         }
                       ]
                     }
@@ -123282,22 +123236,20 @@
               4,
               5,
               6,
-              6,
-              8,
-              8
+              7,
+              7
             ],
-            "candidate_source": "sw t0, 76(x2)\nsw t3, 72(x2)\nsw t4, 68(x2)\nsw t5, 64(x2)\nsw t6, 60(x2)\nsw s0, 56(x2)\nsw s1, 52(x2)\nslt t1, zero, t0\nsw s2, 48(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+            "candidate_source": "sw t0, 76(x2)\nsw t3, 72(x2)\nsw t4, 68(x2)\nsw t5, 64(x2)\nsw t6, 60(x2)\nsw s0, 56(x2)\nsw s1, 52(x2)\nsw s2, 48(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
             "original_issue_cycles": [
               0,
+              1,
               2,
               3,
               4,
               5,
               6,
               7,
-              8,
-              9,
-              9
+              7
             ],
             "candidate_issue_cycles": [
               0,
@@ -123307,9 +123259,8 @@
               4,
               5,
               6,
-              6,
-              8,
-              8
+              7,
+              7
             ]
           },
           {
@@ -124416,36 +124367,34 @@
             ]
           },
           {
-            "start_line": 42,
+            "start_line": 43,
             "end_line": 44,
-            "instructions": 3,
+            "instructions": 2,
             "status": "no_improvement",
             "moved": 0,
-            "original_cycles": 5,
-            "candidate_cycles": 5,
-            "final_cycles": 5,
+            "original_cycles": 3,
+            "candidate_cycles": 3,
+            "final_cycles": 3,
             "dependencies": {
-              "RAW": 1,
-              "control": 2
+              "control": 1
             },
             "metrics_before": {
-              "cycles": 5,
+              "cycles": 3,
               "peak_parallelism": 2,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
-              "bubbles": 1,
-              "bubble_ratio": 0.3333333333333333,
-              "issue_span": 3,
+              "bubbles": 0,
+              "bubble_ratio": 0.0,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.6,
+              "ipc": 0.6666666666666666,
               "issue_cycles": [
                 0,
-                2,
-                2
+                0
               ],
-              "llvm_total_cycles": 6,
-              "source": "slt t1, zero, t0\nsw t0, 40(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "sw t0, 40(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -124453,15 +124402,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 1,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -124470,7 +124410,7 @@
                           "mayStore": true
                         },
                         {
-                          "Instruction": 2,
+                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -124481,7 +124421,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\tt1, t0",
                       "sw\tt0, 40(sp)",
                       "bnez\tt1, .Lmca_target"
                     ],
@@ -124490,11 +124429,16 @@
                       "ResourcePressureInfo": [
                         {
                           "InstructionIndex": 0,
-                          "ResourceIndex": 3,
+                          "ResourceIndex": 2,
                           "ResourceUsage": 1
                         },
                         {
                           "InstructionIndex": 1,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 2,
                           "ResourceIndex": 2,
                           "ResourceUsage": 1
                         },
@@ -124502,51 +124446,34 @@
                           "InstructionIndex": 2,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
-                      "BlockRThroughput": 1.5,
+                      "BlockRThroughput": 1,
                       "DispatchWidth": 2,
                       "IPC": 0.5,
-                      "Instructions": 3,
+                      "Instructions": 2,
                       "Iterations": 1,
-                      "TotalCycles": 6,
-                      "TotaluOps": 3,
+                      "TotalCycles": 4,
+                      "TotaluOps": 2,
                       "uOpsPerCycle": 0.5
                     },
                     "TimelineView": {
                       "TimelineInfo": [
                         {
                           "CycleDispatched": 0,
+                          "CycleExecuted": 1,
+                          "CycleIssued": 0,
+                          "CycleReady": 0,
+                          "CycleRetired": 1
+                        },
+                        {
+                          "CycleDispatched": 0,
                           "CycleExecuted": 3,
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 3,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 5,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 5
                         }
                       ]
                     }
@@ -124573,23 +124500,22 @@
               }
             },
             "metrics_after": {
-              "cycles": 5,
+              "cycles": 3,
               "peak_parallelism": 2,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
-              "bubbles": 1,
-              "bubble_ratio": 0.3333333333333333,
-              "issue_span": 3,
+              "bubbles": 0,
+              "bubble_ratio": 0.0,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.6,
+              "ipc": 0.6666666666666666,
               "issue_cycles": [
                 0,
-                2,
-                2
+                0
               ],
-              "llvm_total_cycles": 6,
-              "source": "slt t1, zero, t0\nsw t0, 40(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "sw t0, 40(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -124597,15 +124523,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 1,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -124614,7 +124531,7 @@
                           "mayStore": true
                         },
                         {
-                          "Instruction": 2,
+                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -124625,7 +124542,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\tt1, t0",
                       "sw\tt0, 40(sp)",
                       "bnez\tt1, .Lmca_target"
                     ],
@@ -124634,11 +124550,16 @@
                       "ResourcePressureInfo": [
                         {
                           "InstructionIndex": 0,
-                          "ResourceIndex": 3,
+                          "ResourceIndex": 2,
                           "ResourceUsage": 1
                         },
                         {
                           "InstructionIndex": 1,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 2,
                           "ResourceIndex": 2,
                           "ResourceUsage": 1
                         },
@@ -124646,51 +124567,34 @@
                           "InstructionIndex": 2,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
-                      "BlockRThroughput": 1.5,
+                      "BlockRThroughput": 1,
                       "DispatchWidth": 2,
                       "IPC": 0.5,
-                      "Instructions": 3,
+                      "Instructions": 2,
                       "Iterations": 1,
-                      "TotalCycles": 6,
-                      "TotaluOps": 3,
+                      "TotalCycles": 4,
+                      "TotaluOps": 2,
                       "uOpsPerCycle": 0.5
                     },
                     "TimelineView": {
                       "TimelineInfo": [
                         {
                           "CycleDispatched": 0,
+                          "CycleExecuted": 1,
+                          "CycleIssued": 0,
+                          "CycleReady": 0,
+                          "CycleRetired": 1
+                        },
+                        {
+                          "CycleDispatched": 0,
                           "CycleExecuted": 3,
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 3,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 5,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 5
                         }
                       ]
                     }
@@ -124718,19 +124622,16 @@
             },
             "final_issue_cycles": [
               0,
-              2,
-              2
+              0
             ],
-            "candidate_source": "slt t1, zero, t0\nsw t0, 40(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+            "candidate_source": "sw t0, 40(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
             "original_issue_cycles": [
               0,
-              2,
-              2
+              0
             ],
             "candidate_issue_cycles": [
               0,
-              2,
-              2
+              0
             ]
           },
           {
@@ -125837,36 +125738,34 @@
             ]
           },
           {
-            "start_line": 60,
+            "start_line": 61,
             "end_line": 62,
-            "instructions": 3,
+            "instructions": 2,
             "status": "no_improvement",
             "moved": 0,
-            "original_cycles": 5,
-            "candidate_cycles": 5,
-            "final_cycles": 5,
+            "original_cycles": 3,
+            "candidate_cycles": 3,
+            "final_cycles": 3,
             "dependencies": {
-              "RAW": 1,
-              "control": 2
+              "control": 1
             },
             "metrics_before": {
-              "cycles": 5,
+              "cycles": 3,
               "peak_parallelism": 2,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
-              "bubbles": 1,
-              "bubble_ratio": 0.3333333333333333,
-              "issue_span": 3,
+              "bubbles": 0,
+              "bubble_ratio": 0.0,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.6,
+              "ipc": 0.6666666666666666,
               "issue_cycles": [
                 0,
-                2,
-                2
+                0
               ],
-              "llvm_total_cycles": 6,
-              "source": "slt t1, zero, t0\nsw t0, 32(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "sw t0, 32(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -125874,15 +125773,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 1,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -125891,7 +125781,7 @@
                           "mayStore": true
                         },
                         {
-                          "Instruction": 2,
+                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -125902,7 +125792,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\tt1, t0",
                       "sw\tt0, 32(sp)",
                       "bnez\tt1, .Lmca_target"
                     ],
@@ -125911,11 +125800,16 @@
                       "ResourcePressureInfo": [
                         {
                           "InstructionIndex": 0,
-                          "ResourceIndex": 3,
+                          "ResourceIndex": 2,
                           "ResourceUsage": 1
                         },
                         {
                           "InstructionIndex": 1,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 2,
                           "ResourceIndex": 2,
                           "ResourceUsage": 1
                         },
@@ -125923,51 +125817,34 @@
                           "InstructionIndex": 2,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
-                      "BlockRThroughput": 1.5,
+                      "BlockRThroughput": 1,
                       "DispatchWidth": 2,
                       "IPC": 0.5,
-                      "Instructions": 3,
+                      "Instructions": 2,
                       "Iterations": 1,
-                      "TotalCycles": 6,
-                      "TotaluOps": 3,
+                      "TotalCycles": 4,
+                      "TotaluOps": 2,
                       "uOpsPerCycle": 0.5
                     },
                     "TimelineView": {
                       "TimelineInfo": [
                         {
                           "CycleDispatched": 0,
+                          "CycleExecuted": 1,
+                          "CycleIssued": 0,
+                          "CycleReady": 0,
+                          "CycleRetired": 1
+                        },
+                        {
+                          "CycleDispatched": 0,
                           "CycleExecuted": 3,
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 3,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 5,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 5
                         }
                       ]
                     }
@@ -125994,23 +125871,22 @@
               }
             },
             "metrics_after": {
-              "cycles": 5,
+              "cycles": 3,
               "peak_parallelism": 2,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
-              "bubbles": 1,
-              "bubble_ratio": 0.3333333333333333,
-              "issue_span": 3,
+              "bubbles": 0,
+              "bubble_ratio": 0.0,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.6,
+              "ipc": 0.6666666666666666,
               "issue_cycles": [
                 0,
-                2,
-                2
+                0
               ],
-              "llvm_total_cycles": 6,
-              "source": "slt t1, zero, t0\nsw t0, 32(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "sw t0, 32(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -126018,15 +125894,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 1,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -126035,7 +125902,7 @@
                           "mayStore": true
                         },
                         {
-                          "Instruction": 2,
+                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -126046,7 +125913,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\tt1, t0",
                       "sw\tt0, 32(sp)",
                       "bnez\tt1, .Lmca_target"
                     ],
@@ -126055,11 +125921,16 @@
                       "ResourcePressureInfo": [
                         {
                           "InstructionIndex": 0,
-                          "ResourceIndex": 3,
+                          "ResourceIndex": 2,
                           "ResourceUsage": 1
                         },
                         {
                           "InstructionIndex": 1,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 2,
                           "ResourceIndex": 2,
                           "ResourceUsage": 1
                         },
@@ -126067,51 +125938,34 @@
                           "InstructionIndex": 2,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 2,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
-                      "BlockRThroughput": 1.5,
+                      "BlockRThroughput": 1,
                       "DispatchWidth": 2,
                       "IPC": 0.5,
-                      "Instructions": 3,
+                      "Instructions": 2,
                       "Iterations": 1,
-                      "TotalCycles": 6,
-                      "TotaluOps": 3,
+                      "TotalCycles": 4,
+                      "TotaluOps": 2,
                       "uOpsPerCycle": 0.5
                     },
                     "TimelineView": {
                       "TimelineInfo": [
                         {
                           "CycleDispatched": 0,
+                          "CycleExecuted": 1,
+                          "CycleIssued": 0,
+                          "CycleReady": 0,
+                          "CycleRetired": 1
+                        },
+                        {
+                          "CycleDispatched": 0,
                           "CycleExecuted": 3,
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 3,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 5,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 5
                         }
                       ]
                     }
@@ -126139,19 +125993,16 @@
             },
             "final_issue_cycles": [
               0,
-              2,
-              2
+              0
             ],
-            "candidate_source": "slt t1, zero, t0\nsw t0, 32(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+            "candidate_source": "sw t0, 32(x2)\nbnez t1, .Lmca_target\n.Lmca_target:\n",
             "original_issue_cycles": [
               0,
-              2,
-              2
+              0
             ],
             "candidate_issue_cycles": [
               0,
-              2,
-              2
+              0
             ]
           },
           {
@@ -128579,35 +128430,30 @@
           },
           {
             "start_line": 94,
-            "end_line": 96,
-            "instructions": 3,
+            "end_line": 94,
+            "instructions": 1,
             "status": "no_improvement",
             "moved": 0,
-            "original_cycles": 5,
-            "candidate_cycles": 5,
-            "final_cycles": 5,
-            "dependencies": {
-              "RAW": 2,
-              "control": 2
-            },
+            "original_cycles": 3,
+            "candidate_cycles": 3,
+            "final_cycles": 3,
+            "dependencies": {},
             "metrics_before": {
-              "cycles": 5,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 3,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.6,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1,
-                2
+                0
               ],
-              "llvm_total_cycles": 6,
-              "source": "lw t0, 24(x2)\nslt t1, zero, t0\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "lw t0, 24(x2)\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -128621,31 +128467,11 @@
                           "hasUnmodeledSideEffects": false,
                           "mayLoad": true,
                           "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 2,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
                         }
                       ]
                     },
                     "Instructions": [
-                      "lw\tt0, 24(sp)",
-                      "sgtz\tt1, t0",
-                      "bnez\tt1, .Lmca_target"
+                      "lw\tt0, 24(sp)"
                     ],
                     "Name": "",
                     "ResourcePressureView": {
@@ -128657,35 +128483,20 @@
                         },
                         {
                           "InstructionIndex": 1,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
                           "ResourceIndex": 2,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
-                      "BlockRThroughput": 1.5,
+                      "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.5,
-                      "Instructions": 3,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 6,
-                      "TotaluOps": 3,
-                      "uOpsPerCycle": 0.5
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -128695,20 +128506,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 5,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 5
                         }
                       ]
                     }
@@ -128735,23 +128532,21 @@
               }
             },
             "metrics_after": {
-              "cycles": 5,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 3,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.6,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1,
-                2
+                0
               ],
-              "llvm_total_cycles": 6,
-              "source": "lw t0, 24(x2)\nslt t1, zero, t0\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "lw t0, 24(x2)\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -128765,31 +128560,11 @@
                           "hasUnmodeledSideEffects": false,
                           "mayLoad": true,
                           "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 2,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 1,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
                         }
                       ]
                     },
                     "Instructions": [
-                      "lw\tt0, 24(sp)",
-                      "sgtz\tt1, t0",
-                      "bnez\tt1, .Lmca_target"
+                      "lw\tt0, 24(sp)"
                     ],
                     "Name": "",
                     "ResourcePressureView": {
@@ -128801,35 +128576,20 @@
                         },
                         {
                           "InstructionIndex": 1,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
                           "ResourceIndex": 2,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 3,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
-                      "BlockRThroughput": 1.5,
+                      "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.5,
-                      "Instructions": 3,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 6,
-                      "TotaluOps": 3,
-                      "uOpsPerCycle": 0.5
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -128839,20 +128599,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
-                        },
-                        {
-                          "CycleDispatched": 2,
-                          "CycleExecuted": 5,
-                          "CycleIssued": 2,
-                          "CycleReady": 2,
-                          "CycleRetired": 5
                         }
                       ]
                     }
@@ -128879,20 +128625,221 @@
               }
             },
             "final_issue_cycles": [
-              0,
-              1,
-              2
+              0
             ],
-            "candidate_source": "lw t0, 24(x2)\nslt t1, zero, t0\nbnez t1, .Lmca_target\n.Lmca_target:\n",
+            "candidate_source": "lw t0, 24(x2)\n.Lmca_target:\n",
             "original_issue_cycles": [
-              0,
-              1,
-              2
+              0
             ],
             "candidate_issue_cycles": [
-              0,
-              1,
-              2
+              0
+            ]
+          },
+          {
+            "start_line": 96,
+            "end_line": 96,
+            "instructions": 1,
+            "status": "no_improvement",
+            "moved": 0,
+            "original_cycles": 3,
+            "candidate_cycles": 3,
+            "final_cycles": 3,
+            "dependencies": {},
+            "metrics_before": {
+              "cycles": 3,
+              "peak_parallelism": 1,
+              "critical_path": null,
+              "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
+              "bubbles": 0,
+              "bubble_ratio": 0.0,
+              "issue_span": 1,
+              "drain_cycles": 2,
+              "dispatch_width": 2,
+              "ipc": 0.3333333333333333,
+              "issue_cycles": [
+                0
+              ],
+              "llvm_total_cycles": 4,
+              "source": "bnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_output": {
+                "CodeRegions": [
+                  {
+                    "InstructionInfoView": {
+                      "InstructionList": [
+                        {
+                          "Instruction": 0,
+                          "Latency": 3,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": false
+                        }
+                      ]
+                    },
+                    "Instructions": [
+                      "bnez\tt1, .Lmca_target"
+                    ],
+                    "Name": "",
+                    "ResourcePressureView": {
+                      "ResourcePressureInfo": [
+                        {
+                          "InstructionIndex": 0,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 1,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        }
+                      ]
+                    },
+                    "SummaryView": {
+                      "BlockRThroughput": 1,
+                      "DispatchWidth": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
+                      "Iterations": 1,
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
+                    },
+                    "TimelineView": {
+                      "TimelineInfo": [
+                        {
+                          "CycleDispatched": 0,
+                          "CycleExecuted": 3,
+                          "CycleIssued": 0,
+                          "CycleReady": 0,
+                          "CycleRetired": 3
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "SimulationParameters": {
+                  "-march": "riscv32",
+                  "-mcpu": "sifive-e76",
+                  "-mtriple": "riscv32"
+                },
+                "TargetInfo": {
+                  "CPUName": "sifive-e76",
+                  "Resources": [
+                    "SiFive7FDiv",
+                    "SiFive7IDiv",
+                    "SiFive7PipeA",
+                    "SiFive7PipeB",
+                    "SiFive7VA",
+                    "SiFive7VCQ",
+                    "SiFive7VL",
+                    "SiFive7VS"
+                  ]
+                }
+              }
+            },
+            "metrics_after": {
+              "cycles": 3,
+              "peak_parallelism": 1,
+              "critical_path": null,
+              "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
+              "bubbles": 0,
+              "bubble_ratio": 0.0,
+              "issue_span": 1,
+              "drain_cycles": 2,
+              "dispatch_width": 2,
+              "ipc": 0.3333333333333333,
+              "issue_cycles": [
+                0
+              ],
+              "llvm_total_cycles": 4,
+              "source": "bnez t1, .Lmca_target\n.Lmca_target:\n",
+              "llvm_output": {
+                "CodeRegions": [
+                  {
+                    "InstructionInfoView": {
+                      "InstructionList": [
+                        {
+                          "Instruction": 0,
+                          "Latency": 3,
+                          "NumMicroOpcodes": 1,
+                          "RThroughput": 1,
+                          "hasUnmodeledSideEffects": false,
+                          "mayLoad": false,
+                          "mayStore": false
+                        }
+                      ]
+                    },
+                    "Instructions": [
+                      "bnez\tt1, .Lmca_target"
+                    ],
+                    "Name": "",
+                    "ResourcePressureView": {
+                      "ResourcePressureInfo": [
+                        {
+                          "InstructionIndex": 0,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        },
+                        {
+                          "InstructionIndex": 1,
+                          "ResourceIndex": 3,
+                          "ResourceUsage": 1
+                        }
+                      ]
+                    },
+                    "SummaryView": {
+                      "BlockRThroughput": 1,
+                      "DispatchWidth": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
+                      "Iterations": 1,
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
+                    },
+                    "TimelineView": {
+                      "TimelineInfo": [
+                        {
+                          "CycleDispatched": 0,
+                          "CycleExecuted": 3,
+                          "CycleIssued": 0,
+                          "CycleReady": 0,
+                          "CycleRetired": 3
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "SimulationParameters": {
+                  "-march": "riscv32",
+                  "-mcpu": "sifive-e76",
+                  "-mtriple": "riscv32"
+                },
+                "TargetInfo": {
+                  "CPUName": "sifive-e76",
+                  "Resources": [
+                    "SiFive7FDiv",
+                    "SiFive7IDiv",
+                    "SiFive7PipeA",
+                    "SiFive7PipeB",
+                    "SiFive7VA",
+                    "SiFive7VCQ",
+                    "SiFive7VL",
+                    "SiFive7VS"
+                  ]
+                }
+              }
+            },
+            "final_issue_cycles": [
+              0
+            ],
+            "candidate_source": "bnez t1, .Lmca_target\n.Lmca_target:\n",
+            "original_issue_cycles": [
+              0
+            ],
+            "candidate_issue_cycles": [
+              0
             ]
           },
           {
@@ -129531,36 +129478,36 @@
             ]
           }
         ],
-        "saved_cycles": 1,
+        "saved_cycles": 0,
         "output_instructions": 88,
-        "unmodeled_instructions": 5,
-        "coverage_ratio": 0.9431818181818182,
+        "unmodeled_instructions": 9,
+        "coverage_ratio": 0.8977272727272727,
         "unmodeled_by_opcode": {
           "max": 4,
-          "slt": 1
+          "slt": 5
         },
-        "region_count": 21,
-        "mean_region_size": 3.9523809523809526,
-        "max_region_instructions": 10,
+        "region_count": 22,
+        "mean_region_size": 3.590909090909091,
+        "max_region_instructions": 9,
         "metrics_before": {
-          "cycles": 130,
+          "cycles": 125,
           "peak_parallelism": 2,
           "critical_path_max": null,
-          "bubbles": 31,
-          "bubble_ratio": 0.31,
-          "issue_span": 100,
-          "drain_cycles": 30,
-          "ipc": 0.6384615384615384
+          "bubbles": 28,
+          "bubble_ratio": 0.3010752688172043,
+          "issue_span": 93,
+          "drain_cycles": 32,
+          "ipc": 0.632
         },
         "metrics_after": {
-          "cycles": 129,
+          "cycles": 125,
           "peak_parallelism": 2,
           "critical_path_max": null,
-          "bubbles": 31,
-          "bubble_ratio": 0.31313131313131315,
-          "issue_span": 99,
-          "drain_cycles": 30,
-          "ipc": 0.6434108527131783
+          "bubbles": 28,
+          "bubble_ratio": 0.3010752688172043,
+          "issue_span": 93,
+          "drain_cycles": 32,
+          "ipc": 0.632
         },
         "diagnostics": [
           {
@@ -129569,13 +129516,28 @@
             "severity": "info"
           },
           {
+            "line": 17,
+            "reason": "invalid register operand",
+            "severity": "info"
+          },
+          {
             "line": 41,
             "reason": "unknown opcode or unsupported form",
             "severity": "info"
           },
           {
+            "line": 42,
+            "reason": "invalid register operand",
+            "severity": "info"
+          },
+          {
             "line": 59,
             "reason": "unknown opcode or unsupported form",
+            "severity": "info"
+          },
+          {
+            "line": 60,
+            "reason": "invalid register operand",
             "severity": "info"
           },
           {
@@ -129589,8 +129551,13 @@
             "severity": "info"
           },
           {
+            "line": 95,
+            "reason": "invalid register operand",
+            "severity": "info"
+          },
+          {
             "line": 16,
-            "reason": "scheduling coverage 94.3%; 5/88 instructions unmodeled; see unmodeled_by_opcode and diagnostics",
+            "reason": "scheduling coverage 89.8%; 9/88 instructions unmodeled; see unmodeled_by_opcode and diagnostics",
             "severity": "warning"
           }
         ]
@@ -129602,10 +129569,10 @@
         "reason": "Static assembly A/B only; no whole-program execution or hardware timing."
       },
       "assembly": {
-        "before": ".text\n.align 2\n  .globl main_graph\n  .type main_graph, @function\nmain_graph:\n  addi sp, sp, -80  # create stack frame\n  sw s0, 0(sp)  # ABI save\n  sw s1, 4(sp)  # ABI save\n  sw s2, 8(sp)  # ABI save\n  sw s3, 12(sp)  # ABI save\n.entry:\n    li s3, 0  # const 0\n    mv s3, t0  # acc = bias\n    mul t0, t1, t2  # tmp = x * w\n    add s3, s3, t0  # acc += x*w\n    max t0, s3, 0\n    slt t1, zero, t0  # 0 < x ?\n    sw t0, 76(sp)  # spill v_3 [regalloc:spill]\n    sw t3, 72(sp)  # spill layer2.0.bias [regalloc:spill]\n    sw t4, 68(sp)  # spill layer2.0.weight [regalloc:spill]\n    sw t5, 64(sp)  # spill layer3.0.bias [regalloc:spill]\n    sw t6, 60(sp)  # spill layer3.0.weight [regalloc:spill]\n    sw s0, 56(sp)  # spill fc1.bias [regalloc:spill]\n    sw s1, 52(sp)  # spill fc1.weight [regalloc:spill]\n    sw s2, 48(sp)  # spill fc2.weight [regalloc:spill]\n    bnez t1, .Lmp_gt_1\n    li t0, 0  # result = 0\n    sw t0, 44(sp)  # spill v_4 [regalloc:spill]\n    j .Lmp_done_2\n.Lmp_gt_1:\n    lw t0, 76(sp)  # reload v_3 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 44(sp)  # spill v_4 [regalloc:spill]\n.Lmp_done_2:\n    lw t0, 72(sp)  # reload layer2.0.bias [regalloc:reload]\n    mv t1, t0  # acc = bias\n    lw t0, 44(sp)  # reload v_4 [regalloc:reload]\n    lw t2, 68(sp)  # reload layer2.0.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = x * w\n    add t1, t1, t3  # acc += x*w\n    max t0, t1, 0\n    slt t1, zero, t0  # 0 < x ?\n    sw t0, 40(sp)  # spill v_6 [regalloc:spill]\n    bnez t1, .Lmp_gt_3\n    li t0, 0  # result = 0\n    sw t0, 36(sp)  # spill v_7 [regalloc:spill]\n    j .Lmp_done_4\n.Lmp_gt_3:\n    lw t0, 40(sp)  # reload v_6 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 36(sp)  # spill v_7 [regalloc:spill]\n.Lmp_done_4:\n    lw t0, 64(sp)  # reload layer3.0.bias [regalloc:reload]\n    mv t1, t0  # acc = bias\n    lw t0, 36(sp)  # reload v_7 [regalloc:reload]\n    lw t2, 60(sp)  # reload layer3.0.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = x * w\n    add t1, t1, t3  # acc += x*w\n    max t0, t1, 0\n    slt t1, zero, t0  # 0 < x ?\n    sw t0, 32(sp)  # spill v_9 [regalloc:spill]\n    bnez t1, .Lmp_gt_5\n    li t0, 0  # result = 0\n    sw t0, 28(sp)  # spill v_10 [regalloc:spill]\n    j .Lmp_done_6\n.Lmp_gt_5:\n    lw t0, 32(sp)  # reload v_9 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 28(sp)  # spill v_10 [regalloc:spill]\n.Lmp_done_6:\n    lw t0, 28(sp)  # reload v_10 [regalloc:reload]\n    mv t1, t0  # reshape\n    lw t0, 56(sp)  # reload fc1.bias [regalloc:reload]\n    mv t2, t0  # acc = bias\n    lw t0, 52(sp)  # reload fc1.weight [regalloc:reload]\n    mul t3, t1, t0  # tmp = a * w\n    add t2, t2, t3  # acc += a*w\n    max t0, t2, 0\n    li t1, 0  # acc = bias\n    lw t2, 48(sp)  # reload fc2.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = a * w\n    add t1, t1, t3  # acc += a*w\n    slt t0, t1, 1  # src < 1 ?\n    sw t1, 24(sp)  # spill v_14 [regalloc:spill]\n    bnez t0, .Lsig_keep_7\n    li t0, 1  # clamp to 1\n    sw t0, 20(sp)  # spill v_15 [regalloc:spill]\n    j .Lsig_done_8\n.Lsig_keep_7:\n    lw t0, 24(sp)  # reload v_14 [regalloc:reload]\n    mv t1, t0  # keep src\n    sw t1, 20(sp)  # spill v_15 [regalloc:spill]\n.Lsig_done_8:\n    lw t0, 24(sp)  # reload v_14 [regalloc:reload]\n    slt t1, zero, t0  # 0 < src ?\n    bnez t1, .Lsig_zero_9\n    li t0, 0  # clamp to 0\n    sw t0, 20(sp)  # spill v_15 [regalloc:spill]\n.Lsig_zero_9:\n    lw t0, 20(sp)  # reload v_15 [regalloc:reload]\n    mv t1, t0  # reshape\n    mv a0, t1  # return value\n    jalr zero, ra  # ret\n",
-        "after": ".text\n.align 2\n  .globl main_graph\n  .type main_graph, @function\nmain_graph:\n  addi sp, sp, -80  # create stack frame\n  sw s0, 0(sp)  # ABI save\n  sw s1, 4(sp)  # ABI save\n  sw s2, 8(sp)  # ABI save\n  sw s3, 12(sp)  # ABI save\n.entry:\n    li s3, 0  # const 0\n    mv s3, t0  # acc = bias\n    mul t0, t1, t2  # tmp = x * w\n    add s3, s3, t0  # acc += x*w\n    max t0, s3, 0\n    sw t0, 76(sp)  # spill v_3 [regalloc:spill]\n    sw t3, 72(sp)  # spill layer2.0.bias [regalloc:spill]\n    sw t4, 68(sp)  # spill layer2.0.weight [regalloc:spill]\n    sw t5, 64(sp)  # spill layer3.0.bias [regalloc:spill]\n    sw t6, 60(sp)  # spill layer3.0.weight [regalloc:spill]\n    sw s0, 56(sp)  # spill fc1.bias [regalloc:spill]\n    sw s1, 52(sp)  # spill fc1.weight [regalloc:spill]\n    slt t1, zero, t0  # 0 < x ?\n    sw s2, 48(sp)  # spill fc2.weight [regalloc:spill]\n    bnez t1, .Lmp_gt_1\n    li t0, 0  # result = 0\n    sw t0, 44(sp)  # spill v_4 [regalloc:spill]\n    j .Lmp_done_2\n.Lmp_gt_1:\n    lw t0, 76(sp)  # reload v_3 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 44(sp)  # spill v_4 [regalloc:spill]\n.Lmp_done_2:\n    lw t0, 72(sp)  # reload layer2.0.bias [regalloc:reload]\n    mv t1, t0  # acc = bias\n    lw t0, 44(sp)  # reload v_4 [regalloc:reload]\n    lw t2, 68(sp)  # reload layer2.0.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = x * w\n    add t1, t1, t3  # acc += x*w\n    max t0, t1, 0\n    slt t1, zero, t0  # 0 < x ?\n    sw t0, 40(sp)  # spill v_6 [regalloc:spill]\n    bnez t1, .Lmp_gt_3\n    li t0, 0  # result = 0\n    sw t0, 36(sp)  # spill v_7 [regalloc:spill]\n    j .Lmp_done_4\n.Lmp_gt_3:\n    lw t0, 40(sp)  # reload v_6 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 36(sp)  # spill v_7 [regalloc:spill]\n.Lmp_done_4:\n    lw t0, 64(sp)  # reload layer3.0.bias [regalloc:reload]\n    mv t1, t0  # acc = bias\n    lw t0, 36(sp)  # reload v_7 [regalloc:reload]\n    lw t2, 60(sp)  # reload layer3.0.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = x * w\n    add t1, t1, t3  # acc += x*w\n    max t0, t1, 0\n    slt t1, zero, t0  # 0 < x ?\n    sw t0, 32(sp)  # spill v_9 [regalloc:spill]\n    bnez t1, .Lmp_gt_5\n    li t0, 0  # result = 0\n    sw t0, 28(sp)  # spill v_10 [regalloc:spill]\n    j .Lmp_done_6\n.Lmp_gt_5:\n    lw t0, 32(sp)  # reload v_9 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 28(sp)  # spill v_10 [regalloc:spill]\n.Lmp_done_6:\n    lw t0, 28(sp)  # reload v_10 [regalloc:reload]\n    mv t1, t0  # reshape\n    lw t0, 56(sp)  # reload fc1.bias [regalloc:reload]\n    mv t2, t0  # acc = bias\n    lw t0, 52(sp)  # reload fc1.weight [regalloc:reload]\n    mul t3, t1, t0  # tmp = a * w\n    add t2, t2, t3  # acc += a*w\n    max t0, t2, 0\n    li t1, 0  # acc = bias\n    lw t2, 48(sp)  # reload fc2.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = a * w\n    add t1, t1, t3  # acc += a*w\n    slt t0, t1, 1  # src < 1 ?\n    sw t1, 24(sp)  # spill v_14 [regalloc:spill]\n    bnez t0, .Lsig_keep_7\n    li t0, 1  # clamp to 1\n    sw t0, 20(sp)  # spill v_15 [regalloc:spill]\n    j .Lsig_done_8\n.Lsig_keep_7:\n    lw t0, 24(sp)  # reload v_14 [regalloc:reload]\n    mv t1, t0  # keep src\n    sw t1, 20(sp)  # spill v_15 [regalloc:spill]\n.Lsig_done_8:\n    lw t0, 24(sp)  # reload v_14 [regalloc:reload]\n    slt t1, zero, t0  # 0 < src ?\n    bnez t1, .Lsig_zero_9\n    li t0, 0  # clamp to 0\n    sw t0, 20(sp)  # spill v_15 [regalloc:spill]\n.Lsig_zero_9:\n    lw t0, 20(sp)  # reload v_15 [regalloc:reload]\n    mv t1, t0  # reshape\n    mv a0, t1  # return value\n    jalr zero, ra  # ret\n"
+        "before": ".text\n.align 2\n  .globl main_graph\n  .type main_graph, @function\nmain_graph:\n  addi sp, sp, -80  # create stack frame\n  sw s0, 0(sp)  # ABI save\n  sw s1, 4(sp)  # ABI save\n  sw s2, 8(sp)  # ABI save\n  sw s3, 12(sp)  # ABI save\n.entry:\n    li s3, 0  # const 0\n    mv s3, t0  # acc = bias\n    mul t0, t1, t2  # tmp = x * w\n    add s3, s3, t0  # acc += x*w\n    max t0, s3, 0\n    slt t1, 0, t0  # 0 < x ?\n    sw t0, 76(sp)  # spill v_3 [regalloc:spill]\n    sw t3, 72(sp)  # spill layer2.0.bias [regalloc:spill]\n    sw t4, 68(sp)  # spill layer2.0.weight [regalloc:spill]\n    sw t5, 64(sp)  # spill layer3.0.bias [regalloc:spill]\n    sw t6, 60(sp)  # spill layer3.0.weight [regalloc:spill]\n    sw s0, 56(sp)  # spill fc1.bias [regalloc:spill]\n    sw s1, 52(sp)  # spill fc1.weight [regalloc:spill]\n    sw s2, 48(sp)  # spill fc2.weight [regalloc:spill]\n    bnez t1, .Lmp_gt_1\n    li t0, 0  # result = 0\n    sw t0, 44(sp)  # spill v_4 [regalloc:spill]\n    j .Lmp_done_2\n.Lmp_gt_1:\n    lw t0, 76(sp)  # reload v_3 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 44(sp)  # spill v_4 [regalloc:spill]\n.Lmp_done_2:\n    lw t0, 72(sp)  # reload layer2.0.bias [regalloc:reload]\n    mv t1, t0  # acc = bias\n    lw t0, 44(sp)  # reload v_4 [regalloc:reload]\n    lw t2, 68(sp)  # reload layer2.0.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = x * w\n    add t1, t1, t3  # acc += x*w\n    max t0, t1, 0\n    slt t1, 0, t0  # 0 < x ?\n    sw t0, 40(sp)  # spill v_6 [regalloc:spill]\n    bnez t1, .Lmp_gt_3\n    li t0, 0  # result = 0\n    sw t0, 36(sp)  # spill v_7 [regalloc:spill]\n    j .Lmp_done_4\n.Lmp_gt_3:\n    lw t0, 40(sp)  # reload v_6 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 36(sp)  # spill v_7 [regalloc:spill]\n.Lmp_done_4:\n    lw t0, 64(sp)  # reload layer3.0.bias [regalloc:reload]\n    mv t1, t0  # acc = bias\n    lw t0, 36(sp)  # reload v_7 [regalloc:reload]\n    lw t2, 60(sp)  # reload layer3.0.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = x * w\n    add t1, t1, t3  # acc += x*w\n    max t0, t1, 0\n    slt t1, 0, t0  # 0 < x ?\n    sw t0, 32(sp)  # spill v_9 [regalloc:spill]\n    bnez t1, .Lmp_gt_5\n    li t0, 0  # result = 0\n    sw t0, 28(sp)  # spill v_10 [regalloc:spill]\n    j .Lmp_done_6\n.Lmp_gt_5:\n    lw t0, 32(sp)  # reload v_9 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 28(sp)  # spill v_10 [regalloc:spill]\n.Lmp_done_6:\n    lw t0, 28(sp)  # reload v_10 [regalloc:reload]\n    mv t1, t0  # reshape\n    lw t0, 56(sp)  # reload fc1.bias [regalloc:reload]\n    mv t2, t0  # acc = bias\n    lw t0, 52(sp)  # reload fc1.weight [regalloc:reload]\n    mul t3, t1, t0  # tmp = a * w\n    add t2, t2, t3  # acc += a*w\n    max t0, t2, 0\n    li t1, 0  # acc = bias\n    lw t2, 48(sp)  # reload fc2.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = a * w\n    add t1, t1, t3  # acc += a*w\n    slt t0, t1, 1  # src < 1 ?\n    sw t1, 24(sp)  # spill v_14 [regalloc:spill]\n    bnez t0, .Lsig_keep_7\n    li t0, 1  # clamp to 1\n    sw t0, 20(sp)  # spill v_15 [regalloc:spill]\n    j .Lsig_done_8\n.Lsig_keep_7:\n    lw t0, 24(sp)  # reload v_14 [regalloc:reload]\n    mv t1, t0  # keep src\n    sw t1, 20(sp)  # spill v_15 [regalloc:spill]\n.Lsig_done_8:\n    lw t0, 24(sp)  # reload v_14 [regalloc:reload]\n    slt t1, 0, t0  # 0 < src ?\n    bnez t1, .Lsig_zero_9\n    li t0, 0  # clamp to 0\n    sw t0, 20(sp)  # spill v_15 [regalloc:spill]\n.Lsig_zero_9:\n    lw t0, 20(sp)  # reload v_15 [regalloc:reload]\n    mv t1, t0  # reshape\n    mv a0, t1  # return value\n    jalr zero, ra  # ret\n",
+        "after": ".text\n.align 2\n  .globl main_graph\n  .type main_graph, @function\nmain_graph:\n  addi sp, sp, -80  # create stack frame\n  sw s0, 0(sp)  # ABI save\n  sw s1, 4(sp)  # ABI save\n  sw s2, 8(sp)  # ABI save\n  sw s3, 12(sp)  # ABI save\n.entry:\n    li s3, 0  # const 0\n    mv s3, t0  # acc = bias\n    mul t0, t1, t2  # tmp = x * w\n    add s3, s3, t0  # acc += x*w\n    max t0, s3, 0\n    slt t1, 0, t0  # 0 < x ?\n    sw t0, 76(sp)  # spill v_3 [regalloc:spill]\n    sw t3, 72(sp)  # spill layer2.0.bias [regalloc:spill]\n    sw t4, 68(sp)  # spill layer2.0.weight [regalloc:spill]\n    sw t5, 64(sp)  # spill layer3.0.bias [regalloc:spill]\n    sw t6, 60(sp)  # spill layer3.0.weight [regalloc:spill]\n    sw s0, 56(sp)  # spill fc1.bias [regalloc:spill]\n    sw s1, 52(sp)  # spill fc1.weight [regalloc:spill]\n    sw s2, 48(sp)  # spill fc2.weight [regalloc:spill]\n    bnez t1, .Lmp_gt_1\n    li t0, 0  # result = 0\n    sw t0, 44(sp)  # spill v_4 [regalloc:spill]\n    j .Lmp_done_2\n.Lmp_gt_1:\n    lw t0, 76(sp)  # reload v_3 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 44(sp)  # spill v_4 [regalloc:spill]\n.Lmp_done_2:\n    lw t0, 72(sp)  # reload layer2.0.bias [regalloc:reload]\n    mv t1, t0  # acc = bias\n    lw t0, 44(sp)  # reload v_4 [regalloc:reload]\n    lw t2, 68(sp)  # reload layer2.0.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = x * w\n    add t1, t1, t3  # acc += x*w\n    max t0, t1, 0\n    slt t1, 0, t0  # 0 < x ?\n    sw t0, 40(sp)  # spill v_6 [regalloc:spill]\n    bnez t1, .Lmp_gt_3\n    li t0, 0  # result = 0\n    sw t0, 36(sp)  # spill v_7 [regalloc:spill]\n    j .Lmp_done_4\n.Lmp_gt_3:\n    lw t0, 40(sp)  # reload v_6 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 36(sp)  # spill v_7 [regalloc:spill]\n.Lmp_done_4:\n    lw t0, 64(sp)  # reload layer3.0.bias [regalloc:reload]\n    mv t1, t0  # acc = bias\n    lw t0, 36(sp)  # reload v_7 [regalloc:reload]\n    lw t2, 60(sp)  # reload layer3.0.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = x * w\n    add t1, t1, t3  # acc += x*w\n    max t0, t1, 0\n    slt t1, 0, t0  # 0 < x ?\n    sw t0, 32(sp)  # spill v_9 [regalloc:spill]\n    bnez t1, .Lmp_gt_5\n    li t0, 0  # result = 0\n    sw t0, 28(sp)  # spill v_10 [regalloc:spill]\n    j .Lmp_done_6\n.Lmp_gt_5:\n    lw t0, 32(sp)  # reload v_9 [regalloc:reload]\n    mv t1, t0  # result = x\n    sw t1, 28(sp)  # spill v_10 [regalloc:spill]\n.Lmp_done_6:\n    lw t0, 28(sp)  # reload v_10 [regalloc:reload]\n    mv t1, t0  # reshape\n    lw t0, 56(sp)  # reload fc1.bias [regalloc:reload]\n    mv t2, t0  # acc = bias\n    lw t0, 52(sp)  # reload fc1.weight [regalloc:reload]\n    mul t3, t1, t0  # tmp = a * w\n    add t2, t2, t3  # acc += a*w\n    max t0, t2, 0\n    li t1, 0  # acc = bias\n    lw t2, 48(sp)  # reload fc2.weight [regalloc:reload]\n    mul t3, t0, t2  # tmp = a * w\n    add t1, t1, t3  # acc += a*w\n    slt t0, t1, 1  # src < 1 ?\n    sw t1, 24(sp)  # spill v_14 [regalloc:spill]\n    bnez t0, .Lsig_keep_7\n    li t0, 1  # clamp to 1\n    sw t0, 20(sp)  # spill v_15 [regalloc:spill]\n    j .Lsig_done_8\n.Lsig_keep_7:\n    lw t0, 24(sp)  # reload v_14 [regalloc:reload]\n    mv t1, t0  # keep src\n    sw t1, 20(sp)  # spill v_15 [regalloc:spill]\n.Lsig_done_8:\n    lw t0, 24(sp)  # reload v_14 [regalloc:reload]\n    slt t1, 0, t0  # 0 < src ?\n    bnez t1, .Lsig_zero_9\n    li t0, 0  # clamp to 0\n    sw t0, 20(sp)  # spill v_15 [regalloc:spill]\n.Lsig_zero_9:\n    lw t0, 20(sp)  # reload v_15 [regalloc:reload]\n    mv t1, t0  # reshape\n    mv a0, t1  # return value\n    jalr zero, ra  # ret\n"
       },
-      "output_sha256": "7746e395b031e372c3fe407b1c8659fcb1f2ed515ea17032706e14e5e25ec081",
+      "output_sha256": "abdfe8dd707e37b5d9e89296bb8b8a59c99ee8a53a27f45040e29f7ff315fcb4",
       "side_effects": {
         "status": "passed",
         "before": {
@@ -130294,11 +130261,11 @@
           "region_dataflow_equal": true
         },
         "errors": [],
-        "verified_regions": 21,
+        "verified_regions": 22,
         "local_liveness": {
           "scope": "Per modeled region; all final definitions live at exit; not whole-CFG pressure",
           "peak_before": 10,
-          "peak_after": 9,
+          "peak_after": 10,
           "increased_regions": 0,
           "regions": [
             {
@@ -130321,13 +130288,11 @@
               "after": 3
             },
             {
-              "start_line": 17,
+              "start_line": 18,
               "end_line": 26,
-              "live_out": [
-                "x6"
-              ],
+              "live_out": [],
               "before": 10,
-              "after": 9
+              "after": 10
             },
             {
               "start_line": 27,
@@ -130361,11 +130326,9 @@
               "after": 4
             },
             {
-              "start_line": 42,
+              "start_line": 43,
               "end_line": 44,
-              "live_out": [
-                "x6"
-              ],
+              "live_out": [],
               "before": 3,
               "after": 3
             },
@@ -130401,11 +130364,9 @@
               "after": 4
             },
             {
-              "start_line": 60,
+              "start_line": 61,
               "end_line": 62,
-              "live_out": [
-                "x6"
-              ],
+              "live_out": [],
               "before": 3,
               "after": 3
             },
@@ -130479,13 +130440,19 @@
             },
             {
               "start_line": 94,
-              "end_line": 96,
+              "end_line": 94,
               "live_out": [
-                "x5",
-                "x6"
+                "x5"
               ],
-              "before": 2,
-              "after": 2
+              "before": 1,
+              "after": 1
+            },
+            {
+              "start_line": 96,
+              "end_line": 96,
+              "live_out": [],
+              "before": 1,
+              "after": 1
             },
             {
               "start_line": 97,
@@ -130523,10 +130490,10 @@
       },
       "metric": {
         "name": "sum_of_modeled_region_cycles",
-        "before": 130,
-        "after": 129,
-        "saved": 1,
-        "reduction_percent": 0.7692307692307693
+        "before": 125,
+        "after": 125,
+        "saved": 0,
+        "reduction_percent": 0.0
       },
       "role": "supplemental",
       "execution": {
@@ -130538,7 +130505,7 @@
       "schema_version": 1,
       "benchmark_type": "assembly-ab",
       "case": "CompilerDriver/linear",
-      "input_sha256": "e2f7be421648afe8e6b3cf038316273aa8ca6b69621bccc4d147ce36dad91f50",
+      "input_sha256": "d0319637da33b010a7c372d3e65f4ccc8a2c4cc806d5211b405a51200d0cc54c",
       "status": "passed",
       "comparison_status": "no_improvement",
       "errors": [],
@@ -130551,7 +130518,7 @@
         "pipeline_matches_public_pass": true,
         "used": false,
         "warnings": [
-          "Schedule line 20: scheduling coverage 91.7%; 5/60 instructions unmodeled; see unmodeled_by_opcode and diagnostics"
+          "Schedule line 20: scheduling coverage 85.0%; 9/60 instructions unmodeled; see unmodeled_by_opcode and diagnostics"
         ]
       },
       "source_instructions": {
@@ -130586,13 +130553,13 @@
         "division_policy": "preserve-relative-order",
         "estimate_scope": "sum of local static regions; ready inputs; no cache/branch prediction",
         "input_instructions": 60,
-        "modeled_instructions": 55,
+        "modeled_instructions": 51,
         "moved_instructions": 0,
         "applied_regions": 0,
         "skipped_regions": 0,
-        "original_cycles": 96,
-        "candidate_cycles": 96,
-        "final_cycles": 96,
+        "original_cycles": 92,
+        "candidate_cycles": 92,
+        "final_cycles": 92,
         "original_stalls": 4,
         "final_stalls": 4,
         "regions": [
@@ -131772,35 +131739,31 @@
             ]
           },
           {
-            "start_line": 21,
+            "start_line": 22,
             "end_line": 22,
-            "instructions": 2,
+            "instructions": 1,
             "status": "no_improvement",
             "moved": 0,
-            "original_cycles": 4,
-            "candidate_cycles": 4,
-            "final_cycles": 4,
-            "dependencies": {
-              "RAW": 1,
-              "control": 1
-            },
+            "original_cycles": 3,
+            "candidate_cycles": 3,
+            "final_cycles": 3,
+            "dependencies": {},
             "metrics_before": {
-              "cycles": 4,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 2,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.5,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1
+                0
               ],
-              "llvm_total_cycles": 5,
-              "source": "slt s7, zero, s6\nbnez s7, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "bnez s7, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -131808,15 +131771,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -131827,7 +131781,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\ts7, s6",
                       "bnez\ts7, .Lmca_target"
                     ],
                     "Name": "",
@@ -131842,23 +131795,18 @@
                           "InstructionIndex": 1,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
                       "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.4,
-                      "Instructions": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 5,
-                      "TotaluOps": 2,
-                      "uOpsPerCycle": 0.4
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -131868,13 +131816,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
                         }
                       ]
                     }
@@ -131901,22 +131842,21 @@
               }
             },
             "metrics_after": {
-              "cycles": 4,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 2,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.5,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1
+                0
               ],
-              "llvm_total_cycles": 5,
-              "source": "slt s7, zero, s6\nbnez s7, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "bnez s7, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -131924,15 +131864,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -131943,7 +131874,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\ts7, s6",
                       "bnez\ts7, .Lmca_target"
                     ],
                     "Name": "",
@@ -131958,23 +131888,18 @@
                           "InstructionIndex": 1,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
                       "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.4,
-                      "Instructions": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 5,
-                      "TotaluOps": 2,
-                      "uOpsPerCycle": 0.4
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -131984,13 +131909,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
                         }
                       ]
                     }
@@ -132017,17 +131935,14 @@
               }
             },
             "final_issue_cycles": [
-              0,
-              1
+              0
             ],
-            "candidate_source": "slt s7, zero, s6\nbnez s7, .Lmca_target\n.Lmca_target:\n",
+            "candidate_source": "bnez s7, .Lmca_target\n.Lmca_target:\n",
             "original_issue_cycles": [
-              0,
-              1
+              0
             ],
             "candidate_issue_cycles": [
-              0,
-              1
+              0
             ]
           },
           {
@@ -132814,35 +132729,31 @@
             ]
           },
           {
-            "start_line": 32,
+            "start_line": 33,
             "end_line": 33,
-            "instructions": 2,
+            "instructions": 1,
             "status": "no_improvement",
             "moved": 0,
-            "original_cycles": 4,
-            "candidate_cycles": 4,
-            "final_cycles": 4,
-            "dependencies": {
-              "RAW": 1,
-              "control": 1
-            },
+            "original_cycles": 3,
+            "candidate_cycles": 3,
+            "final_cycles": 3,
+            "dependencies": {},
             "metrics_before": {
-              "cycles": 4,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 2,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.5,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1
+                0
               ],
-              "llvm_total_cycles": 5,
-              "source": "slt s7, zero, s10\nbnez s7, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "bnez s7, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -132850,15 +132761,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -132869,7 +132771,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\ts7, s10",
                       "bnez\ts7, .Lmca_target"
                     ],
                     "Name": "",
@@ -132884,23 +132785,18 @@
                           "InstructionIndex": 1,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
                       "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.4,
-                      "Instructions": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 5,
-                      "TotaluOps": 2,
-                      "uOpsPerCycle": 0.4
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -132910,13 +132806,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
                         }
                       ]
                     }
@@ -132943,22 +132832,21 @@
               }
             },
             "metrics_after": {
-              "cycles": 4,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 2,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.5,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1
+                0
               ],
-              "llvm_total_cycles": 5,
-              "source": "slt s7, zero, s10\nbnez s7, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "bnez s7, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -132966,15 +132854,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -132985,7 +132864,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\ts7, s10",
                       "bnez\ts7, .Lmca_target"
                     ],
                     "Name": "",
@@ -133000,23 +132878,18 @@
                           "InstructionIndex": 1,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
                       "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.4,
-                      "Instructions": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 5,
-                      "TotaluOps": 2,
-                      "uOpsPerCycle": 0.4
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -133026,13 +132899,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
                         }
                       ]
                     }
@@ -133059,17 +132925,14 @@
               }
             },
             "final_issue_cycles": [
-              0,
-              1
+              0
             ],
-            "candidate_source": "slt s7, zero, s10\nbnez s7, .Lmca_target\n.Lmca_target:\n",
+            "candidate_source": "bnez s7, .Lmca_target\n.Lmca_target:\n",
             "original_issue_cycles": [
-              0,
-              1
+              0
             ],
             "candidate_issue_cycles": [
-              0,
-              1
+              0
             ]
           },
           {
@@ -133856,35 +133719,31 @@
             ]
           },
           {
-            "start_line": 43,
+            "start_line": 44,
             "end_line": 44,
-            "instructions": 2,
+            "instructions": 1,
             "status": "no_improvement",
             "moved": 0,
-            "original_cycles": 4,
-            "candidate_cycles": 4,
-            "final_cycles": 4,
-            "dependencies": {
-              "RAW": 1,
-              "control": 1
-            },
+            "original_cycles": 3,
+            "candidate_cycles": 3,
+            "final_cycles": 3,
+            "dependencies": {},
             "metrics_before": {
-              "cycles": 4,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 2,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.5,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1
+                0
               ],
-              "llvm_total_cycles": 5,
-              "source": "slt s7, zero, t0\nbnez s7, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "bnez s7, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -133892,15 +133751,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -133911,7 +133761,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\ts7, t0",
                       "bnez\ts7, .Lmca_target"
                     ],
                     "Name": "",
@@ -133926,23 +133775,18 @@
                           "InstructionIndex": 1,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
                       "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.4,
-                      "Instructions": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 5,
-                      "TotaluOps": 2,
-                      "uOpsPerCycle": 0.4
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -133952,13 +133796,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
                         }
                       ]
                     }
@@ -133985,22 +133822,21 @@
               }
             },
             "metrics_after": {
-              "cycles": 4,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 2,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.5,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1
+                0
               ],
-              "llvm_total_cycles": 5,
-              "source": "slt s7, zero, t0\nbnez s7, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "bnez s7, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -134008,15 +133844,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -134027,7 +133854,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\ts7, t0",
                       "bnez\ts7, .Lmca_target"
                     ],
                     "Name": "",
@@ -134042,23 +133868,18 @@
                           "InstructionIndex": 1,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
                       "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.4,
-                      "Instructions": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 5,
-                      "TotaluOps": 2,
-                      "uOpsPerCycle": 0.4
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -134068,13 +133889,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
                         }
                       ]
                     }
@@ -134101,17 +133915,14 @@
               }
             },
             "final_issue_cycles": [
-              0,
-              1
+              0
             ],
-            "candidate_source": "slt s7, zero, t0\nbnez s7, .Lmca_target\n.Lmca_target:\n",
+            "candidate_source": "bnez s7, .Lmca_target\n.Lmca_target:\n",
             "original_issue_cycles": [
-              0,
-              1
+              0
             ],
             "candidate_issue_cycles": [
-              0,
-              1
+              0
             ]
           },
           {
@@ -135937,35 +135748,31 @@
             ]
           },
           {
-            "start_line": 65,
+            "start_line": 66,
             "end_line": 66,
-            "instructions": 2,
+            "instructions": 1,
             "status": "no_improvement",
             "moved": 0,
-            "original_cycles": 4,
-            "candidate_cycles": 4,
-            "final_cycles": 4,
-            "dependencies": {
-              "RAW": 1,
-              "control": 1
-            },
+            "original_cycles": 3,
+            "candidate_cycles": 3,
+            "final_cycles": 3,
+            "dependencies": {},
             "metrics_before": {
-              "cycles": 4,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 2,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.5,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1
+                0
               ],
-              "llvm_total_cycles": 5,
-              "source": "slt s10, zero, t4\nbnez s10, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "bnez s10, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -135973,15 +135780,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -135992,7 +135790,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\ts10, t4",
                       "bnez\ts10, .Lmca_target"
                     ],
                     "Name": "",
@@ -136007,23 +135804,18 @@
                           "InstructionIndex": 1,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
                       "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.4,
-                      "Instructions": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 5,
-                      "TotaluOps": 2,
-                      "uOpsPerCycle": 0.4
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -136033,13 +135825,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
                         }
                       ]
                     }
@@ -136066,22 +135851,21 @@
               }
             },
             "metrics_after": {
-              "cycles": 4,
+              "cycles": 3,
               "peak_parallelism": 1,
               "critical_path": null,
               "critical_path_reason": "Critical-path analysis is not collected by this adapter for in-order sifive-e76",
               "bubbles": 0,
               "bubble_ratio": 0.0,
-              "issue_span": 2,
+              "issue_span": 1,
               "drain_cycles": 2,
               "dispatch_width": 2,
-              "ipc": 0.5,
+              "ipc": 0.3333333333333333,
               "issue_cycles": [
-                0,
-                1
+                0
               ],
-              "llvm_total_cycles": 5,
-              "source": "slt s10, zero, t4\nbnez s10, .Lmca_target\n.Lmca_target:\n",
+              "llvm_total_cycles": 4,
+              "source": "bnez s10, .Lmca_target\n.Lmca_target:\n",
               "llvm_output": {
                 "CodeRegions": [
                   {
@@ -136089,15 +135873,6 @@
                       "InstructionList": [
                         {
                           "Instruction": 0,
-                          "Latency": 3,
-                          "NumMicroOpcodes": 1,
-                          "RThroughput": 0.5,
-                          "hasUnmodeledSideEffects": false,
-                          "mayLoad": false,
-                          "mayStore": false
-                        },
-                        {
-                          "Instruction": 1,
                           "Latency": 3,
                           "NumMicroOpcodes": 1,
                           "RThroughput": 1,
@@ -136108,7 +135883,6 @@
                       ]
                     },
                     "Instructions": [
-                      "sgtz\ts10, t4",
                       "bnez\ts10, .Lmca_target"
                     ],
                     "Name": "",
@@ -136123,23 +135897,18 @@
                           "InstructionIndex": 1,
                           "ResourceIndex": 3,
                           "ResourceUsage": 1
-                        },
-                        {
-                          "InstructionIndex": 2,
-                          "ResourceIndex": 3,
-                          "ResourceUsage": 2
                         }
                       ]
                     },
                     "SummaryView": {
                       "BlockRThroughput": 1,
                       "DispatchWidth": 2,
-                      "IPC": 0.4,
-                      "Instructions": 2,
+                      "IPC": 0.25,
+                      "Instructions": 1,
                       "Iterations": 1,
-                      "TotalCycles": 5,
-                      "TotaluOps": 2,
-                      "uOpsPerCycle": 0.4
+                      "TotalCycles": 4,
+                      "TotaluOps": 1,
+                      "uOpsPerCycle": 0.25
                     },
                     "TimelineView": {
                       "TimelineInfo": [
@@ -136149,13 +135918,6 @@
                           "CycleIssued": 0,
                           "CycleReady": 0,
                           "CycleRetired": 3
-                        },
-                        {
-                          "CycleDispatched": 1,
-                          "CycleExecuted": 4,
-                          "CycleIssued": 1,
-                          "CycleReady": 1,
-                          "CycleRetired": 4
                         }
                       ]
                     }
@@ -136182,17 +135944,14 @@
               }
             },
             "final_issue_cycles": [
-              0,
-              1
+              0
             ],
-            "candidate_source": "slt s10, zero, t4\nbnez s10, .Lmca_target\n.Lmca_target:\n",
+            "candidate_source": "bnez s10, .Lmca_target\n.Lmca_target:\n",
             "original_issue_cycles": [
-              0,
-              1
+              0
             ],
             "candidate_issue_cycles": [
-              0,
-              1
+              0
             ]
           },
           {
@@ -136723,34 +136482,34 @@
         ],
         "saved_cycles": 0,
         "output_instructions": 60,
-        "unmodeled_instructions": 5,
-        "coverage_ratio": 0.9166666666666666,
+        "unmodeled_instructions": 9,
+        "coverage_ratio": 0.85,
         "unmodeled_by_opcode": {
           "max": 4,
-          "slt": 1
+          "slt": 5
         },
         "region_count": 21,
-        "mean_region_size": 2.619047619047619,
+        "mean_region_size": 2.4285714285714284,
         "max_region_instructions": 13,
         "metrics_before": {
-          "cycles": 96,
+          "cycles": 92,
           "peak_parallelism": 2,
           "critical_path_max": null,
           "bubbles": 4,
-          "bubble_ratio": 0.07142857142857142,
-          "issue_span": 56,
+          "bubble_ratio": 0.07692307692307693,
+          "issue_span": 52,
           "drain_cycles": 40,
-          "ipc": 0.5729166666666666
+          "ipc": 0.5543478260869565
         },
         "metrics_after": {
-          "cycles": 96,
+          "cycles": 92,
           "peak_parallelism": 2,
           "critical_path_max": null,
           "bubbles": 4,
-          "bubble_ratio": 0.07142857142857142,
-          "issue_span": 56,
+          "bubble_ratio": 0.07692307692307693,
+          "issue_span": 52,
           "drain_cycles": 40,
-          "ipc": 0.5729166666666666
+          "ipc": 0.5543478260869565
         },
         "diagnostics": [
           {
@@ -136759,13 +136518,28 @@
             "severity": "info"
           },
           {
+            "line": 21,
+            "reason": "invalid register operand",
+            "severity": "info"
+          },
+          {
             "line": 31,
             "reason": "unknown opcode or unsupported form",
             "severity": "info"
           },
           {
+            "line": 32,
+            "reason": "invalid register operand",
+            "severity": "info"
+          },
+          {
             "line": 42,
             "reason": "unknown opcode or unsupported form",
+            "severity": "info"
+          },
+          {
+            "line": 43,
+            "reason": "invalid register operand",
             "severity": "info"
           },
           {
@@ -136779,8 +136553,13 @@
             "severity": "info"
           },
           {
+            "line": 65,
+            "reason": "invalid register operand",
+            "severity": "info"
+          },
+          {
             "line": 20,
-            "reason": "scheduling coverage 91.7%; 5/60 instructions unmodeled; see unmodeled_by_opcode and diagnostics",
+            "reason": "scheduling coverage 85.0%; 9/60 instructions unmodeled; see unmodeled_by_opcode and diagnostics",
             "severity": "warning"
           }
         ]
@@ -136792,10 +136571,10 @@
         "reason": "Static assembly A/B only; no whole-program execution or hardware timing."
       },
       "assembly": {
-        "before": "main_graph:\n  addi sp, sp, -48  # create stack frame\n  sw s0, 0(sp)  # ABI save\n  sw s1, 4(sp)  # ABI save\n  sw s2, 8(sp)  # ABI save\n  sw s3, 12(sp)  # ABI save\n  sw s4, 16(sp)  # ABI save\n  sw s5, 20(sp)  # ABI save\n  sw s6, 24(sp)  # ABI save\n  sw s7, 28(sp)  # ABI save\n  sw s8, 32(sp)  # ABI save\n  sw s9, 36(sp)  # ABI save\n  sw s10, 40(sp)  # ABI save\n  sw s11, 44(sp)  # ABI save\n.entry:\n  li s3, 0  # const 0\n  mv s4, t0  # acc = bias\n  mul s5, t1, t2  # tmp = x * w\n  add s4, s4, s5  # acc += x*w\n  max s6, s4, 0\n  slt s7, zero, s6  # 0 < x ?\n  bnez s7, .Lmp_gt_1  # .Lmp_gt_1\n  li s8, 0  # result = 0\n  j .Lmp_done_2  # .Lmp_done_2\n.Lmp_gt_1:\n  mv s8, s6  # result = x\n.Lmp_done_2:\n  mv s9, t3  # acc = bias\n  mul s5, s8, t4  # tmp = x * w\n  add s9, s9, s5  # acc += x*w\n  max s10, s9, 0\n  slt s7, zero, s10  # 0 < x ?\n  bnez s7, .Lmp_gt_3  # .Lmp_gt_3\n  li s11, 0  # result = 0\n  j .Lmp_done_4  # .Lmp_done_4\n.Lmp_gt_3:\n  mv s11, s10  # result = x\n.Lmp_done_4:\n  mv s3, t5  # acc = bias\n  mul s5, s11, t6  # tmp = x * w\n  add s3, s3, s5  # acc += x*w\n  max t0, s3, 0\n  slt s7, zero, t0  # 0 < x ?\n  bnez s7, .Lmp_gt_5  # .Lmp_gt_5\n  li t1, 0  # result = 0\n  j .Lmp_done_6  # .Lmp_done_6\n.Lmp_gt_5:\n  mv t1, t0  # result = x\n.Lmp_done_6:\n  mv t2, t1  # reshape\n  mv s4, s0  # acc = bias\n  mul s6, t2, s1  # tmp = a * w\n  add s4, s4, s6  # acc += a*w\n  max t3, s4, 0\n  li t4, 0  # acc = bias\n  mul s6, t3, s2  # tmp = a * w\n  add t4, t4, s6  # acc += a*w\n  slt s8, t4, 1  # src < 1 ?\n  bnez s8, .Lsig_keep_7  # .Lsig_keep_7\n  li s9, 1  # clamp to 1\n  j .Lsig_done_8  # .Lsig_done_8\n.Lsig_keep_7:\n  mv s9, t4  # keep src\n.Lsig_done_8:\n  slt s10, zero, t4  # 0 < src ?\n  bnez s10, .Lsig_zero_9  # .Lsig_zero_9\n  li s9, 0  # clamp to 0\n.Lsig_zero_9:\n  mv t5, s9  # reshape\n  mv a0, t5  # return value\n  jalr zero, ra  # ret",
-        "after": "main_graph:\n  addi sp, sp, -48  # create stack frame\n  sw s0, 0(sp)  # ABI save\n  sw s1, 4(sp)  # ABI save\n  sw s2, 8(sp)  # ABI save\n  sw s3, 12(sp)  # ABI save\n  sw s4, 16(sp)  # ABI save\n  sw s5, 20(sp)  # ABI save\n  sw s6, 24(sp)  # ABI save\n  sw s7, 28(sp)  # ABI save\n  sw s8, 32(sp)  # ABI save\n  sw s9, 36(sp)  # ABI save\n  sw s10, 40(sp)  # ABI save\n  sw s11, 44(sp)  # ABI save\n.entry:\n  li s3, 0  # const 0\n  mv s4, t0  # acc = bias\n  mul s5, t1, t2  # tmp = x * w\n  add s4, s4, s5  # acc += x*w\n  max s6, s4, 0\n  slt s7, zero, s6  # 0 < x ?\n  bnez s7, .Lmp_gt_1  # .Lmp_gt_1\n  li s8, 0  # result = 0\n  j .Lmp_done_2  # .Lmp_done_2\n.Lmp_gt_1:\n  mv s8, s6  # result = x\n.Lmp_done_2:\n  mv s9, t3  # acc = bias\n  mul s5, s8, t4  # tmp = x * w\n  add s9, s9, s5  # acc += x*w\n  max s10, s9, 0\n  slt s7, zero, s10  # 0 < x ?\n  bnez s7, .Lmp_gt_3  # .Lmp_gt_3\n  li s11, 0  # result = 0\n  j .Lmp_done_4  # .Lmp_done_4\n.Lmp_gt_3:\n  mv s11, s10  # result = x\n.Lmp_done_4:\n  mv s3, t5  # acc = bias\n  mul s5, s11, t6  # tmp = x * w\n  add s3, s3, s5  # acc += x*w\n  max t0, s3, 0\n  slt s7, zero, t0  # 0 < x ?\n  bnez s7, .Lmp_gt_5  # .Lmp_gt_5\n  li t1, 0  # result = 0\n  j .Lmp_done_6  # .Lmp_done_6\n.Lmp_gt_5:\n  mv t1, t0  # result = x\n.Lmp_done_6:\n  mv t2, t1  # reshape\n  mv s4, s0  # acc = bias\n  mul s6, t2, s1  # tmp = a * w\n  add s4, s4, s6  # acc += a*w\n  max t3, s4, 0\n  li t4, 0  # acc = bias\n  mul s6, t3, s2  # tmp = a * w\n  add t4, t4, s6  # acc += a*w\n  slt s8, t4, 1  # src < 1 ?\n  bnez s8, .Lsig_keep_7  # .Lsig_keep_7\n  li s9, 1  # clamp to 1\n  j .Lsig_done_8  # .Lsig_done_8\n.Lsig_keep_7:\n  mv s9, t4  # keep src\n.Lsig_done_8:\n  slt s10, zero, t4  # 0 < src ?\n  bnez s10, .Lsig_zero_9  # .Lsig_zero_9\n  li s9, 0  # clamp to 0\n.Lsig_zero_9:\n  mv t5, s9  # reshape\n  mv a0, t5  # return value\n  jalr zero, ra  # ret"
+        "before": "main_graph:\n  addi sp, sp, -48  # create stack frame\n  sw s0, 0(sp)  # ABI save\n  sw s1, 4(sp)  # ABI save\n  sw s2, 8(sp)  # ABI save\n  sw s3, 12(sp)  # ABI save\n  sw s4, 16(sp)  # ABI save\n  sw s5, 20(sp)  # ABI save\n  sw s6, 24(sp)  # ABI save\n  sw s7, 28(sp)  # ABI save\n  sw s8, 32(sp)  # ABI save\n  sw s9, 36(sp)  # ABI save\n  sw s10, 40(sp)  # ABI save\n  sw s11, 44(sp)  # ABI save\n.entry:\n  li s3, 0  # const 0\n  mv s4, t0  # acc = bias\n  mul s5, t1, t2  # tmp = x * w\n  add s4, s4, s5  # acc += x*w\n  max s6, s4, 0\n  slt s7, 0, s6  # 0 < x ?\n  bnez s7, .Lmp_gt_1  # .Lmp_gt_1\n  li s8, 0  # result = 0\n  j .Lmp_done_2  # .Lmp_done_2\n.Lmp_gt_1:\n  mv s8, s6  # result = x\n.Lmp_done_2:\n  mv s9, t3  # acc = bias\n  mul s5, s8, t4  # tmp = x * w\n  add s9, s9, s5  # acc += x*w\n  max s10, s9, 0\n  slt s7, 0, s10  # 0 < x ?\n  bnez s7, .Lmp_gt_3  # .Lmp_gt_3\n  li s11, 0  # result = 0\n  j .Lmp_done_4  # .Lmp_done_4\n.Lmp_gt_3:\n  mv s11, s10  # result = x\n.Lmp_done_4:\n  mv s3, t5  # acc = bias\n  mul s5, s11, t6  # tmp = x * w\n  add s3, s3, s5  # acc += x*w\n  max t0, s3, 0\n  slt s7, 0, t0  # 0 < x ?\n  bnez s7, .Lmp_gt_5  # .Lmp_gt_5\n  li t1, 0  # result = 0\n  j .Lmp_done_6  # .Lmp_done_6\n.Lmp_gt_5:\n  mv t1, t0  # result = x\n.Lmp_done_6:\n  mv t2, t1  # reshape\n  mv s4, s0  # acc = bias\n  mul s6, t2, s1  # tmp = a * w\n  add s4, s4, s6  # acc += a*w\n  max t3, s4, 0\n  li t4, 0  # acc = bias\n  mul s6, t3, s2  # tmp = a * w\n  add t4, t4, s6  # acc += a*w\n  slt s8, t4, 1  # src < 1 ?\n  bnez s8, .Lsig_keep_7  # .Lsig_keep_7\n  li s9, 1  # clamp to 1\n  j .Lsig_done_8  # .Lsig_done_8\n.Lsig_keep_7:\n  mv s9, t4  # keep src\n.Lsig_done_8:\n  slt s10, 0, t4  # 0 < src ?\n  bnez s10, .Lsig_zero_9  # .Lsig_zero_9\n  li s9, 0  # clamp to 0\n.Lsig_zero_9:\n  mv t5, s9  # reshape\n  mv a0, t5  # return value\n  jalr zero, ra  # ret",
+        "after": "main_graph:\n  addi sp, sp, -48  # create stack frame\n  sw s0, 0(sp)  # ABI save\n  sw s1, 4(sp)  # ABI save\n  sw s2, 8(sp)  # ABI save\n  sw s3, 12(sp)  # ABI save\n  sw s4, 16(sp)  # ABI save\n  sw s5, 20(sp)  # ABI save\n  sw s6, 24(sp)  # ABI save\n  sw s7, 28(sp)  # ABI save\n  sw s8, 32(sp)  # ABI save\n  sw s9, 36(sp)  # ABI save\n  sw s10, 40(sp)  # ABI save\n  sw s11, 44(sp)  # ABI save\n.entry:\n  li s3, 0  # const 0\n  mv s4, t0  # acc = bias\n  mul s5, t1, t2  # tmp = x * w\n  add s4, s4, s5  # acc += x*w\n  max s6, s4, 0\n  slt s7, 0, s6  # 0 < x ?\n  bnez s7, .Lmp_gt_1  # .Lmp_gt_1\n  li s8, 0  # result = 0\n  j .Lmp_done_2  # .Lmp_done_2\n.Lmp_gt_1:\n  mv s8, s6  # result = x\n.Lmp_done_2:\n  mv s9, t3  # acc = bias\n  mul s5, s8, t4  # tmp = x * w\n  add s9, s9, s5  # acc += x*w\n  max s10, s9, 0\n  slt s7, 0, s10  # 0 < x ?\n  bnez s7, .Lmp_gt_3  # .Lmp_gt_3\n  li s11, 0  # result = 0\n  j .Lmp_done_4  # .Lmp_done_4\n.Lmp_gt_3:\n  mv s11, s10  # result = x\n.Lmp_done_4:\n  mv s3, t5  # acc = bias\n  mul s5, s11, t6  # tmp = x * w\n  add s3, s3, s5  # acc += x*w\n  max t0, s3, 0\n  slt s7, 0, t0  # 0 < x ?\n  bnez s7, .Lmp_gt_5  # .Lmp_gt_5\n  li t1, 0  # result = 0\n  j .Lmp_done_6  # .Lmp_done_6\n.Lmp_gt_5:\n  mv t1, t0  # result = x\n.Lmp_done_6:\n  mv t2, t1  # reshape\n  mv s4, s0  # acc = bias\n  mul s6, t2, s1  # tmp = a * w\n  add s4, s4, s6  # acc += a*w\n  max t3, s4, 0\n  li t4, 0  # acc = bias\n  mul s6, t3, s2  # tmp = a * w\n  add t4, t4, s6  # acc += a*w\n  slt s8, t4, 1  # src < 1 ?\n  bnez s8, .Lsig_keep_7  # .Lsig_keep_7\n  li s9, 1  # clamp to 1\n  j .Lsig_done_8  # .Lsig_done_8\n.Lsig_keep_7:\n  mv s9, t4  # keep src\n.Lsig_done_8:\n  slt s10, 0, t4  # 0 < src ?\n  bnez s10, .Lsig_zero_9  # .Lsig_zero_9\n  li s9, 0  # clamp to 0\n.Lsig_zero_9:\n  mv t5, s9  # reshape\n  mv a0, t5  # return value\n  jalr zero, ra  # ret"
       },
-      "output_sha256": "e2f7be421648afe8e6b3cf038316273aa8ca6b69621bccc4d147ce36dad91f50",
+      "output_sha256": "d0319637da33b010a7c372d3e65f4ccc8a2c4cc806d5211b405a51200d0cc54c",
       "side_effects": {
         "status": "passed",
         "before": {
@@ -137122,11 +136901,9 @@
               "after": 4
             },
             {
-              "start_line": 21,
+              "start_line": 22,
               "end_line": 22,
-              "live_out": [
-                "x23"
-              ],
+              "live_out": [],
               "before": 1,
               "after": 1
             },
@@ -137159,11 +136936,9 @@
               "after": 3
             },
             {
-              "start_line": 32,
+              "start_line": 33,
               "end_line": 33,
-              "live_out": [
-                "x23"
-              ],
+              "live_out": [],
               "before": 1,
               "after": 1
             },
@@ -137196,11 +136971,9 @@
               "after": 3
             },
             {
-              "start_line": 43,
+              "start_line": 44,
               "end_line": 44,
-              "live_out": [
-                "x23"
-              ],
+              "live_out": [],
               "before": 1,
               "after": 1
             },
@@ -137269,11 +137042,9 @@
               "after": 1
             },
             {
-              "start_line": 65,
+              "start_line": 66,
               "end_line": 66,
-              "live_out": [
-                "x26"
-              ],
+              "live_out": [],
               "before": 1,
               "after": 1
             },
@@ -137312,8 +137083,8 @@
       },
       "metric": {
         "name": "sum_of_modeled_region_cycles",
-        "before": 96,
-        "after": 96,
+        "before": 92,
+        "after": 92,
         "saved": 0,
         "reduction_percent": 0.0
       },

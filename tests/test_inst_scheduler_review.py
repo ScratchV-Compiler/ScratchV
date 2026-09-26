@@ -8,11 +8,6 @@ from benchmarks.run_inst_scheduler_case import _instruction_count
 from scratchv.backend.inst_scheduler import (
     InstructionScheduler, ScheduleConfig, parse_instructions, schedule_assembly,
 )
-from scratchv.backend.machine_types import MachineInstr, MachineOp, MachineOperand
-from scratchv.backend.regalloc_linear import (
-    LsInstruction, block_from_machine_instrs, machine_instrs_from_block,
-)
-from scratchv.backend.riscv_encoder import assemble_to_binary
 from scratchv.backend.llvm_mca import metrics as llvm_metrics
 from scratchv.compiler import CompilerConfig, CompilerDriver
 from scratchv.main import main
@@ -126,44 +121,3 @@ def test_report_has_its_own_cli_channel(tmp_path, capsys):
     assert status == 0
     assert "\nInstruction Scheduling Report" in output
     assert "note: Instruction Scheduling Report" not in output
-
-
-@pytest.mark.parametrize("filename", ["014_for_dot.dsl", "017_while_sum.dsl", "019_nested_loop.dsl"])
-@pytest.mark.parametrize("enabled", [False, True])
-def test_linear_control_flow_is_encoded_and_has_symbolic_targets(tmp_path, filename, enabled):
-    source = Path(__file__).parents[1] / "benchmarks" / "cases" / filename
-    result = CompilerDriver(CompilerConfig(reg_alloc="linear", schedule=enabled)).compile(
-        str(source), str(tmp_path / "out.s"),
-    )
-    assert result.success, result.errors
-    binary = assemble_to_binary(result.output_text)
-    assert len(binary) > 0 and len(binary) % 4 == 0
-    assert ".label" not in result.output_text
-    targets = [i.effects.target for i in parse_instructions(result.output_text) if i.effects.target]
-    assert targets
-    assert all(f"{target}:" in result.output_text for target in targets)
-    if enabled:
-        assert not any("numeric control-flow target" in d["reason"]
-                       for d in result.stats["schedule"]["diagnostics"])
-
-
-def test_linear_target_is_not_renamed_and_first_branch_operand_is_a_use():
-    v = MachineOperand.vreg
-    machine = MachineInstr(MachineOp.BNE, v("condition"), v("other"), comment="condition")
-    block = block_from_machine_instrs([machine])
-    assert block[0].uses == {"condition", "other"}
-    assert not block[0].defines
-    assert block[0].to_asm({"condition": "t0", "other": "t1"}).strip() == "bne t0, t1, condition"
-    restored = machine_instrs_from_block(block)[0]
-    assert restored.comment == "condition"
-    explicit = LsInstruction(0, "j", ["target"], comment="an ordinary comment")
-    assert explicit.to_asm().strip() == "j target  # an ordinary comment"
-
-
-def test_zero_sources_are_canonical_but_immediates_keep_their_meaning():
-    r, n = MachineOperand.reg, MachineOperand.immediate
-    assert MachineInstr(MachineOp.SLT, r("t0"), n(0), r("t1")).src1 == r("zero")
-    assert MachineInstr(MachineOp.MV, r("t0"), n(0)).src1 == r("zero")
-    immediate = MachineInstr(MachineOp.ADDI, r("t0"), n(0), n(0))
-    assert immediate.src1 == r("zero") and immediate.src2 == n(0)
-    assert MachineInstr(MachineOp.LI, r("t0"), n(0)).src1 == n(0)

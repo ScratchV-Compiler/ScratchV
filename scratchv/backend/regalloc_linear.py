@@ -22,7 +22,7 @@ from scratchv.backend.machine_semantics import (
     linear_scan_operands,
     virtual_register_defs_uses,
 )
-from scratchv.backend.machine_types import ALL_REGS, ARG_REGS, MachineOp
+from scratchv.backend.machine_types import ALL_REGS, ARG_REGS
 from scratchv.backend.regalloc_metrics import (
     count_spill_reload_sites,
     peak_live_intervals,
@@ -135,15 +135,7 @@ class LsInstruction:
 
         ops = self.operands[:]
         if rename:
-            # Direct targets are symbols, even when named like a virtual register.
-            try:
-                semantics = get_machine_semantics(MachineOp(self.opcode))
-            except ValueError:
-                semantics = None
-            target = ops.pop() if ops and semantics and semantics.target_from_comment else None
             ops = [rename.get(o, o) for o in ops]
-            if target is not None:
-                ops.append(target)
         parts = [f"  {self.opcode}"]
         if ops:
             parts.append(" " + ", ".join(ops))

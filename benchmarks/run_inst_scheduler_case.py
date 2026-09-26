@@ -250,7 +250,6 @@ def _markdown(report: dict[str, Any]) -> str:
         ]
     )
     for label, key in (("最大指令并行数（条/周期）", "peak_parallelism"),
-                       ("最大区域关键路径（周期）", "critical_path_max"),
                        ("流水线气泡代理量（零发射周期）", "bubbles")):
         a, b = s["metrics_before"][key], s["metrics_after"][key]
         lines.append(f"| {label} | {a if modeled and a is not None else 'N/A'} | {b if modeled and b is not None else 'N/A'} | {a - b if modeled and b is not None else 'N/A'} |")
@@ -295,7 +294,7 @@ def _markdown(report: dict[str, Any]) -> str:
         [
             "",
             "> 周期是各局部区域在输入就绪假设下的静态估算，未覆盖部分不按零周期解释。",
-            "> 气泡 B=S−U：S 为发射跨度，U 为有发射的周期数，排除排空；峰值并行数取区域最大值，关键路径 N/A（LLVM 未提供此目标的分析）。",
+            "> 气泡 B=S−U：S 为发射跨度，U 为有发射的周期数，排除排空；峰值并行数取区域最大值。",
             "> 调度耗时是运行优化器的主机时间，包含进程内重复输入缓存。TinyFive 仅验证执行结果和动态指令数，不能证明硬件加速。",
             "",
             "<details>",

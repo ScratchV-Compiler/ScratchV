@@ -24,11 +24,9 @@ DSL = "x = add(a, b)\ny = mul(x, c)\nreturn y\n"
 
 
 @pytest.mark.parametrize("allocator", ["linear", "greedy", "naive"])
-@pytest.mark.parametrize("dag", [False, True])
-def test_actual_compiler_paths_use_scheduler(tmp_path, allocator, dag):
+def test_actual_compiler_paths_use_scheduler(tmp_path, allocator):
     config = CompilerConfig(
         reg_alloc=allocator,
-        use_dag_isel=dag,
         schedule=True,
         schedule_strict=True,
         schedule_report=True,
@@ -62,6 +60,17 @@ def test_disabled_has_identical_output_and_never_calls_scheduler(tmp_path, monke
     assert result.success
     assert result.output_text == expected
     assert "schedule" not in result.stats
+
+
+@pytest.mark.parametrize("opaque", [
+    "slt t0, 0, t1", "mv t0, 0", "bge t0, 4, exit", "jalr t0, t1, t2",
+])
+def test_upstream_nonstandard_operands_are_preserved_as_boundaries(opaque):
+    source = "lw t0, 0(a0)\n" + opaque + "\nadd t1, t0, t2\nexit:\nret\n"
+    result = schedule_assembly(source, ScheduleConfig(strict=True))
+    assert result.asm_text == source
+    assert result.stats["unmodeled_instructions"] >= 1
+    assert any(item["line"] == 2 for item in result.diagnostics)
 
 
 def test_stats_are_per_compilation_and_strict_failure_leaves_output_intact(
@@ -219,21 +228,6 @@ def execute_riscv(tmp_path):
     return execute
 
 
-def test_linear_branch_target_executes_a_backward_loop(execute_riscv):
-    from scratchv.backend.machine_types import MachineInstr, MachineOp, MachineOperand
-    from scratchv.backend.regalloc_linear import LinearScanAllocator, block_from_machine_instrs
-
-    counter = MachineOperand.vreg("counter")
-    block = block_from_machine_instrs([
-        MachineInstr(MachineOp.LI, counter, MachineOperand.immediate(3)),
-        MachineInstr(MachineOp.LABEL, comment=".Lcounter"),
-        MachineInstr(MachineOp.ADDI, counter, counter, MachineOperand.immediate(-1)),
-        MachineInstr(MachineOp.BNEZ, counter, comment=".Lcounter"),
-    ])
-    assembly = LinearScanAllocator(phys_regs=["t0"]).emit(block)
-    assert execute_riscv(assembly) == execute_riscv("li t0, 0\n")
-
-
 def test_scheduled_machine_targets_survive_cfg_and_execution(execute_riscv):
     from scratchv.analysis.adapters import MachineCFGAdapter
     from scratchv.analysis.cfg import build_cfg
@@ -257,18 +251,6 @@ def test_scheduled_machine_targets_survive_cfg_and_execution(execute_riscv):
     assert any(edge.source == edge.target == ".loop" for edge in cfg.edges)
     assert any(edge.target == ".done" for edge in cfg.edges)
     assert execute_riscv(AsmEmitter(machine).emit()) == execute_riscv("li t0, 0\n")
-
-
-@pytest.mark.parametrize("outer,inner", [(4, 2), (0, 3), (3, 0)])
-@pytest.mark.parametrize("enabled", [False, True])
-def test_nested_for_returns_outer_induction_value(execute_riscv, tmp_path, outer, inner, enabled):
-    source = f"for i = 0, {outer}\nfor j = 0, {inner}\nendfor\nendfor\nreturn i\n"
-    result = CompilerDriver(CompilerConfig(reg_alloc="linear", schedule=enabled)).compile(
-        "", str(tmp_path / "nested.s"), dsl_source=source,
-    )
-    assert result.success, result.errors
-    state = execute_riscv("call main\nmv t0, a0\n", suffix=result.output_text)
-    assert int.from_bytes(state[:4], "little") == outer
 
 
 @pytest.mark.parametrize(

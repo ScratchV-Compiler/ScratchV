@@ -42,7 +42,8 @@ def run_graph(tmp_path, shape, out_shape, nodes, tensors, *, compact=True):
         binary, assembly = tmp_path / f"{name}.bin", tmp_path / f"{name}.s"
         with redirect_stdout(io.StringIO()):
             assert convert_onnx_to_riscv(str(path), str(binary), str(assembly),
-                                       const_merge=compact, schedule=enabled, metadata=metadata) == 0
+                                       const_merge=compact, schedule=enabled, metadata=metadata,
+                                       symbolic_asm=True) == 0
         assert assemble_listing(assembly, tmp_path) == binary.read_bytes()[:metadata["code_bytes"]]
         binaries.append(binary)
     result = execute_pair(*binaries, metadata, tmp_path)

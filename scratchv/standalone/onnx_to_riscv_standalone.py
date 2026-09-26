@@ -2661,6 +2661,7 @@ def convert_onnx_to_riscv(
     schedule: bool = False,
     metadata: dict | None = None,
     llvm_mca: str | None = None,
+    symbolic_asm: bool = False,
 ) -> int:
     """Full pipeline: ONNX model → RISC-V RV32IM binary.
 
@@ -2835,7 +2836,8 @@ def convert_onnx_to_riscv(
         code_word_list[auipc_word_idx] = rv_auipc(_R_GP, upper & 0xFFFFF)
         code_word_list[addi_word_idx] = rv_addi(_R_GP, _R_GP, lower & 0xFFF)
         code_bytes = struct.pack(f"<{len(code_word_list)}I", *code_word_list)
-        generator.emit.code = code_word_list
+        if schedule or symbolic_asm:
+            generator.emit.code = code_word_list
 
     if schedule:
         scheduling = generator.emit.schedule(llvm_mca=llvm_mca)
@@ -2854,7 +2856,7 @@ def convert_onnx_to_riscv(
     print(f"  Binary: {output_bin} ({len(binary):,} bytes)")
 
     # Disassembly for verification
-    asm_text = generator.emit.disassemble(symbolic=True)
+    asm_text = generator.emit.disassemble(symbolic=schedule or symbolic_asm)
     asm_path = output_asm or output_bin.replace(".bin", ".s")
     with open(asm_path, "w") as f:
         f.write(asm_text)
@@ -3035,6 +3037,8 @@ def main() -> int:
     )
     parser.add_argument("--schedule", action="store_true",
                         help="Schedule physical-register instructions before writing the binary")
+    parser.add_argument("--symbolic-asm", action="store_true",
+                        help="Emit reassemblable symbolic targets for scheduling analysis")
     parser.add_argument(
         "--uarch", default="basic", choices=["single", "fast", "basic", "slow"],
         help="Microarchitecture profile for cycle-accurate emulation: "
@@ -3075,6 +3079,7 @@ def main() -> int:
         tinyfive_max_instr=args.tinyfive_max_instr,
         const_merge=args.const_merge,
         schedule=args.schedule,
+        symbolic_asm=args.symbolic_asm,
     )
 
 

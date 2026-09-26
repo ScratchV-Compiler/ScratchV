@@ -208,10 +208,15 @@ def run_benchmark(model_path: Path = DEFAULT_MODEL, *, standalone_asm: Path | No
         generated, scheduled = out / "standalone-before.s", out / "standalone-after.s"
         baseline_bin, scheduled_bin = out / "standalone-before.bin", out / "standalone-after.bin"
         with redirect_stdout(io.StringIO()):
+            default_asm, default_bin = out / "standalone-default.s", out / "standalone-default.bin"
+            rc = convert_onnx_to_riscv(str(model_path), str(default_bin), str(default_asm), const_merge=True)
+            if rc:
+                raise RuntimeError(f"Standalone default compilation failed: {rc}")
             for enabled, asm, binary in ((False, generated, baseline_bin), (True, scheduled, scheduled_bin)):
                 current_metadata = {}
                 rc = convert_onnx_to_riscv(str(model_path), str(binary), str(asm), const_merge=True,
-                                          schedule=enabled, metadata=current_metadata, llvm_mca=llvm_mca)
+                                          schedule=enabled, metadata=current_metadata, llvm_mca=llvm_mca,
+                                          symbolic_asm=True)
                 if rc:
                     raise RuntimeError(f"Standalone CNN compilation failed: {rc}")
                 if metadata and metadata != current_metadata:
@@ -220,7 +225,9 @@ def run_benchmark(model_path: Path = DEFAULT_MODEL, *, standalone_asm: Path | No
                 encoded = assemble_listing(asm, work)
                 if bytes(encoded) != binary.read_bytes()[:metadata["code_bytes"]]:
                     raise ValueError("Standalone listing does not encode the generated machine words")
-        if standalone_asm is not None and standalone_asm.read_bytes() != generated.read_bytes():
+        if default_bin.read_bytes() != baseline_bin.read_bytes():
+            raise ValueError("Symbolic assembly output changed the default CNN binary")
+        if standalone_asm is not None and standalone_asm.read_bytes() != default_asm.read_bytes():
             raise ValueError("Standalone assembly does not match this ONNX model and --const-merge")
         primary = analyze_assembly(generated, "standalone/const-merge", llvm_mca)
         if primary["assembly"]["after"] != scheduled.read_text():
@@ -229,6 +236,8 @@ def run_benchmark(model_path: Path = DEFAULT_MODEL, *, standalone_asm: Path | No
             raise ValueError("Scheduling changed weight bytes")
         primary["role"] = "primary"
         primary["binary"] = {"code_bytes": metadata["code_bytes"], "listing_roundtrip_equal": True,
+                             "default_binary_equal": True,
+                             "default_listing_sha256": sha256(default_asm.read_bytes()),
                              "weights_equal": True, "before_sha256": sha256(baseline_bin.read_bytes()),
                              "after_sha256": sha256(scheduled_bin.read_bytes()),
                              "code_generator_sha256": sha256((ROOT / "scratchv/standalone/onnx_to_riscv_standalone.py").read_bytes())}
@@ -276,7 +285,6 @@ def run_benchmark(model_path: Path = DEFAULT_MODEL, *, standalone_asm: Path | No
         "model": cpu_model,
         "metrics": {
             "peak_parallelism": "max instructions issued in one cycle; region maxima aggregated by max",
-            "critical_path": "unavailable: this adapter does not collect critical-path analysis for this in-order target",
             "bubbles": "zero-issue cycles B = issue_span - count(distinct issue cycles); excludes drain; summed across regions",
             "issue_span": "last issue cycle + 1, with first issue normalized to zero; summed across regions",
             "bubble_ratio": "sum(bubbles) / sum(issue_span)",
@@ -295,25 +303,25 @@ def markdown(report: dict) -> str:
         f"输入：`{report['input']['path']}`，{report['input']['nodes']} 个节点；SHA-256：`{report['input']['sha256']}`。",
         "主路径为 standalone CNN 编译器，固定启用常量合并；CompilerDriver 两种分配器仅作补充回归。",
         "A/B 两侧使用相同版本的代码生成器，仅切换调度；生成器哈希保存在 JSON 中。",
+        "评测显式请求符号化汇编，并校验关闭调度时的二进制与默认输出一致；默认汇编格式保持原有行为。",
         f"CPU 模型：LLVM {report['model']['llvm_version']} / `{report['model']['cpu']}`，RV32IMFD，禁用压缩指令。",
         "调度候选与原序均由 llvm-mca 分析；仅在完成周期严格减少时采用候选。指令延迟、旁路和资源占用由 LLVM 提供。",
         "配置：`-iterations=1 -noalias=false -timeline -timeline-max-cycles=0 -timeline-max-iterations=1`。模型定义链接、工具版本、输入和原始 LLVM JSON 均保存在报告 JSON 中。",
         "", "## 指标与结果", "",
         "| 指标 | 定义 |", "|---|---|",
         "| 最大指令并行数 | LLVM Timeline 中单周期发射指令数的峰值；跨区域取最大值 |",
-        "| 关键路径长度 | N/A：当前接口未采集该顺序执行 CPU 的关键路径分析；不另行估算 |",
         "| 流水线气泡 | 发射区间内没有指令发射的周期数 B=S−U；S 为首末发射周期覆盖的长度，U 为有发射的周期数。排除尾部排空，不代表逐流水级气泡数 |",
         "| 完成周期 | 最后执行完成与最后发射加一的较大值，减去首发射周期；排除 LLVM 最后一个管理周期，包含排空 |",
         "| 汇总 | 周期和气泡跨区域求和；气泡率为 ΣB/ΣS，IPC 为建模指令数/完成周期合计 |",
         "", "表中数值均为调度前→后。", "",
-        "| 路径 | 建模/输入指令 | 换序区域 | 峰值并行数 | 关键路径 | 周期合计 | 气泡周期 | 气泡率 | IPC |",
-        "|---|---:|---:|---:|---|---:|---:|---:|---:|",
+        "| 路径 | 建模/输入指令 | 换序区域 | 峰值并行数 | 周期合计 | 气泡周期 | 气泡率 | IPC |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for case in report["cases"]:
         s = case["scheduling"]
         a, b = s["metrics_before"], s["metrics_after"]
         lines.append(f"| {case['case']} | {s['modeled_instructions']}/{s['input_instructions']} | {s['applied_regions']} | "
-                     f"{a['peak_parallelism']}→{b['peak_parallelism']} | N/A | {a['cycles']}→{b['cycles']} | "
+                     f"{a['peak_parallelism']}→{b['peak_parallelism']} | {a['cycles']}→{b['cycles']} | "
                      f"{a['bubbles']}→{b['bubbles']} | {a['bubble_ratio']:.1%}→{b['bubble_ratio']:.1%} | {a['ipc']:.3f}→{b['ipc']:.3f} |")
     primary = report["cases"][0]
     a, b = primary["scheduling"]["metrics_before"], primary["scheduling"]["metrics_after"]
@@ -379,7 +387,7 @@ def markdown(report: dict) -> str:
     if "max" in missing_opcodes:
         lines.append("- **max：尚未展开的项目伪指令。** 当前 RV32IM 路径中的 `max rd, rs, 0` 会展开成比较、分支和复制等多条指令。调度器在展开前处理文本，尚未对该展开序列建模，不能直接赋予一条普通指令的周期。")
     if invalid_slt:
-        lines.append("- **slt：寄存器操作数形式无效。** " + "；".join(invalid_slt) + "。`slt` 要求寄存器操作数，立即数比较应生成 `slti`。正常寄存器形式的 `slt` 已支持；这里需要修正 CompilerDriver 指令选择，不能仅补充周期参数。")
+        lines.append("- **slt：寄存器操作数形式无效。** " + "；".join(invalid_slt) + "。`slt` 的两个输入必须是寄存器：零寄存器应写为 `zero/x0`，寄存器与立即数比较需要 `slti` 等合法形式。调度器保留原有生成结果，将这些指令作为边界；公共指令选择的修复需独立处理。")
     lines += ["",
               "未建模指令作为调度边界：自身固定，前后指令分别在各自区域内分析，禁止跨越该边界移动。其他未建模原因及所在行见 JSON 的 `scheduling.diagnostics`；CFG 活跃性遇到未知寄存器语义时标为 N/A，不能解释为零活跃寄存器。",
               "",
