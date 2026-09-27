@@ -383,3 +383,9 @@ DSL 输入
 ### 7.3 文档说明
 
 本开发文档用于明确 ScratchV 窥孔优化器 Benchmark 专项需要解决的问题、计划交付的功能、测试方法和验收标准。具体函数拆分、命令行参数、数据对象实现方式和编译流程接入方式，将在后续设计文档中结合实际代码进一步确定。
+
+### 7.4 当前统一报告与 CI Summary
+
+当前实现使用 `make -s ci-peephole` 一次生成三类 Benchmark 的 JSON、统一 HTML
+`benchmark_reports/peephole_benchmark.html` 和 Markdown Summary
+`benchmark_reports/peephole_summary.md`。Summary 只读取三份 JSON，不重新运行 Benchmark，包含微型汇编、23 个 DSL 案例和 CNN standalone A/B 的独立汇总；每一类案例明细默认折叠，并显示实际规则及次数。GitHub Actions 会把该 Markdown 完整追加到 `$GITHUB_STEP_SUMMARY`，同时将 HTML、JSON 和 Markdown 上传到 `peephole-benchmark-report` Artifact；这些生成文件不提交到 Git。

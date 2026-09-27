@@ -72,7 +72,8 @@ ci-peephole: test-peephole
 		--micro-json benchmark_reports/peephole_compare_html.json \
 		--dsl-json benchmark_reports/peephole_compare.json \
 		--cnn-json benchmark_reports/cnn_peephole_compare.json \
-		--output-html benchmark_reports/peephole_benchmark.html
+		--output-html benchmark_reports/peephole_benchmark.html \
+		--summary-output benchmark_reports/peephole_summary.md
 	@echo "Peephole CI checks done."
 
 # ── 模型性能基准 ──────────────────────────────────────────────────────────

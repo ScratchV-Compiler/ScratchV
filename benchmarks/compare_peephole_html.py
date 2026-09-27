@@ -12,7 +12,8 @@ Usage:
         --micro-json benchmark_reports/peephole_compare_html.json \
         --dsl-json benchmark_reports/peephole_compare.json \
         --cnn-json benchmark_reports/cnn_peephole_compare.json \
-        --output-html benchmark_reports/peephole_benchmark.html
+        --output-html benchmark_reports/peephole_benchmark.html \
+        --summary-output benchmark_reports/peephole_summary.md
 """
 
 from __future__ import annotations
@@ -647,6 +648,134 @@ def generate_unified_html_report(
     )
 
 
+def _markdown_cell(value: Any) -> str:
+    """Escape dynamic values before placing them in a Markdown table cell."""
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+
+
+def _summary_case_rows(report: dict) -> list[str]:
+    rows = []
+    for case in report["cases"]:
+        before = int(case["peephole_off"]["instructions"])
+        after = int(case["peephole_on"]["instructions"])
+        saved = int(case.get("reduced_instructions", before - after))
+        reduction_percent = float(
+            case.get(
+                "reduction_percent",
+                round(100.0 * saved / before, 3) if before else 0.0,
+            )
+        )
+        rule_matches = case.get("rule_matches") or case["peephole_on"].get(
+            "rule_matches", {}
+        )
+        applied_rules = [
+            f"{_markdown_cell(name)} ({int(count)})"
+            for name, count in rule_matches.items()
+            if int(count) > 0
+        ]
+        rules = "<br>".join(applied_rules) if applied_rules else "—"
+        rows.append(
+            "| {name} | {before} | {after} | {saved} | {percent:.3f}% | {rules} |".format(
+                name=_markdown_cell(case["case_id"]),
+                before=before,
+                after=after,
+                saved=saved,
+                percent=reduction_percent,
+                rules=rules,
+            )
+        )
+    return rows
+
+
+def _summary_overview_row(label: str, report: dict) -> str:
+    summary = report["summary"]
+    before = int(summary["before_instructions"])
+    after = int(summary["after_instructions"])
+    saved = int(summary.get("reduced_instructions", before - after))
+    percent = float(
+        summary.get(
+            "reduction_percent",
+            round(100.0 * saved / before, 3) if before else 0.0,
+        )
+    )
+    return (
+        f"| {_markdown_cell(label)} | {int(summary['case_count'])} | {before} | "
+        f"{after} | {saved} | {percent:.3f}% |"
+    )
+
+
+def generate_summary_markdown(
+    micro_report: dict,
+    dsl_report: Any,
+    cnn_report: dict,
+) -> str:
+    """Render the GitHub Actions Summary from the three JSON report payloads."""
+    dsl_payload = _dsl_report_payload(dsl_report)
+    cnn_payload, _ = _cnn_report_payload(cnn_report)
+    cnn_before = int(cnn_report["code_size"]["baseline"])
+    cnn_after = int(cnn_report["code_size"]["optimized"])
+    cnn_saved = cnn_before - cnn_after
+    cnn_percent = 100.0 * cnn_saved / cnn_before if cnn_before else 0.0
+    cnn_rules = cnn_report["peephole"]["total_matches"]
+    cnn_applied_rules = [
+        f"{_markdown_cell(name)} ({int(count)})"
+        for name, count in cnn_rules.items()
+        if int(count) > 0
+    ]
+    cnn_rule_text = "<br>".join(cnn_applied_rules) if cnn_applied_rules else "—"
+
+    lines = [
+        "## Topic 13 Peephole Benchmark",
+        "",
+        "| 测试集 | 案例数 | 优化前指令数 | 优化后指令数 | 节省 | 节省比例 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        _summary_overview_row("微型汇编案例", micro_report),
+        _summary_overview_row("DSL 案例", dsl_payload),
+        _summary_overview_row("CNN standalone", cnn_payload),
+        "",
+        "| CNN 代码大小 | 优化前 | 优化后 | 节省 | 节省比例 |",
+        "| --- | ---: | ---: | ---: | ---: |",
+        f"| CNN 代码大小 | {cnn_before} B | {cnn_after} B | "
+        f"{cnn_saved} B | {cnn_percent:.3f}% |",
+        "",
+        "<details>",
+        "<summary>微型案例明细</summary>",
+        "",
+        "| 案例名 | 优化前指令数 | 优化后指令数 | 节省数 | 节省比例 | 实际命中规则及次数 |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
+        *_summary_case_rows(micro_report),
+        "",
+        "</details>",
+        "",
+        "<details>",
+        "<summary>DSL 案例明细</summary>",
+        "",
+        "| 案例名 | 优化前指令数 | 优化后指令数 | 节省数 | 节省比例 | 实际命中规则及次数 |",
+        "| --- | ---: | ---: | ---: | ---: | --- |",
+        *_summary_case_rows(dsl_payload),
+        "",
+        "</details>",
+        "",
+        "<details>",
+        "<summary>CNN standalone A/B 明细</summary>",
+        "",
+        "| 指标 | 优化前 | 优化后 | 结果 |",
+        "| --- | ---: | ---: | --- |",
+        f"| 静态机器指令数 | {cnn_payload['summary']['before_instructions']} | "
+        f"{cnn_payload['summary']['after_instructions']} | {cnn_payload['summary']['reduced_instructions']} 节省 |",
+        f"| 代码大小 | {cnn_before} B | {cnn_after} B | {cnn_saved} B 节省 |",
+        f"| 规则应用总次数 | — | — | {int(cnn_report['peephole']['rule_applications'])} |",
+        f"| fixed-point 迭代次数 | — | — | {int(cnn_report['peephole']['fixed_point_iterations'])} |",
+        f"| 实际命中规则及次数 | — | — | {cnn_rule_text} |",
+        "",
+        "</details>",
+        "",
+        "完整 HTML 和 JSON 报告请下载 Artifact：peephole-benchmark-report",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def generate_dsl_html_report(dsl_report: Any) -> str:
     """Render the 23-case DSL suite with the shared HTML renderer."""
     return generate_html_report(
@@ -704,6 +833,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--dsl-json", type=Path)
     parser.add_argument("--cnn-json", type=Path)
     parser.add_argument("--output-html", type=Path)
+    parser.add_argument("--summary-output", type=Path)
     args = parser.parse_args(argv)
 
     if args.unified:
@@ -711,14 +841,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             parser.error(
                 "--unified requires --micro-json, --dsl-json, --cnn-json and --output-html"
             )
+        micro_report = json.loads(args.micro_json.read_text(encoding="utf-8"))
+        dsl_report = json.loads(args.dsl_json.read_text(encoding="utf-8"))
+        cnn_report = json.loads(args.cnn_json.read_text(encoding="utf-8"))
         unified = generate_unified_html_report(
-            json.loads(args.micro_json.read_text(encoding="utf-8")),
-            json.loads(args.dsl_json.read_text(encoding="utf-8")),
-            json.loads(args.cnn_json.read_text(encoding="utf-8")),
+            micro_report,
+            dsl_report,
+            cnn_report,
         )
         args.output_html.parent.mkdir(parents=True, exist_ok=True)
         args.output_html.write_text(unified, encoding="utf-8")
         print(f"HTML: {args.output_html}")
+        if args.summary_output is not None:
+            summary = generate_summary_markdown(
+                micro_report,
+                dsl_report,
+                cnn_report,
+            )
+            args.summary_output.parent.mkdir(parents=True, exist_ok=True)
+            args.summary_output.write_text(summary, encoding="utf-8")
+            print(f"Summary: {args.summary_output}")
         return 0
 
     report = compare_cases(repeats=args.repeats)

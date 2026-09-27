@@ -342,3 +342,102 @@ def test_make_and_ci_use_only_the_unified_peephole_html():
     assert "name: peephole-benchmark-report" in workflow
     assert "benchmark_reports/peephole_benchmark.html" in workflow
     assert "if-no-files-found: error" in workflow
+
+
+def test_unified_summary_contains_dynamic_sections_and_case_details():
+    from benchmarks.compare_peephole_cnn import compare_cnn_model
+
+    root = Path(__file__).resolve().parents[1]
+    micro = compare_cases(repeats=1)
+    dsl = compare_dsl.run_dsl_suite(root / "benchmarks" / "cases")
+    cnn = compare_cnn_model(root / "models" / "graph" / "cnn.onnx")
+
+    summary = compare_html.generate_summary_markdown(micro, dsl, cnn)
+
+    assert summary.startswith("## Topic 13 Peephole Benchmark")
+    assert "| 微型汇编案例 | 14 | 31 | 22 | 9 | 29.032% |" in summary
+    assert "| DSL 案例 | 23 | 306 | 305 | 1 |" in summary
+    assert "| CNN standalone | 1 | 889 | 865 | 24 |" in summary
+    assert "| CNN 代码大小 | 3556 B | 3460 B | 96 B |" in summary
+    assert summary.count("<details>") == 3
+    micro_details = summary.split("<summary>微型案例明细</summary>", 1)[1].split(
+        "</details>", 1
+    )[0]
+    dsl_details = summary.split("<summary>DSL 案例明细</summary>", 1)[1].split(
+        "</details>", 1
+    )[0]
+    assert (
+        sum(f"| {case['case_id']} |" in micro_details for case in micro["cases"]) == 14
+    )
+    assert sum(f"| {case.name} |" in dsl_details for case in dsl.cases) == 23
+    assert "representative_codegen" in summary
+    assert "addi+addi fusion (1)" in summary
+    assert "beq zero-zero to jump (1)" in summary
+    assert "beq_zero_jump | 2 | 2 | 0 | 0.000% | beq zero-zero to jump (1)" in summary
+    assert " | — |" in summary
+    assert "fixed-point 迭代次数" in summary
+    assert "synthetic_100" not in summary
+    assert "完整 HTML 和 JSON 报告请下载 Artifact：peephole-benchmark-report" in summary
+
+
+def test_unified_summary_cli_writes_requested_markdown(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    micro = compare_cases(repeats=1)
+    dsl = compare_dsl.run_dsl_suite(root / "benchmarks" / "cases")
+    from benchmarks.compare_peephole_cnn import compare_cnn_model
+
+    cnn = compare_cnn_model(root / "models" / "graph" / "cnn.onnx")
+    micro_path = tmp_path / "micro.json"
+    dsl_path = tmp_path / "dsl.json"
+    cnn_path = tmp_path / "cnn.json"
+    output_path = tmp_path / "peephole_summary.md"
+    micro_path.write_text(json.dumps(micro), encoding="utf-8")
+    dsl_path.write_text(
+        json.dumps(
+            {
+                "dsl_suite": {
+                    "total_before": dsl.total_before,
+                    "total_after": dsl.total_after,
+                    "total_saved": dsl.total_saved,
+                    "cases_with_savings": dsl.cases_with_savings,
+                    "cases": [compare_dsl.asdict(case) for case in dsl.cases],
+                },
+                "synthetic": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cnn_path.write_text(json.dumps(cnn), encoding="utf-8")
+
+    exit_code = compare_html.main(
+        [
+            "--unified",
+            "--micro-json",
+            str(micro_path),
+            "--dsl-json",
+            str(dsl_path),
+            "--cnn-json",
+            str(cnn_path),
+            "--output-html",
+            str(tmp_path / "report.html"),
+            "--summary-output",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert "## Topic 13 Peephole Benchmark" in output_path.read_text(encoding="utf-8")
+
+
+def test_summary_and_ci_write_job_summary_artifact():
+    root = Path(__file__).resolve().parents[1]
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "--summary-output benchmark_reports/peephole_summary.md" in makefile
+    assert "benchmark_reports/peephole_summary.md" in workflow
+    assert (
+        'cat benchmark_reports/peephole_summary.md >> "$GITHUB_STEP_SUMMARY"'
+        in workflow
+    )
+    assert "head -40 benchmark_reports/peephole_compare.md" not in workflow

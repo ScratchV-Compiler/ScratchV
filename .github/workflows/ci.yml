@@ -415,6 +415,7 @@ jobs:
             !benchmark_reports/peephole_compare_html.json
             !benchmark_reports/peephole_raw.json
             !benchmark_reports/cnn_peephole_compare.json
+            !benchmark_reports/peephole_summary.md
           retention-days: 30
 
       - name: Upload peephole benchmark report
@@ -428,6 +429,7 @@ jobs:
             benchmark_reports/peephole_compare_html.json
             benchmark_reports/peephole_raw.json
             benchmark_reports/cnn_peephole_compare.json
+            benchmark_reports/peephole_summary.md
           if-no-files-found: error
           retention-days: 30
 
@@ -489,9 +491,8 @@ jobs:
             cat benchmark_reports/const_merge_report.md >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -f benchmark_reports/peephole_compare.md ]; then
-            echo "### Topic 13 Peephole Compare" >> $GITHUB_STEP_SUMMARY
-            head -40 benchmark_reports/peephole_compare.md >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/peephole_summary.md ]; then
+            cat benchmark_reports/peephole_summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/github_summary.md ]; then
