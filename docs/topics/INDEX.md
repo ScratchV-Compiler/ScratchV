@@ -12,6 +12,10 @@
 
 ---
 
+## Topic 04 IR优化器
+
+- [PassManager 设计文档](04%20IR优化器/Topic04-PassManager-设计文档.md)：注册、管线、开关与功能性 Pass。
+
 ## 文档状态说明
 
 | 标记 | 含义 |

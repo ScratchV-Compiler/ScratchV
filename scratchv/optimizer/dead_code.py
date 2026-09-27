@@ -9,29 +9,26 @@ from __future__ import annotations
 from scratchv.ir.types import (
     OpCode, Instruction, BasicBlock, Function, Program,
 )
+from scratchv.pass_interface import OptimizationPass
 
 
-class DeadCodeEliminator:
+class DeadCodeEliminator(OptimizationPass):
     """Remove unused instructions from an IR Program."""
 
-    def __init__(self, program: Program):
-        self.program = program
-        self._stats = {"eliminated": 0}
+    name = "dead-code-elim"
 
-    def run(self) -> int:
+    def optimize(self, program: Program) -> int:
         """Run dead code elimination.
 
         Returns number of eliminated instructions.
         """
-        for func in self.program.functions:
-            self._eliminate_function(func)
-        return self._stats["eliminated"]
+        return sum(self._eliminate_function(func) for func in program.functions)
 
-    def _eliminate_function(self, func: Function) -> None:
-        for block in func.blocks:
-            self._eliminate_block(block)
+    def _eliminate_function(self, func: Function) -> int:
+        return sum(self._eliminate_block(block) for block in func.blocks)
 
-    def _eliminate_block(self, block: BasicBlock) -> None:
+    def _eliminate_block(self, block: BasicBlock) -> int:
+        changes = 0
         # Collect all used value names
         used: set[str | None] = set()
         # Return values and branch targets are always live
@@ -52,9 +49,10 @@ class DeadCodeEliminator:
             elif instr.dest is None or instr.dest.name in used:
                 new_instrs.append(instr)
             else:
-                self._stats["eliminated"] += 1
+                changes += 1
 
         block.instructions = new_instrs
+        return changes
 
     @staticmethod
     def _is_side_effect(instr: Instruction) -> bool:

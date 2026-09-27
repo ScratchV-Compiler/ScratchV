@@ -9,34 +9,33 @@ from __future__ import annotations
 from scratchv.ir.types import (
     OpCode, Instruction, BasicBlock, Function, Program,
 )
+from scratchv.pass_interface import OptimizationPass
 
 
-class ConstantFolder:
+class ConstantFolder(OptimizationPass):
     """Fold constant expressions in an IR Program."""
 
-    def __init__(self, program: Program):
-        self.program = program
-        self._stats = {"folded": 0}
+    name = "constant-folding"
 
-    def run(self) -> int:
+    def optimize(self, program: Program) -> int:
         """Run constant folding on all functions. Returns number of folds."""
-        for func in self.program.functions:
-            self._fold_function(func)
-        return self._stats["folded"]
+        return sum(self._fold_function(func) for func in program.functions)
 
-    def _fold_function(self, func: Function) -> None:
-        for block in func.blocks:
-            self._fold_block(block)
+    def _fold_function(self, func: Function) -> int:
+        return sum(self._fold_block(block) for block in func.blocks)
 
-    def _fold_block(self, block: BasicBlock) -> None:
+    def _fold_block(self, block: BasicBlock) -> int:
+        changes = 0
         new_instrs: list[Instruction] = []
         for instr in block.instructions:
             folded = self._try_fold(instr)
             if folded is not None:
                 new_instrs.append(folded)
+                changes += 1
             else:
                 new_instrs.append(instr)
         block.instructions = new_instrs
+        return changes
 
     def _try_fold(self, instr: Instruction) -> Instruction | None:
         """Try to fold an instruction. Returns a replacement or None."""
@@ -58,7 +57,6 @@ class ConstantFolder:
         if result is None:
             return None
 
-        self._stats["folded"] += 1
         dest = instr.dest
         if dest is not None:
             dest.is_constant = True

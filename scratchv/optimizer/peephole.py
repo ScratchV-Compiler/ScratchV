@@ -10,26 +10,27 @@ Scans basic blocks for common redundant patterns:
 from __future__ import annotations
 
 from scratchv.ir.types import OpCode, Instruction, BasicBlock, Program
+from scratchv.pass_interface import OptimizationPass
 
 
-class IRPeepholeOptimizer:
+class IRPeepholeOptimizer(OptimizationPass):
     """Eliminate redundant instruction patterns in IR."""
 
-    def __init__(self, program: Program):
-        self.program = program
-        self._stats = {"eliminated": 0}
+    name = "ir-peephole"
 
-    def run(self) -> int:
+    def optimize(self, program: Program) -> int:
         """Run peephole optimization.
 
         Returns number of eliminated instructions.
         """
-        for func in self.program.functions:
-            for block in func.blocks:
-                self._optimize_block(block)
-        return self._stats["eliminated"]
+        return sum(
+            self._optimize_block(block)
+            for func in program.functions
+            for block in func.blocks
+        )
 
-    def _optimize_block(self, block: BasicBlock) -> None:
+    def _optimize_block(self, block: BasicBlock) -> int:
+        changes = 0
         instrs = block.instructions
         i = 0
         while i < len(instrs):
@@ -38,7 +39,7 @@ class IRPeepholeOptimizer:
             # Pattern 1: addi rd, rs, 0 → delete (no-op)
             if self._is_addi_zero(instr):
                 instrs.pop(i)
-                self._stats["eliminated"] += 1
+                changes += 1
                 continue
 
             # Pattern 2: mul rd, rs, 1 → mv rd, rs (use add rd, rs, x0)
@@ -50,7 +51,7 @@ class IRPeepholeOptimizer:
                     dest=dest,
                     operands=[src, self._make_zero_operand(instr)],
                 )
-                self._stats["eliminated"] += 1  # counts as optimization
+                changes += 1
                 i += 1
                 continue
 
@@ -62,17 +63,19 @@ class IRPeepholeOptimizer:
                     dest=dest,
                     attrs={"value": 0},
                 )
-                self._stats["eliminated"] += 1
+                changes += 1
                 i += 1
                 continue
 
             # Pattern 4: j L followed immediately by L:
             if self._is_jump_to_next(instrs, i):
                 instrs.pop(i)
-                self._stats["eliminated"] += 1
+                changes += 1
                 continue
 
             i += 1
+
+        return changes
 
     def _is_addi_zero(self, instr: Instruction) -> bool:
         """Check for: add rd, rs, 0  (or  add rd, rs, const where const=0)."""

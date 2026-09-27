@@ -44,15 +44,13 @@ def _compile_onnx(onnx_path: str) -> tuple:
     """
     from scratchv.frontend.onnx_parser import ONNXParser
     from scratchv.backend.instruction_select import InstructionSelector
-    from scratchv.optimizer.constant_folding import ConstantFolder
-    from scratchv.optimizer.dead_code import DeadCodeEliminator
+    from scratchv.pass_manager import create_optimization_pass_manager
 
     program = ONNXParser().parse(onnx_path)
     ir_count = sum(
         1 for f in program.functions for bb in f.blocks for _ in bb.instructions
     )
-    ConstantFolder(program).run()
-    DeadCodeEliminator(program).run()
+    create_optimization_pass_manager("basic").run(program)
     machine = InstructionSelector(program).run()
 
     # The scalarized CNN Machine IR names model inputs and initializers as

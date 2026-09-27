@@ -5,11 +5,31 @@ import copy
 import pytest
 
 import scratchv.analysis.ir_verifier as verifier_module
-from scratchv.compiler import CompilerConfig, CompilerDriver, PassManager, _PassAdapter
+from scratchv.compiler import CompilerConfig, CompilerDriver, PassManager
 from scratchv.ir.types import Instruction, OpCode, Value
 from scratchv.main import args_to_config, build_arg_parser, main
-from scratchv.pass_interface import PassResult
+from scratchv.pass_interface import CompilerPass, OptimizationPass, PassResult
 from tests.test_ir_verifier import straight
+
+
+class FunctionalPass(CompilerPass):
+    name = "constant-folding"
+
+    def __init__(self, run):
+        self._run = run
+
+    def run(self, data):
+        return self._run(self, data)
+
+
+def install_passes(monkeypatch, *passes):
+    def factory(*args, **kwargs):
+        manager = PassManager("optimizer")
+        for pass_ in passes:
+            manager.register(pass_)
+        return manager
+
+    monkeypatch.setattr("scratchv.compiler.create_optimization_pass_manager", factory)
 
 
 def harness(monkeypatch, *, enabled=True, optimization="basic", p=None):
@@ -44,6 +64,42 @@ def test_i01_i02_exact_checkpoints(monkeypatch, tmp_path, optimization, expected
     assert result.success, result.errors
     assert events == expected
     assert target.read_text() == "generated output\n"
+
+
+def test_named_pipeline_checks_only_selected_passes(monkeypatch, tmp_path):
+    driver, events = harness(monkeypatch, optimization="none")
+    driver.config.passes = ("dead-code-elim", "constant-folding", "dead-code-elim")
+    driver.config.disabled_passes = ("constant-folding",)
+    result = driver.compile("model.onnx", str(tmp_path / "out.s"))
+    assert result.success, result.errors
+    assert events == [
+        "after-parse", "before:dead-code-elim", "after:dead-code-elim",
+        "before:dead-code-elim", "after:dead-code-elim", "before-codegen", "codegen",
+    ]
+    assert [item["name"] for item in result.stats["optimization"]["passes"]] == [
+        "dead-code-elim", "dead-code-elim",
+    ]
+
+
+def test_in_place_optimization_failure_keeps_ir_diagnostics(monkeypatch, tmp_path):
+    driver, events = harness(monkeypatch)
+
+    class BrokenPass(OptimizationPass):
+        name = "broken"
+
+        def optimize(self, program):
+            program.functions[0].params = []
+            return 1
+
+    install_passes(monkeypatch, BrokenPass())
+    target = tmp_path / "out.s"
+    target.write_text("original")
+    result = driver.compile("model.onnx", str(target))
+    assert not result.success
+    assert events == ["after-parse", "before:broken", "after:broken"]
+    assert all(issue.stage == "after:broken" for issue in result.ir_diagnostics)
+    assert any(issue.rule == "def-before-use" for issue in result.ir_diagnostics)
+    assert target.read_text() == "original"
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -84,7 +140,7 @@ def test_i04_i05_a07_replacement_pass_failure(monkeypatch, tmp_path, mutation, r
             block.instructions[-1] = Instruction(OpCode.BR, target="missing")
         return PassResult(replacement)
 
-    monkeypatch.setattr(_PassAdapter, "run", run)
+    install_passes(monkeypatch, FunctionalPass(run))
     target = tmp_path / "out.s"
     target.write_bytes(b"original")
     result = driver.compile("model.onnx", str(target))
@@ -99,7 +155,7 @@ def test_i04_i05_a07_replacement_pass_failure(monkeypatch, tmp_path, mutation, r
 @pytest.mark.parametrize("enabled", [False, True])
 def test_a08_pass_contract_stops_before_backend(monkeypatch, tmp_path, bad_result, enabled):
     driver, events = harness(monkeypatch, enabled=enabled)
-    monkeypatch.setattr(_PassAdapter, "run", lambda *args: bad_result)
+    install_passes(monkeypatch, FunctionalPass(lambda *args: bad_result))
     result = driver.compile("model.onnx", str(tmp_path / "out.s"))
     assert not result.success
     assert "codegen" not in events
@@ -107,27 +163,22 @@ def test_a08_pass_contract_stops_before_backend(monkeypatch, tmp_path, bad_resul
     assert not (tmp_path / "out.s").exists()
 
 
-def test_a07_next_adapter_and_codegen_receive_replacement(monkeypatch, tmp_path):
+def test_a07_next_pass_and_codegen_receive_replacement(monkeypatch, tmp_path):
     driver, events = harness(monkeypatch)
-    original_run = _PassAdapter.run
     replacement = straight()
     replacement.functions[0].name = "replacement"
 
     def run(pass_, data):
-        if pass_.name == "constant-folding":
-            return PassResult(replacement)
-        assert data is replacement
-        return original_run(pass_, data)
+        return PassResult(replacement)
 
-    class DeadCode:
-        def __init__(self, program):
+    class DeadCode(OptimizationPass):
+        name = "dead-code-elim"
+
+        def optimize(self, program):
             assert program is replacement
-
-        def run(self):
             return 0
 
-    monkeypatch.setattr(_PassAdapter, "run", run)
-    monkeypatch.setattr("scratchv.optimizer.dead_code.DeadCodeEliminator", DeadCode)
+    install_passes(monkeypatch, FunctionalPass(run), DeadCode())
     monkeypatch.setattr(driver, "_generate_code", lambda p: p.functions[0].name)
     result = driver.compile("model.onnx", str(tmp_path / "out.s"))
     assert result.success and result.output_text == "replacement"
@@ -234,14 +285,14 @@ def test_dsl_implicit_inputs_strict_only_when_enabled(monkeypatch, tmp_path):
 
 
 def test_generic_pass_manager_has_no_ir_dependency():
-    class TextPass:
+    class TextPass(CompilerPass):
         name = "text"
 
         def run(self, text):
             return PassResult(text + "!")
 
     manager = PassManager().add(TextPass())
-    assert manager.run("text").data == "text!"
+    assert manager.run_pipeline("text").data == "text!"
 
 
 @pytest.mark.parametrize("source,missing", [
