@@ -5,7 +5,8 @@ import json
 import pytest
 
 import scratchv.analysis.ir_verifier as verifier_module
-from benchmarks.bench_ir_verifier import DEFAULT_MODEL, benchmark, main
+import benchmarks.bench_ir_verifier as benchmark_module
+from benchmarks.bench_ir_verifier import DEFAULT_MODEL, benchmark, main, rule_examples
 from scratchv.compiler import CompilerDriver
 from tests.test_ir_verifier import straight
 
@@ -67,4 +68,36 @@ def test_benchmark_cli_writes_reports(tmp_path):
     report = json.loads(json_path.read_text())
     assert [row["optimize"] for row in report["results"]] == ["none", "basic", "all"]
     assert all(row["output_equal"] for row in report["results"])
-    assert "不是模型运行耗时" in markdown_path.read_text()
+    examples = report["rule_examples"]
+    assert all(case["matched"] for case in examples)
+    markdown = markdown_path.read_text()
+    assert "不是模型运行耗时" in markdown
+    assert markdown.count("<details>") == len(examples)
+    for case in examples:
+        assert case["rendered"] in markdown
+
+
+def test_rule_examples_cover_all_rules_and_warning_semantics():
+    examples = rule_examples()
+    assert [case["number"] for case in examples] == [
+        "R1", "R2", "R3", "R4", "R5", "R5", "R6", "R7",
+    ]
+    for case in examples:
+        assert case["matched"], case
+        assert case["ir_passed"] == (case["expected_level"] == "warning")
+        assert case["diagnostics"][0]["rule"] == case["rule"]
+        assert "stage=benchmark-example" in case["rendered"]
+        assert "-->" in case["rendered"]
+        assert "\x1b" not in case["rendered"]
+
+
+def test_missing_expected_diagnostics_fail_cli_but_preserve_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(benchmark_module, "verify_ir", lambda *args, **kwargs: (True, []))
+    json_path, md_path = tmp_path / "ir.json", tmp_path / "ir.md"
+    assert main([
+        "--repeats", "1", "--warmup", "0",
+        "--json-output", str(json_path), "--markdown", str(md_path),
+    ]) == 1
+    report = json.loads(json_path.read_text())
+    assert not any(case["matched"] for case in report["rule_examples"])
+    assert "<no diagnostics>" in md_path.read_text()

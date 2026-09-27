@@ -482,9 +482,6 @@ jobs:
       - name: Write job summary
         if: always()
         run: |
-          if [ -f benchmark_reports/ir_verifier.md ]; then
-            cat benchmark_reports/ir_verifier.md >> "$GITHUB_STEP_SUMMARY"
-          fi
           if [ -f benchmark_reports/topic01_control_flow.md ]; then
             cat benchmark_reports/topic01_control_flow.md >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -525,6 +522,10 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ -f benchmark_reports/single_op_bench.md ]; then
             cat benchmark_reports/single_op_bench.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f benchmark_reports/ir_verifier.md ]; then
+            cat benchmark_reports/ir_verifier.md >> "$GITHUB_STEP_SUMMARY"
           fi
 
   # ═════════════════════════════════════════════════════════════════════════
