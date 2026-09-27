@@ -308,16 +308,7 @@ jobs:
 
       # ── 3.1.2 课题13：窥孔前后对比报告 ─────────────────────────────
       - name: Topic 13 peephole compare report
-        run: |
-          mkdir -p benchmark_reports
-          $PY benchmarks/bench_asm_peephole.py \
-            --sizes 1 2 100 --fusion-ratio 0.3 --repeats 2 \
-            --output benchmark_reports/peephole_raw.json
-          $PY benchmarks/compare_peephole.py \
-            --json benchmark_reports/peephole_compare.json \
-            --markdown benchmark_reports/peephole_compare.md
-          $PY benchmarks/compare_peephole_html.py \
-            --repeats 2 --output-dir benchmark_reports
+        run: make -s ci-peephole
 
       # ── 3.2 DSL 用例编译 + 模拟基准 ────────────────────────────────────
       - name: DSL case compilation benchmarks
@@ -417,7 +408,27 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: benchmark-reports
-          path: benchmark_reports/
+          path: |
+            benchmark_reports/
+            !benchmark_reports/peephole_benchmark.html
+            !benchmark_reports/peephole_compare.json
+            !benchmark_reports/peephole_compare_html.json
+            !benchmark_reports/peephole_raw.json
+            !benchmark_reports/cnn_peephole_compare.json
+          retention-days: 30
+
+      - name: Upload peephole benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: peephole-benchmark-report
+          path: |
+            benchmark_reports/peephole_benchmark.html
+            benchmark_reports/peephole_compare.json
+            benchmark_reports/peephole_compare_html.json
+            benchmark_reports/peephole_raw.json
+            benchmark_reports/cnn_peephole_compare.json
+          if-no-files-found: error
           retention-days: 30
 
       # ── 保留推广主页（docs/promo/ScratchV.html 不会被顶替） ───────────

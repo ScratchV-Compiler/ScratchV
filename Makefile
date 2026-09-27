@@ -49,7 +49,7 @@ test:
 # ── Topic 13 窥孔优化器（本地 / CI 对齐） ─────────────────────────────────
 
 test-peephole:
-	python3 -m pytest tests/test_asm_peephole*.py tests/test_bench_asm_peephole.py tests/test_compare_peephole.py -v --tb=short
+	python3 -m pytest tests/test_asm_peephole*.py tests/test_bench_asm_peephole.py tests/test_compare_peephole.py tests/test_standalone_peephole.py tests/test_cnn_peephole_benchmark.py -v --tb=short
 	python3 -m scratchv.backend.asm_peephole --list-rules
 	python3 -m scratchv.backend.asm_peephole \
 		tests/fixtures/asm_peephole/input_addi_fusion.s \
@@ -62,10 +62,17 @@ ci-peephole: test-peephole
 		--output benchmark_reports/peephole_raw.json
 	python3 benchmarks/compare_peephole.py \
 		--json benchmark_reports/peephole_compare.json \
-		--markdown benchmark_reports/peephole_compare.md \
-		--html benchmark_reports/peephole_dsl_compare.html
+		--markdown benchmark_reports/peephole_compare.md
 	python3 benchmarks/compare_peephole_html.py \
 		--repeats 2 --output-dir benchmark_reports
+	python3 benchmarks/compare_peephole_cnn.py \
+		--model models/graph/cnn.onnx \
+		--json benchmark_reports/cnn_peephole_compare.json
+	python3 benchmarks/compare_peephole_html.py --unified \
+		--micro-json benchmark_reports/peephole_compare_html.json \
+		--dsl-json benchmark_reports/peephole_compare.json \
+		--cnn-json benchmark_reports/cnn_peephole_compare.json \
+		--output-html benchmark_reports/peephole_benchmark.html
 	@echo "Peephole CI checks done."
 
 # ── 模型性能基准 ──────────────────────────────────────────────────────────

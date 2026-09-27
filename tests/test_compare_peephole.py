@@ -14,6 +14,7 @@ from benchmarks.bench_asm_peephole import BenchmarkCase, default_cases
 compare_cases = compare_html.compare_cases
 generate_dsl_html_report = compare_html.generate_dsl_html_report
 generate_html_report = compare_html.generate_html_report
+generate_unified_html_report = compare_html.generate_unified_html_report
 save_comparison = compare_html.save_comparison
 
 
@@ -286,17 +287,58 @@ def test_dsl_html_report_uses_all_suite_cases_and_actual_rules():
     assert "优化器参考耗时" not in rendered
 
 
-def test_compare_dsl_main_writes_html_from_suite_result(tmp_path, monkeypatch):
-    html_path = tmp_path / "peephole_dsl_compare.html"
+def test_compare_dsl_main_writes_json_without_standalone_html(tmp_path, monkeypatch):
+    json_path = tmp_path / "peephole_compare.json"
 
     monkeypatch.setattr(
         compare_dsl.sys,
         "argv",
-        ["compare_peephole.py", "--html", str(html_path)],
+        ["compare_peephole.py", "--json", str(json_path)],
     )
     compare_dsl.main()
-    rendered = html_path.read_text(encoding="utf-8")
 
-    details = rendered.split("<section><h2>样例明细</h2>", 1)[1].split("</table>", 1)[0]
-    assert details.count("<tr>") == 24
-    assert "synthetic_100" not in rendered
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    assert len(payload["dsl_suite"]["cases"]) == 23
+    assert not (tmp_path / "peephole_dsl_compare.html").exists()
+
+
+def test_unified_html_contains_three_independent_benchmark_sections():
+    from benchmarks.compare_peephole_cnn import compare_cnn_model
+
+    micro = compare_cases(repeats=1)
+    dsl = compare_dsl.run_dsl_suite(
+        Path(__file__).resolve().parents[1] / "benchmarks" / "cases"
+    )
+    cnn = compare_cnn_model(
+        Path(__file__).resolve().parents[1] / "models" / "graph" / "cnn.onnx"
+    )
+
+    rendered = generate_unified_html_report(micro, dsl, cnn)
+
+    assert rendered.count("14个微型规则案例") == 1
+    assert rendered.count("23个 DSL 案例") == 1
+    assert rendered.count("cnn.onnx standalone A/B") == 1
+    for value in (31, 22, 306, 305, 889, 865):
+        assert f">{value:,}<" in rendered
+    assert "Commit:" not in rendered
+    assert "类别" not in rendered
+    assert "输入摘要" not in rendered
+    assert "预期规则" not in rendered
+    assert "case-table" in rendered
+    assert "benchmark-section" in rendered
+
+
+def test_make_and_ci_use_only_the_unified_peephole_html():
+    root = Path(__file__).resolve().parents[1]
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "peephole_benchmark.html" in makefile
+    assert "peephole_compare.html" not in makefile
+    assert "peephole_dsl_compare.html" not in makefile
+    assert "cnn_peephole_compare.html" not in makefile
+    assert "make -s ci-peephole" in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert "name: peephole-benchmark-report" in workflow
+    assert "benchmark_reports/peephole_benchmark.html" in workflow
+    assert "if-no-files-found: error" in workflow

@@ -56,3 +56,6 @@ markers = [
     "integration: integration tests",
     "stress: stress tests",
 ]
+
+[tool.isort]
+profile = "black"

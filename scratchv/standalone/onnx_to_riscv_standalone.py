@@ -38,13 +38,12 @@ Author: ScratchV standalone compiler
 
 from __future__ import annotations
 
+import argparse
+import copy
+import math
+import os
 import struct
 import sys
-import os
-import argparse
-import math
-import copy
-from typing import Optional, Union
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Part 1: Minimal Protobuf Wire-Format Parser
@@ -1174,8 +1173,10 @@ class RISCVEmitter:
     def __init__(self, compact_li32: bool = False):
         self.code: list[int] = []  # list of 32-bit instruction words
         self.labels: dict[str, int] = {}  # label name → instruction index
+        self.label_history: list[str] = []
         self.pending_fixups: list[tuple[int, str, str]] = []  # (idx, kind, label)
         self.comments: dict[int, str] = {}  # instruction index → comment
+        self.protected_indices: set[int] = set()
         self.compact_li32 = compact_li32
         self.label_prefix = ""
 
@@ -1200,7 +1201,15 @@ class RISCVEmitter:
         name = self.label_prefix + name
         if name in self.labels:
             raise ValueError(f"Duplicate label '{name}'")
+        self.label_history.append(name)
         self.labels[name] = len(self.code)
+
+    def finalize(self, strategy=None) -> None:
+        """Finalize code through an optional symbolic encoding strategy."""
+        if strategy is None:
+            self.resolve_fixups()
+        else:
+            strategy(self)
 
     def emit_branch(self, op_builder, rs1: int, rs2: int,
                     label: str, comment: str = "") -> int:
@@ -1442,10 +1451,12 @@ class CNNRISCVGenerator:
         model: ONNXModel,
         memory: MemoryPlan,
         compact_constants: bool = False,
+        finalize_strategy=None,
     ):
         self.model = model
         self.mem = memory
         self.emit = RISCVEmitter(compact_li32=compact_constants)
+        self.finalize_strategy = finalize_strategy
 
         # Wide register aliases for readability
         # t0-t6: x5-x7, x28-x31 → temporaries
@@ -1476,6 +1487,7 @@ class CNNRISCVGenerator:
         # During code generation, we don't know the exact offset yet,
         # so we'll use a placeholder that gets resolved when linking code+data.
         # For now, emit a NOP placeholder — the caller handles AUIPC setup.
+        init_label_idx = len(self.emit.code)
         self.emit.label("_init_data_base")
         # The data base address loading is handled at binary assembly time.
         # We embed a dummy AUIPC + ADDI that gets patched:
@@ -1483,6 +1495,7 @@ class CNNRISCVGenerator:
         #   addi gp, gp, 0     → placeholder
         self.emit.emit(rv_auipc(_R_GP, 0), "gp = data base (patched at link time)")
         self.emit.emit(rv_addi(_R_GP, _R_GP, 0), "data offset (patched)")
+        self.emit.protected_indices.update({init_label_idx, init_label_idx + 1})
 
         # ── Copy input from caller buffer to workspace ─────────────────
         # The input data is at s0 (caller-provided, float32/Q16.16 format).
@@ -1561,8 +1574,9 @@ class CNNRISCVGenerator:
         self.emit.emit(rv_ret(), "return")
         self.emit.emit(rv_nop(), "")
 
-        # Resolve internal branch/jump fixups
-        self.emit.resolve_fixups()
+        # Resolve internal branch/jump fixups, or run an injected symbolic
+        # finalizer before relocation when a benchmark strategy is supplied.
+        self.emit.finalize(self.finalize_strategy)
 
         return self.emit.to_bytes()
 
@@ -1812,7 +1826,7 @@ class CNNRISCVGenerator:
                                "wt_ptr++")
             # Row advance: in_ptr += (W-K)*4
             self.emit.emit(rv_add(IN_PTR, IN_PTR, ROW_ADV_REG),
-                           f"in_ptr += row_adv to next row")
+                           "in_ptr += row_adv to next row")
 
             # Row 1 (kh=1): MAC 3,4,5 then row advance
             for _ in range(3):
@@ -1832,7 +1846,7 @@ class CNNRISCVGenerator:
                                "wt_ptr++")
             # Row advance
             self.emit.emit(rv_add(IN_PTR, IN_PTR, ROW_ADV_REG),
-                           f"in_ptr += row_adv to next row")
+                           "in_ptr += row_adv to next row")
 
             # Row 2 (kh=2): MAC 6,7,8 (last row, no row advance after)
             for _ in range(3):
@@ -2462,7 +2476,6 @@ class CNNRISCVGenerator:
         x_name = node.inputs[0]
         out_name = node.outputs[0]
         shape = self.model.get_shape(x_name)
-        out_shape = self.model.get_shape(out_name)
 
         num_el = 1
         for d in shape:
@@ -2505,6 +2518,63 @@ class CNNRISCVGenerator:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def patch_gp_data_base(
+    generator: CNNRISCVGenerator,
+    code_bytes: bytes,
+    *,
+    sync_listing: bool = False,
+    strict: bool = False,
+) -> tuple[bytes, dict[str, object]]:
+    """Patch GP using the final code size and optionally sync the listing."""
+    if len(code_bytes) % 4:
+        code_bytes += b"\x00" * (4 - len(code_bytes) % 4)
+
+    data_offset = len(code_bytes)
+    candidate = getattr(generator, "emit", None)
+    emitter = candidate if hasattr(candidate, "labels") else generator
+    init_label_idx = emitter.labels.get("_init_data_base", -1)
+    if init_label_idx < 0:
+        if strict:
+            raise ValueError("missing _init_data_base label")
+        return code_bytes, {
+            "applied": False,
+            "code_size": data_offset,
+            "data_offset": data_offset,
+            "validation": True,
+        }
+
+    auipc_word_idx = init_label_idx
+    addi_word_idx = init_label_idx + 1
+    code_word_list = list(struct.unpack(f"<{len(code_bytes) // 4}I", code_bytes))
+    if addi_word_idx >= len(code_word_list):
+        raise ValueError("_init_data_base pair is incomplete")
+
+    auipc_pc = auipc_word_idx * 4
+    delta = data_offset - auipc_pc
+    upper = (delta + 0x800) >> 12
+    lower = _sext(delta & 0xFFF, 12)
+    code_word_list[auipc_word_idx] = rv_auipc(_R_GP, upper & 0xFFFFF)
+    code_word_list[addi_word_idx] = rv_addi(_R_GP, _R_GP, lower & 0xFFF)
+    patched = struct.pack(f"<{len(code_word_list)}I", *code_word_list)
+
+    if sync_listing:
+        emitter.code = code_word_list
+    validation = code_word_list[auipc_word_idx] == rv_auipc(
+        _R_GP, upper & 0xFFFFF
+    ) and code_word_list[addi_word_idx] == rv_addi(_R_GP, _R_GP, lower & 0xFFF)
+    if strict and not validation:
+        raise ValueError("GP patch validation failed")
+    return patched, {
+        "applied": True,
+        "code_size": data_offset,
+        "data_offset": data_offset,
+        "auipc_index": auipc_word_idx,
+        "addi_index": addi_word_idx,
+        "delta": delta,
+        "validation": validation,
+    }
+
+
 def _run_tinyfive_sim(
     output_bin: str, code_bytes: bytes, memory: MemoryPlan,
     model: ONNXModel, data_offset: int, max_instr: int,
@@ -2519,7 +2589,7 @@ def _run_tinyfive_sim(
     import random
     import struct
 
-    print(f"\n[tinyfive] Running TinyFive RV32IM simulation...")
+    print("\n[tinyfive] Running TinyFive RV32IM simulation...")
     try:
         from scratchv.simulator.tinyfive import ProfiledMachine
     except ImportError:
@@ -2580,12 +2650,12 @@ def _run_tinyfive_sim(
     # ── Report ───────────────────────────────────────────────────────
     perf = m.get_perf()
     mips = perf["total"] / elapsed / 1_000_000 if elapsed > 0 else 0
-    print(f"\n  ── TinyFive Simulation Results ──")
+    print("\n  ── TinyFive Simulation Results ──")
     print(f"  Instructions executed: {perf['total']:,}")
     print(f"  Wall time:            {elapsed:.2f}s")
     print(f"  Simulated MIPS:       {mips:.1f}")
-    print(f"")
-    print(f"  ── Performance Counters (TinyFive built-in) ──")
+    print("")
+    print("  ── Performance Counters (TinyFive built-in) ──")
     print(f"  {'Counter':<12s} {'Count':>15s} {'%':>8s}")
     print(f"  {'─'*12} {'─'*15} {'─'*8}")
     total = max(perf['total'], 1)
@@ -2603,7 +2673,7 @@ def _run_tinyfive_sim(
     print(f"\n  Output Q16.16: {out_val}  (≈ {out_float:.6f} float)")
 
     # ── Register state at end ────────────────────────────────────────
-    print(f"\n  ── Final Register State ──")
+    print("\n  ── Final Register State ──")
     for name, idx in [('ra', 1), ('sp', 2), ('gp', 3), ('a0', 10), ('a1', 11),
                        ('t0', 5), ('t1', 6), ('t2', 7)]:
         print(f"  {name:>4s} (x{idx:2d}): 0x{m.get_reg(idx):08x}")
@@ -2630,12 +2700,12 @@ def convert_onnx_to_riscv(
 
     Returns: 0 on success, non-zero on error.
     """
-    print(f"ScratchV: Library-free ONNX → RISC-V RV32IM Pipeline")
+    print("ScratchV: Library-free ONNX → RISC-V RV32IM Pipeline")
     print(f"{'='*60}")
     print(f"  Input:  {onnx_path}")
 
     # ── Step 1: Parse ONNX protobuf ────────────────────────────────────
-    print(f"\n[1/5] Parsing ONNX protobuf (manual wire-format parser)...")
+    print("\n[1/5] Parsing ONNX protobuf (manual wire-format parser)...")
     model = ONNXModel.from_file(onnx_path)
     print(f"  Graph: {model.graph_name}")
     print(f"  Nodes: {len(model.nodes)}")
@@ -2645,7 +2715,7 @@ def convert_onnx_to_riscv(
               f"{', '.join(node.inputs[:2])} → {', '.join(node.outputs[:1])}")
 
     # ── Step 2: Layout weights and plan memory ─────────────────────────
-    print(f"\n[2/5] Converting weights to Q16.16 fixed-point and planning memory...")
+    print("\n[2/5] Converting weights to Q16.16 fixed-point and planning memory...")
     memory = MemoryPlan()
     weight_data = memory.layout_weights(model.initializers)
     print(f"  Weight data: {memory.data_size:,} bytes ({memory.data_size/1024/1024:.1f} MB)")
@@ -2661,7 +2731,7 @@ def convert_onnx_to_riscv(
         print(f"  Input '{input_name}': shape={input_shape}, {input_el:,} elements")
 
     # ── Step 3: Generate RISC-V code ───────────────────────────────────
-    print(f"\n[3/5] Generating inline RISC-V RV32IM machine code...")
+    print("\n[3/5] Generating inline RISC-V RV32IM machine code...")
     constant_merge_report = None
     if const_merge:
         # Generate both variants from identical pre-codegen memory plans.  The
@@ -2742,7 +2812,7 @@ def convert_onnx_to_riscv(
           f"({memory.workspace_size/1024/1024:.1f} MB)")
 
     # ── Step 4: Assemble binary ────────────────────────────────────────
-    print(f"\n[4/5] Assembling flat binary...")
+    print("\n[4/5] Assembling flat binary...")
     # The binary layout:
     #   [code_bytes][weight_data_bytes]
     # Code is at offset 0, data immediately follows (4-byte aligned).
@@ -2793,11 +2863,11 @@ def convert_onnx_to_riscv(
 
     binary = code_bytes + weight_data
     print(f"  Total binary: {len(binary):,} bytes ({len(binary)/1024/1024:.1f} MB)")
-    print(f"  Code offset: 0x00000000")
+    print("  Code offset: 0x00000000")
     print(f"  Data offset: 0x{data_offset:08x} ({data_offset:,} bytes)")
 
     # ── Step 5: Write output ───────────────────────────────────────────
-    print(f"\n[5/5] Writing output files...")
+    print("\n[5/5] Writing output files...")
     with open(output_bin, "wb") as f:
         f.write(binary)
     print(f"  Binary: {output_bin} ({len(binary):,} bytes)")
@@ -2811,7 +2881,7 @@ def convert_onnx_to_riscv(
 
     # ── Summary ────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print(f"  Pipeline complete!")
+    print("  Pipeline complete!")
     print(f"  Code:   {len(code_bytes):,} bytes ({len(code_bytes)//4} instructions)")
     print(f"  Data:   {memory.data_size:,} bytes ({memory.data_size/1024/1024:.1f} MB)")
     print(f"  Total:  {len(binary):,} bytes ({len(binary)/1024/1024:.1f} MB)")
@@ -2819,17 +2889,17 @@ def convert_onnx_to_riscv(
     print(f"          shape={input_shape if model.inputs else 'unknown'}")
     print(f"  Output: {model.outputs[0].name if model.outputs else 'unknown'}")
     print(f"  Workspace needed: {memory.workspace_size/1024/1024:.1f} MB")
-    print(f"\n  Bare-metal ABI:")
-    print(f"    a0 → input tensor (float32, Q16.16 converted)")
-    print(f"    a1 → output buffer")
-    print(f"    gp → data section base (set by binary on entry)")
-    print(f"    sp → stack pointer (caller must initialize)")
-    print(f"    returns via jalr zero, ra, 0")
+    print("\n  Bare-metal ABI:")
+    print("    a0 → input tensor (float32, Q16.16 converted)")
+    print("    a1 → output buffer")
+    print("    gp → data section base (set by binary on entry)")
+    print("    sp → stack pointer (caller must initialize)")
+    print("    returns via jalr zero, ra, 0")
     print(f"{'='*60}")
 
     # ── Optional: Analytical estimation ──────────────────────────────────
     if estimate or report:
-        print(f"\n[estimate] Analytical instruction count estimation...")
+        print("\n[estimate] Analytical instruction count estimation...")
         try:
             from scratchv.standalone.benchmark import estimate_cnn_model, print_estimate
             est = estimate_cnn_model()
@@ -2839,12 +2909,14 @@ def convert_onnx_to_riscv(
 
     # ── Optional: Generate CI reports (HTML, JSON, GitHub summary) ───────
     if report:
-        print(f"\n[report] Generating CI benchmark reports...")
+        print("\n[report] Generating CI benchmark reports...")
         try:
-            from scratchv.standalone.benchmark import estimate_cnn_model
             from scratchv.standalone.bench_report import (
-                generate_html_report, generate_json_report, generate_github_summary,
+                generate_github_summary,
+                generate_html_report,
+                generate_json_report,
             )
+            from scratchv.standalone.benchmark import estimate_cnn_model
             est_data = estimate_cnn_model()
             code_len = len(code_bytes)
 
@@ -2860,7 +2932,7 @@ def convert_onnx_to_riscv(
                     model_name=model_name,
                     optimization=constant_merge_report,
                 ))
-            print(f"  HTML: benchmark_reports/benchmark.html")
+            print("  HTML: benchmark_reports/benchmark.html")
 
             # JSON report
             with open("benchmark_reports/benchmark.json", "w") as f:
@@ -2871,7 +2943,7 @@ def convert_onnx_to_riscv(
                     model_name=model_name,
                     optimization=constant_merge_report,
                 ))
-            print(f"  JSON: benchmark_reports/benchmark.json")
+            print("  JSON: benchmark_reports/benchmark.json")
 
             # GitHub Actions job summary
             with open("benchmark_reports/github_summary.md", "w") as f:
@@ -2881,13 +2953,13 @@ def convert_onnx_to_riscv(
                     est_data=est_data,
                     optimization=constant_merge_report,
                 ))
-            print(f"  Summary: benchmark_reports/github_summary.md")
+            print("  Summary: benchmark_reports/github_summary.md")
         except ImportError as e:
             print(f"  ERROR: {e}", file=sys.stderr)
 
     # ── Optional: Benchmark ───────────────────────────────────────────────
     if benchmark:
-        print(f"\n[benchmark] Running RISC-V emulation with performance counters...")
+        print("\n[benchmark] Running RISC-V emulation with performance counters...")
         code_size = len(code_bytes)
 
         # Build label address map from emitter (for per-operator stats)
@@ -2911,7 +2983,9 @@ def convert_onnx_to_riscv(
 
         try:
             from scratchv.standalone.benchmark import (
-                run_benchmark, format_benchmark_report, PROFILES,
+                PROFILES,
+                format_benchmark_report,
+                run_benchmark,
             )
             uarch_obj = PROFILES.get(uarch, PROFILES["basic"])
             perf = run_benchmark(

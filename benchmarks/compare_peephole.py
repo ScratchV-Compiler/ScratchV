@@ -184,7 +184,6 @@ def main() -> None:
     parser.add_argument("--cases", default="benchmarks/cases", help="DSL cases dir")
     parser.add_argument("--json", help="Write JSON report")
     parser.add_argument("--markdown", help="Write Markdown report")
-    parser.add_argument("--html", help="Write DSL HTML report")
     args = parser.parse_args()
 
     cases_dir = ROOT / args.cases
@@ -239,12 +238,6 @@ def main() -> None:
     if args.markdown:
         Path(args.markdown).write_text(md, encoding="utf-8")
         print(f"Markdown: {args.markdown}")
-
-    if args.html:
-        from benchmarks.compare_peephole_html import generate_dsl_html_report
-
-        Path(args.html).write_text(generate_dsl_html_report(report), encoding="utf-8")
-        print(f"HTML: {args.html}")
 
 
 if __name__ == "__main__":

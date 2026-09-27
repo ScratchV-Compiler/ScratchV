@@ -8,6 +8,11 @@ a self-contained HTML report styled like the existing ScratchV benchmark page.
 Usage:
     python benchmarks/compare_peephole_html.py
     python benchmarks/compare_peephole_html.py --repeats 20 --output-dir benchmark_reports
+    python benchmarks/compare_peephole_html.py --unified \
+        --micro-json benchmark_reports/peephole_compare_html.json \
+        --dsl-json benchmark_reports/peephole_compare.json \
+        --cnn-json benchmark_reports/cnn_peephole_compare.json \
+        --output-html benchmark_reports/peephole_benchmark.html
 """
 
 from __future__ import annotations
@@ -255,43 +260,74 @@ def _metric_card(label: str, value: str, color: str = "") -> str:
 
 def _dsl_report_payload(dsl_report: Any) -> dict:
     """Adapt ``run_dsl_suite()`` output to the shared HTML report schema."""
+    if isinstance(dsl_report, dict):
+        suite = dsl_report.get("dsl_suite", {})
+        raw_cases = suite.get("cases", [])
+        before_total = int(suite.get("total_before", 0))
+        after_total = int(suite.get("total_after", 0))
+        generated_at = (
+            dsl_report.get("generated_at") or datetime.now(timezone.utc).isoformat()
+        )
+    else:
+        raw_cases = dsl_report.cases
+        before_total = int(dsl_report.total_before)
+        after_total = int(dsl_report.total_after)
+        generated_at = datetime.now(timezone.utc).isoformat()
+
     rule_matches = {name: 0 for name in peephole_bench.PR39_RULES}
     cases = []
-    for case in dsl_report.cases:
-        case_rule_matches = {name: int(count) for name, count in case.rule_hits.items()}
-        for name, count in case_rule_matches.items():
-            rule_matches[name] = rule_matches.get(name, 0) + count
+    for case in raw_cases:
+        if isinstance(case, dict):
+            case_name = case["name"]
+            before = int(case["before_total"])
+            after = int(case["after_total"])
+            saved = int(case["saved"])
+            saved_pct = float(case["saved_pct"])
+            changes = int(case["peephole_changes"])
+            raw_rule_matches = case.get("rule_hits", {})
+        else:
+            case_name = case.name
+            before = case.before_total
+            after = case.after_total
+            saved = case.saved
+            saved_pct = case.saved_pct
+            changes = case.peephole_changes
+            raw_rule_matches = case.rule_hits
+        case_rule_matches = {
+            name: int(count) for name, count in raw_rule_matches.items()
+        }
+        for rule_name, count in case_rule_matches.items():
+            rule_matches[rule_name] = rule_matches.get(rule_name, 0) + count
         cases.append(
             {
-                "case_id": case.name,
+                "case_id": case_name,
                 "description": "",
-                "peephole_off": {"instructions": case.before_total},
-                "peephole_on": {"instructions": case.after_total},
-                "reduced_instructions": case.saved,
-                "reduction_percent": case.saved_pct,
-                "changes": case.peephole_changes,
+                "peephole_off": {"instructions": before},
+                "peephole_on": {"instructions": after},
+                "reduced_instructions": saved,
+                "reduction_percent": saved_pct,
+                "changes": changes,
                 "rule_matches": case_rule_matches,
             }
         )
 
-    before = int(dsl_report.total_before)
-    saved = int(dsl_report.total_saved)
+    saved = before_total - after_total
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": generated_at,
         "metadata": {
             "python": platform.python_version(),
             "comparison": "DSL suite, optimizer disabled vs enabled",
         },
         "summary": {
             "case_count": len(cases),
-            "unchanged_cases": sum(
-                case.peephole_changes == 0 for case in dsl_report.cases
-            ),
-            "before_instructions": before,
-            "after_instructions": int(dsl_report.total_after),
+            "unchanged_cases": sum(int(case.get("changes", 0)) == 0 for case in cases),
+            "before_instructions": before_total,
+            "after_instructions": after_total,
             "reduced_instructions": saved,
-            "reduction_percent": round(100.0 * saved / before, 3) if before else 0.0,
-            "changes": sum(case.peephole_changes for case in dsl_report.cases),
+            "reduction_percent": (
+                round(100.0 * saved / before_total, 3) if before_total else 0.0
+            ),
+            "changes": sum(int(case.get("changes", 0)) for case in cases),
             "rule_matches": rule_matches,
         },
         "cases": cases,
@@ -307,6 +343,7 @@ def generate_html_report(
         "关闭表示跳过汇编窥孔优化，开启表示执行窥孔优化规则。"
     ),
     show_case_polarity: bool = True,
+    extra_environment_rows: Optional[Sequence[tuple[str, str]]] = None,
 ) -> str:
     """Render a comparison report using the existing ScratchV card/bar style."""
 
@@ -346,6 +383,10 @@ def generate_html_report(
           }
           .case-table th:last-child, .case-table td:last-child {
             width:32%; text-align:left; white-space:normal; overflow-wrap:anywhere;
+          }
+          .benchmark-section { margin:28px 0 36px; padding-top:4px; }
+          .benchmark-section > h2 {
+            color:#2d3748; border-top:2px solid #e2e8f0; padding-top:18px;
           }
           code { color:#2b6cb0; }
         </style>""",
@@ -428,6 +469,10 @@ def generate_html_report(
         environment_rows.append(
             f"<tr><td>优化器参考耗时（样例中位数之和）</td><td>{elapsed:.3f} ms</td></tr>"
         )
+    for label, value in extra_environment_rows or ():
+        environment_rows.append(
+            f"<tr><td>{_escape(label)}</td><td>{_escape(value)}</td></tr>"
+        )
     if show_case_polarity:
         environment_rows.append(
             f"<tr><td>正向样例 / 负向样例</td><td>"
@@ -448,6 +493,160 @@ def generate_html_report(
     return "\n".join(parts)
 
 
+def _cnn_report_payload(report: dict) -> tuple[dict, list[tuple[str, str]]]:
+    rules = report["peephole"]["total_matches"]
+    before = report["instructions"]["baseline"]
+    after = report["instructions"]["optimized"]
+    saved = report["instructions"]["saved"]
+    payload = {
+        "generated_at": report["generated_at"],
+        "metadata": {
+            "python": platform.python_version(),
+            "comparison": "standalone CNN, identical compiler parameters",
+        },
+        "summary": {
+            "case_count": 1,
+            "unchanged_cases": int(saved == 0),
+            "before_instructions": before,
+            "after_instructions": after,
+            "reduced_instructions": saved,
+            "reduction_percent": report["instructions"]["saved_percent"],
+            "changes": report["peephole"]["rule_applications"],
+            "rule_matches": rules,
+        },
+        "cases": [
+            {
+                "case_id": report["model"]["name"],
+                "description": "真实 standalone RV32IM 编译结果",
+                "peephole_off": {"instructions": before},
+                "peephole_on": {"instructions": after},
+                "reduced_instructions": saved,
+                "reduction_percent": report["instructions"]["saved_percent"],
+                "changes": report["peephole"]["rule_applications"],
+                "rule_matches": rules,
+            }
+        ],
+    }
+    parameters_equal = (
+        "是" if report["compiler_parameters_equal_except_peephole"] else "否"
+    )
+    rows = [
+        ("模型", report["model"]["path"]),
+        ("优化前代码大小", f'{report["code_size"]["baseline"]:,} B'),
+        ("优化后代码大小", f'{report["code_size"]["optimized"]:,} B'),
+        ("规则应用总次数", str(report["peephole"]["rule_applications"])),
+        ("fixed-point 迭代次数", str(report["peephole"]["fixed_point_iterations"])),
+        ("A/B 编译参数（除窥孔开关外）一致", parameters_equal),
+        (
+            "A/B 输入汇编哈希一致",
+            "是" if report["input_assembly_sha256"]["equal"] else "否",
+        ),
+        (
+            "baseline 机器码生成",
+            "是" if report["machine_code"]["baseline"]["success"] else "否",
+        ),
+        (
+            "optimized 机器码生成",
+            "是" if report["machine_code"]["optimized"]["success"] else "否",
+        ),
+        ("重定位校验", "是" if all(report["relocation_validation"].values()) else "否"),
+        (
+            "GP 修补校验",
+            (
+                "是"
+                if all(
+                    report["gp_patch_validation"][key]
+                    for key in ("baseline", "optimized")
+                )
+                else "否"
+            ),
+        ),
+    ]
+    return payload, rows
+
+
+def _render_benchmark_section(
+    report: dict,
+    section_title: str,
+    *,
+    comparison_note: str,
+    show_case_polarity: bool = True,
+    extra_environment_rows: Optional[Sequence[tuple[str, str]]] = None,
+) -> str:
+    rendered = generate_html_report(
+        report,
+        title=section_title,
+        comparison_note=comparison_note,
+        show_case_polarity=show_case_polarity,
+        extra_environment_rows=extra_environment_rows,
+    )
+    body = rendered.split("<body>", 1)[1].rsplit("</body>", 1)[0]
+    if "</h1>" in body:
+        body = body.split("</h1>", 1)[1]
+    footer = body.find('<div class="footer">')
+    if footer >= 0:
+        body = body[:footer]
+    return f'<section class="benchmark-section"><h2>{_escape(section_title)}</h2>{body}</section>'
+
+
+def generate_unified_html_report(
+    micro_report: dict,
+    dsl_report: Any,
+    cnn_report: dict,
+) -> str:
+    """Render micro, DSL and CNN results in one self-contained HTML page."""
+    dsl_payload = _dsl_report_payload(dsl_report)
+    cnn_payload, cnn_rows = _cnn_report_payload(cnn_report)
+    micro_page = generate_html_report(micro_report)
+    head = micro_page.split("<body>", 1)[0]
+    head = head.replace(
+        "<title>ScratchV 窥孔优化器 Benchmark</title>",
+        "<title>ScratchV 窥孔优化器统一 Benchmark</title>",
+        1,
+    )
+    generated_at = _escape(micro_report.get("generated_at", ""))
+    sections = [
+        _render_benchmark_section(
+            micro_report,
+            "14个微型规则案例",
+            comparison_note=(
+                "每个样例的关闭/开启结果均基于同一份输入汇编；"
+                "关闭表示跳过汇编窥孔优化，开启表示执行窥孔优化规则。"
+            ),
+        ),
+        _render_benchmark_section(
+            dsl_payload,
+            "23个 DSL 案例",
+            comparison_note=(
+                "每个 DSL 案例的关闭/开启结果均基于同一份输入汇编；"
+                "关闭表示跳过汇编窥孔优化，开启表示执行窥孔优化规则。"
+            ),
+            show_case_polarity=False,
+        ),
+        _render_benchmark_section(
+            cnn_payload,
+            "cnn.onnx standalone A/B",
+            comparison_note=(
+                "baseline 与 optimized 使用同一模型、MemoryPlan、workspace、权重布局和编译参数；"
+                "唯一变量是是否执行窥孔优化。"
+            ),
+            show_case_polarity=False,
+            extra_environment_rows=cnn_rows,
+        ),
+    ]
+    return "\n".join(
+        [
+            head,
+            "<body>",
+            "<h1>ScratchV 窥孔优化器统一 Benchmark</h1>",
+            f'<div class="subtitle">三类 Benchmark 独立统计 · 生成时间: {generated_at}</div>',
+            *sections,
+            f'<div class="footer">ScratchV 窥孔优化器报告 · {generated_at}</div>',
+            "</body></html>",
+        ]
+    )
+
+
 def generate_dsl_html_report(dsl_report: Any) -> str:
     """Render the 23-case DSL suite with the shared HTML renderer."""
     return generate_html_report(
@@ -461,7 +660,9 @@ def generate_dsl_html_report(dsl_report: Any) -> str:
     )
 
 
-def _print_summary(report: dict, json_path: Path, html_path: Path) -> None:
+def _print_summary(
+    report: dict, json_path: Path, html_path: Optional[Path] = None
+) -> None:
     summary = report["summary"]
     print("=" * 88)
     print("ScratchV Peephole On/Off Comparison")
@@ -474,7 +675,8 @@ def _print_summary(report: dict, json_path: Path, html_path: Path) -> None:
         f"({summary['reduction_percent']:.1f}%)"
     )
     print(f"JSON: {json_path}")
-    print(f"HTML: {html_path}")
+    if html_path is not None:
+        print(f"HTML: {html_path}")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -493,13 +695,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=Path("benchmark_reports"),
         help="Directory for JSON and HTML reports (default: benchmark_reports)",
     )
+    parser.add_argument(
+        "--unified",
+        action="store_true",
+        help="Render one unified HTML report from JSON inputs",
+    )
+    parser.add_argument("--micro-json", type=Path)
+    parser.add_argument("--dsl-json", type=Path)
+    parser.add_argument("--cnn-json", type=Path)
+    parser.add_argument("--output-html", type=Path)
     args = parser.parse_args(argv)
+
+    if args.unified:
+        if not all((args.micro_json, args.dsl_json, args.cnn_json, args.output_html)):
+            parser.error(
+                "--unified requires --micro-json, --dsl-json, --cnn-json and --output-html"
+            )
+        unified = generate_unified_html_report(
+            json.loads(args.micro_json.read_text(encoding="utf-8")),
+            json.loads(args.dsl_json.read_text(encoding="utf-8")),
+            json.loads(args.cnn_json.read_text(encoding="utf-8")),
+        )
+        args.output_html.parent.mkdir(parents=True, exist_ok=True)
+        args.output_html.write_text(unified, encoding="utf-8")
+        print(f"HTML: {args.output_html}")
+        return 0
 
     report = compare_cases(repeats=args.repeats)
     json_path = args.output_dir / "peephole_compare_html.json"
-    html_path = args.output_dir / "peephole_compare.html"
-    save_comparison(report, json_path, html_path)
-    _print_summary(report, json_path, html_path)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    _print_summary(report, json_path, None)
     return 0
 
 
