@@ -11,7 +11,7 @@
 - Add a separate-checkout comparison for scheduling-disabled source/machine code, register maps, spills and scalar execution results.
 - Preserve the unified CFG control targets and register-map statistics. Keep CI on `ubuntu-latest` and validate LLVM analysis capabilities without requiring a specific release.
 - API migration: `SchedInst` is immutable and recomputes def/use; `build_dag` rejects multiple regions; `machine_instrs_from_scheduled` rejects lossy conversions. Use `schedule_assembly` for complete assembly, and read the compiler report from `stats["schedule"]["report"]` instead of `warnings`.
-- Structured post-RA/pre-emission scheduling and Fast/BURR strategy selection remain future work; see `docs/topic-18/README.md`.
+- Structured post-RA/pre-emission scheduling and Fast/BURR strategy selection remain future work; see `docs/topics/18-指令调度器/README.md`.
 
 ## [0.3.0] — 2026-05-18
 

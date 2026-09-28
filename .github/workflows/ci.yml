@@ -147,7 +147,7 @@ jobs:
           done
           if [ -n "$missing" ]; then
             echo "::error::missing tools:$missing -- provision them on this runner as root; CI cannot install them (no passwordless sudo)"
-            echo "::notice::Ubuntu 22.04's default \`llvm\` package is 14, so \`llvm-mca-18\` needs the apt.llvm.org archive; the scheduler's expectations are calibrated to LLVM 18 (docs/topic-18/README.md)."
+            echo "::notice::Ubuntu 22.04's default \`llvm\` package is 14, so \`llvm-mca-18\` needs the apt.llvm.org archive; the scheduler's expectations are calibrated to LLVM 18 (docs/topics/18-指令调度器/README.md)."
             exit 1
           fi
           $PY -c "from scratchv.backend.llvm_mca import check_version; v = check_version('llvm-mca-18'); print(v); assert 'LLVM version 18.' in v, 'scheduler timing requires LLVM 18, got: ' + v"
@@ -361,7 +361,7 @@ jobs:
           done
           if [ -n "$missing" ]; then
             echo "::error::missing tools:$missing -- provision them on this runner as root; CI cannot install them (no passwordless sudo)"
-            echo "::notice::Ubuntu 22.04's default \`llvm\` package is 14, so \`llvm-mca-18\` needs the apt.llvm.org archive; the scheduler's expectations are calibrated to LLVM 18 (docs/topic-18/README.md)."
+            echo "::notice::Ubuntu 22.04's default \`llvm\` package is 14, so \`llvm-mca-18\` needs the apt.llvm.org archive; the scheduler's expectations are calibrated to LLVM 18 (docs/topics/18-指令调度器/README.md)."
             exit 1
           fi
           $PY -c "from scratchv.backend.llvm_mca import check_version; v = check_version('llvm-mca-18'); print(v); assert 'LLVM version 18.' in v, 'scheduler timing requires LLVM 18, got: ' + v"

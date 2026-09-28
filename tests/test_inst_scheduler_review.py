@@ -1,4 +1,4 @@
-"""Scheduler safety regressions; current behavior is documented in docs/topic-18/."""
+"""Scheduler safety regressions; current behavior is documented in docs/topics/18-指令调度器/."""
 
 from pathlib import Path
 
