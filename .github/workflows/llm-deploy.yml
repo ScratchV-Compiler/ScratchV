@@ -138,8 +138,14 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| 交付物 | 状态 |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          # scratchv/verification/ir_interpreter.py is not a probe but is the
+          # prerequisite for probe:small-transformer's criterion ("IR
+          # interpreter vs ORT"). It was a phantom dependency: referenced in
+          # seven places, scheduled nowhere, so nothing ever reported it
+          # missing. Listing it here is the whole point.
           for f in docs/llm-deploy-v1.0/W1/interfaces.md \
                    docs/llm-deploy-v1.0/W1/risks.md \
+                   scratchv/verification/ir_interpreter.py \
                    probes/w1_matmul_4x4/run.py \
                    probes/w1_tiny_transformer/run.py \
                    probes/w1_qwen3_export/run.py ; do
