@@ -67,11 +67,12 @@ def test_two_operand_scalar_branch(comparison, a, b_value, expected):
 def test_step_count_and_limit_map_to_original_instruction():
     case = make_case("loop_sum")
     interpreter = IRInterpreter(case.program)
-    result = interpreter.run({}, max_steps=37)
+    result = interpreter.run({}, max_steps=36)
     assert result.return_value == 10
-    assert result.executed_steps == 37
+    # Constant nonempty bounds skip the redundant first condition check.
+    assert result.executed_steps == 36
     with pytest.raises(IRExecutionError) as found:
-        interpreter.run({}, max_steps=4)
+        interpreter.run({}, max_steps=9)
     assert found.value.code == "StepLimitExceeded"
     assert (
         found.value.block_name,
@@ -101,6 +102,19 @@ def test_cross_block_loop_and_original_locations():
         and p.stage == "for-step"
         for p in origins
     )
+
+
+@pytest.mark.parametrize("start,end,step,expected", [
+    (0, 1, 1, 1), (0, 5, 2, 5), (3, 4, 1, 4),
+])
+def test_nonempty_loop_returns_last_body_value(start, end, step, expected):
+    b = builder()
+    i = b.for_loop(start, end, step)
+    result = b.add(i, b.make_const(1, D.INT32))
+    b.endfor()
+    b.ret(result)
+    assert verify_ir(b.program) == (True, [])
+    assert IRInterpreter(b.program).run({}).return_value == expected
 
 
 def test_collision_free_loop_names():

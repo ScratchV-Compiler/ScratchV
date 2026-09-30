@@ -212,10 +212,9 @@ def test_for_loop_is_normalized_and_detected():
     cfg = CFGBuilder().build(program)["main"]
     loops = detect_loops(cfg)
     assert len(loops) == 1
-    assert loops[0].header.startswith("for_hdr")
-    assert "for_body" in loops[0].body or any(
-        name.startswith("for_body") for name in loops[0].body
-    )
+    # The nonempty loop enters its body first, making it the natural header.
+    assert loops[0].header.startswith("for_body")
+    assert any(name.startswith("for_hdr") for name in loops[0].body)
 
 
 def test_machine_use_def_provider_uses_central_semantics():

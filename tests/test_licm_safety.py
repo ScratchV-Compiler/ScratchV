@@ -387,3 +387,109 @@ def test_reachable_error_remains_at_original_instruction():
         IRInterpreter(b.program).run({})
     assert exc.value.code == "NumericError"
     assert exc.value.instruction_index == 1
+
+
+@pytest.mark.parametrize("trips", [0, 4])
+def test_float_chain_hoists_when_first_iteration_is_guaranteed(trips):
+    x, y = Value("x"), Value("y")
+    b = builder(x, y)
+    slot = b.alloca(4)
+    b.store(slot, b.make_const(0.0))
+    b.for_loop(0, trips)
+    total = b.add(x, y)
+    product = b.mul(total, x)
+    b.store(slot, product)
+    b.endfor()
+    b.ret(b.load(slot))
+    inputs = {"x": np.array(2, dtype="float32"), "y": np.array(3, dtype="float32")}
+    compare(b, inputs, count=2 if trips else 0)
+    assert before_for(b, total) == bool(trips)
+    assert before_for(b, product) == bool(trips)
+    assert IRInterpreter(b.program).run(inputs).return_value == (10 if trips else 0)
+
+
+@pytest.mark.parametrize("operation", ["overflow", "division", "gather"])
+def test_guaranteed_runtime_error_is_preserved_after_hoisting(operation):
+    x = Value("x", shape=(2,))
+    index = Value("index", D.INT64)
+    b = builder(x, index)
+    b.for_loop(0, 4)
+    if operation == "overflow":
+        b.add(x, x)
+        data = np.full(2, np.finfo("float32").max, dtype="float32")
+    elif operation == "division":
+        b.div(x, b.make_const(0.0))
+        data = np.ones(2, dtype="float32")
+    else:
+        b.gather(x, index)
+        data = np.ones(2, dtype="float32")
+    b.endfor()
+    b.ret(b.make_const(1.0))
+    inputs = {"x": data, "index": np.array(2, dtype="int64")}
+    original = copy.deepcopy(b.program)
+    assert LICM().optimize(b.program) == 1
+    failures = []
+    for program in (original, b.program):
+        assert verify_ir(program)[0]
+        with pytest.raises(IRExecutionError) as exc:
+            IRInterpreter(program).run(inputs)
+        failures.append((exc.value.code, exc.value.opcode))
+    assert failures[0] == failures[1]
+
+
+@pytest.mark.parametrize("barrier", ["division", "load"])
+def test_guaranteed_proof_cannot_cross_prior_runtime_error(barrier):
+    x = Value("x")
+    b = builder(x)
+    slot = b.alloca(4, D.INT32)
+    iv = b.for_loop(0, 4)
+    if barrier == "division":
+        b.div(iv, b.make_const(0, D.INT32))
+    else:
+        b.load(slot)  # Uninitialized: must fail before the later SQRT.
+    root = b.sqrt(x)
+    b.endfor()
+    b.ret(b.make_const(1.0))
+    assert verify_ir(b.program)[0]
+    assert LICM().optimize(b.program) == 0
+    assert not before_for(b, root)
+    with pytest.raises(IRExecutionError) as exc:
+        IRInterpreter(b.program).run({"x": np.array(-1, dtype="float32")})
+    assert exc.value.opcode == (OpCode.DIV if barrier == "division" else OpCode.LOAD)
+
+
+def test_positive_loop_does_not_make_conditional_body_guaranteed():
+    flag, divisor = Value("flag"), Value("divisor")
+    b = builder(flag, divisor)
+    slot = b.alloca(4)
+    b.store(slot, b.make_const(0.0))
+    b.for_loop(0, 4)
+    b.br_compare(flag, ">", b.make_const(0.0), "then", "skip")
+    b.new_block("then")
+    b.store(slot, b.div(b.make_const(1.0), divisor))
+    b.br("merge")
+    b.new_block("skip")
+    b.br("merge")
+    b.new_block("merge")
+    b.endfor()
+    b.ret(b.load(slot))
+    inputs = {"flag": np.array(0, dtype="float32"), "divisor": np.array(0, dtype="float32")}
+    compare(b, inputs, count=0)
+    assert IRInterpreter(b.program).run(inputs).return_value == 0
+
+
+def test_guaranteed_inner_computation_stays_inside_zero_trip_outer_loop():
+    x = Value("x")
+    b = builder(x)
+    outer = b.for_loop(0, 0)
+    inner = b.for_loop(0, 4)
+    root = b.sqrt(x)
+    b.endfor()
+    b.endfor()
+    b.ret(b.make_const(1.0))
+    compare(b, {"x": np.array(-1, dtype="float32")}, count=1)
+    instructions = b.current_block.instructions
+    def position(value):
+        return next(i for i, inst in enumerate(instructions) if inst.dest is value)
+
+    assert position(outer) < position(root) < position(inner)

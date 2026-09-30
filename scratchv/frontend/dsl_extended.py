@@ -438,7 +438,13 @@ class ExtendedDSLParser(DSLParser):
         slot = self._slots.get(name)
         if slot is not None and name in self._initialized_slots:
             return self.builder.load(slot)
-        return super()._resolve(name)
+        known = name in self._vars
+        value = super()._resolve(name)
+        if not known and not value.is_constant:
+            # DSL identifiers first read before assignment are external inputs.
+            # Declare them in the IR as well as in the source name table.
+            self.builder.current_func.params.append(value)
+        return value
 
     def _current_block_terminated(self) -> bool:
         block = self.builder.current_block

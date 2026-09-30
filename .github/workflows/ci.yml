@@ -405,6 +405,7 @@ jobs:
           trap 'git worktree remove --force "$BASELINE"' EXIT
           python3.12 -m benchmarks.bench_dsl_diagnostics \
             --baseline-root "$BASELINE" \
+            --allow-input-registration \
             --allow-ir-change 016_if_simple.dsl \
             --allow-ir-change 017_while_sum.dsl \
             --allow-ir-change 018_nested_if.dsl \

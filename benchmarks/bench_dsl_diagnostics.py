@@ -60,6 +60,36 @@ def revision(root: Path) -> str | None:
         return None
 
 
+def dump_with_registered_inputs(program: Any) -> str:
+    """Add only missing external operand declarations for baseline comparison.
+
+    Render parameter names consistently across dump() versions while preserving
+    existing declarations and all instruction text, without mutation.
+    """
+    headers = {}
+    for function in getattr(program, "functions", []):
+        instructions = [i for b in function.blocks for i in b.instructions]
+        defined = {v.name for v in [*program.global_values, *function.params]}
+        defined.update(i.dest.name for i in instructions if i.dest is not None)
+        params = list(function.params)
+        for instruction in instructions:
+            for value in instruction.operands:
+                if not value.is_constant and value.name not in defined:
+                    params.append(value)
+                    defined.add(value.name)
+        headers[f"fun ${function.name}("] = (
+            "  params: " + ", ".join(f"${v.name}: {v.dtype.value}" for v in params) + "\n"
+            if params else ""
+        )
+    lines = []
+    for line in program.dump().splitlines(keepends=True):
+        if headers and line.startswith("  params: "):
+            continue
+        lines.append(line)
+        lines.append(headers.get(line.rstrip("\r\n"), ""))
+    return "".join(lines)
+
+
 def parse_worker(args: argparse.Namespace) -> dict:
     from scratchv.frontend import dsl_extended
 
@@ -78,10 +108,13 @@ def parse_worker(args: argparse.Namespace) -> dict:
         except Exception as exc:
             raise RuntimeError(f"{name}: {exc}") from exc
 
-    hashes = {
-        name: hashlib.sha256(parse_one(name, source).dump().encode("utf-8")).hexdigest()
-        for name, source in sources.items()
-    }
+    hashes, registered_hashes = {}, {}
+    for name, source in sources.items():
+        program = parse_one(name, source)
+        hashes[name] = hashlib.sha256(program.dump().encode("utf-8")).hexdigest()
+        registered_hashes[name] = hashlib.sha256(
+            dump_with_registered_inputs(program).encode("utf-8")
+        ).hexdigest()
 
     def batch() -> None:
         for name, source in sources.items():
@@ -92,6 +125,7 @@ def parse_worker(args: argparse.Namespace) -> dict:
         "root": str(args.worker_root), "revision": revision(args.worker_root),
         "parser_file": str(parser_file), "parser": "ExtendedDSLParser",
         "ir_hashes": hashes,
+        "registered_ir_hashes": registered_hashes,
         "case_hashes": {
             name: hashlib.sha256(source.encode("utf-8")).hexdigest()
             for name, source in sources.items()
@@ -201,6 +235,7 @@ def compare_parsing(
     current: dict,
     target: float,
     allowed_ir_changes: set[str] | None = None,
+    allow_input_registration: bool = False,
 ) -> dict:
     same_cases = baseline["case_hashes"] == current["case_hashes"]
     same_ir = baseline["ir_hashes"] == current["ir_hashes"]
@@ -210,7 +245,12 @@ def compare_parsing(
         if baseline["ir_hashes"].get(name) != current_hash
     )
     allowed = allowed_ir_changes or set()
-    unexpected_changes = sorted(set(changed_cases) - allowed)
+    registration_only = [
+        name for name in changed_cases
+        if baseline.get("registered_ir_hashes", {}).get(name) == current["ir_hashes"][name]
+    ]
+    allowed_registration = set(registration_only) if allow_input_registration else set()
+    unexpected_changes = sorted(set(changed_cases) - allowed - allowed_registration)
     ratio = current["median_s"] / baseline["median_s"]
     return {
         "baseline": baseline, "current": current, "same_cases": same_cases,
@@ -218,6 +258,8 @@ def compare_parsing(
         "target_met": ratio <= target,
         "ir_changed_cases": changed_cases,
         "allowed_ir_changes": sorted(allowed),
+        "input_registration_only_cases": registration_only,
+        "allow_input_registration": allow_input_registration,
         "unexpected_ir_changes": unexpected_changes,
     }
 
@@ -250,6 +292,7 @@ def build_report(args: argparse.Namespace) -> dict:
             current,
             args.max_parse_ratio,
             set(args.allow_ir_change),
+            args.allow_input_registration,
         )
         report["parsing"] = parsing
         if not parsing["same_cases"]:
@@ -294,6 +337,10 @@ def markdown_report(report: dict, *, include_examples: bool = True) -> str:
                 + ", ".join(parsing["ir_changed_cases"]),
                 "",
             ]
+        if parsing["allow_input_registration"]:
+            lines += ["Input declaration additions only: " + ", ".join(
+                parsing["input_registration_only_cases"]
+            ), ""]
     if "diagnostics" in report:
         lines += ["## Diagnostic acceptance and timings", "",
                   "Validation/rendering times are per operation (batch median divided by iterations). CLI runs are correctness checks, not timed.", "",
@@ -339,6 +386,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--iterations", type=positive_int, default=100)
     parser.add_argument("--max-parse-ratio", type=positive_float, default=1.5)
     parser.add_argument("--enforce-performance", action="store_true")
+    parser.add_argument(
+        "--allow-input-registration", action="store_true",
+        help="allow only adding declarations for existing implicit baseline inputs",
+    )
     parser.add_argument(
         "--allow-ir-change",
         action="append",

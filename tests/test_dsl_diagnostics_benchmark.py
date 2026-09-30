@@ -1,6 +1,7 @@
 """Exercise the Topic 9 report through its real subprocess interface."""
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -167,6 +168,45 @@ def test_expected_ir_change_can_be_allowed_for_one_named_case(tmp_path):
     assert report["parsing"]["ir_equal"] is False
     assert report["parsing"]["ir_changed_cases"] == ["valid.dsl"]
     assert report["parsing"]["unexpected_ir_changes"] == []
+
+
+@pytest.mark.parametrize("operation,allow_registration,exit_code", [
+    ("ADD", False, 1), ("ADD", True, 0), ("SUB", True, 1),
+])
+def test_input_registration_permission_preserves_instruction_checks(
+    tmp_path, operation, allow_registration, exit_code,
+):
+    baseline = tmp_path / "baseline"
+    for package in ("scratchv", "scratchv/frontend", "scratchv/ir"):
+        directory = baseline / package
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copyfile(ROOT / "scratchv/ir/types.py", baseline / "scratchv/ir/types.py")
+    # A legacy parser emits the same instruction body but leaves a/b undeclared.
+    (baseline / "scratchv/frontend/dsl_extended.py").write_text(
+        "from scratchv.ir.types import Program, Function, Instruction, OpCode, Value\n"
+        "class ExtendedDSLParser:\n"
+        "    def parse(self, source):\n"
+        "        program = Program()\n"
+        "        function = Function('main')\n"
+        "        program.add_function(function)\n"
+        "        block = function.new_block('entry')\n"
+        "        result = Value('v_1')\n"
+        f"        block.add(Instruction(OpCode.{operation}, result, [Value('a'), Value('b')]))\n"
+        "        block.add(Instruction(OpCode.RETURN, operands=[result]))\n"
+        "        return program\n",
+        encoding="utf-8",
+    )
+    options = ("--allow-input-registration",) if allow_registration else ()
+    result, report = run_report(tmp_path, "--baseline-root", str(baseline), *options)
+    assert result.returncode == exit_code, result.stderr
+    assert report["parsing"]["ir_equal"] is False
+    assert report["parsing"]["input_registration_only_cases"] == (
+        ["valid.dsl"] if operation == "ADD" else []
+    )
+    assert report["parsing"]["unexpected_ir_changes"] == (
+        ["valid.dsl"] if exit_code else []
+    )
 
 
 def test_html_escapes_diagnostic_source(tmp_path):

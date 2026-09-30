@@ -122,6 +122,29 @@ class HoistSafety:
     def is_safe(self, instr: Instruction) -> bool:
         return self._prove(instr) is not None
 
+    def can_hoist_when_guaranteed(self, instr: Instruction) -> bool:
+        """Allow pure runtime computations only with a must-execute proof.
+
+        This does not prove that the operation succeeds. LICM must separately
+        preserve execution and ordering before using this result. Memory and
+        control-flow instructions are excluded from the stateless kernels.
+        """
+        if instr.dest is None or instr.opcode not in KERNELS:
+            return False
+        try:
+            check_instruction(instr)
+            operands = [self.facts(v) for v in instr.operands]
+            if any(not facts.tensor for facts in operands):
+                return False
+            # Safe scalar constants already pass is_safe(). Keep known failing
+            # constant expressions at their source location for diagnostics.
+            return not (
+                instr.opcode in _SCALAR_OPS
+                and all(facts.constant is not None for facts in operands)
+            )
+        except (OpError, TypeError, ValueError, IndexError, OverflowError):
+            return False
+
     def _prove(self, instr):
         if instr.dest is None or instr.opcode not in KERNELS:
             # LOAD/STORE/ALLOCA and control flow have no stateless kernel.

@@ -239,11 +239,19 @@ def test_u39_a12_a17_collect_other_functions():
     assert found[-1].function_name == "empty"
 
 
-@pytest.mark.parametrize("nested", [False, True])
-def test_u42a_u42c_a15_a16_loop_zero_path(nested):
+@pytest.mark.parametrize("nested,empty_loop", [
+    (False, None), (False, 0), (True, None), (True, 0), (True, 1),
+])
+def test_u42a_u42c_a15_a16_loop_zero_path(nested, empty_loop):
     p = loop(nested)
+    if empty_loop is not None:
+        loops = [i for i in p.functions[0].blocks[0].instructions if i.opcode is O.FOR]
+        loops[empty_loop].attrs["end"] = loops[empty_loop].attrs["start"]
     assert verify_ir(p) == (True, [])
     p.functions[0].blocks[0].instructions[-1].operands = [V("x", D.INT32)]
+    if empty_loop is None:
+        assert verify_ir(p) == (True, [])
+        return
     found = issues(p, "def-before-use")
     assert len(found) == 1 and found[0].value_name == "x"
     assert found[0].block_name == "entry"

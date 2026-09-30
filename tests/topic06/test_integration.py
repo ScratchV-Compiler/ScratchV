@@ -6,6 +6,9 @@ import importlib.util
 import json
 from pathlib import Path
 
+import numpy as np
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CASE_DIR = ROOT / "tests" / "topic06" / "cases"
@@ -139,6 +142,32 @@ def test_interpreter_marks_control_flow_as_unsupported():
 
         assert result["status"] == "UNSUPPORTED"
         assert not result["success"]
+
+
+@pytest.mark.parametrize("name,hoists", [
+    ("loop_add_4", 1), ("loop_add_chain_4", 2), ("loop_relu_add_4", 2),
+])
+def test_loop_cases_verify_hoist_and_execute(name, hoists):
+    from scratchv.analysis.ir_verifier import verify_ir
+    from scratchv.frontend.dsl_extended import ExtendedDSLParser
+    from scratchv.optimizer.licm import LICM
+    from scratchv.verification.ir_interpreter import IRInterpreter
+
+    runner = _load_runner()
+    path = CASE_DIR / "loop" / f"{name}.dsl"
+    metadata = runner.load_metadata(path)
+    source = path.read_text(encoding="utf-8")
+    expected = metadata["expected_return"]
+    program = ExtendedDSLParser().parse(source)
+    valid, issues = verify_ir(program)
+    assert valid, issues
+    inputs = {key: np.asarray(value, dtype=np.float32) for key, value in metadata["inputs"].items()}
+    assert IRInterpreter(program).run(inputs).return_value == expected
+    # The pure dependency chain is invariant and executes on the first trip.
+    assert LICM().optimize(program) == hoists
+    valid, issues = verify_ir(program)
+    assert valid, issues
+    assert IRInterpreter(program).run(inputs).return_value == expected
 
 
 def test_runner_metadata_drives_independent_report_generation(tmp_path, monkeypatch):

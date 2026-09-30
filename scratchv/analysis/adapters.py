@@ -178,7 +178,10 @@ def _normalize_for_endfor(
             step_value = _const_int(fresh(f"for_step_{synthetic}"), step)
 
             emit(_load_const(iv, start), instr, "for-init")
-            emit(_br(header), instr, "for-init")
+            # Constant bounds prove whether the first iteration executes.
+            # Enter a nonempty loop directly to expose its mandatory first
+            # iteration to dominance analysis; empty loops retain the bypass.
+            emit(_br(body if start < end else header), instr, "for-init")
             emit(_label(header), instr, "for-test")
             emit(_br_if(iv, end_value, exit_label, body, cmp_op=">="), instr, "for-test")
             emit(_label(body), instr, "for-test")

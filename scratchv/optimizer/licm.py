@@ -1,4 +1,4 @@
-"""Move available, invariant and safely speculatable instructions before FOR.
+"""Move invariant instructions proven safe to speculate or certain to execute.
 
 Only structured loops contained in one IR block are transformed. Safety follows
 the checked IR semantics: purity alone does not permit speculative execution.
@@ -52,19 +52,36 @@ class LICM(OptimizationPass):
             available = self._available_before(program, func, block, i)
             hoisted, kept = [], []
             depth = 0
+            # Verified FOR bounds are constant i32 values with positive step.
+            # The straight-line prefix executes on the first iteration when
+            # start < end. Do not carry this proof past a retained instruction
+            # that may fail, affect memory, or change control flow.
+            guaranteed_prefix = instrs[i].attrs["start"] < instrs[i].attrs["end"]
             for instr in instrs[i + 1 : end]:
                 if instr.opcode == OpCode.FOR:
                     depth += 1
+                safe_to_speculate = depth == 0 and safety.is_safe(instr)
                 operands_available = all(
                     v.name in available
                     or (v.is_constant and v.name not in safety.definitions)
                     for v in instr.operands
                 )
-                if depth == 0 and operands_available and safety.is_safe(instr):
+                can_move = depth == 0 and operands_available and (
+                    safe_to_speculate
+                    or (guaranteed_prefix and safety.can_hoist_when_guaranteed(instr))
+                )
+                if can_move:
                     hoisted.append(instr)
                     available.add(instr.dest.name)
                 else:
                     kept.append(instr)
+                # Hoisted computations retain their relative order, including
+                # possible failures. A safe retained computation cannot prevent
+                # reaching the next instruction; all other retained operations
+                # stop the must-execute proof.
+                guaranteed_prefix = guaranteed_prefix and (
+                    can_move or safe_to_speculate
+                )
                 if instr.opcode == OpCode.ENDFOR:
                     depth -= 1
             # Rebuild once, preserving both dependency order and instruction

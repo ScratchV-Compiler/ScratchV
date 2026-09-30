@@ -272,16 +272,16 @@ def test_dsl_syntax_recovery_stops_before_ir(monkeypatch, tmp_path, capsys):
     assert target.read_bytes() == b"original"
 
 
-def test_dsl_implicit_inputs_strict_only_when_enabled(monkeypatch, tmp_path):
-    monkeypatch.setattr(CompilerDriver, "_generate_code", lambda *args: "code")
+def test_dsl_registered_inputs_pass_with_or_without_ir_verification(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(CompilerDriver, "_generate_code", lambda _, p: seen.append(p) or "code")
     source = "c = add(a, b)\nreturn c\n"
     for enabled in (False, True):
         driver = CompilerDriver(CompilerConfig(verify_ir=enabled))
         result = driver.compile("demo.dsl", str(tmp_path / "out.s"), dsl_source=source)
-        assert result.success is not enabled
-        assert not result.diagnostics
-        if enabled:
-            assert {i.value_name for i in result.ir_diagnostics} == {"a", "b"}
+        assert result.success, result.errors
+        assert not result.diagnostics and not result.ir_diagnostics
+        assert [v.name for v in seen[-1].functions[0].params] == ["a", "b"]
 
 
 def test_generic_pass_manager_has_no_ir_dependency():
@@ -295,17 +295,24 @@ def test_generic_pass_manager_has_no_ir_dependency():
     assert manager.run_pipeline("text").data == "text!"
 
 
-@pytest.mark.parametrize("source,missing", [
+@pytest.mark.parametrize("source,input_names", [
     ("if (a > b):\nc = add(a, b)\nelse:\nc = mul(a, b)\nendif\nreturn c\n", {"a", "b"}),
     ("while (i < 10):\nacc = add(acc, x)\nendwhile\nreturn acc\n", {"i", "acc", "x"}),
 ])
-def test_extended_dsl_keeps_real_external_input_diagnostics(source, missing):
+def test_extended_dsl_registers_inputs_and_rejects_missing_declarations(source, input_names):
     from scratchv.frontend.dsl_extended import ExtendedDSLParser
     program = ExtendedDSLParser().parse(source)
+    params = program.functions[0].params
+    assert {v.name for v in params} == input_names
+    assert len(params) == len(input_names)
+    assert verifier_module.verify_ir(program) == (True, [])
+    # Input declarations belong to the frontend; the verifier must still reject
+    # an IR whose declarations are missing, rather than guessing the inputs.
+    program.functions[0].params = []
     passed, diagnostics = verifier_module.verify_ir(program)
     assert not passed
     assert {d.rule for d in diagnostics} == {"def-before-use"}
-    assert {d.value_name for d in diagnostics} == missing
+    assert {d.value_name for d in diagnostics} == input_names
 
 
 def test_dsl_error_limit_still_reported_with_ir_enabled(tmp_path, capsys):
