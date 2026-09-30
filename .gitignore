@@ -6,6 +6,9 @@ build/
 *.s
 *.o
 *.ll
+# 模型默认不入库（体积）。确需入库的小文件用 `git add -f` 显式例外，例如
+# models/graph/cnn.onnx 和 models/graph/qwen3-0.6b-onnx/ 下的清单；
+# 那批权重本身（2.41GB）走 Release 资产，见 qwen3-0.6b-onnx/获取与校验.md。
 models/
 venv/
 .venv/
