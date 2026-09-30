@@ -1,0 +1,2 @@
+/models/qwen3-0.6b-onnx/*.onnx filter=lfs diff=lfs merge=lfs -text
+/models/qwen3-0.6b-onnx/*.data filter=lfs diff=lfs merge=lfs -text

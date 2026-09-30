@@ -7,8 +7,12 @@ build/
 *.o
 *.ll
 models/
+!/models/
+/models/*
+!/models/qwen3-0.6b-onnx/
 venv/
 .venv/
+.venv-qwen-export/
 .claude/
 .omo/
 scratchv.egg-info/
