@@ -173,6 +173,9 @@ class LLVMCodegen:
     def _emit_instruction(self, instr: Instruction) -> None:
         handler = getattr(self, f"_emit_{instr.opcode.value}", None)
         if handler is None:
+            if instr.opcode in (OpCode.SQRT, OpCode.REDUCE_MEAN, OpCode.GATHER,
+                               OpCode.SLICE, OpCode.UNSQUEEZE, OpCode.EXPAND):
+                raise ValueError(f"LLVM codegen does not support opcode: {instr.opcode.value}")
             ops = ' '.join(str(v.name) for v in instr.operands)
             self._p(f"  ; UNSUPPORTED: {instr.opcode.value} {ops}")
         else:

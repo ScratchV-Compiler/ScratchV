@@ -58,14 +58,17 @@ class OpcodeSpec:
 OPCODE_SPECS = {}
 for _ops, _count, _family in (
     ((OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV, OpCode.MATMUL, OpCode.DOT), 2, "T"),
-    ((OpCode.NEG, OpCode.RELU, OpCode.MAXPOOL, OpCode.RESHAPE, OpCode.TRANSPOSE), 1, "T"),
-    ((OpCode.EXP, OpCode.GELU, OpCode.SIGMOID, OpCode.SOFTMAX), 1, "F"),
+    ((OpCode.NEG, OpCode.RELU, OpCode.MAXPOOL, OpCode.RESHAPE, OpCode.TRANSPOSE,
+      OpCode.SLICE, OpCode.UNSQUEEZE, OpCode.EXPAND), 1, "T"),
+    ((OpCode.EXP, OpCode.GELU, OpCode.SIGMOID, OpCode.SOFTMAX,
+      OpCode.SQRT, OpCode.REDUCE_MEAN), 1, "F"),
     ((OpCode.CONV, OpCode.GEMM), 3, "T"),
 ):
     for _op in _ops:
         OPCODE_SPECS[_op] = OpcodeSpec(_count, _count, True, _family)
 OPCODE_SPECS.update({
     OpCode.CONCAT: OpcodeSpec(1, None, True, "T"),
+    OpCode.GATHER: OpcodeSpec(2, 2, True),
     OpCode.LOAD_CONST: OpcodeSpec(0, 0, True),
     OpCode.ALLOCA: OpcodeSpec(0, 0, True),
     OpCode.LOAD: OpcodeSpec(1, 1, True),
@@ -383,6 +386,12 @@ class IRVerifier:
                 error("loop-step-direction", "FOR step must be positive")
         if not valid_count:
             return
+        if inst.opcode == OpCode.GATHER:
+            data, indices = inst.operands
+            if indices.dtype not in _INTS:
+                error("gather-indices", "GATHER indices must be i32 or i64")
+            if inst.dest is not None and inst.dest.dtype != data.dtype:
+                error("gather-result", "GATHER result dtype must match data dtype")
         if inst.opcode == OpCode.BR_IF:
             if count == 1:
                 if isinstance(inst.operands[0].dtype, DataType) and inst.operands[0].dtype not in _INTS:

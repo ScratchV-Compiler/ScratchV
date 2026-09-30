@@ -328,8 +328,10 @@ def test_a06_a11_repeat_readonly_and_name_identity():
 # shared signature validation only once per distinct signature.
 _SIGNATURE_GROUPS = [
     ((O.ADD, O.SUB, O.MUL, O.DIV, O.MATMUL, O.DOT), (2, 2, True, "T")),
-    ((O.NEG, O.RELU, O.MAXPOOL, O.RESHAPE, O.TRANSPOSE), (1, 1, True, "T")),
-    ((O.EXP, O.GELU, O.SIGMOID, O.SOFTMAX), (1, 1, True, "F")),
+    ((O.NEG, O.RELU, O.MAXPOOL, O.RESHAPE, O.TRANSPOSE,
+      O.SLICE, O.UNSQUEEZE, O.EXPAND), (1, 1, True, "T")),
+    ((O.EXP, O.GELU, O.SIGMOID, O.SOFTMAX, O.SQRT, O.REDUCE_MEAN), (1, 1, True, "F")),
+    ((O.GATHER,), (2, 2, True, None)),
     ((O.CONV, O.GEMM), (3, 3, True, "T")),
     ((O.CONCAT,), (1, None, True, "T")),
     ((O.LOAD_CONST, O.ALLOCA, O.FOR), (0, 0, True, None)),
@@ -349,6 +351,8 @@ def signature_program(opcode, dtype=None):
         dtype = D.INT32 if opcode in (O.FOR, O.BR_IF) else D.FLOAT32
     minimum, _, has_dest, _ = _EXPECTED_SIGNATURES[opcode]
     operands = [literal(1, dtype, f"c{i}") for i in range(minimum)]
+    if opcode == O.GATHER:
+        operands[1] = literal(0, D.INT64, "index")
     dest = V("result", dtype) if has_dest else None
     inst = I(opcode, dest, operands, attrs={"value": 1, "start": 0, "end": 2, "step": 1})
     inst.target = "exit,exit" if opcode == O.BR_IF else "exit" if opcode == O.BR else None

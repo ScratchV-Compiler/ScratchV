@@ -44,6 +44,29 @@ class _NormalizedIRBlock:
     instructions: list[Instruction]
 
 
+@dataclass(frozen=True)
+class IRSourcePosition:
+    """Original instruction position, including a synthetic loop stage."""
+
+    block_name: str
+    instruction_index: int
+    stage: str = "instruction"
+
+
+@dataclass(frozen=True)
+class IRExecutionPlan:
+    """Shared loop lowering and source locations; does not modify the Function."""
+
+    blocks: tuple[_NormalizedIRBlock, ...]
+    origins: dict[int, IRSourcePosition]
+
+
+def normalize_ir(function: Function) -> IRExecutionPlan:
+    origins: dict[int, IRSourcePosition] = {}
+    stream = _normalize_for_endfor(function, origins)
+    return IRExecutionPlan(tuple(_partition_ir_stream(stream)), origins)
+
+
 # ---------------------------------------------------------------------------
 # IR helper constructors
 # ---------------------------------------------------------------------------
@@ -94,6 +117,7 @@ def _const_int(name: str, value: int) -> Value:
 
 def _normalize_for_endfor(
     function: Function,
+    origins: Optional[dict[int, IRSourcePosition]] = None,
 ) -> list[Instruction]:
     """Normalise FOR/ENDFOR before partitioning.
 
@@ -103,11 +127,35 @@ def _normalize_for_endfor(
     """
 
     flat: list[Instruction] = []
+    source = {}
+    reserved = {b.name for b in function.blocks}
+    reserved.update(v.name for v in function.params + function.locals)
     for block in function.blocks:
         flat.append(_label(block.name))
-        flat.extend(block.instructions)
+        for index, instr in enumerate(block.instructions):
+            flat.append(instr)
+            source[id(instr)] = IRSourcePosition(block.name, index)
+            reserved.update(v.name for v in instr.operands)
+            if instr.dest is not None:
+                reserved.add(instr.dest.name)
+
+    def fresh(name):
+        candidate, suffix = name, 0
+        while candidate in reserved:
+            suffix += 1
+            candidate = f"{name}_{suffix}"
+        reserved.add(candidate)
+        return candidate
 
     normalized: list[Instruction] = []
+
+    def emit(instruction, original, stage="instruction"):
+        normalized.append(instruction)
+        if origins is not None and id(original) in source:
+            location = source[id(original)]
+            origins[id(instruction)] = IRSourcePosition(
+                location.block_name, location.instruction_index, stage)
+
     loop_stack: list[dict[str, Any]] = []
     synthetic = 0
 
@@ -122,20 +170,18 @@ def _normalize_for_endfor(
             end = int(instr.attrs.get("end", 0))
             step = int(instr.attrs.get("step", 1))
 
-            header = f"for_hdr{synthetic}"
-            body = f"for_body{synthetic}"
-            exit_label = f"for_exit{synthetic}"
+            header = fresh(f"for_hdr{synthetic}")
+            body = fresh(f"for_body{synthetic}")
+            exit_label = fresh(f"for_exit{synthetic}")
 
-            end_value = _const_int(f"for_end_{synthetic}", end)
-            step_value = _const_int(f"for_step_{synthetic}", step)
+            end_value = _const_int(fresh(f"for_end_{synthetic}"), end)
+            step_value = _const_int(fresh(f"for_step_{synthetic}"), step)
 
-            normalized.append(_load_const(iv, start))
-            normalized.append(_br(header))
-            normalized.append(_label(header))
-            normalized.append(
-                _br_if(iv, end_value, exit_label, body, cmp_op=">=")
-            )
-            normalized.append(_label(body))
+            emit(_load_const(iv, start), instr, "for-init")
+            emit(_br(header), instr, "for-init")
+            emit(_label(header), instr, "for-test")
+            emit(_br_if(iv, end_value, exit_label, body, cmp_op=">="), instr, "for-test")
+            emit(_label(body), instr, "for-test")
 
             loop_stack.append(
                 {
@@ -151,12 +197,12 @@ def _normalize_for_endfor(
             if not loop_stack:
                 raise ValueError("ENDFOR without matching FOR")
             ctx = loop_stack.pop()
-            normalized.append(_add(ctx["iv"], ctx["iv"], ctx["step"]))
-            normalized.append(_br(ctx["header"]))
-            normalized.append(_label(ctx["exit"]))
+            emit(_add(ctx["iv"], ctx["iv"], ctx["step"]), instr, "for-step")
+            emit(_br(ctx["header"]), instr, "for-step")
+            emit(_label(ctx["exit"]), instr, "for-step")
             continue
 
-        normalized.append(instr)
+        emit(instr, instr)
 
     if loop_stack:
         raise ValueError("unterminated FOR loop")
@@ -217,8 +263,8 @@ class IRCFGAdapter:
 
     def __init__(self, function: Function):
         self._function = function
-        normalized = _normalize_for_endfor(function)
-        self._blocks = _partition_ir_stream(normalized)
+        self.execution_plan = normalize_ir(function)
+        self._blocks = self.execution_plan.blocks
         self.use_def_provider = IRUseDefProvider()
 
     @property
@@ -429,5 +475,8 @@ class MachineCFGAdapter:
 
 __all__ = [
     "IRCFGAdapter",
+    "IRExecutionPlan",
+    "IRSourcePosition",
+    "normalize_ir",
     "MachineCFGAdapter",
 ]

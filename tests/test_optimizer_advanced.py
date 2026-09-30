@@ -1,7 +1,7 @@
 """Tests for advanced optimizer passes: peephole, muladd_fusion, LICM."""
 
 from scratchv.ir.builder import IRBuilder
-from scratchv.ir.types import OpCode
+from scratchv.ir.types import DataType, OpCode, Value
 from scratchv.optimizer.peephole import IRPeepholeOptimizer
 from scratchv.optimizer.muladd_fusion import MulAddFusion
 from scratchv.optimizer.licm import LICM
@@ -105,11 +105,10 @@ class TestMulAddFusion:
 class TestLICM:
     def test_hoist_invariant(self):
         builder = IRBuilder()
-        builder.new_function("test")
+        a = Value("a", DataType.INT32, shape=(2,))
+        b = Value("b", DataType.INT32, shape=(2,))
+        builder.new_function("test", [a, b])
         builder.new_block("entry")
-
-        a = builder.make_value(name="a")
-        b = builder.make_value(name="b")
 
         # Loop with invariant mul inside
         iv = builder.for_loop(0, 10)  # FOR
@@ -138,7 +137,7 @@ class TestLICM:
 
         iv = builder.for_loop(0, 10)
         # This add depends on iv (loop variant) → should not be hoisted
-        builder.add(iv, builder.load_const(1.0))
+        builder.add(iv, builder.load_const(1, DataType.INT32))
         builder.endfor()
         builder.ret()
 

@@ -122,6 +122,18 @@ jobs:
             echo "JUnit XML and detailed test output are included in the test-reports artifact when tests run."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Run IR interpreter and LICM regressions
+        timeout-minutes: 5
+        env:
+          PYTHONHASHSEED: "0"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+        run: |
+          mkdir -p benchmark_reports
+          $PY -m pytest tests/test_ir_interpreter*.py tests/test_licm_safety.py -q \
+            --junit-xml=benchmark_reports/ir_interpreter_tests.xml
+
       - name: Prepare RISC-V test tools
         run: |
           set -euo pipefail
@@ -250,6 +262,7 @@ jobs:
           name: test-reports
           path: |
             benchmark_reports/test_results.xml
+            benchmark_reports/ir_interpreter_tests.xml
             benchmark_reports/tests.html
             benchmark_reports/ir_verifier_smoke/
             benchmark_reports/topic04_pass_manager.xml
@@ -336,6 +349,18 @@ jobs:
           $PY -m pip install markdown "pytest>=7,<10"
 
       # Topic 18 reports share the existing benchmark job and report artifact.
+      - name: IR interpreter execution benchmark
+        timeout-minutes: 5
+        env:
+          PYTHONHASHSEED: "0"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+        run: |
+          $PY -m benchmarks.bench_ir_interpreter --warmup 1 --repeats 3 \
+            --json-output benchmark_reports/ir_interpreter.json \
+            --markdown benchmark_reports/ir_interpreter.md
+
       - name: Prepare RISC-V scheduling execution tools
         run: |
           set -euo pipefail
@@ -611,6 +636,9 @@ jobs:
       - name: Write job summary
         if: always()
         run: |
+          if [ -f benchmark_reports/ir_interpreter.md ]; then
+            cat benchmark_reports/ir_interpreter.md >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f benchmark_reports/topic01_control_flow.md ]; then
             cat benchmark_reports/topic01_control_flow.md >> "$GITHUB_STEP_SUMMARY"
           fi

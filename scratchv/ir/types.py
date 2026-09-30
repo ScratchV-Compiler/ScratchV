@@ -22,6 +22,8 @@ class OpCode(enum.Enum):
     # Arithmetic (unary)
     NEG = "neg"
     EXP = "exp"
+    SQRT = "sqrt"
+    REDUCE_MEAN = "reduce_mean"
     # Memory / data
     LOAD = "load"
     STORE = "store"
@@ -48,6 +50,10 @@ class OpCode(enum.Enum):
     TRANSPOSE = "transpose"
     RESHAPE = "reshape"
     CONCAT = "concat"
+    GATHER = "gather"
+    SLICE = "slice"
+    UNSQUEEZE = "unsqueeze"
+    EXPAND = "expand"
 
     def is_arith(self) -> bool:
         return self in (OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV)
@@ -64,6 +70,8 @@ class OpCode(enum.Enum):
             OpCode.CONV,
             OpCode.GEMM,
             OpCode.SIGMOID,
+            OpCode.SQRT,
+            OpCode.REDUCE_MEAN,
         )
 
     def is_control_flow(self) -> bool:
@@ -182,7 +190,7 @@ class Program:
             lines.append(f"fun ${func.name}(")
             if func.params:
                 params_str = ", ".join(
-                    f"${{p.name}}: {p.dtype.value}"
+                    f"${p.name}: {p.dtype.value}"
                     for p in func.params)
                 lines.append("  params: " + params_str)
             for block in func.blocks:

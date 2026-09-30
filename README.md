@@ -45,6 +45,15 @@ make bench-ci       # 完整 CI 对比 (ScratchV vs LLVM)
 make bench-reports  # 生成 Dashboard + 优化历史
 ```
 
+### Program 的 NumPy 解释器
+
+```bash
+python -m examples.run_ir_interpreter --case matmul_add_softmax
+python -m benchmarks.bench_ir_interpreter --warmup 1 --repeats 3
+```
+
+接口、支持的操作和测试命令见 [IR 解释器使用说明](docs/llm-deploy-v1.0/W1/IR解释器-使用说明.md)。
+
 ---
 
 ## 📂 项目结构（核心目录）
