@@ -58,8 +58,8 @@ def test_gemm_weights_and_bias_are_global_definitions(tmp_path, initializer_is_i
 def test_scalar_initializer_keeps_its_numeric_type(tmp_path, dtype, onnx_type, ir_type):
     path = save_model(
         tmp_path, [], [],
-        [helper.make_tensor_value_info("scalar", onnx_type, [1])],
-        [numpy_helper.from_array(np.array([7], dtype=dtype), "scalar")],
+        [helper.make_tensor_value_info("scalar", onnx_type, [])],
+        [numpy_helper.from_array(np.array(7, dtype=dtype), "scalar")],
     )
     program = ONNXParser().parse(str(path))
     scalar, = program.global_values

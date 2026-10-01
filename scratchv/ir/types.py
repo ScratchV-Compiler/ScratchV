@@ -19,8 +19,13 @@ class OpCode(enum.Enum):
     SUB = "sub"
     MUL = "mul"
     DIV = "div"
+    POW = "pow"
     # Arithmetic (unary)
     NEG = "neg"
+    ABS = "abs"
+    COS = "cos"
+    SIN = "sin"
+    RECIPROCAL = "reciprocal"
     EXP = "exp"
     SQRT = "sqrt"
     REDUCE_MEAN = "reduce_mean"
@@ -28,6 +33,7 @@ class OpCode(enum.Enum):
     LOAD = "load"
     STORE = "store"
     LOAD_CONST = "load_const"
+    CAST = "cast"
     ALLOCA = "alloca"
     # Control flow
     FOR = "for"
@@ -56,7 +62,7 @@ class OpCode(enum.Enum):
     EXPAND = "expand"
 
     def is_arith(self) -> bool:
-        return self in (OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV)
+        return self in (OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV, OpCode.POW)
 
     def is_nn(self) -> bool:
         return self in (

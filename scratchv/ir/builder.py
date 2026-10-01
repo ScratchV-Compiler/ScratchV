@@ -106,6 +106,45 @@ class IRBuilder:
         self._emit(OpCode.EXP, dest, [val])
         return dest
 
+    def abs(self, val: Value) -> Value:
+        dest = self.make_value(dtype=val.dtype)
+        dest.shape = val.shape
+        self._emit(OpCode.ABS, dest, [val])
+        return dest
+
+    def cos(self, val: Value) -> Value:
+        dest = self.make_value(dtype=val.dtype)
+        dest.shape = val.shape
+        self._emit(OpCode.COS, dest, [val])
+        return dest
+
+    def sin(self, val: Value) -> Value:
+        dest = self.make_value(dtype=val.dtype)
+        dest.shape = val.shape
+        self._emit(OpCode.SIN, dest, [val])
+        return dest
+
+    def reciprocal(self, val: Value) -> Value:
+        dest = self.make_value(dtype=val.dtype)
+        dest.shape = val.shape
+        self._emit(OpCode.RECIPROCAL, dest, [val])
+        return dest
+
+    def cast(self, val: Value, dtype: DataType) -> Value:
+        """Convert elements; the result type is the conversion target."""
+        if not isinstance(dtype, DataType):
+            raise ValueError("CAST target must be a supported DataType")
+        dest = self.make_value(dtype=dtype)
+        dest.shape = val.shape
+        self._emit(OpCode.CAST, dest, [val])
+        return dest
+
+    def pow(self, base: Value, exponent: Value) -> Value:
+        """Broadcast power; exponent type may differ from the base/result type."""
+        dest = self.make_value(dtype=base.dtype)
+        self._emit(OpCode.POW, dest, [base, exponent])
+        return dest
+
     def load_const(
             self, val: float | int,
             dtype: DataType = DataType.FLOAT32,

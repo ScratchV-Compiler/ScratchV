@@ -29,6 +29,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          # ONNX before/after integration tests read the pinned PR #89 commit.
+          fetch-depth: 0
 
       - name: Set up Python for pull request
         if: github.event_name == 'pull_request'

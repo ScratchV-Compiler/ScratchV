@@ -58,10 +58,11 @@ class OpcodeSpec:
 OPCODE_SPECS = {}
 for _ops, _count, _family in (
     ((OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV, OpCode.MATMUL, OpCode.DOT), 2, "T"),
-    ((OpCode.NEG, OpCode.RELU, OpCode.MAXPOOL, OpCode.RESHAPE, OpCode.TRANSPOSE,
+    ((OpCode.NEG, OpCode.ABS, OpCode.RELU, OpCode.MAXPOOL, OpCode.RESHAPE, OpCode.TRANSPOSE,
       OpCode.SLICE, OpCode.UNSQUEEZE, OpCode.EXPAND), 1, "T"),
     ((OpCode.EXP, OpCode.GELU, OpCode.SIGMOID, OpCode.SOFTMAX,
-      OpCode.SQRT, OpCode.REDUCE_MEAN), 1, "F"),
+      OpCode.SQRT, OpCode.REDUCE_MEAN, OpCode.COS, OpCode.SIN,
+      OpCode.RECIPROCAL), 1, "F"),
     ((OpCode.CONV, OpCode.GEMM), 3, "T"),
 ):
     for _op in _ops:
@@ -69,6 +70,8 @@ for _ops, _count, _family in (
 OPCODE_SPECS.update({
     OpCode.CONCAT: OpcodeSpec(1, None, True, "T"),
     OpCode.GATHER: OpcodeSpec(2, 2, True),
+    OpCode.CAST: OpcodeSpec(1, 1, True),
+    OpCode.POW: OpcodeSpec(2, 2, True),
     OpCode.LOAD_CONST: OpcodeSpec(0, 0, True),
     OpCode.ALLOCA: OpcodeSpec(0, 0, True),
     OpCode.LOAD: OpcodeSpec(1, 1, True),
@@ -386,6 +389,9 @@ class IRVerifier:
                 error("loop-step-direction", "FOR step must be positive")
         if not valid_count:
             return
+        if inst.opcode == OpCode.POW:
+            if inst.dest is not None and inst.dest.dtype != inst.operands[0].dtype:
+                error("pow-result", "POW result dtype must match base dtype")
         if inst.opcode == OpCode.GATHER:
             data, indices = inst.operands
             if indices.dtype not in _INTS:

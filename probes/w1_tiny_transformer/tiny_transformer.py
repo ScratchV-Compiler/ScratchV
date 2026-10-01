@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Build a 2-layer Qwen3-shaped Transformer directly as an ONNX graph.
+"""Build a 2-layer Qwen3-inspired operator probe directly as an ONNX graph.
 
 No torch: the graph is assembled with onnx.helper and constant tensors are
 baked in as initializers. That keeps the probe runnable anywhere `onnx` is
 installed, and — more usefully for a probe — makes the op set explicit, which
 is exactly what we need to compare against ScratchV's ONNX parser.
 
-Architecture, mirroring Qwen3 (all sizes tiny so the probe iterates fast):
+Architecture (synthetic weights and tiny sizes for fast probe iteration):
 
     pre-norm, RMSNorm (no mean subtraction)
     RoPE, partial — only the first `rotary_dim` of head_dim is rotated
@@ -16,6 +16,8 @@ Architecture, mirroring Qwen3 (all sizes tiny so the probe iterates fast):
     additive causal mask, supplied as an input
 
 Fixed shapes throughout: [1, 256]. No dynamic axes, no KV cache.
+This is not an exact Qwen3 layer: Q/K RMSNorm is absent, and partial RoPE
+is used for Slice/Concat coverage. Real Qwen3-0.6B rotates the full head.
 """
 
 from __future__ import annotations
@@ -40,8 +42,8 @@ class Config:
     intermediate: int = 192
     seq: int = 256
     rope_theta: float = 10000.0
-    # Fraction of head_dim that RoPE rotates. Qwen3 uses partial RoPE; 0.5 on a
-    # 16-wide head rotates 8 dims, enough to exercise the slice/concat path.
+    # Rotate 8 of 16 dims to exercise the slice/concat path in this probe.
+    # This deliberate test configuration differs from Qwen3's full-head RoPE.
     partial_rotary: float = 0.5
     eps: float = 1e-6
     seed: int = 0

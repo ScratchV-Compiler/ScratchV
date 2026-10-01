@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
+
 from scratchv.ir.types import DataType, Value, Program
 from scratchv.ir.builder import IRBuilder
 
@@ -20,6 +27,13 @@ class ONNXParser:
     def __init__(self):
         self.builder = IRBuilder()
         self._value_map: dict[str, Value] = {}
+        # Pass these arrays to IRInterpreter.run(initializers=...). Program
+        # keeps typed global definitions; the execution API binds their data.
+        self.initializers: dict[str, np.ndarray] = {}
+        self._tensor_info = {}
+        self._producers = {}
+        self._constant_cache = {}
+        self._base_dir = ""
 
     def parse(self, model_path: str) -> Program:
         """Parse an ONNX model file and return an IR Program."""
@@ -31,8 +45,46 @@ class ONNXParser:
                 "  pip install onnx"
             )
 
-        model = onnx.load(model_path)
+        self.builder = IRBuilder()
+        self._value_map = {}
+        self.initializers = {}
+        self._tensor_info = {}
+        self._producers = {}
+        self._constant_cache = {}
+        self._base_dir = str(Path(model_path).resolve().parent)
+        # Inspect/infer the graph before materializing external weights. This
+        # avoids serializing a >2 GiB protobuf just to infer tensor shapes.
+        model = onnx.load(model_path, load_external_data=False)
+        domains = sorted({node.domain for node in model.graph.node
+                          if node.domain not in ("", "ai.onnx")})
+        if domains:
+            raise ONNXParseError(f"Unsupported ONNX domains: {', '.join(domains)}")
+        missing = sorted({
+            node.op_type for node in model.graph.node
+            if not hasattr(self, f"_handle_{node.op_type.lower()}")
+        })
+        if missing:
+            raise ONNXParseError(f"Unsupported ONNX op types: {', '.join(missing)}")
+        try:
+            model = onnx.shape_inference.infer_shapes(model, strict_mode=True)
+        except onnx.shape_inference.InferenceError as exc:
+            raise ONNXParseError(f"ONNX shape inference failed: {exc}") from exc
         graph = model.graph
+        self._tensor_info = {
+            value.name: value.type.tensor_type
+            for value in [*graph.input, *graph.value_info, *graph.output]
+        }
+        # Globals/parameters retain ONNX names, while builder temporaries use
+        # v_N. Reserve the entire graph before emitting anything, including
+        # Constant nodes encountered later, so SSA names cannot collide.
+        names = {value.name for value in [*graph.input, *graph.initializer,
+                                          *graph.value_info, *graph.output]}
+        names.update(name for node in graph.node for name in [*node.input, *node.output])
+        self.builder._name_counter = max(
+            (int(name[2:]) for name in names
+             if name.startswith("v_") and name[2:].isascii() and name[2:].isdecimal()),
+            default=0,
+        )
 
         # Create IR function from ONNX graph
         func_name = graph.name or "main"
@@ -41,26 +93,8 @@ class ONNXParser:
 
         # Map ONNX initializers (constants) to IR values
         for init in graph.initializer:
-            arr = onnx.numpy_helper.to_array(init)
-            dtype = DataType.from_onnx(init.data_type)
-            val = self.builder.make_value(name=init.name, dtype=dtype)
-            if arr.size == 1:
-                val = self.builder.make_value(
-                    name=init.name, dtype=dtype, is_constant=True,
-                    const_value=arr.item(),
-                )
-            # Emit a load_const for scalar initializers
-            if arr.size == 1:
-                self.builder.load_const(arr.item(), dtype)
-            else:
-                # Multi-element tensor: retain its element type and shape.
-                val.is_constant = False
-                val.shape = tuple(arr.shape)
-            # Initializers are model-owned definitions, not function inputs.
-            # Register the same Value used by operands in the returned IR;
-            # the parser's private lookup table alone is not a definition.
-            self.builder.program.global_values.append(val)
-            self._value_map[init.name] = val
+            arr = onnx.numpy_helper.to_array(init, base_dir=self._base_dir)
+            self._bind_constant(init.name, arr)
 
         # Map graph inputs to function params
         for inp in graph.input:
@@ -68,7 +102,7 @@ class ONNXParser:
                 continue  # already defined as initializer
             dtype = DataType.FLOAT32
             if inp.type.tensor_type.elem_type:
-                dtype = DataType.from_onnx(inp.type.tensor_type.elem_type)
+                dtype = self._dtype(inp.type.tensor_type.elem_type)
             val = self.builder.make_value(name=inp.name, dtype=dtype)
             # Infer shape from ONNX type
             shape_dims = list(inp.type.tensor_type.shape.dim)
@@ -96,6 +130,8 @@ class ONNXParser:
     def _translate_node(self, node, output_names: set[str]) -> None:
         """Translate a single ONNX node to IR instructions."""
         op_type = node.op_type
+        if node.domain not in ("", "ai.onnx"):
+            raise ONNXParseError(f"Unsupported ONNX domain: {node.domain}")
         inputs = [self._get_value(name) for name in node.input if name]
         outputs = node.output
 
@@ -103,12 +139,23 @@ class ONNXParser:
         if handler is None:
             raise ONNXParseError(f"Unsupported ONNX op type: {op_type}")
 
+        start = len(self.builder.current_block.instructions)
         handler(node, inputs, outputs)
+        for instruction in self.builder.current_block.instructions[start:]:
+            if instruction.dest is not None:
+                self._producers[instruction.dest.name] = instruction
+        for name in outputs:
+            info = self._tensor_info.get(name)
+            if info is not None:
+                value = self._value_map[name]
+                if info.elem_type:
+                    value.dtype = self._dtype(info.elem_type)
+                if all(dim.HasField("dim_value") for dim in info.shape.dim):
+                    value.shape = tuple(dim.dim_value for dim in info.shape.dim)
 
     def _get_value(self, name: str) -> Value:
         if name not in self._value_map:
-            val = self.builder.make_value(name=name)
-            self._value_map[name] = val
+            raise ONNXParseError(f"ONNX input has no preceding definition: {name}")
         return self._value_map[name]
 
     def _define_outputs(self, outputs: list[str],
@@ -120,35 +167,131 @@ class ONNXParser:
             self._value_map[name] = value
         return value
 
+    @staticmethod
+    def _attributes(node) -> dict:
+        from onnx import helper
+        return {attr.name: helper.get_attribute_value(attr) for attr in node.attribute}
+
+    @staticmethod
+    def _dtype(elem_type: int) -> DataType:
+        if elem_type not in (1, 6, 7, 11):
+            raise ONNXParseError(f"Unsupported ONNX element type: {elem_type}")
+        return DataType.from_onnx(elem_type)
+
+    def _bind_constant(self, name: str, data) -> Value:
+        from onnx import helper
+        dtype = self._dtype(helper.np_dtype_to_tensor_dtype(data.dtype))
+        value = self.builder.make_value(name=name, dtype=dtype,
+                                        is_constant=data.ndim == 0,
+                                        const_value=data.item() if data.ndim == 0 else None)
+        value.shape = tuple(data.shape)
+        self.builder.program.global_values.append(value)
+        self.initializers[name] = data
+        self._value_map[name] = value
+        if data.ndim == 0:
+            self.builder.load_const(data.item(), dtype)
+        return value
+
+    def _constant_array(self, value: Value):
+        """Resolve only shape/axis dependencies, not whole-model constant folding.
+
+        Exporters encode these as Constant -> Cast/Abs/Reshape chains. Keep
+        computed values separate from initializer bindings: intermediate IR
+        definitions are not globals accepted by IRInterpreter.run().
+        """
+        import numpy as np
+        from scratchv.verification.ir_numpy_ops import DTYPES, OpError, compute
+
+        if value.name in self.initializers:
+            return self.initializers[value.name]
+        if value.name in self._constant_cache:
+            return self._constant_cache[value.name]
+        if value.is_constant:
+            return np.asarray(value.const_value, dtype=DTYPES[value.dtype])
+        instruction = self._producers.get(value.name)
+        allowed = {"cast", "abs", "reshape", "concat", "unsqueeze", "transpose",
+                   "slice", "gather", "add", "sub", "mul", "div", "neg", "expand"}
+        if instruction is None or instruction.opcode.value not in allowed:
+            raise ONNXParseError(
+                f"Expected a constant integer vector for shape/axes: {value.name}")
+        operands = [self._constant_array(operand) for operand in instruction.operands]
+        if any(data.size > 4096 for data in operands):
+            raise ONNXParseError("Shape/axis constant expression exceeds 4096 elements")
+        try:
+            if instruction.opcode.value == "expand":
+                requested = instruction.attrs["shape"]
+                # Python integers avoid int64 product overflow, and the actual
+                # broadcast shape can be larger than the requested shape. The
+                # first guard also avoids NumPy's platform-sized shape limit.
+                if (math.prod(requested) > 4096 or math.prod(
+                        np.broadcast_shapes(operands[0].shape, requested)) > 4096):
+                    raise ONNXParseError("Shape/axis constant expression exceeds 4096 elements")
+            result = compute(instruction, operands)
+        except (OpError, ValueError, TypeError, FloatingPointError, OverflowError) as exc:
+            raise ONNXParseError(f"Invalid shape/axis constant {value.name}: {exc}") from exc
+        self._constant_cache[value.name] = result
+        return result
+
+    def _constant_ints(self, value: Value) -> tuple[int, ...]:
+        data = self._constant_array(value)
+        if data.ndim != 1 or data.dtype.kind not in "iu":
+            raise ONNXParseError(
+                f"Expected a constant integer vector for shape/axes: {value.name}"
+            )
+        return tuple(int(item) for item in data)
+
     # --- Operator handlers ---
+
+    def _handle_constant(self, node, inputs, outputs):
+        import numpy as np
+        from onnx import numpy_helper
+        attrs = self._attributes(node)
+        if len(attrs) != 1 or len(outputs) != 1 or inputs:
+            raise ONNXParseError("Constant requires one value attribute and one output")
+        key, value = next(iter(attrs.items()))
+        if key == "value":
+            data = numpy_helper.to_array(value, base_dir=self._base_dir)
+        elif key in ("value_int", "value_ints"):
+            data = np.asarray(value, dtype=np.int64)
+        elif key in ("value_float", "value_floats"):
+            data = np.asarray(value, dtype=np.float32)
+        else:
+            raise ONNXParseError(f"Unsupported Constant attribute: {key}")
+        self._bind_constant(outputs[0], data)
+
+    def _handle_identity(self, node, inputs, outputs):
+        self._define_outputs(outputs, inputs[0])
+
+    def _handle_cast(self, node, inputs, outputs):
+        attrs = self._attributes(node)
+        if set(attrs) != {"to"}:
+            raise ONNXParseError("Cast supports only the numeric 'to' attribute")
+        self._define_outputs(outputs, self.builder.cast(inputs[0], self._dtype(attrs["to"])))
+
+    def _handle_abs(self, node, inputs, outputs):
+        self._define_outputs(outputs, self.builder.abs(inputs[0]))
+
+    def _handle_cos(self, node, inputs, outputs):
+        self._define_outputs(outputs, self.builder.cos(inputs[0]))
+
+    def _handle_sin(self, node, inputs, outputs):
+        self._define_outputs(outputs, self.builder.sin(inputs[0]))
+
+    def _handle_pow(self, node, inputs, outputs):
+        self._define_outputs(outputs, self.builder.pow(inputs[0], inputs[1]))
+
+    def _handle_reciprocal(self, node, inputs, outputs):
+        self._define_outputs(outputs, self.builder.reciprocal(inputs[0]))
 
     def _handle_add(self, node, inputs: list[Value],
                     outputs: list[str]) -> None:
-        a, b = inputs[0], inputs[1]
-        if a.is_constant and b.is_constant:
-            assert a.const_value is not None
-            assert b.const_value is not None
-            result = self.builder.make_value(
-                is_constant=True,
-                const_value=a.const_value + b.const_value,
-            )
-        else:
-            result = self.builder.add(a, b)
-        self._define_outputs(outputs, result)
+        # Preserve per-operation rounding and integer width. Shape constants
+        # are evaluated lazily by _constant_array using these same IR kernels.
+        self._define_outputs(outputs, self.builder.add(inputs[0], inputs[1]))
 
     def _handle_mul(self, node, inputs: list[Value],
                     outputs: list[str]) -> None:
-        a, b = inputs[0], inputs[1]
-        if a.is_constant and b.is_constant:
-            assert a.const_value is not None
-            assert b.const_value is not None
-            result = self.builder.make_value(
-                is_constant=True,
-                const_value=a.const_value * b.const_value,
-            )
-        else:
-            result = self.builder.mul(a, b)
-        self._define_outputs(outputs, result)
+        self._define_outputs(outputs, self.builder.mul(inputs[0], inputs[1]))
 
     def _handle_sub(self, node, inputs: list[Value],
                     outputs: list[str]) -> None:
@@ -170,10 +313,12 @@ class ONNXParser:
     def _handle_matmul(self, node, inputs: list[Value],
                        outputs: list[str]) -> None:
         a, b = inputs[0], inputs[1]
-        m = a.shape[0] if len(a.shape) > 0 else 1
-        k = a.shape[1] if len(a.shape) > 1 else 1
-        n = b.shape[1] if len(b.shape) > 1 else 1
-        result = self.builder.matmul(a, b, m, n, k)
+        if len(a.shape) == len(b.shape) == 2 and all(d > 0 for d in a.shape + b.shape):
+            result = self.builder.matmul(a, b, a.shape[0], b.shape[1], a.shape[1])
+        else:
+            # Batched/vector ONNX MatMul uses NumPy broadcasting semantics.
+            # m/n/k describe only the legacy 2-D/flattened-matrix contract.
+            result = self.builder.matmul(a, b)
         self._define_outputs(outputs, result)
 
     def _handle_gelu(self, node, inputs: list[Value],
@@ -250,10 +395,50 @@ class ONNXParser:
 
     def _handle_reshape(self, node, inputs: list[Value],
                         outputs: list[str]) -> None:
-        # The second input contains the target shape
-        shape: tuple[int, ...] = ()
-        if len(inputs) > 1 and inputs[1].is_constant:
-            # shape is a constant — extract it from attrs
-            shape = inputs[1].shape
+        if self._attributes(node).get("allowzero", 0):
+            raise ONNXParseError("Reshape allowzero=1 is not supported by the IR")
+        shape = self._constant_ints(inputs[1])
         result = self.builder.reshape(inputs[0], shape)
         self._define_outputs(outputs, result)
+
+    def _handle_gather(self, node, inputs, outputs):
+        axis = self._attributes(node).get("axis", 0)
+        self._define_outputs(outputs, self.builder.gather(inputs[0], inputs[1], axis))
+
+    def _handle_sqrt(self, node, inputs, outputs):
+        self._define_outputs(outputs, self.builder.sqrt(inputs[0]))
+
+    def _handle_reducemean(self, node, inputs, outputs):
+        attrs = self._attributes(node)
+        axes = self._constant_ints(inputs[1]) if len(inputs) > 1 else attrs.get("axes")
+        if not axes and attrs.get("noop_with_empty_axes", 0):
+            self._define_outputs(outputs, inputs[0])
+        else:
+            self._define_outputs(outputs, self.builder.reduce_mean(
+                inputs[0], axes, bool(attrs.get("keepdims", 1))))
+
+    def _handle_transpose(self, node, inputs, outputs):
+        self._define_outputs(outputs, self.builder.transpose(
+            inputs[0], self._attributes(node).get("perm")))
+
+    def _handle_concat(self, node, inputs, outputs):
+        self._define_outputs(outputs, self.builder.concat(
+            inputs, self._attributes(node)["axis"]))
+
+    def _handle_slice(self, node, inputs, outputs):
+        attrs = self._attributes(node)
+        # Preserve optional input positions: steps may be present without axes.
+        for index, key in enumerate(("starts", "ends", "axes", "steps"), start=1):
+            if len(node.input) > index and node.input[index]:
+                attrs[key] = self._constant_ints(self._get_value(node.input[index]))
+        self._define_outputs(outputs, self.builder.slice(
+            inputs[0], attrs["starts"], attrs["ends"], attrs.get("axes"), attrs.get("steps")))
+
+    def _handle_unsqueeze(self, node, inputs, outputs):
+        axes = (self._constant_ints(inputs[1]) if len(inputs) > 1
+                else self._attributes(node)["axes"])
+        self._define_outputs(outputs, self.builder.unsqueeze(inputs[0], axes))
+
+    def _handle_expand(self, node, inputs, outputs):
+        self._define_outputs(outputs, self.builder.expand(
+            inputs[0], self._constant_ints(inputs[1])))

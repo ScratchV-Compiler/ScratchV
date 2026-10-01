@@ -2,10 +2,12 @@
 
 Axes use Python-style negative indexing. REDUCE_MEAN with omitted/empty axes
 reduces all dimensions. RESHAPE zeros copy input dimensions (allowzero=False).
-SLICE uses clamped Python slice bounds; UNSQUEEZE axes refer to the output rank.
+SLICE uses ONNX bounds clamping; UNSQUEEZE axes refer to the output rank.
 EXPAND computes the broadcast shape of the input and the requested shape.
 GELU uses the tanh approximation. CONV is NCHW, group=1, dilation=1; MAXPOOL
 accepts NCHW/CHW with no padding. Unsupported semantic attributes are rejected.
+CAST preserves ONNX integer narrowing (discard high bits); undefined float-to-int
+conversions and nonfinite numeric results fail. ABS and integer POW reject overflow.
 """
 
 from __future__ import annotations
@@ -164,6 +166,9 @@ def check_instruction(instr: Instruction):
         OpCode.SOFTMAX,
         OpCode.EXP,
         OpCode.SQRT,
+        OpCode.COS,
+        OpCode.SIN,
+        OpCode.RECIPROCAL,
         OpCode.REDUCE_MEAN,
     ) and instr.dest.dtype not in (DataType.FLOAT32, DataType.FLOAT64):
         raise OpError(
@@ -233,6 +238,98 @@ def negate(xs, attrs, dtype):
 @kernel(OpCode.EXP)
 def exponent(xs, attrs, dtype):
     return np.exp(xs[0])
+
+
+@kernel(OpCode.ABS)
+def absolute(xs, attrs, dtype):
+    x = xs[0]
+    if np.issubdtype(dtype, np.integer) and np.any(x == np.iinfo(dtype).min):
+        raise OpError("NumericError", "ABS integer overflow")
+    return np.abs(x)
+
+
+@kernel(OpCode.COS)
+def cosine(xs, attrs, dtype):
+    return np.cos(xs[0])
+
+
+@kernel(OpCode.SIN)
+def sine(xs, attrs, dtype):
+    return np.sin(xs[0])
+
+
+@kernel(OpCode.RECIPROCAL)
+def reciprocal(xs, attrs, dtype):
+    if np.any(xs[0] == 0):
+        raise OpError("NumericError", "RECIPROCAL division by zero")
+    return np.reciprocal(xs[0])
+
+
+def _float_to_integer(x, dtype):
+    """Truncate, then check exact power-of-two bounds before NumPy casts.
+
+    Comparing against i64.max converts it to 2**63 in float64 and would admit
+    an out-of-range endpoint; the exclusive upper bound avoids that bug.
+    """
+    if not np.isfinite(x).all():
+        raise OpError("NumericError", "cannot convert nonfinite data to integer")
+    truncated = np.trunc(x)
+    bound = 1 << (np.iinfo(dtype).bits - 1)
+    if np.any(truncated < -bound) or np.any(truncated >= bound):
+        raise OpError("NumericError", "float-to-integer conversion out of range")
+    return truncated.astype(dtype)
+
+
+@kernel(OpCode.CAST)
+def cast(xs, attrs, dtype):
+    x = xs[0]
+    if np.issubdtype(x.dtype, np.floating) and np.issubdtype(dtype, np.integer):
+        return _float_to_integer(x, dtype)
+    # ONNX defines integer narrowing by dropping high bits, not saturation.
+    return x.astype(dtype)
+
+
+def _bounded_integer_power(base, exponent, minimum, maximum):
+    """Exact exponentiation with bounded intermediates, including i64 inputs."""
+    negative = base < 0 and exponent % 2 != 0
+    limit = -minimum if negative else maximum
+    result, factor = 1, abs(base)
+    while exponent:
+        if exponent & 1:
+            result *= factor
+            if result > limit:
+                raise OpError("NumericError", "POW integer overflow")
+        exponent >>= 1
+        if exponent:
+            factor *= factor
+            if factor > limit:
+                raise OpError("NumericError", "POW integer overflow")
+    return -result if negative else result
+
+
+@kernel(OpCode.POW)
+def power(xs, attrs, dtype):
+    base, exponent = np.broadcast_arrays(*xs)
+    if np.any((base == 0) & (exponent < 0)):
+        raise OpError("NumericError", "POW zero base with negative exponent")
+    if np.issubdtype(dtype, np.floating):
+        # NumPy can promote f32 with i64/f64 exponent to f64. ONNX output
+        # always retains the base dtype; do not cast the exponent prematurely.
+        return np.power(base, exponent).astype(dtype)
+    bounds = np.iinfo(dtype)
+    result = np.empty(base.shape, dtype=dtype)
+    for index in np.ndindex(base.shape):
+        a, b = int(base[index]), exponent[index].item()
+        if not np.isfinite(b):
+            raise OpError("NumericError", "POW requires a finite exponent")
+        if b >= 0 and int(b) == b:
+            result[index] = _bounded_integer_power(a, int(b), bounds.min, bounds.max)
+        else:
+            # Fractional/negative powers use real arithmetic and truncate to
+            # the integer base type, rejecting invalid domains and overflow.
+            value = np.float_power(np.float64(a), b)
+            result[index] = _float_to_integer(np.asarray(value), dtype)
+    return result
 
 
 @kernel(OpCode.SQRT)
@@ -325,6 +422,24 @@ def slice_tensor(xs, attrs, dtype):
     steps = attrs.get("steps", (1,) * count)
     slices = [slice(None)] * x.ndim
     for a, start, end, step in zip(selected, attrs["starts"], attrs["ends"], steps):
+        dimension = x.shape[a]
+        if dimension == 0:
+            slices[a] = slice(0, 0)
+            continue
+        # ONNX clamps negative-step starts to [0, dim-1], whereas Python
+        # permits a normalized start of -1 (which produces an empty slice).
+        start = start + dimension if start < 0 else start
+        end = end + dimension if end < 0 else end
+        if step > 0:
+            start = max(0, min(dimension, start))
+            end = max(0, min(dimension, end))
+        else:
+            start = max(0, min(dimension - 1, start))
+            end = max(-1, min(dimension - 1, end))
+            # Python interprets literal -1 relative to the array again.
+            # None represents the exclusive position before its first item.
+            if end == -1:
+                end = None
         slices[a] = slice(start, end, step)
     return x[tuple(slices)]
 

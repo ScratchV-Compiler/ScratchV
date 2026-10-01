@@ -56,6 +56,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       # ── 前置：RISC-V 工具链 + Python 依赖 ──────────────────────────────
       - name: Install RISC-V toolchain and QEMU
@@ -107,7 +109,7 @@ jobs:
             echo "::notice::$PROBE_TRANSFORMER not delivered yet — W1 probe pending"
             exit 0
           fi
-          python3 "$PROBE_TRANSFORMER"
+          python3 "$PROBE_TRANSFORMER" --model probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx
 
       # ── probe:qwen3-onnx ──────────────────────────────────────────────
       - name: "probe:qwen3-onnx"
