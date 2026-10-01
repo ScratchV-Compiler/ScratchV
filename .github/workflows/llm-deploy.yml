@@ -6,11 +6,12 @@ name: LLM Deploy v1.0
 # one tests the deployment project. A failure here should not read as "the
 # compiler is broken".
 #
-# ONE job, steps in sequence. Every step maps to an item in the plan's W1
-# acceptance list (开发计划.md §4.3):
+# ONE job, steps in sequence. Steps cover W1 probes and the W2 real-Qwen3
+# architecture gate (开发计划.md §4.3):
 #
 #   docs:interfaces  docs:risks
 #   probe:qemu-matmul  probe:small-transformer  probe:qwen3-onnx
+#   numeric:ir-qwen3-small
 #
 # Trade-off being made deliberately: one job means one sidebar row and one
 # thing to look at, at the cost of knowing only the FIRST failure per run —
@@ -29,6 +30,8 @@ on:
       - 'scripts/check_llm_deploy_docs.py'
       - 'export_qwen3_onnx.py'
       - 'scratchv/**'
+      - 'requirements/qwen3-small-probe.txt'
+      - 'tests/test_qwen3_small*.py'
       - '.github/workflows/llm-deploy.yml'
   schedule:
     # Nightly, off the hour: 19:23 UTC = 03:23 北京时间.
@@ -45,6 +48,8 @@ env:
   PROBE_MATMUL: probes/w1_matmul_4x4/run.py
   PROBE_TRANSFORMER: probes/w1_tiny_transformer/run.py
   PROBE_QWEN3_EXPORT: probes/w1_qwen3_export/run.py
+  PROBE_QWEN3_SMALL: probes/w2_qwen3_small/run.py
+  QWEN3_PY: output/qwen3-probe-venv/bin/python
 
 jobs:
   llm-deploy:
@@ -58,6 +63,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
 
       # ── 前置：RISC-V 工具链 + Python 依赖 ──────────────────────────────
       - name: Install RISC-V toolchain and QEMU
@@ -104,12 +113,78 @@ jobs:
       - name: "probe:small-transformer"
         run: |
           set -euo pipefail
-          python3 -m pip install onnxruntime torch
           if [ ! -f "$PROBE_TRANSFORMER" ]; then
             echo "::notice::$PROBE_TRANSFORMER not delivered yet — W1 probe pending"
             exit 0
           fi
           python3 "$PROBE_TRANSFORMER" --model probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx
+
+      # The real architecture probe uses random weights, needs no checkpoint
+      # download, and runs on PRs. Keep its export stack isolated from W1 and
+      # the generic compiler tests. Install the CPU wheel before requirements
+      # so pip never resolves torch from PyPI with CUDA dependencies.
+      - name: Install pinned CPU Qwen3 probe environment
+        run: |
+          set -euo pipefail
+          python3 -m venv output/qwen3-probe-venv
+          "$QWEN3_PY" -m pip install --upgrade pip
+          "$QWEN3_PY" -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
+          "$QWEN3_PY" -m pip install -r requirements/qwen3-small-probe.txt
+          "$QWEN3_PY" -m pip install --no-deps -e .
+          "$QWEN3_PY" -m pip check
+          "$QWEN3_PY" -c "import torch; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
+
+      - name: "numeric:ir-qwen3-small"
+        id: qwen3_small
+        timeout-minutes: 15
+        env:
+          PYTHONHASHSEED: "0"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          "$QWEN3_PY" "$PROBE_QWEN3_SMALL" --output-dir output/qwen3-small
+
+      - name: Qwen3 small probe regressions
+        id: qwen3_small_tests
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          set -euo pipefail
+          "$QWEN3_PY" -m pytest \
+            tests/test_qwen3_small_probe.py \
+            tests/test_qwen3_small_model.py \
+            tests/test_qwen3_small_gate.py -q \
+            --junit-xml=output/qwen3-small/tests.xml
+
+      - name: Summarize Qwen3 small probe
+        if: always()
+        env:
+          PROBE_OUTCOME: ${{ steps.qwen3_small.outcome }}
+          TEST_OUTCOME: ${{ steps.qwen3_small_tests.outcome }}
+        run: |
+          {
+            echo "## numeric:ir-qwen3-small"
+            echo "Probe: $PROBE_OUTCOME; regression tests: $TEST_OUTCOME"
+            echo ""
+            if [ -f output/qwen3-small/report.md ]; then
+              cat output/qwen3-small/report.md
+            else
+              echo "No report was produced; inspect the dependency/probe step logs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Qwen3 small probe artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen3-small-probe-output
+          path: output/qwen3-small/
+          if-no-files-found: ignore
 
       # ── probe:qwen3-onnx ──────────────────────────────────────────────
       - name: "probe:qwen3-onnx"

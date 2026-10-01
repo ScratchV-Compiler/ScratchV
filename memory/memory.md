@@ -17,3 +17,5 @@
 [2026-09-26] Topic 04 的 PassRegistry 注册只声明可用工厂，build 才按名称构造并调度；禁用先于构造。IR 和汇编分阶段建管线，常量折叠与汇编常量加载合并不可混用；新增调用点须使用统一工厂，避免旧 ConstantFolder(program).run() 接口。
 
 [2026-10-01] ONNX initializer 是否为标量应按秩为 0 判断，不能按元素数为 1 判断。保留 CNN 的 fc2.bias 为 (1,) 后，IR 指令数由 17 变 16，Topic 17 的峰值寄存器压力由 11 变 12；更新统计基线时须同时检查张量形状、真实汇编执行和零 spill，不能恢复错误标量化来迎合旧断言。专项测试通过后仍须覆盖现有 CNN 与寄存器分配回归。
+
+[2026-10-02] 真实 Qwen3 小模型探测须保留 Q/K RMSNorm、全 head RoPE 和独立 head_dim，不能用 W1 手工 partial-RoPE 图替代。共享 IR 当前仅返回一个张量，逐层诊断可在 ONNX 副本追加 Reshape/Concat 打包观察点，并独立核对 ORT 具名输出和普通 logits-only 图；诊断图通过不能替代普通图验收。固定 CPU 导出环境、种子和输入，并分别验证 padding 隔离、因果性及故障非零退出。
