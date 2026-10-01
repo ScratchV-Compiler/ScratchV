@@ -61,7 +61,8 @@ def test_topic17_cnn_uses_19_regs_and_passes_real_assembly_validation():
     assert stats["asm_valid"], stats["asm_errors"]
     assert len(stats["_alloc"].phys_regs) == 19
     assert stats["phys_reg_count"] == 19
-    assert stats["pressure_peak"] == 11
+    # Preserving fc2.bias as a rank-1 tensor adds one live-in register.
+    assert stats["pressure_peak"] == 12
     assert stats["pressure_excess_peak"] == 0
     assert stats["spill_slots"] == 0
     assert stats["spill_stores"] == 0

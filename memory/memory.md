@@ -15,3 +15,5 @@
 [2026-09-19] 课题专项 benchmark 应接入原有 CI job，摘要表常显，逐用例源码、IR 与汇编放入默认关闭的 details/summary，并同时产出 JSON/Markdown/HTML 到既有 artifact。适用于需要在 Actions Summary 展示详细编译日志的课题。
 
 [2026-09-26] Topic 04 的 PassRegistry 注册只声明可用工厂，build 才按名称构造并调度；禁用先于构造。IR 和汇编分阶段建管线，常量折叠与汇编常量加载合并不可混用；新增调用点须使用统一工厂，避免旧 ConstantFolder(program).run() 接口。
+
+[2026-10-01] ONNX initializer 是否为标量应按秩为 0 判断，不能按元素数为 1 判断。保留 CNN 的 fc2.bias 为 (1,) 后，IR 指令数由 17 变 16，Topic 17 的峰值寄存器压力由 11 变 12；更新统计基线时须同时检查张量形状、真实汇编执行和零 spill，不能恢复错误标量化来迎合旧断言。专项测试通过后仍须覆盖现有 CNN 与寄存器分配回归。

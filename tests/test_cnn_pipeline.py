@@ -172,11 +172,13 @@ class TestIRCompilation:
         """IR program should contain one function."""
         assert len(ir_program.functions) == 1
 
-    def test_all_ops_translated(self, ir_program):
-        """All 15 ONNX ops become 17 IR instructions."""
+    def test_all_ops_translated(self, ir_program, onnx_model):
+        """Each CNN node emits one instruction, followed by a return."""
         func = ir_program.functions[0]
         total = sum(len(b.instructions) for b in func.blocks)
-        assert total == 17
+        # All initializers are tensors, including the one-element fc2.bias;
+        # none should produce a scalar LOAD_CONST instruction.
+        assert total == onnx_model["num_nodes"] + 1
 
     def test_op_codes_present(self, ir_program):
         """Verify all expected opcodes appear in the IR."""
@@ -185,8 +187,9 @@ class TestIRCompilation:
         opcodes = {i.opcode for b in func.blocks for i in b.instructions}
         expected = {OpCode.CONV, OpCode.RELU, OpCode.MAXPOOL,
                     OpCode.GEMM, OpCode.SIGMOID, OpCode.RESHAPE,
-                    OpCode.RETURN, OpCode.LOAD_CONST}
+                    OpCode.RETURN}
         assert expected.issubset(opcodes), f"Missing: {expected - opcodes}"
+        assert OpCode.LOAD_CONST not in opcodes
 
     def test_ir_dump_readable(self, ir_program):
         """IR dump should contain function name and ops."""

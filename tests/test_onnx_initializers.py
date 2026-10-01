@@ -82,6 +82,13 @@ def test_cnn_initializers_pass_existing_ir_verifier():
     globals_ = {value.name: value for value in program.global_values}
     assert set(globals_) == {value.name for value in model.graph.initializer}
     assert len(globals_) == len(program.global_values)
+    for initializer in model.graph.initializer:
+        value = globals_[initializer.name]
+        assert value.shape == tuple(initializer.dims)
+        assert value.is_constant == (len(initializer.dims) == 0)
+    # One element does not make the final Gemm bias a rank-zero scalar.
+    assert globals_["fc2.bias"].shape == (1,)
+    assert not globals_["fc2.bias"].is_constant
     assert verify_ir(program) == (True, [])
     for block in program.functions[0].blocks:
         for instruction in block.instructions:
