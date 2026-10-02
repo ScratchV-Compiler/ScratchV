@@ -93,6 +93,42 @@ def test_guest_error_cannot_be_misreported_as_valid_empty_output():
         decode_tensor_frame(frame(b"", status=258), spec("y", (2,), "float32"))
 
 
+def _assert_posix_process_terminated(pid):
+    # A killed Linux orphan can remain a zombie until PID 1 reaps it. Reaping
+    # can also happen while /proc is being read, so do not use exists() first.
+    try:
+        status = Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    else:
+        assert status.split()[2] == "Z", "Timed-out compiler child is still running"
+
+
+@pytest.mark.parametrize("read_error", [FileNotFoundError, ProcessLookupError])
+def test_process_exit_check_accepts_reaping_during_proc_read(monkeypatch, read_error):
+    checked = []
+
+    def read_reaped_process(self):
+        raise read_error("Child was reaped while reading /proc")
+
+    def check_reaped_process(pid, signal):
+        checked.append((pid, signal))
+        raise ProcessLookupError("Child has exited")
+
+    monkeypatch.setattr(Path, "read_text", read_reaped_process)
+    monkeypatch.setattr(os, "kill", check_reaped_process)
+    _assert_posix_process_terminated(123)
+    assert checked == [(123, 0)]
+
+
+@pytest.mark.parametrize("state", ["R", "S"])
+def test_process_exit_check_rejects_live_child(monkeypatch, state):
+    monkeypatch.setattr(Path, "read_text", lambda self: f"123 (python) {state} 0")
+    with pytest.raises(AssertionError, match="still running"):
+        _assert_posix_process_terminated(123)
+
+
 def test_timeout_terminates_only_owned_process_tree(tmp_path):
     # The child inherits the compiler's stdout pipe. Killing only the direct
     # process would leave it alive and keep communicate() blocked indefinitely.
@@ -120,13 +156,7 @@ def test_timeout_terminates_only_owned_process_tree(tmp_path):
             finally:
                 kernel.CloseHandle(handle)
     else:
-        # On Linux a killed orphan may briefly be a zombie until PID 1 reaps it.
-        status = Path(f"/proc/{pid}/stat")
-        if status.exists():
-            assert status.read_text().split()[2] == "Z"
-        else:
-            with pytest.raises(ProcessLookupError):
-                os.kill(pid, 0)
+        _assert_posix_process_terminated(pid)
 
 
 @pytest.mark.parametrize("field,value", [

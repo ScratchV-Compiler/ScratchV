@@ -115,9 +115,9 @@ Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收�
 |---|---|---|
 | 前端基础算子与 IR 数值 | 已补齐本次图所需算子与用例，真实两层图通过 | E1/E2 继续完整图对照 |
 | 旧选择器张量 MatMul/FP32 | 未修复；新路径不经过它 | E3：保留范围说明，是否另行补齐由团队决定 |
-| tensor-c / RV64 运行器 | 本地 28 次两层 QEMU 执行通过 | E3/E4/E5：Linux CI、独立复现 |
+| tensor-c / RV64 运行器 | 本地及545e696的[Linux部署任务](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/36983000988/job/110761571841)通过，含28次两层QEMU执行与artifacts上传 | E3/E4/E5：第二人独立复现、后续提交Checks；不外推通用主CI状态 |
 | 完整模型 IR 数值与容量 | 未由小模型验收 | E2/E4/E5：逐步扩大配置及预训练权重验证 |
-| 完整 ONNX 门禁 | 历史导出通过；新入口verify本地完成真实四文件hash/checker/ORT两case | E1/E5：手动/定时CI、第二人复现；不冒称本轮重新导出 |
+| 完整 ONNX 门禁 | 历史导出、本地verify，以及545e696的[Linux download/ORT重型任务](https://github.com/yuki-328/ScratchV/actions/runs/36983119833/job/110761955767)均通过 | E1/E5：第二人复现及后续提交Checks；不冒称本轮重新导出或全部CI通过 |
 | Tokenizer / 生成 / 大权重加载 | 当前探测不覆盖 | E4：W4 实现及专项验收 |
 
 ## 7. 团队待决议与确认

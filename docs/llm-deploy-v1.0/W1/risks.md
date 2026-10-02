@@ -16,7 +16,7 @@
 | R2 | 旧选择器缺张量 FP32 lowering | 已确认 | 高 | 不把助记符存在视为张量实现；新 RV64GC + musl 路线本地已通过 | 缺浮点目标、非有限值或绝对误差达阈值 | 保留 FP32目标、禁用 fast-math/FMA并逐层定位；是否另补旧选择器由团队另立项，不静默换 FP64/定点通过原 gate | E3 |
 | R3 | 多后端 ISA / ABI 混用 | 已确认 | 高 | 新路线 RV64GC/LP64D/裸机；旧 RV32 CNN 配方另存，不能互用 | 用 qemu-riscv32、错误 ABI 或把 Linux triple 当成 Linux guest | 按 artifact/runtime 固定工具与 ABI；编译/加载失败即终止。团队确认路线；其他后端独立验收 | E2/E3/E4 |
 | R4 | 不同执行器的算子支持范围被混淆 | 已确认 | 高 | 前端/IR 的 Transpose、Concat 已能执行，新 tensor-c 支持所需图；旧 selector 范围未修复 | 前端通过而选定后端拒绝/错误执行 | 每个后端显式拒绝未支持操作，新增能力时补后端数值用例；不能把 parser 成功当 backend 通过 | E1/E3 |
-| R5 | 新 CI 工具链或网络不可用、门禁被跳过 | 待验收 | 高 | Windows 便携执行已通过；本轮新 Linux CI 尚无实际 run 证据。保留早期 runner sudo/HTTPS 失败历史 | 缺 Zig/QEMU/LFS 分片；job pending/skip；报告无实际执行 | 缺必需工具/输入显式失败；可先本地跑并标 CI 未验收。重型 ONNX 按模式分别展示结构与 ORT 状态，E5补真实 run/artifact | E5 |
+| R5 | 新 CI 工具链或网络不可用、门禁被跳过 | 部署功能任务已验证 | 高 | 545e696小模型Linux全部部署步骤（含28次QEMU）和完整ONNX下载/ORT重型任务均通过；首次主CI测试竞争失败已在测试中修复，本地26项通过，后续提交以Checks为准 | 缺 Zig/QEMU/LFS 分片；job pending/skip；报告无实际执行 | 缺必需工具/输入显式失败；分任务关联真实run/artifact，后续提交重验受影响gate，不以部署功能任务通过替代通用主CI | E5 |
 | R6 | IR 不能表达 Attention | 小模型已验证 | 高 | 官方 Qwen3 基础算子图经 IR 及 QEMU 通过；不需要强制融合 Attention opcode | 新配置解析/执行失败或 checkpoint 首次偏差 | 保留基础算子基线，缩小到失败子图并修相应语义；若使用 host 分段必须标明路线变化 | E2 |
 | R7 | 完整 28 层数值误差累积 | 待验证 | 高 | 两层 29 检查点通过不等于完整层数已通过 | 随层数增加误差越过既定阈值 | 逐步扩大层数/尺寸并比较首次偏差；先定位数学/累加/优化问题。任何更改精度或容差需独立评审，不能改 gate 掩盖错误 | E2/E5，W3 |
 | R8 | 因果/padding mask 错误 | 小模型已验证 | 高 | 7 输入含 future/padding 改动；IR/QEMU 不变性通过。完整导出 padding query 数值差异仍记录 | 被屏蔽位置概率泄漏或有效前缀受未来/padding token 影响 | 固定加性 mask 与位置约定，检查 attention probabilities/首个偏差；把有效位置和全张量结果分开报告，不删 padding 失败证据 | E2/E5 |
@@ -25,7 +25,7 @@
 
 | # | 风险 | 概率 | 影响 | 当前状态 / 证据 | 触发信号 | Plan B | 责任 |
 |---|---|---|---|---|---|---|---|
-| R9 | 完整 Qwen3 ONNX 导出/载入失败 | 本地已验证 | 高 | 历史导出通过；新入口verify已通过真实hash/checker/ORT两case，验证器峰值RSS约6.40 GB；新CI待运行 | 缺/损坏分片、版本漂移、shape 不符或 ORT 失败 | 固定 revision/依赖与哈希，从已批准来源重新准备产物；必要时重导出。子图只能作定位工具，不代替完整导出 gate | E1/E5 |
+| R9 | 完整 Qwen3 ONNX 导出/载入失败 | 本地及指定CI已验证 | 高 | 历史导出、本地verify和545e696 Linux download重型任务通过；验证器峰值RSS分别为Windows约6.40 GB、Linux约6.41 GB，均非导出总峰值 | 缺/损坏分片、版本漂移、shape 不符或 ORT 失败 | 固定 revision/依赖与哈希，从已批准来源重新准备产物；必要时重导出。子图只能作定位工具，不代替完整导出 gate | E1/E5 |
 | R10 | 完整权重/激活超出内存布局 | 待验证 | 高 | 当前 guest 512 MiB、workspace 上限256 MiB；完整 logits 约148.4 MiB，权重约2.4 GB，未完整装载 | arena/ELF 与输入区冲突、容量超限、OOM | 先做完整容量预算，再设计大权重装载/分块/释放；若选择 mmap 须另有 Linux 路线，不能在现裸机上只增加 -m 就声称解决 | E4，W4 |
 | R11 | L=256 无 KV Cache 前向耗时过长 | 待测完整规模 | 中 | 小模型 QEMU 时间只用于功能回归，不代表硬件性能 | 完整前向超时或生成循环不可用 | 记录真实耗时，按算子分块/优化；短 L 仅作诊断且另标配置，不降低固定 L=256 验收 | E3/E5 |
 | R12 | 151936×1024 LM Head 计算/输出开销 | 配置已确认 | 高 | 小词表128不覆盖完整词表开销 | 完整 LM Head 超时或输出传输过大 | 保留完整 logits oracle；生产生成路径可另设计最后位置/分块接口，并与完整输出对照，不能替换 W1 完整形状 gate | E3/E4 |
@@ -47,7 +47,7 @@
 | 官方两层 IR/QEMU | `probes/w2_qwen3_small/run.py`、`riscv.py`；R6/R8/R13/R14 在小配置范围缓解 |
 | 本地 QEMU 结果 | `output/qemu-matmul-final/report.json`、`output/qwen3-riscv-final/report.json`，28次两层执行通过；忽略产物需独立复现或从CI artifact取得 |
 | 完整导出 | 固定revision `c1899de289a04d12100db370d81485cdf75e47ca`；历史导出通过，本轮`output/qwen3-full-local/report.json`为新verify的真实hash/checker/ORT结果；R9/R19部分缓解 |
-| 新 CI | 关联实际commit/run/artifact后更新R5；脚本存在、job启动、结构检查都不是完整数值证据 |
+| 新 CI | 545e696的[完整ONNX Linux任务](https://github.com/yuki-328/ScratchV/actions/runs/36983119833/job/110761955767)及[小模型Linux部署任务](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/36983000988/job/110761571841)与artifacts均成功；通用主CI状态独立跟踪，不能用结构检查或功能job代替它 |
 
 新增证据时记录模型范围、执行路径、环境、误差与源码指纹；失败保留首次偏差和日志。不要把所有状态统一改成“已排除”。
 
@@ -56,7 +56,9 @@
 - [x] 20 条风险均列出触发信号和 Plan B。
 - [x] 回填新路线，保留旧选择器和完整模型的未覆盖边界。
 - [ ] E1–E5确认各自责任、处置范围与排期；E2记录决议。
-- [ ] 新 Linux CI及完整 ONNX 重型门禁取得真实执行证据，更新R5/R9。
+- [x] 545e696完整ONNX Linux重型任务取得真实下载/ORT/artifact证据，更新R9。
+- [x] 545e696小模型Linux部署功能任务通过，含28次QEMU执行，R5的部署工具链/网络获得实际证据。
+- [x] 545e696首次通用主CI的测试竞争已定位并仅修改测试修复，本地26项通过；修复提交及后续主CI状态以对应Checks为准。
 - [ ] E4/E5完成第二人独立复现，按 [模板](README.md)记录。
 - [ ] 完整权重加载、容量及28层数值验收另有计划和责任人。
 

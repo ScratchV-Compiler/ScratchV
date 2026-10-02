@@ -124,7 +124,7 @@ python -X utf8 -B probes/w1_qwen3_export/run.py --mode export --source-dir outpu
 
 输出 `report.json`、`report.md`；核对mode、passed、各阶段hash/structure/ort、输入有效长度、shape、dtype、有限值、provider/线程数。导出模式另有export日志与export_validation；下载/验证模式不具备新PyTorch对照。
 
-peak_memory是验证器进程峰值RSS，**不包含导出子进程**，不能写成整次导出峰值内存。保存实际源码和产物指纹；历史verification只作来源说明。缺文件、哈希不符、版本不符、ORT失败都应非零退出。
+peak_memory是验证器进程峰值RSS，**不包含导出子进程**，不能写成整次导出峰值内存。新报告的 `source_fingerprints` 保存入口wrapper、导出脚本、manifest的SHA256，成功/失败均记录；源码不可读取则为null并附错误。既有本地 `output/qwen3-full-local/report.json` 生成于此字段加入前，不能假称其已有源码指纹；按实际字段与对应checkout核对。历史verification只作来源说明。缺文件、哈希不符、版本不符、ORT失败都应非零退出。
 
 ## 5. CI状态记录
 
@@ -135,7 +135,14 @@ peak_memory是验证器进程峰值RSS，**不包含导出子进程**，不能�
 - 完整模型job只需要固定NumPy2.2.6、ONNX1.18.0、ORT1.22.1、protobuf5.29.5，不需要PyTorch；这也意味着它不重新导出或比较PyTorch。
 - PR中完整模型job按条件未执行，应明确记录“ORT重型门禁未执行”，不能用轻量测试通过代替。
 
-本指南编写时已确认本地28次两层QEMU执行，以及完整模型新入口verify的hash/checker/ORT两case通过（验证器峰值RSS约6.40 GB，报告 `output/qwen3-full-local/report.json`）。新提交Linux CI尚待真实run验收。独立复现报告须附run URL及head SHA，逐项确认步骤实际执行。源码或编译器发生变化时重跑受影响验证；“先前PR绿色”不足以证明新tensor-c路线。
+已确认本地28次两层QEMU执行，以及完整模型新入口verify的hash/checker/ORT两case通过（验证器峰值RSS约6.40 GB，报告 `output/qwen3-full-local/report.json`）。提交 `545e696` 已有两项Linux成功证据：
+
+- [完整ONNX重型任务](https://github.com/yuki-328/ScratchV/actions/runs/36983119833/job/110761955767)：真实固定release下载、校验、ORT两case及artifact上传。
+- [小模型部署功能任务](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/36983000988/job/110761571841)：所有部署步骤通过，含MatMul、合成图IR、官方Qwen3小模型IR和28次真实QEMU执行，artifacts上传成功。
+
+545e696首次通用主CI出现过读取 `/proc` 时进程退出的测试竞争失败，已仅修改测试修复，追加确定性用例后本地26项运行时测试通过；运行时源码未因此改变。不要把这个历史提交写成“整个CI全绿”，修复提交及后续主CI状态以PR Checks为准。上述自动运行也不等于第二名成员独立复现或团队确认。
+
+后续提交以对应Checks为准。独立复现报告须附run URL及head SHA，逐项确认步骤实际执行；源码或编译器变化时重跑受影响验证。“先前PR绿色”不足以证明新提交的tensor-c路线。
 
 ## 6. 独立复现模板
 
