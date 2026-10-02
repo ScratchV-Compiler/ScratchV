@@ -1,6 +1,7 @@
 """Binary ABI, failure propagation, and optional real RV64 math execution."""
 
 from types import SimpleNamespace
+import hashlib
 import os
 from pathlib import Path
 import struct
@@ -12,6 +13,7 @@ import pytest
 
 from scratchv.runtime.riscv_tensor import (
     FRAME_END, FRAME_HEADER, FRAME_MAGIC, INPUT_BASE, INPUT_CAPACITY,
+    RiscVTensorExecutionError, RiscVTensorTimeoutError,
     _checksum, _run_process, build_riscv_tensor, decode_tensor_frame, discover_toolchain,
     input_layout, pack_inputs, run_riscv_tensor, validate_riscv_elf,
 )
@@ -182,6 +184,177 @@ def test_validate_elf_rejects_wrong_target_or_address(tmp_path, field, value):
     path.write_bytes(header)
     with pytest.raises(ValueError):
         validate_riscv_elf(path)
+
+
+@pytest.fixture
+def timed_guest(tmp_path, monkeypatch):
+    from scratchv.runtime import riscv_tensor as runtime
+
+    elf = tmp_path / "model.elf"
+    elf.write_bytes(b"test executable identity")
+    executable = SimpleNamespace(
+        elf_path=elf, elf_sha256=hashlib.sha256(elf.read_bytes()).hexdigest(),
+        inputs=(spec("x", (2,), "float32"),), output=spec("y", (2,), "float32"),
+        toolchain=SimpleNamespace(qemu="test-qemu"),
+    )
+    clock = SimpleNamespace(now=100.0, reads=0)
+
+    def now():
+        clock.reads += 1
+        return clock.now
+
+    # Replacing the module binding avoids changing pytest's own clock.
+    monkeypatch.setattr(runtime, "time", SimpleNamespace(perf_counter=now))
+    feed = {"x": np.array([1.0, 2.0], np.float32)}
+    return runtime, executable, feed, clock
+
+
+def test_process_wall_time_excludes_input_preparation_and_output_decoding(tmp_path, monkeypatch, timed_guest):
+    runtime, executable, feed, clock = timed_guest
+    original_pack, original_decode = runtime.pack_inputs, runtime.decode_tensor_frame
+    original_write = Path.write_bytes
+
+    def prepare(*args):
+        clock.now += 10.0
+        return original_pack(*args)
+
+    def write(path, data):
+        # Disk preparation and log persistence must not count as simulation.
+        if path.name == "inputs.bin":
+            clock.now += 7.0
+        elif path.name in ("qemu.stdout", "qemu.stderr"):
+            clock.now += 40.0
+        return original_write(path, data)
+
+    def decode(*args):
+        clock.now += 30.0
+        return original_decode(*args)
+
+    observed = []
+
+    def process(command, *, cwd, timeout):
+        observed.append(tuple(command))
+        assert clock.now == 117.0
+        clock.now += 3.25
+        (cwd / "uart.bin").write_bytes(frame(feed["x"].tobytes()))
+        return subprocess.CompletedProcess(command, 0, b"stdout", b"stderr")
+
+    monkeypatch.setattr(runtime, "pack_inputs", prepare)
+    monkeypatch.setattr(runtime, "decode_tensor_frame", decode)
+    monkeypatch.setattr(Path, "write_bytes", write)
+    monkeypatch.setattr(runtime, "_run_process", process)
+    result = run_riscv_tensor(executable, feed, tmp_path / "run", timeout=9)
+    assert result.elapsed_s == 3.25 and clock.reads == 2
+    assert result.command == observed[0]
+    np.testing.assert_array_equal(result.output, feed["x"])
+
+
+@pytest.mark.parametrize("outcome,message", [
+    ("nonzero", r"QEMU failed \(7\): rejected"),
+    ("nonzero_valid_frame", r"QEMU failed \(7\): rejected"),
+    ("guest", "failure status 3"),
+    ("bad_frame", "truncated or missing"),
+    ("missing_uart", "without producing UART"),
+    ("log_error", "cannot save log"),
+])
+def test_failed_qemu_attempt_retains_measured_wall_time(tmp_path, monkeypatch, timed_guest, outcome, message):
+    runtime, executable, feed, clock = timed_guest
+    original_write = Path.write_bytes
+    commands = []
+
+    def write(path, data):
+        if path.name == "qemu.stdout" and outcome == "log_error":
+            clock.now += 90.0
+            raise PermissionError("cannot save log")
+        return original_write(path, data)
+
+    def process(command, *, cwd, timeout):
+        commands.append(tuple(command))
+        clock.now += 4.5
+        if outcome == "guest":
+            (cwd / "uart.bin").write_bytes(frame(b"", status=3))
+        elif outcome == "bad_frame":
+            (cwd / "uart.bin").write_bytes(b"broken")
+        elif outcome in ("nonzero_valid_frame", "log_error"):
+            (cwd / "uart.bin").write_bytes(frame(feed["x"].tobytes()))
+        code = 7 if outcome.startswith("nonzero") or outcome == "guest" else 0
+        return subprocess.CompletedProcess(command, code, b"partial stdout", b"rejected")
+
+    monkeypatch.setattr(Path, "write_bytes", write)
+    monkeypatch.setattr(runtime, "_run_process", process)
+    with pytest.raises(RiscVTensorExecutionError, match=message) as captured:
+        run_riscv_tensor(executable, feed, tmp_path / "run")
+    error = captured.value
+    assert isinstance(error, RuntimeError)
+    assert error.elapsed_s == 4.5 and error.status == "runtime_error"
+    assert error.command == commands[0] and clock.reads == 2
+    assert error.__cause__ is not None
+
+
+@pytest.mark.parametrize("log_error", [False, True])
+def test_timeout_reports_actual_time_including_cleanup(tmp_path, monkeypatch, timed_guest, log_error):
+    runtime, executable, feed, clock = timed_guest
+    original_write = Path.write_bytes
+    commands = []
+
+    def process(command, *, cwd, timeout):
+        commands.append(tuple(command))
+        assert timeout == 2.0
+        # _run_process returns its TimeoutExpired only after tree cleanup.
+        clock.now += 6.75
+        raise subprocess.TimeoutExpired(command, timeout, output=b"partial", stderr=b"timed out")
+
+    def write(path, data):
+        if path.name == "qemu.stdout":
+            clock.now += 50.0
+            if log_error:
+                raise PermissionError("cannot preserve timeout log")
+        return original_write(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", write)
+    monkeypatch.setattr(runtime, "_run_process", process)
+    with pytest.raises(RiscVTensorTimeoutError, match="execution exceeded 2.0 seconds") as captured:
+        run_riscv_tensor(executable, feed, tmp_path / "run", timeout=2.0)
+    error = captured.value
+    assert isinstance(error, TimeoutError)
+    assert error.elapsed_s == 6.75 and error.timeout_s == 2.0
+    assert error.status == "timeout" and error.command == commands[0]
+    assert clock.reads == 2 and isinstance(error.__cause__, subprocess.TimeoutExpired)
+    if log_error:
+        assert "cannot preserve timeout log" in str(error)
+    else:
+        assert (tmp_path / "run/qemu.stdout").read_bytes() == b"partial"
+        assert (tmp_path / "run/qemu.stderr").read_bytes() == b"timed out"
+
+
+@pytest.mark.parametrize("failure", ["elf", "input", "stale", "write_input", "spawn"])
+def test_attempt_not_started_has_no_simulation_time(tmp_path, monkeypatch, timed_guest, failure):
+    runtime, executable, feed, clock = timed_guest
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    if failure == "elf":
+        executable.elf_path.write_bytes(b"changed ELF")
+    elif failure == "input":
+        feed["x"] = np.ones(3, np.float32)
+    elif failure == "stale":
+        (run_dir / "uart.bin").write_bytes(b"prior evidence")
+    elif failure == "write_input":
+        (run_dir / "inputs.bin").mkdir()
+
+    started = []
+
+    def process(*args, **kwargs):
+        started.append(True)
+        assert failure == "spawn"
+        raise FileNotFoundError("qemu executable disappeared before launch")
+
+    monkeypatch.setattr(runtime, "_run_process", process)
+    with pytest.raises((ValueError, OSError)) as captured:
+        run_riscv_tensor(executable, feed, run_dir)
+    assert not isinstance(captured.value, (RiscVTensorExecutionError, RiscVTensorTimeoutError))
+    assert not hasattr(captured.value, "elapsed_s")
+    assert len(started) == int(failure == "spawn")
+    assert clock.reads == int(failure == "spawn")
 
 
 @pytest.mark.integration

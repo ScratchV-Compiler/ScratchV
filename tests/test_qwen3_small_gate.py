@@ -34,6 +34,11 @@ def test_official_two_layer_export_passes_all_checkpoints_and_invariants(tmp_pat
     assert all(check["passed"] for check in report["invariants"])
     assert (tmp_path / "model.onnx").exists()
     assert (tmp_path / "diagnostics.onnx").exists()
+    from probes.w2_qwen3_small.riscv import validated_model_artifacts
+
+    _, schema, evidence = validated_model_artifacts(tmp_path)
+    assert schema == report["checkpoints"]
+    assert evidence["model_sha256"]["normal"] == report["onnx"]["model_sha256"]
 
 
 @pytest.mark.parametrize("target", ["ordinary", "diagnostic"])

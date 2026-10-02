@@ -23,6 +23,7 @@ on:
       - 'docs/llm-deploy-v1.0/**'
       - 'probes/**'
       - 'scripts/check_llm_deploy_docs.py'
+      - 'scripts/check_w1_repro_env.py'
       - 'export_qwen3_onnx.py'
       - 'scratchv/**'
       - 'requirements/**'
@@ -31,6 +32,7 @@ on:
       - 'tests/test_riscv_tensor*.py'
       - 'tests/test_optimizer*.py'
       - 'tests/test_w1_qwen3*.py'
+      - 'tests/test_w1_repro_env.py'
       - '.github/workflows/llm-deploy.yml'
   schedule:
     # Nightly, off the hour: 19:23 UTC = 03:23 北京时间.
@@ -104,7 +106,7 @@ jobs:
 
       - name: Tensor compiler and runtime regressions
         run: |
-          python3 -m pytest tests/test_tensor_c_codegen.py tests/test_tensor_compiler.py tests/test_riscv_tensor_runtime.py tests/test_optimizer_numeric_semantics.py tests/test_w1_qwen3_export.py -q
+          python3 -m pytest tests/test_tensor_c_codegen.py tests/test_tensor_compiler.py tests/test_riscv_tensor_runtime.py tests/test_optimizer_numeric_semantics.py tests/test_w1_qwen3_export.py tests/test_qwen3_small_riscv_gate.py tests/test_w1_repro_env.py -q
 
       # ── probe:small-transformer ───────────────────────────────────────
       - name: "probe:small-transformer"
@@ -127,6 +129,12 @@ jobs:
           "$QWEN3_PY" -m pip install --no-deps -e .
           "$QWEN3_PY" -m pip check
           "$QWEN3_PY" -c "import torch; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
+
+      - name: W1 reproduction environment preflight
+        run: |
+          set -euo pipefail
+          "$QWEN3_PY" -X utf8 scripts/check_w1_repro_env.py \
+            --require-clean --output-dir output/w1-repro-env
 
       - name: "numeric:ir-qwen3-small"
         id: qwen3_small
@@ -212,6 +220,14 @@ jobs:
         with:
           name: qwen3-small-probe-output
           path: output/qwen3-small/
+          if-no-files-found: ignore
+
+      - name: Upload W1 reproduction environment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w1-reproduction-environment
+          path: output/w1-repro-env/
           if-no-files-found: ignore
 
       - name: Upload probe artifacts

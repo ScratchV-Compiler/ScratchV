@@ -168,6 +168,31 @@ def test_reverse_slice_clamps_too_negative_start(tmp_path, compiler):
     np.testing.assert_array_equal(result, np.array([0], dtype="float32"))
 
 
+@pytest.mark.parametrize("shape,axis", [((0, 2), 1), ((2, 0), 0)])
+def test_empty_gather_still_checks_indices_and_recovers(tmp_path, compiler, shape, axis):
+    from scratchv.verification.ir_interpreter import IRExecutionError, IRInterpreter
+
+    x = Value("x", shape=shape)
+    index = Value("index", D.INT64, shape=(1,))
+    b = builder(x, index)
+    b.ret(b.gather(x, index, axis=axis))
+    artifact = TensorCCodegen(b.program).generate()
+    feed = {"x": np.empty(shape, np.float32), "index": np.array([2], np.int64)}
+    with compiled(tmp_path, artifact, compiler) as execute:
+        for bad_index in (2, -3):
+            feed["index"][0] = bad_index
+            with pytest.raises(IRExecutionError, match="GATHER index out of bounds"):
+                IRInterpreter(b.program).run(feed)
+            assert execute(feed)[0] == 3
+        for valid_index in (1, -1):
+            feed["index"][0] = valid_index
+            expected = IRInterpreter(b.program).run(feed).return_value
+            status, actual = execute(feed)
+            assert status == 0
+            np.testing.assert_array_equal(actual, expected)
+            assert actual.shape == expected.shape and actual.size == 0
+
+
 @pytest.mark.parametrize("dtype,np_type", [(D.INT32, "int32"), (D.INT64, "int64")])
 def test_integer_wraparound_and_exact_abs(tmp_path, compiler, dtype, np_type):
     x = Value("x", dtype, shape=(3,))

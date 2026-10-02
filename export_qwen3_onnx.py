@@ -156,7 +156,9 @@ def external_tensors(message):
         return
     for field, value in message.ListFields():
         if field.message_type is not None:
-            if field.label == field.LABEL_REPEATED:
+            repeated = (field.is_repeated if hasattr(field, "is_repeated")
+                        else field.label == field.LABEL_REPEATED)
+            if repeated:
                 for item in value:
                     yield from external_tensors(item)
             else:
@@ -272,19 +274,30 @@ def verify(args):
     for index in range(2):
         with np.load(args.work_dir / f"input_{index}.npz") as inputs:
             feed = {name: inputs[name] for name in expected}
-            n = int(inputs["valid_length"])
+            valid_length = inputs["valid_length"]
+            if (valid_length.ndim != 0 or valid_length.dtype.kind not in "iu"
+                    or not 1 <= int(valid_length) <= SEQ):
+                raise ValueError("Reference valid_length must be an integer scalar in [1, sequence length]")
+            n = int(valid_length)
         start = time.perf_counter()
         result = session.run(["logits"], feed)[0]
         elapsed = time.perf_counter() - start
         reference = np.load(args.work_dir / f"reference_{index}.npy", mmap_mode="r")
         if result.shape != (1, SEQ, VOCAB) or result.dtype != np.float32:
             raise ValueError(f"Unexpected output: {result.shape}/{result.dtype}")
+        if reference.shape != result.shape or reference.dtype != np.float32:
+            raise ValueError(f"Unexpected PyTorch reference: {reference.shape}/{reference.dtype}")
         max_abs, total, full_passed = 0.0, 0.0, True
         valid_max, valid_passed, finite = 0.0, True, True
         for begin in range(0, SEQ, 8):
             a = result[:, begin:begin + 8]
             b = reference[:, begin:begin + 8]
-            difference = np.abs(a - b)
+            if not np.isfinite(a).all() or not np.isfinite(b).all():
+                raise ValueError("ONNX output and PyTorch reference must both be finite")
+            # A nonfinite oracle can otherwise satisfy inf <= inf. Compute
+            # metrics in small FP64 chunks so opposite finite FP32 extrema do
+            # not overflow the subtraction or produce invalid JSON evidence.
+            difference = np.abs(a.astype(np.float64) - b.astype(np.float64))
             max_abs = max(max_abs, float(difference.max()))
             total += float(difference.sum(dtype=np.float64))
             finite &= bool(np.isfinite(a).all())
@@ -331,7 +344,7 @@ def verify(args):
         "full_tensor_allclose": all(c["full_tensor_allclose"] for c in cases),
     }
     (args.output_dir / "verification.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     if not report["passed"]:
         raise RuntimeError("ONNX/PyTorch numeric comparison failed; see verification.json")
 

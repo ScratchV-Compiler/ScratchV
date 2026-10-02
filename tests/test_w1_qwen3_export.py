@@ -4,6 +4,7 @@ import copy
 import json
 import stat
 import zipfile
+from argparse import Namespace
 
 import numpy as np
 import onnx
@@ -11,6 +12,7 @@ from onnx import TensorProto as T, helper, numpy_helper
 import pytest
 
 from probes.w1_qwen3_export import run as probe
+import export_qwen3_onnx as exporter
 
 
 @pytest.fixture
@@ -273,3 +275,74 @@ def test_changed_source_config_fails_before_export(tmp_path, monkeypatch):
     args = probe.argparse.Namespace(source_dir=source, model_dir=tmp_path / "model", output_dir=tmp_path, threads=2)
     with pytest.raises(ValueError, match="configuration/tokenizer"):
         probe.export_model(args)
+
+
+@pytest.fixture
+def exporter_case(artifact, tmp_path, monkeypatch):
+    """Real tiny ORT model and a file-backed oracle, without torch/weights."""
+    directory, _ = artifact
+    monkeypatch.setattr(exporter, "SEQ", 3)
+    monkeypatch.setattr(exporter, "VOCAB", 4)
+    monkeypatch.setattr(exporter.importlib.metadata, "version", lambda name: "unit-test")
+    work = tmp_path / "reference"
+    work.mkdir()
+    reference = np.tile(np.arange(4, dtype=np.float32), (1, 3, 1))
+    for index in range(2):
+        np.savez(work / f"input_{index}.npz", input_ids=np.zeros((1, 3), np.int64),
+                 attention_mask=np.zeros((1, 1, 3, 3), np.float32), valid_length=np.int64(3))
+        np.save(work / f"reference_{index}.npy", reference)
+    return Namespace(output_dir=directory, work_dir=work, threads=1,
+                     require_full_allclose=True, exporter="dynamo")
+
+
+def test_exporter_verifier_accepts_exact_finite_reference(exporter_case):
+    exporter.verify(exporter_case)
+    report = json.loads((exporter_case.output_dir / "verification.json").read_text(encoding="utf-8"))
+    assert report["passed"] is True and report["full_tensor_allclose"] is True
+    assert all(case["max_abs_error"] == 0 for case in report["cases"])
+
+
+@pytest.mark.parametrize("fault", ["broadcast_shape", "dtype", "nan", "inf"])
+def test_exporter_verifier_rejects_invalid_oracle(exporter_case, fault):
+    path = exporter_case.work_dir / "reference_0.npy"
+    reference = np.load(path)
+    if fault == "broadcast_shape":
+        # The old verifier broadcast this singleton dimension and accepted it
+        # when the ORT output was constant across the vocabulary dimension.
+        reference = reference[:, :, :1]
+        (exporter_case.output_dir / "weights.data").write_bytes(np.zeros(16, np.float32).tobytes())
+    elif fault == "dtype":
+        reference = reference.astype(np.float64)
+    else:
+        reference[:] = np.nan if fault == "nan" else np.inf
+    np.save(path, reference)
+    with pytest.raises(ValueError, match="reference"):
+        exporter.verify(exporter_case)
+    assert not (exporter_case.output_dir / "verification.json").exists()
+
+
+@pytest.mark.parametrize("length", [np.int64(0), np.int64(-1), np.int64(4),
+                                   np.float32(2.5), np.array([2], np.int64)])
+def test_exporter_verifier_cannot_skip_valid_token_gate(exporter_case, length):
+    path = exporter_case.work_dir / "input_0.npz"
+    with np.load(path) as data:
+        feed = {name: data[name] for name in ("input_ids", "attention_mask")}
+    np.savez(path, **feed, valid_length=length)
+    exporter_case.require_full_allclose = False
+    with pytest.raises(ValueError, match="valid_length"):
+        exporter.verify(exporter_case)
+
+
+def test_exporter_extreme_finite_error_is_reported_without_infinity(exporter_case):
+    weights = exporter_case.output_dir / "weights.data"
+    weights.write_bytes(np.full(16, np.finfo(np.float32).max, np.float32).tobytes())
+    for index in range(2):
+        np.save(exporter_case.work_dir / f"reference_{index}.npy",
+                np.full((1, 3, 4), -np.finfo(np.float32).max, np.float32))
+    with pytest.raises(RuntimeError, match="numeric comparison failed"):
+        exporter.verify(exporter_case)
+    text = (exporter_case.output_dir / "verification.json").read_text(encoding="utf-8")
+    assert "Infinity" not in text and "NaN" not in text
+    report = json.loads(text)
+    assert report["passed"] is False
+    assert all(np.isfinite(case["max_abs_error"]) for case in report["cases"])

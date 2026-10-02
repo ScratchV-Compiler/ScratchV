@@ -25,21 +25,17 @@ class DeadCodeEliminator(OptimizationPass):
         return sum(self._eliminate_function(func) for func in program.functions)
 
     def _eliminate_function(self, func: Function) -> int:
-        return sum(self._eliminate_block(block) for block in func.blocks)
+        # SSA values can be consumed in another block, including PHI edges.
+        # Collect uses across the whole function before filtering any block;
+        # block-local liveness can erase a still-needed dominating definition.
+        used = {value.name for value in func.returns}
+        for block in func.blocks:
+            for instr in [*block.phi_nodes, *block.instructions]:
+                used.update(value.name for value in instr.operands)
+        return sum(self._eliminate_block(block, used) for block in func.blocks)
 
-    def _eliminate_block(self, block: BasicBlock) -> int:
+    def _eliminate_block(self, block: BasicBlock, used: set[str]) -> int:
         changes = 0
-        # Collect all used value names
-        used: set[str | None] = set()
-        # Return values and branch targets are always live
-        for instr in block.instructions:
-            if instr.opcode in (
-                    OpCode.RETURN, OpCode.BR,
-                    OpCode.BR_IF, OpCode.STORE,
-                    OpCode.ENDFOR, OpCode.FOR):
-                used.add(instr.dest.name if instr.dest else None)
-            for op in instr.operands:
-                used.add(op.name)
 
         # Filter: keep instructions with side effects or whose dest is used
         new_instrs: list[Instruction] = []

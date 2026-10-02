@@ -443,6 +443,12 @@ class TensorCCodegen:
         dst = self.names[output.name]
         dtype, size = output.dtype, output.size
         names = [self.names[x.name] for x in xs]
+        # Bounds are checked even when an unrelated zero-sized axis makes the
+        # output empty. The NumPy IR contract still rejects invalid indices.
+        if op == OpCode.GATHER:
+            dimension = xs[0].shape[details["axis"]]
+            self.body.append(f"for (size_t j=0; j<{xs[1].size}ULL; ++j) if ({names[1]}[j]<-{dimension}LL "
+                             f"|| {names[1]}[j]>={dimension}LL) return 3;")
         if not size:
             return
         if op == OpCode.LOAD_CONST:
@@ -567,8 +573,6 @@ class TensorCCodegen:
         elif op == OpCode.GATHER:
             axis, count = details["axis"], xs[1].size
             dimension, inner = x.shape[axis], math.prod(x.shape[axis+1:])
-            self.body.append(f"for (size_t j=0; j<{count}ULL; ++j) if ({names[1]}[j]<-{dimension}LL "
-                             f"|| {names[1]}[j]>={dimension}LL) return 3;")
             self.body.append(f"for (size_t i=0; i<{size}ULL; ++i) {{ int64_t selected="
                 f"{names[1]}[(i/{inner}ULL)%{count}ULL]; if (selected<0) selected+={dimension}LL; "
                 f"{dst}[i]={src}[(i/{inner*count}ULL)*{dimension*inner}ULL+selected*{inner}LL+i%{inner}ULL]; }}")

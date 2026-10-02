@@ -10,6 +10,7 @@ from scratchv.analysis.ir_verifier import verify_ir
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import DataType as D, OpCode as O, Value
 from scratchv.optimizer.constant_folding import ConstantFolder
+from scratchv.optimizer.dead_code import DeadCodeEliminator
 from scratchv.optimizer.muladd_fusion import MulAddFusion
 from scratchv.optimizer.peephole import IRPeepholeOptimizer
 from scratchv.pass_manager import create_optimization_pass_manager
@@ -78,6 +79,31 @@ def test_integer_identity_uses_are_rewritten_across_out_of_order_blocks():
     assert count == 2
     assert changed.functions[0].returns[0].name == "x"
     assert changed.functions[0].blocks[1].instructions[0].operands[0].name == "x"
+
+
+@pytest.mark.parametrize("level", ["dce-only", "basic", "all"])
+def test_dead_code_keeps_values_used_by_later_blocks(level):
+    x = Value("x", D.FLOAT32, shape=(2,))
+    b = builder(x)
+    result = b.neg(x)
+    b.br("middle")
+    middle = b.new_block("middle")
+    total = b.add(result, x)
+    b.br("exit")
+    exit_block = b.new_block("exit")
+    b.ret(total)
+    # Block listing order does not change dominance or value liveness.
+    b.current_func.blocks = [b.current_func.blocks[0], exit_block, middle]
+    feed = {"x": np.array([2.0, -3.0], np.float32)}
+    assert verify_ir(b.program) == (True, [])
+    expected = IRInterpreter(b.program).run(feed).return_value
+    if level == "dce-only":
+        assert DeadCodeEliminator().optimize(b.program) == 0
+    else:
+        create_optimization_pass_manager(level).run(b.program)
+    assert verify_ir(b.program) == (True, [])
+    actual = IRInterpreter(b.program).run(feed).return_value
+    np.testing.assert_array_equal(actual, expected)
 
 
 @pytest.mark.parametrize("opcode,constant", [(O.ADD, 0), (O.MUL, 1), (O.MUL, 0)])

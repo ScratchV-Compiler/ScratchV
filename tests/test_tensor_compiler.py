@@ -100,6 +100,9 @@ def test_qemu_gate_fails_and_preserves_report_when_tool_is_missing(tmp_path, mon
     def absent(**kwargs):
         raise FileNotFoundError("qemu-system-riscv64 missing")
 
+    # Isolate the toolchain failure after the separately tested model evidence
+    # check. Missing/invalid upstream artifacts now fail before tool discovery.
+    monkeypatch.setattr(riscv, "validated_model_artifacts", lambda directory: ({}, [], {}))
     monkeypatch.setattr(riscv, "discover_toolchain", absent)
     assert riscv.main(["--model-dir", str(tmp_path), "--output-dir", str(tmp_path / "result")]) == 1
     report = json.loads((tmp_path / "result/report.json").read_text())

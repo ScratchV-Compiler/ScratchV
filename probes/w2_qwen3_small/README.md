@@ -7,7 +7,9 @@ RV64GC ELF，在 QEMU `virt` 裸机执行。下文“不是 RISC-V 验证”的�
 
 此探测直接使用固定版本 `transformers==4.51.3` 的[官方 Qwen3 实现](https://github.com/huggingface/transformers/blob/v4.51.3/src/transformers/models/qwen3/modeling_qwen3.py)，参照[固定版本 Qwen3-0.6B 配置](https://huggingface.co/Qwen/Qwen3-0.6B/blob/c1899de289a04d12100db370d81485cdf75e47ca/config.json)缩小尺寸并生成固定种子的随机权重，验证 **PyTorch → ONNX Runtime → ScratchV IR 解释器** 的数值一致性。无需下载 Qwen3-0.6B 权重或访问 Hugging Face。
 
-与 W1 手工拼接的两层图不同，这里保留真实 Qwen3 的 Q/K RMSNorm、全 head_dim RoPE、GQA、SwiGLU 和 residual 路径。随机权重仅用于检查结构和计算，不具备语言生成能力；通过该探测也不表示完整 0.6B 模型或 RISC-V 后端已经验证通过。
+与 W1 手工拼接的两层图不同，这里保留真实 Qwen3 的 Q/K RMSNorm、全 head_dim RoPE、GQA、SwiGLU 和 residual 路径。随机权重仅用于检查结构和计算，不具备语言生成能力；只通过 `run.py` 不表示 RISC-V 路径通过，两入口均通过也不能替代完整 0.6B 模型验收。
+
+复现 PR #91 本次更新时，按 [W1 独立复现指南](../../docs/llm-deploy-v1.0/W1/README.md) 获取并核对 PR 的精确 head SHA。历史 `5ea22ec` 不含本次新增的环境预检和时长汇总，不能用旧提交的成功记录代表新代码结果。
 
 ## 固定配置
 
@@ -145,11 +147,45 @@ padding 隔离。每个比较仍要求 FP32、形状一致、有限值、最大�
 小于 `1e-5`，不提高容差。独立矩阵乘探测包含 4×4 小数、投影、Attention、
 双侧批次广播及三种向量乘法。
 
+进入工具链前，RISC-V 入口先核对上游 PyTorch/ORT/IR 成功报告、普通/诊断 ONNX
+哈希、checkpoint schema 和 7 组输入指纹。`export_evidence` 保存对应证据；上游
+失败、输入目录混用或哈希不一致应直接失败，不能只靠当前 ORT 比较通过。该绑定
+用于避免意外混用产物，不是第三方认证；参考计算仍须在指定环境重新生成。
+
 `output/qwen3-riscv/` 包含 `report.json/md/html`、生成的 C、启动汇编与链接脚本、
 ELF、编译器/QEMU 命令与日志、每次执行的输入和 UART 二进制以及 QEMU/ORT 数组。
 JSON 记录源码/模型/输入/ELF 哈希、工具版本、优化统计、工作区大小、最差元素与
 首次发生偏差的检查点。缺工具、编译失败、trap、超时、损坏/截断的 UART、错误
 退出或任一数值不匹配都会失败，不允许跳过后返回成功。
+
+### 查看执行时长
+
+使用上面的 `--output-dir output/qwen3-riscv` 命令即可生成时长报告，无需另开计时
+模式。直接打开 `output/qwen3-riscv/report.md` 或 `report.html`；自动分析读取
+同目录 `report.json`。每次复跑使用新的空输出目录，保留不同运行的原始证据。
+
+| 字段 / 展示 | 含义 |
+|---|---|
+| `report.timing.pipeline_seconds` | RISC-V 探测流水线墙钟，包括产物核验、IR/ORT 对照、编译和 QEMU 等阶段，不含最终报告渲染 |
+| `report.timing.cross_compile_seconds_total` | 仅汇总已记录的成功交叉编译，不含 ScratchV 解析/优化/生成 C 或失败构建耗时；另看构建完成数 |
+| `report.timing.qemu_process_wall_seconds_total` | 已记录的 QEMU 进程墙钟汇总，不含独立的编译时间 |
+| `report.timing.groups` | 按 normal/diagnostic、none/all 区分普通/诊断输出和优化级别，不能把不同工作量混为同一前向性能 |
+| 逐次 `qemu_process_wall_seconds` / `seconds` | 本次 QEMU 进程实测墙钟；`seconds` 为相同计时口径的兼容字段 |
+| 逐次状态 | `success`、`numeric_failed`、`runtime_error`、`timeout`、`not_started`；失败保留已测时长，无测量为 null |
+| `not_attempted_count` | 尚未尝试的计划项数；区别于 `not_started` 的已尝试但 QEMU 未启动，二者均非零秒成功 |
+
+QEMU 进程墙钟包含启动、guest 计算、输出打包/UART 和退出；超时路径还包含子进程清理，
+不含 host 输入准备和输出解码，**不是纯模型 forward 耗时**。流水线包含额外对照工作，不能把它称为 QEMU 推理时间。
+首次 Zig 缓存、系统负载、工具版本和诊断图较大的输出都会影响测量。当前记录只用于
+观察与后续定位，不新增性能通过阈值，也不据此宣称优化加速或目标硬件性能。
+成功与失败样本分别统计，7 种输入不是同一输入的重复采样。
+
+Markdown/HTML 在数值结果旁展示汇总、分组与逐次耗时；CI 将相同 Markdown 写入
+Actions Summary，并将 JSON/HTML 和已生成的失败报告保存在
+`riscv-tensor-probe-output` artifact。失败时同时核对实际执行次数、状态与日志，
+不能将不完整的一轮写成 4 构建、28 次全部通过。
+
+### 仅生成 C 与当前边界
 
 只生成张量 C 可使用标准入口：
 
@@ -164,6 +200,11 @@ python -m scratchv.main model.onnx --backend tensor-c --optimize all \
 本次优化器修复保持可执行语义：常量折叠遵循 dtype 的逐步舍入；peephole 仅
 消除安全的恒等运算，并重定向 SSA 使用；现有 MulAddFusion 因缺少合法融合
 opcode 暂时不执行融合。`all` 仍运行注册的全部 pass，融合次数为零。
+
+未使用算子的数值错误是否属于优化必须保留的可观察行为，仍待团队在接口 D8 中
+决定；当前存在 DCE 删除无用除零后错误不再出现的差异，本次 Qwen 探测未触发它。
+现象、候选契约和后续处理见 [收尾与审查报告](../../docs/llm-deploy-v1.0/W1/W1-本地收尾与审查报告.md)，
+不能因为本探测通过就宣称所有失败行为已在不同优化级别间等价。
 
 当前边界：静态形状、连续张量、FP32 计算和 INT32/INT64 索引；固定单函数直线
 IR；静态 arena 按 SSA 最后使用复用，函数不可重入。权重嵌入只读段，中间张量

@@ -57,12 +57,39 @@ class RiscVTensorExecutable:
 
 @dataclass(frozen=True)
 class RiscVTensorRun:
+    """Successful QEMU execution and its host-observed process wall time.
+
+    ``elapsed_s`` includes process startup, guest work, UART transfer and exit;
+    input preparation and host output decoding are outside this interval.
+    """
+
     output: np.ndarray
     elapsed_s: float
     command: tuple[str, ...]
     uart_path: Path
     stdout_path: Path
     stderr_path: Path
+
+
+class RiscVTensorExecutionError(RuntimeError):
+    """A completed QEMU attempt failed, retaining its measured process time."""
+
+    def __init__(self, message: str, *, elapsed_s: float, command: Sequence[str]):
+        super().__init__(message)
+        self.elapsed_s = elapsed_s
+        self.status = "runtime_error"
+        self.command = tuple(command)
+
+
+class RiscVTensorTimeoutError(TimeoutError):
+    """QEMU exceeded its deadline; elapsed time includes process-tree cleanup."""
+
+    def __init__(self, message: str, *, elapsed_s: float, command: Sequence[str], timeout_s: float):
+        super().__init__(message)
+        self.elapsed_s = elapsed_s
+        self.status = "timeout"
+        self.command = tuple(command)
+        self.timeout_s = timeout_s
 
 
 def _creation_flags() -> int:
@@ -508,7 +535,12 @@ def run_riscv_tensor(
     executable: RiscVTensorExecutable, inputs: Mapping[str, np.ndarray],
     run_dir: str | os.PathLike[str], *, timeout: float = 120.0,
 ) -> RiscVTensorRun:
-    """Execute real RV64 instructions and return the guest's exact tensor bytes."""
+    """Execute RV64 instructions, reporting process wall time on success/failure.
+
+    Preflight and process-start errors retain their original exception types.
+    Once QEMU completes or times out, errors include ``elapsed_s`` measured
+    around ``_run_process`` only. This is not guest-only inference latency.
+    """
     if hashlib.sha256(executable.elf_path.read_bytes()).hexdigest() != executable.elf_sha256:
         raise ValueError("RISC-V ELF changed after it was built; refusing mismatched execution")
     payload = pack_inputs(executable.inputs, inputs)
@@ -528,20 +560,29 @@ def run_riscv_tensor(
     try:
         process = _run_process(command, cwd=run_dir, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        stdout_path.write_bytes(exc.stdout or b"")
-        stderr_path.write_bytes(exc.stderr or b"")
-        raise TimeoutError(f"RISC-V QEMU execution exceeded {timeout} seconds") from exc
+        elapsed = time.perf_counter() - started
+        message = f"RISC-V QEMU execution exceeded {timeout} seconds"
+        try:
+            stdout_path.write_bytes(exc.stdout or b"")
+            stderr_path.write_bytes(exc.stderr or b"")
+        except OSError as log_error:
+            message += f"; failed to preserve QEMU logs: {log_error}"
+        raise RiscVTensorTimeoutError(message, elapsed_s=elapsed,
+                                     command=command, timeout_s=timeout) from exc
     elapsed = time.perf_counter() - started
-    stdout_path.write_bytes(process.stdout)
-    stderr_path.write_bytes(process.stderr)
-    if process.returncode:
-        diagnostic = process.stderr.decode("utf-8", errors="replace")[-4000:]
-        if uart_path.exists():
-            # Prefer a structured guest error (e.g. an illegal instruction) to
-            # an unexplained QEMU exit code when the UART frame is available.
-            decode_tensor_frame(uart_path.read_bytes(), executable.output)
-        raise RuntimeError(f"QEMU failed ({process.returncode}): {diagnostic}")
-    if not uart_path.is_file():
-        raise RuntimeError("QEMU exited without producing UART tensor output")
-    result = decode_tensor_frame(uart_path.read_bytes(), executable.output)
+    try:
+        stdout_path.write_bytes(process.stdout)
+        stderr_path.write_bytes(process.stderr)
+        if process.returncode:
+            diagnostic = process.stderr.decode("utf-8", errors="replace")[-4000:]
+            if uart_path.exists():
+                # Prefer a structured guest error (e.g. an illegal instruction)
+                # to an unexplained QEMU exit code when a frame is available.
+                decode_tensor_frame(uart_path.read_bytes(), executable.output)
+            raise RuntimeError(f"QEMU failed ({process.returncode}): {diagnostic}")
+        if not uart_path.is_file():
+            raise RuntimeError("QEMU exited without producing UART tensor output")
+        result = decode_tensor_frame(uart_path.read_bytes(), executable.output)
+    except Exception as exc:
+        raise RiscVTensorExecutionError(str(exc), elapsed_s=elapsed, command=command) from exc
     return RiscVTensorRun(result, elapsed, tuple(command), uart_path, stdout_path, stderr_path)

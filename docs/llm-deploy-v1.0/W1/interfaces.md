@@ -13,11 +13,11 @@
 | 三 | 后端 | `CompilerDriver(backend="tensor-c")` → 显式张量循环 C → Zig/LLVM → RV64GC ELF |
 | 四 | 运行时 | 指针数组模型 ABI；QEMU virt 裸机原始输入装载与 UART 输出协议 |
 
-上述新路径已经本地数值验证。原 `riscv` 标量选择器及旧 `llvm` 路径不由本探测证明；旧选择器的 MatMul 占位/张量与 FP32 覆盖缺口仍保留。不能将“仓库有 LLVM 后端”或 CNN standalone 可运行等同于 Qwen FP32 已支持。
+上述新路径已经本地及 `5ea22ec` 的 Linux 数值验证；本次收尾与仿真计时改动一起集成到 PR #91；新增改动须以对应新提交的检查为准，不能继承该提交的 CI PASS。原 `riscv` 标量选择器及旧 `llvm` 路径不由本探测证明；旧选择器的 MatMul 占位/张量与 FP32 覆盖缺口仍保留。不能将“仓库有 LLVM 后端”或 CNN standalone 可运行等同于 Qwen FP32 已支持。
 
 ## 1. 冻结与变更规则
 
-正式冻结前由 E1–E5 核对本文，E2 记录结论、日期和提交。冻结后接口修改需 PR、E2 批准与团队通知；兼容扩展升次版本，破坏性变更升主版本。消费方负责验证：E2 验前端，E3 验 IR，E4 验编译产物，E5 验端到端数值。不得绕过共享 IR 直接从 ONNX 另建隐藏的执行语义。
+正式冻结前由 E1–E5 核对本文，E2 记录结论、日期和提交。候选变更规则为：冻结后接口修改需 PR、E2 批准与团队通知；兼容扩展升次版本，破坏性变更升主版本。规则本身也需团队确认。消费方建议责任为：E2 验前端，E3 验 IR，E4 验编译产物，E5 验端到端数值。不得绕过共享 IR 直接从 ONNX 另建隐藏的执行语义。
 
 本次修订替换旧草案的“融合节点强制”“INT32 三指针入口”“partial RoPE”提议。这是纠正草案与实际实现的冲突，不伪称团队已经批准这些变化。
 
@@ -55,6 +55,8 @@ PR #89 合成图和官方 Qwen3 小模型是两种不同输入：前者无 Q/K R
 
 解释器支持循环/分支，不意味着所有后端也支持。本次 `tensor-c` 只接受单函数直线图；控制流、动态形状或不支持的 dtype 应在编译时失败。融合 Attention 是可选优化，不是当前正确性验收的前置；从基础算子模式识别融合仍然可行。
 
+错误是否属于优化必须保留的可观察行为尚未冻结：目前未使用的除零在 `none` 报错，却可被 `basic/all` 的 DCE 删除。本轮修复跨块 SSA 删除问题，但没有擅自改变这一全局契约。详见 [本地审查报告](W1-本地收尾与审查报告.md)；D8 决议需协调 DCE、LICM、常量折叠与数值门禁，不能只修改一个特例。
+
 ## 4. 接口三：后端（IR → RISC-V）
 
 ```python
@@ -73,7 +75,7 @@ python -X utf8 -B -m scratchv.main model.onnx --backend tensor-c --optimize all 
 
 `TensorCArtifact` 提供 `source`、有序 `inputs: tuple[TensorSpec, ...]`、`output`、`workspace_bytes`、`constant_bytes`、`function_name` 与 `compile_flags`。`TensorSpec` 包含 name/dtype/shape，并可读取 numpy_dtype/nbytes/size；dtype 是 IR `DataType`，不是任意字符串。
 
-代码生成器将静态权重放只读段，中间张量放有界静态 arena，按 SSA 最后使用复用空间；不在栈上分配大张量。默认工作区上限 256 MiB。编译 flags 包含 `-fno-fast-math -ffp-contract=off -fno-strict-aliasing`；数学函数使用 Zig 随附 musl libm，不用粗略近似。
+代码生成器将小模型权重展开成 C 字面量并放只读段，中间张量放有界静态 arena，按 SSA 最后使用复用空间；不在栈上分配大张量。默认常量和工作区上限**各为 256 MiB**。这不是大权重分离装载接口；放宽字节上限不能消除 C 源码膨胀、编译资源和 guest 容量约束。编译 flags 包含 `-fno-fast-math -ffp-contract=off -fno-strict-aliasing`；数学函数使用 Zig 随附 musl libm，不用粗略近似。
 
 目标为 RV64GC、LP64D、小端、64 位指针。Zig/LLVM 承担 C 到机器码，ScratchV 负责 ONNX/IR、优化、循环生成与内存规划。Zig 命令采用 `riscv64-linux-musl` 以获得数学库，但 guest 入口、链接布局与执行均为裸机，不运行 Linux，也不依赖 Linux syscall。
 
@@ -107,7 +109,9 @@ int scratchv_run(const void *const inputs[], void *output);
 
 ### 5.3 后续运行时边界
 
-Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收。当前小模型权重静态嵌入；完整 0.6B 权重不应直接套用 512 MiB guest 配置。W4 需明确大权重装载策略、容量检查、生命周期及分块输出；选择 Linux mmap 时须另建 Linux guest/user-mode 路线，裸机不具备该系统调用。
+Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收。当前小模型权重静态嵌入；完整 0.6B 外部分片合计 2,384,201,728 bytes（约 2.22 GiB），不应直接套用 512 MiB guest 配置。W4 需设计代码与权重分离，明确名称/偏移/dtype/shape 描述、装载策略、容量和地址重叠检查、生命周期及分块输出；选择 Linux mmap 时须另建 Linux guest/user-mode 路线，裸机不具备该系统调用。完整 logits 对照仍是原数值门槛，后续生成专用“最后有效位置 logits”接口需独立验收，不能悄悄替换原输出。
+
+固定长度的 host 生成循环须选择最后一个有效 token 的 logits，不能选择右侧 padding 的最后物理位置。ID 范围、mask、空输入、EOS 和有效长度达到 256 的行为需要显式测试；超长输入不静默截断。上述生成策略是后续实现要求，不代表当前探测已经提供生成 API。
 
 ## 6. 能力与剩余缺口
 
@@ -115,10 +119,10 @@ Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收�
 |---|---|---|
 | 前端基础算子与 IR 数值 | 已补齐本次图所需算子与用例，真实两层图通过 | E1/E2 继续完整图对照 |
 | 旧选择器张量 MatMul/FP32 | 未修复；新路径不经过它 | E3：保留范围说明，是否另行补齐由团队决定 |
-| tensor-c / RV64 运行器 | 本地及545e696的[Linux部署任务](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/36983000988/job/110761571841)通过，含28次两层QEMU执行与artifacts上传 | E3/E4/E5：第二人独立复现、后续提交Checks；不外推通用主CI状态 |
+| tensor-c / RV64 运行器 | 本地及 `5ea22ec` 的[Linux 部署任务](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/36984369623)通过，含 28 次两层 QEMU 执行；该提交主 CI 也通过 | E3/E4/E5：第二人独立复现、后续修改的受影响门禁；不外推完整模型 |
 | 完整模型 IR 数值与容量 | 未由小模型验收 | E2/E4/E5：逐步扩大配置及预训练权重验证 |
-| 完整 ONNX 门禁 | 历史导出、本地verify，以及545e696的[Linux download/ORT重型任务](https://github.com/yuki-328/ScratchV/actions/runs/36983119833/job/110761955767)均通过 | E1/E5：第二人复现及后续提交Checks；不冒称本轮重新导出或全部CI通过 |
-| Tokenizer / 生成 / 大权重加载 | 当前探测不覆盖 | E4：W4 实现及专项验收 |
+| 完整 ONNX 门禁 | 历史导出、本地 verify，以及 `545e696` 的[Linux download/ORT 重型任务](https://github.com/yuki-328/ScratchV/actions/runs/36983119833/job/110761955767)均通过；三项验证源码至 `5ea22ec` 未变 | E1/E5：第二人复现及受影响门禁；不冒称重新导出或 `5ea22ec` 重跑重型任务 |
+| Tokenizer / 生成 / 大权重加载 | 当前探测不覆盖 | E4：W2 基础运行时、W4 权重装载、W5 生成集成及专项验收 |
 
 ## 7. 团队待决议与确认
 
@@ -131,12 +135,16 @@ Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收�
 - [ ] D5：接受基础算子图作为正确性基线，融合节点作为后续优化。
 - [ ] D6：确认小模型静态嵌入边界，另行设计完整权重加载和内存计划。
 - [ ] D7：确认接口版本、变更审批及消费方测试责任。
+- [ ] D8：确认未使用算子的数值错误是否可被优化消除，以及对应 effect/安全判定和验收范围。
+
+D1–D8 每项应记录“同意 / 有异议 / 待补证据”，有异议时说明消费方、阻塞点和建议修改。涉及完整权重布局/装载的新接口另行设计，不用签署当前小模型 ABI 视为未来架构获批。建议由 E2 汇总，E1–E5 分别核对自己实际消费的契约；姓名与截止日期由团队填写，不由文档作者代签。
 
 | 项 | 记录 |
 |---|---|
 | 会议日期 / 对应 commit | 待填写 |
 | E1 前端 / E2 IR / E3 后端 / E4 运行时 / E5 测试确认 | 待逐人填写 |
 | 尚未同意的条款 / 后续责任人与截止时间 | 待填写 |
+| D1–D8 逐项结论 / 证据或讨论链接 | 待填写 |
 | 最终冻结版本 | 待 E2 确认后填写 |
 
 ## 8. 变更记录
@@ -145,3 +153,4 @@ Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收�
 |---|---|---|
 | 原草案 | v0.1 / v1.0 提议 | 四接口勘察与初始融合节点/三指针入口设想；未完成团队冻结 |
 | 2026-10-02 | v1.1 候选 | 按实际实现校正基础图、全 RoPE、INT64 与指针数组 ABI、tensor-c/RV64 裸机及验收边界 |
+| 2026-10-02 | v1.1 候选补记 | 回填 `5ea22ec` CI、常量容量和完整装载边界；补消费方决议记录，不提升正式冻结版本 |
