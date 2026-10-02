@@ -1,92 +1,72 @@
 """Tests for advanced optimizer passes: peephole, muladd_fusion, LICM."""
 
+import numpy as np
+
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import DataType, OpCode, Value
 from scratchv.optimizer.peephole import IRPeepholeOptimizer
 from scratchv.optimizer.muladd_fusion import MulAddFusion
 from scratchv.optimizer.licm import LICM
+from scratchv.verification.ir_interpreter import IRInterpreter
 
 
 class TestIRPeepholeOptimizer:
-    def test_eliminate_addi_zero(self):
+    def test_eliminate_integer_add_zero_redirects_return(self):
         builder = IRBuilder()
-        builder.new_function("test")
+        a = Value("a", DataType.INT32, shape=(2,))
+        builder.new_function("test", [a])
         builder.new_block("entry")
-        a = builder.make_value(name="a")
-        c = builder.make_value(name="c")
-        # add a, 0  (no-op)
-        zero = builder.make_value(name="_z", is_constant=True, const_value=0)
-        builder._emit(OpCode.ADD, c, [a, zero])
-        builder.ret(c)
+        result = builder.add(a, builder.make_const(0, DataType.INT32))
+        builder.ret(result)
+        assert IRPeepholeOptimizer().optimize(builder.program) == 1
+        assert builder.current_block.instructions[0].operands == [a]
+        np.testing.assert_array_equal(
+            IRInterpreter(builder.program).run({"a": np.array([2, -3], np.int32)}).return_value,
+            [2, -3],
+        )
 
-        opt = IRPeepholeOptimizer()
-        opt.optimize(builder.program)
-        # The addi 0 should have been removed
-        block = builder.program.functions[0].blocks[0]
-        assert all(i.opcode != OpCode.ADD for i in block.instructions)
-
-    def test_eliminate_mul_one(self):
+    def test_eliminate_mul_one_after_checked_float_operation(self):
         builder = IRBuilder()
-        builder.new_function("test")
+        a = Value("a", DataType.FLOAT32, shape=(2,))
+        builder.new_function("test", [a])
         builder.new_block("entry")
-        a = builder.make_value(name="a")
-        c = builder.make_value(name="c")
-        one = builder.make_value(name="_o", is_constant=True, const_value=1)
-        builder._emit(OpCode.MUL, c, [a, one])
-        builder.ret(c)
+        finite = builder.abs(a)
+        result = builder.mul(finite, builder.make_const(1))
+        builder.ret(result)
+        assert IRPeepholeOptimizer().optimize(builder.program) == 1
+        assert all(i.opcode != OpCode.MUL for i in builder.current_block.instructions)
+        np.testing.assert_array_equal(
+            IRInterpreter(builder.program).run({"a": np.array([2, -3], np.float32)}).return_value,
+            [2, 3],
+        )
 
-        opt = IRPeepholeOptimizer()
-        count = opt.optimize(builder.program)
-        assert count >= 1
-        # MUL with 1 should be replaced
-        block = builder.program.functions[0].blocks[0]
-        has_mul = any(i.opcode == OpCode.MUL for i in block.instructions)
-        assert not has_mul
-
-    def test_eliminate_mul_zero(self):
+    def test_preserve_tensor_mul_zero_shape_and_signed_zero(self):
         builder = IRBuilder()
-        builder.new_function("test")
+        a = Value("a", DataType.FLOAT32, shape=(2,))
+        builder.new_function("test", [a])
         builder.new_block("entry")
-        a = builder.make_value(name="a")
-        c = builder.make_value(name="c")
-        zero = builder.make_value(name="_z", is_constant=True, const_value=0)
-        builder._emit(OpCode.MUL, c, [a, zero])
-        builder.ret(c)
-
-        opt = IRPeepholeOptimizer()
-        opt.optimize(builder.program)
-        block = builder.program.functions[0].blocks[0]
-        mul_instrs = [i for i in block.instructions if i.opcode == OpCode.MUL]
-        assert len(mul_instrs) == 0
-        # Should be replaced with load_const 0
-        lc_instrs = [i for i in block.instructions
-                     if i.opcode == OpCode.LOAD_CONST]
-        assert any(i.attrs.get("value") == 0 for i in lc_instrs)
+        result = builder.mul(a, builder.make_const(0))
+        result.shape = a.shape
+        builder.ret(result)
+        assert IRPeepholeOptimizer().optimize(builder.program) == 0
+        actual = IRInterpreter(builder.program).run({"a": np.array([2, -3], np.float32)}).return_value
+        np.testing.assert_array_equal(actual, [0, 0])
+        np.testing.assert_array_equal(np.signbit(actual), [False, True])
 
 
 class TestMulAddFusion:
-    def test_fuse_mul_add(self):
+    def test_retain_binary_mul_add_contract(self):
         builder = IRBuilder()
-        builder.new_function("test")
+        values = [Value(name, DataType.FLOAT32, shape=(2,)) for name in ("a", "b", "acc")]
+        builder.new_function("test", values)
         builder.new_block("entry")
-        a = builder.make_value(name="a")
-        b = builder.make_value(name="b")
-        acc = builder.make_value(name="acc")
-
-        tmp = builder.mul(a, b)
-        result = builder.add(tmp, acc)
-        builder.ret(result)
-
-        opt = MulAddFusion()
-        count = opt.optimize(builder.program)
-        assert count == 1
-
-        block = builder.program.functions[0].blocks[0]
-        # Should have one ADD (the fused one) and no separate MUL+ADD
-        adds = [i for i in block.instructions if i.opcode == OpCode.ADD]
-        muls = [i for i in block.instructions if i.opcode == OpCode.MUL]
-        assert len(adds) == 1
-        assert len(muls) == 0
+        builder.ret(builder.add(builder.mul(*values[:2]), values[2]))
+        before = builder.program.dump()
+        assert MulAddFusion().optimize(builder.program) == 0
+        assert builder.program.dump() == before
+        feed = {"a": np.array([2, 3], np.float32), "b": np.array([4, 5], np.float32),
+                "acc": np.array([6, 7], np.float32)}
+        np.testing.assert_array_equal(IRInterpreter(builder.program).run(feed).return_value, [14, 22])
 
     def test_no_fuse_without_mul(self):
         builder = IRBuilder()
@@ -94,12 +74,8 @@ class TestMulAddFusion:
         builder.new_block("entry")
         a = builder.make_value(name="a")
         b = builder.make_value(name="b")
-        c = builder.add(a, b)
-        builder.ret(c)
-
-        opt = MulAddFusion()
-        count = opt.optimize(builder.program)
-        assert count == 0
+        builder.ret(builder.add(a, b))
+        assert MulAddFusion().optimize(builder.program) == 0
 
 
 class TestLICM:

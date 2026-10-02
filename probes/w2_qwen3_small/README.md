@@ -1,5 +1,10 @@
 # 真实 Qwen3 结构的两层数值探测
 
+本目录提供两个独立验收入口：`run.py` 验证 PyTorch/ORT/IR；`riscv.py`
+继续将同一普通图和诊断图经 ScratchV 编译流程生成张量 C 内核，再交叉编译成
+RV64GC ELF，在 QEMU `virt` 裸机执行。下文“不是 RISC-V 验证”的说明仅指
+`run.py`；RISC-V 的复现步骤和边界见最后一节。
+
 此探测直接使用固定版本 `transformers==4.51.3` 的[官方 Qwen3 实现](https://github.com/huggingface/transformers/blob/v4.51.3/src/transformers/models/qwen3/modeling_qwen3.py)，参照[固定版本 Qwen3-0.6B 配置](https://huggingface.co/Qwen/Qwen3-0.6B/blob/c1899de289a04d12100db370d81485cdf75e47ca/config.json)缩小尺寸并生成固定种子的随机权重，验证 **PyTorch → ONNX Runtime → ScratchV IR 解释器** 的数值一致性。无需下载 Qwen3-0.6B 权重或访问 Hugging Face。
 
 与 W1 手工拼接的两层图不同，这里保留真实 Qwen3 的 Q/K RMSNorm、全 head_dim RoPE、GQA、SwiGLU 和 residual 路径。随机权重仅用于检查结构和计算，不具备语言生成能力；通过该探测也不表示完整 0.6B 模型或 RISC-V 后端已经验证通过。
@@ -93,3 +98,80 @@ ScratchV 当前只返回一个 IR 输出。为在一次执行中观察所有 che
 现有 `probe:small-transformer` 继续使用 PR #89 提交的 LFS 模型执行原来的数值验收。通用编译器 CI 不安装 PyTorch；涉及官方模型导出和执行的重型验证由本专用工作流承担。
 
 专项测试按依赖区分：`test_qwen3_small_probe.py` 检查打包、拆包和数值诊断，仅需 NumPy/ONNX；`test_qwen3_small_model.py` 检查官方模型、配置及观察器；`test_qwen3_small_gate.py` 检查完整门禁的错误传播。后两者使用 PyTorch，在通用轻量环境可跳过，在专用 CI 的固定环境中执行。
+
+## 编译优化与 RISC-V/QEMU 验收
+
+执行链路为：
+
+```text
+官方 Qwen3 → ONNX → ONNXParser → shared Program IR
+  → CompilerDriver / 优化 pass / IR verifier
+  → tensor-c（显式张量循环、FP32、静态 arena 与权重）
+  → Zig 0.14.1 / LLVM → RV64GC LP64D ELF
+  → QEMU virt / TCG → UART 原始输出 → ORT 逐点对照
+```
+
+这里实际执行的是 RISC-V 指令。Zig/LLVM 承担 C 到机器码的交叉编译，
+ScratchV 承担 ONNX/IR、IR 优化、张量循环生成、内存规划与输入输出接口。
+这条新路径不经过旧的标量寄存器选择器，不表示该选择器已经实现张量计算；
+标准编译入口现在会拒绝把张量图交给旧 `riscv/llvm` 后端，以免生成占位汇编。
+
+Linux 工具准备（Python 导出依赖仍按前面的固定版本安装）：
+
+```bash
+sudo apt-get install --no-install-recommends qemu-system-misc
+python -m pip install ziglang==0.14.1
+export SCRATCHV_CC="$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')"
+```
+
+Windows 可使用便携 Zig 和 QEMU，设置 `SCRATCHV_CC` 为 `zig.exe` 的完整路径、
+`SCRATCHV_QEMU` 为 `qemu-system-riscv64.exe` 的完整路径。也会自动搜索仓库的
+`output/tools/`。不需要 WSL、Linux 镜像或系统安装；QEMU Windows 分发来源见
+[QEMU 下载页](https://www.qemu.org/download/#windows)。工具仅在本机准备，脚本不会隐式联网安装。
+
+先验证矩阵乘，再导出模型并运行完整验收；输出目录必须为空，避免覆盖旧证据：
+
+```bash
+python probes/w1_matmul_4x4/run.py --output-dir output/qemu-matmul
+python probes/w2_qwen3_small/run.py --output-dir output/qwen3-small
+python probes/w2_qwen3_small/riscv.py \
+  --model-dir output/qwen3-small --output-dir output/qwen3-riscv
+```
+
+第三步对普通图、诊断图均执行 `none/basic/all` 优化后的 IR 数值验收；并分别
+将 `none/all` 编译为独立 ELF，运行全部 7 组输入。因此一轮有 4 次模型构建、
+28 次 QEMU 执行，涵盖全部 29 个检查点、普通/诊断 logits 一致性、因果性与
+padding 隔离。每个比较仍要求 FP32、形状一致、有限值、最大绝对误差严格
+小于 `1e-5`，不提高容差。独立矩阵乘探测包含 4×4 小数、投影、Attention、
+双侧批次广播及三种向量乘法。
+
+`output/qwen3-riscv/` 包含 `report.json/md/html`、生成的 C、启动汇编与链接脚本、
+ELF、编译器/QEMU 命令与日志、每次执行的输入和 UART 二进制以及 QEMU/ORT 数组。
+JSON 记录源码/模型/输入/ELF 哈希、工具版本、优化统计、工作区大小、最差元素与
+首次发生偏差的检查点。缺工具、编译失败、trap、超时、损坏/截断的 UART、错误
+退出或任一数值不匹配都会失败，不允许跳过后返回成功。
+
+只生成张量 C 可使用标准入口：
+
+```bash
+python -m scratchv.main model.onnx --backend tensor-c --optimize all \
+  --verify-ir --tensor-workspace-mib 256 -o model.c
+```
+
+`--verify-ir` 检查编译流程的 IR 契约；执行数值验收须运行上述 QEMU 探测。
+旧 `--verify` 不会执行这份生成代码，因此新后端拒绝该选项。
+
+本次优化器修复保持可执行语义：常量折叠遵循 dtype 的逐步舍入；peephole 仅
+消除安全的恒等运算，并重定向 SSA 使用；现有 MulAddFusion 因缺少合法融合
+opcode 暂时不执行融合。`all` 仍运行注册的全部 pass，融合次数为零。
+
+当前边界：静态形状、连续张量、FP32 计算和 INT32/INT64 索引；固定单函数直线
+IR；静态 arena 按 SSA 最后使用复用，函数不可重入。权重嵌入只读段，中间张量
+不放栈。当前默认工作区上限 256 MiB、QEMU 内存 512 MiB。本探测使用小尺寸随机
+权重，不覆盖完整 0.6B 权重加载、Tokenizer、生成循环、KV Cache 或性能加速。
+数学函数使用 Zig 随附的 musl libm，而非粗略近似；关闭 fast-math 和浮点乘加融合。
+
+CI 新增强制 `probe:qemu-matmul`、张量编译器/运行时回归与
+`numeric:qemu-qwen3-small`，输出上传为 `riscv-tensor-probe-output`。
+旧 IR verifier benchmark 改为输出优化后 IR，继续比较验证开关的影响；
+它不再生成不可执行的 CNN 占位汇编，计时口径不可与旧版直接比较。

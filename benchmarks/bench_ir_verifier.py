@@ -1,7 +1,7 @@
 """Compare shared-pipeline compilation with IR verification disabled/enabled.
 
 Run with ``python -m benchmarks.bench_ir_verifier``. Timings include parsing,
-optimizations, code generation and writing output; they are not model runtime.
+optimizations, IR serialization and writing output; they are not model runtime.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ def benchmark(model: Path, *, repeats: int = 5, warmup: int = 1,
     model_hash = hashlib.sha256(model.read_bytes()).hexdigest()
     rows = []
     with tempfile.TemporaryDirectory(prefix="scratchv-ir-bench-") as directory:
-        output = str(Path(directory) / "output.s")
+        output = str(Path(directory) / "output.ir")
         for level in levels:
             samples = {False: [], True: []}
             reference = None
@@ -98,7 +98,7 @@ def benchmark(model: Path, *, repeats: int = 5, warmup: int = 1,
                 order = (False, True) if iteration % 2 == 0 else (True, False)
                 for enabled in order:
                     driver = CompilerDriver(CompilerConfig(
-                        backend="riscv", optimize_level=level, verify_ir=enabled,
+                        backend="ir", optimize_level=level, verify_ir=enabled,
                     ))
                     start = time.perf_counter()
                     result = driver.compile(str(model), output)
@@ -115,7 +115,7 @@ def benchmark(model: Path, *, repeats: int = 5, warmup: int = 1,
                         reference = digest
                     elif digest != reference:
                         raise RuntimeError(
-                            f"optimize={level}: generated assembly differs between runs"
+                            f"optimize={level}: generated IR differs between runs"
                         )
                     if iteration >= warmup:
                         samples[enabled].append(elapsed)
@@ -135,8 +135,8 @@ def benchmark(model: Path, *, repeats: int = 5, warmup: int = 1,
     return {
         "model": str(model), "model_sha256": model_hash,
         "python": platform.python_version(), "platform": platform.platform(),
-        "backend": "riscv", "repeats": repeats, "warmup": warmup,
-        "timing_scope": "parse + optimize + codegen + output write",
+        "backend": "ir", "repeats": repeats, "warmup": warmup,
+        "timing_scope": "parse + optimize + IR serialization + output write",
         "results": rows,
     }
 
@@ -144,11 +144,11 @@ def benchmark(model: Path, *, repeats: int = 5, warmup: int = 1,
 def render_markdown(report: dict) -> str:
     lines = [
         "# Topic 21 IR 验证器：编译耗时与规则示例", "",
-        f"模型：`{Path(report['model']).name}`；后端：RISC-V；"
+        f"模型：`{Path(report['model']).name}`；输出：优化后 IR；"
         f"预热 {report['warmup']} 次，采样 {report['repeats']} 次，取中位数。", "",
         "通过 CompilerConfig.verify_ir 开关，在正式编译流程的解析后、每个 IR pass "
         "前后和代码生成前验证。两组均重新解析模型。", "",
-        "| 优化级别 | 关闭验证 (ms) | 开启验证 (ms) | 差值 (ms) | 差值 (%) | 汇编一致 |",
+        "| 优化级别 | 关闭验证 (ms) | 开启验证 (ms) | 差值 (ms) | 差值 (%) | IR 一致 |",
         "| --- | ---: | ---: | ---: | ---: | --- |",
     ]
     for row in report["results"]:
@@ -160,10 +160,11 @@ def render_markdown(report: dict) -> str:
             f"| {row['overhead_s'] * 1000:.3f} | {percent_text} | 是 |"
         )
     lines.extend([
-        "", "计时包含解析、优化、代码生成和写文件，不是模型运行耗时，也不是验证器函数的独立耗时。",
+        "", "计时包含解析、优化、IR 序列化和写文件，不是模型运行耗时，也不是验证器函数的独立耗时。",
         "差值可能受测量噪声影响而为负；不以耗时差值作为 CI 通过门槛。"
-        "编译或验证失败、汇编内容不一致会使 benchmark 失败。",
-        "汇编一致仅检查开关未改变生成结果，不代表与 ONNX Runtime 数值等价。", "",
+        "编译或验证失败、IR 内容不一致会使 benchmark 失败。",
+        "IR 一致仅检查开关未改变生成结果，不代表与 ONNX Runtime 数值等价。"
+        "张量图不再交给仅支持标量的旧后端；本报告不能与旧 RISC-V 代码生成计时直接比较。", "",
     ])
     if "rule_examples" in report:
         lines.extend(["## 七条规则的诊断示例", ""])

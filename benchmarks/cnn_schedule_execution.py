@@ -1,19 +1,31 @@
 """Run complete standalone CNN binaries under QEMU user mode and compare state."""
 
 import hashlib
+import os
 from pathlib import Path
-import resource
 import shutil
 import struct
 import subprocess
 
 
+def qemu_process_options() -> dict:
+    """Suppress Unix core dumps without requiring Unix-only APIs on Windows."""
+    if os.name != "posix":
+        return {}
+    import resource
+
+    return {"preexec_fn": lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0))}
+
+
 def assemble_listing(source: Path, directory: Path) -> bytes:
+    tools = {name: shutil.which(name) for name in ("clang", "ld.lld")}
+    if not all(tools.values()):
+        raise RuntimeError(f"CNN assembly requires clang and ld.lld: {tools}")
     obj, binary = directory / "roundtrip.o", directory / "roundtrip.bin"
-    subprocess.run(["clang", "--target=riscv32-unknown-elf", "-march=rv32im", "-mabi=ilp32",
+    subprocess.run([tools["clang"], "--target=riscv32-unknown-elf", "-march=rv32im", "-mabi=ilp32",
                     "-mno-relax", "-c", str(source), "-o", str(obj)],
                    capture_output=True, check=True, timeout=30)
-    subprocess.run(["ld.lld", "-m", "elf32lriscv", "--no-relax", "--image-base=0", "-Ttext=0", "-e", "0",
+    subprocess.run([tools["ld.lld"], "-m", "elf32lriscv", "--no-relax", "--image-base=0", "-Ttext=0", "-e", "0",
                     "--oformat=binary", str(obj), "-o", str(binary)],
                    capture_output=True, check=True, timeout=30)
     return binary.read_bytes()
@@ -83,7 +95,7 @@ output_tensor:
                             "-nostdlib", "-static", "-fuse-ld=lld", "-Wl,--no-relax", str(asm), "-o", str(elf)],
                            check=True, capture_output=True, timeout=30)
             result = subprocess.run([tools["qemu-riscv32"], str(elf)], capture_output=True, timeout=60,
-                                    preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+                                    **qemu_process_options())
             if result.returncode or len(result.stdout) != total:
                 reason = (f"Full CNN {phase} failed: return={result.returncode}, "
                           f"bytes={len(result.stdout)}/{total}, stderr={result.stderr.decode(errors='replace')}")

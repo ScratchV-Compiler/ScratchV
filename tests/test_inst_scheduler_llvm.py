@@ -141,10 +141,36 @@ def test_unrecognized_version_output_is_rejected(monkeypatch):
         llvm_mca._version(("invalid-version", 0, 0))
 
 
-def test_default_executable_is_not_version_pinned(monkeypatch):
+def test_default_executable_is_not_version_pinned(monkeypatch, tmp_path):
     monkeypatch.delenv("LLVM_MCA", raising=False)
-    monkeypatch.setattr(llvm_mca.shutil, "which", lambda name: f"/tools/{name}")
-    assert llvm_mca.executable_path() == "/tools/llvm-mca"
+    requested = []
+
+    def which(name):
+        requested.append(name)
+        return str(tmp_path / name)
+
+    monkeypatch.setattr(llvm_mca.shutil, "which", which)
+    assert llvm_mca.executable_path() == str((tmp_path / "llvm-mca").resolve())
+    assert requested == ["llvm-mca"]
+
+
+@pytest.mark.parametrize("platform", ["nt", "posix"])
+def test_qemu_process_options_only_disable_unix_core_dumps(monkeypatch, platform):
+    import sys
+    from types import SimpleNamespace
+    from benchmarks import cnn_schedule_execution as execution
+
+    calls = []
+    monkeypatch.setattr(execution, "os", SimpleNamespace(name=platform))
+    monkeypatch.setitem(sys.modules, "resource", SimpleNamespace(
+        RLIMIT_CORE=4, setrlimit=lambda *args: calls.append(args)))
+    options = execution.qemu_process_options()
+    if platform == "posix":
+        options["preexec_fn"]()
+        assert calls == [(4, (0, 0))]
+    else:
+        assert options == {}
+        assert calls == []
 
 
 @pytest.mark.parametrize("failure", ["diagnostic", "exit", "timeout"])
@@ -278,8 +304,10 @@ def test_full_cnn_register_mismatch_fails_even_if_outputs_match(tmp_path, monkey
     monkeypatch.setattr(execution.subprocess, "check_output", lambda *args, **kwargs: "tool test\n")
 
     def run(command, **kwargs):
+        from pathlib import Path
+
         data = bytes(648)
-        if command[0].endswith("qemu-riscv32") and "after" in command[-1]:
+        if command[0].endswith("qemu-riscv32") and Path(command[-1]).stem == "execute-after":
             data = b"\x01" + data[1:]
         return subprocess.CompletedProcess(command, 0, data, b"")
 

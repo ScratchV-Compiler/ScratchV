@@ -164,24 +164,17 @@ class TestFormatTable:
 class TestCompareFiles:
     """Tests for file comparison."""
 
-    def test_compare_two_files(self):
-        f1 = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".s", delete=False)
-        f1.write(".text\nmain:\n  add x1, x2, x3\n  lw x4, 0(sp)\n  ret\n")
-        f1_path = f1.name
-        f2 = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".s", delete=False)
-        f2.write(".text\nmain:\n  add x1, x2, x3\n  div x5, x6, x7\n  ret\n")
-        f2_path = f2.name
+    def test_compare_two_files(self, tmp_path):
+        f1_path, f2_path = tmp_path / "first.s", tmp_path / "second.s"
+        f1_path.write_text(".text\nmain:\n  add x1, x2, x3\n  lw x4, 0(sp)\n  ret\n")
+        f2_path.write_text(".text\nmain:\n  add x1, x2, x3\n  div x5, x6, x7\n  ret\n")
 
-        try:
-            result = compare_files([f1_path, f2_path])
-            assert isinstance(result, ComparisonResult)
-            assert len(result.files) == 2
-            assert len(result.counts) == 2
-        finally:
-            os.unlink(f1_path)
-            os.unlink(f2_path)
+        result = compare_files([str(f1_path), str(f2_path)])
+        assert isinstance(result, ComparisonResult)
+        assert len(result.files) == 2
+        assert len(result.counts) == 2
+        assert result.counts["first.s"]["MEM"] == 1
+        assert result.counts["second.s"]["MEM"] == 0
 
 
 class TestHtmlReport:

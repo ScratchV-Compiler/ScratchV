@@ -9,7 +9,9 @@ from __future__ import annotations
 from scratchv.ir.types import (
     OpCode, Instruction, BasicBlock, Function, Program,
 )
+from scratchv.optimizer.hoist_safety import HoistSafety
 from scratchv.pass_interface import OptimizationPass
+from scratchv.verification.ir_numpy_ops import OpError, check_instruction, compute
 
 
 class ConstantFolder(OptimizationPass):
@@ -19,16 +21,17 @@ class ConstantFolder(OptimizationPass):
 
     def optimize(self, program: Program) -> int:
         """Run constant folding on all functions. Returns number of folds."""
-        return sum(self._fold_function(func) for func in program.functions)
+        return sum(self._fold_function(program, func) for func in program.functions)
 
-    def _fold_function(self, func: Function) -> int:
-        return sum(self._fold_block(block) for block in func.blocks)
+    def _fold_function(self, program: Program, func: Function) -> int:
+        safety = HoistSafety(program, func)
+        return sum(self._fold_block(block, safety) for block in func.blocks)
 
-    def _fold_block(self, block: BasicBlock) -> int:
+    def _fold_block(self, block: BasicBlock, safety: HoistSafety) -> int:
         changes = 0
         new_instrs: list[Instruction] = []
         for instr in block.instructions:
-            folded = self._try_fold(instr)
+            folded = self._try_fold(instr, safety)
             if folded is not None:
                 new_instrs.append(folded)
                 changes += 1
@@ -37,24 +40,26 @@ class ConstantFolder(OptimizationPass):
         block.instructions = new_instrs
         return changes
 
-    def _try_fold(self, instr: Instruction) -> Instruction | None:
+    def _try_fold(self, instr: Instruction, safety: HoistSafety) -> Instruction | None:
         """Try to fold an instruction. Returns a replacement or None."""
         if instr.opcode not in (
                 OpCode.ADD, OpCode.SUB,
                 OpCode.MUL, OpCode.DIV):
             return None
-        if len(instr.operands) != 2:
+        if instr.dest is None or instr.dest.shape or len(instr.operands) != 2:
             return None
-
-        lhs, rhs = instr.operands
-        if not lhs.is_constant or not rhs.is_constant:
+        if any(value.dtype != instr.dest.dtype or value.shape for value in instr.operands):
             return None
-        if lhs.const_value is None or rhs.const_value is None:
+        operands = [safety.facts(value).constant for value in instr.operands]
+        if any(value is None for value in operands):
             return None
-
-        a, b = float(lhs.const_value), float(rhs.const_value)
-        result = self._compute(instr.opcode, a, b)
-        if result is None:
+        try:
+            check_instruction(instr)
+            # Reuse runtime rounding, integer wrapping and checked division.
+            # Facts resolve definitions, not stale const_value hints or params.
+            result = compute(instr, operands).item()
+        except (OpError, ValueError, TypeError, OverflowError, FloatingPointError):
+            # Keep failing operations at their original execution position.
             return None
 
         dest = instr.dest
@@ -67,13 +72,3 @@ class ConstantFolder(OptimizationPass):
             dest=dest,
             attrs={"value": result},
         )
-
-    @staticmethod
-    def _compute(opcode: OpCode, a: float, b: float) -> float | None:
-        mapping = {
-            OpCode.ADD: a + b,
-            OpCode.SUB: a - b,
-            OpCode.MUL: a * b,
-            OpCode.DIV: a / b if b != 0 else None,
-        }
-        return mapping.get(opcode)

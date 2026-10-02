@@ -1,272 +1,147 @@
-# 接口冻结文档 v1.0
+# 接口基线 v1.1：待团队冻结确认
 
-> 上游文档：[开发计划.md](../开发计划.md) §2.2、§4.3 W1
-> 状态：**草案**，待 W1 D4 接口冻结会议确认后升为 v1.0
-> 本文档是 W1 的交付物之一，对应 CI Job `docs:interfaces`
+> 上游：[开发计划.md](../开发计划.md) §2.2、§4.3 W1。
+> 状态（2026-10-02）：**按当前实现核对的候选基线，团队确认未完成**。
+> `docs:interfaces` 只检查文档结构；“有版本号”不等于冻结会议已通过。正式决议见 §7。
 
----
+## 0. 四类接口与路线
 
-## 0. 摘要
+| # | 接口 | 当前实现边界 |
+|---|---|---|
+| 一 | 前端 | ONNX 文件 → shared IR `Program`，权重通过 `parser.initializers` 单独绑定 |
+| 二 | IR | 基础张量算子图、形状/dtype/attrs 契约、verifier 和 NumPy 解释器 |
+| 三 | 后端 | `CompilerDriver(backend="tensor-c")` → 显式张量循环 C → Zig/LLVM → RV64GC ELF |
+| 四 | 运行时 | 指针数组模型 ABI；QEMU virt 裸机原始输入装载与 UART 输出协议 |
 
-本文档冻结 ScratchV 编译 Qwen3-0.6B 所需的**四类接口**：
+上述新路径已经本地数值验证。原 `riscv` 标量选择器及旧 `llvm` 路径不由本探测证明；旧选择器的 MatMul 占位/张量与 FP32 覆盖缺口仍保留。不能将“仓库有 LLVM 后端”或 CNN standalone 可运行等同于 Qwen FP32 已支持。
 
-| # | 接口 | 边界 | 现状 |
-|---|---|---|---|
-| 一 | 前端 | ONNX 文件 → IR `Program` | ✅ 已实现（仅覆盖 CNN 算子） |
-| 二 | IR | IR 数据结构与算子契约 | ⚠️ 结构完备，算子缺 2 个、多个为占位 |
-| 三 | 后端 | IR → RISC-V 汇编 | ⚠️ 框架完备，**FP32 无选择器**、MATMUL 为占位 |
-| 四 | 运行时 | host ↔ RISC-V FFI | ❌ 不存在，本文档首次定义 |
+## 1. 冻结与变更规则
 
-**本次冻结的核心结论**：接口一、二是**扩展**（加算子），接口三、四是**新建**（后端补浮点选择器、运行时从零搭）。缺口清单见 §6。
+正式冻结前由 E1–E5 核对本文，E2 记录结论、日期和提交。冻结后接口修改需 PR、E2 批准与团队通知；兼容扩展升次版本，破坏性变更升主版本。消费方负责验证：E2 验前端，E3 验 IR，E4 验编译产物，E5 验端到端数值。不得绕过共享 IR 直接从 ONNX 另建隐藏的执行语义。
 
----
-
-## 1. 冻结规则
-
-1. 冻结后修改接口需 **PR + E2 批准 + 通知全员**，并在本文档 §8 留痕。
-2. 版本号：破坏性修改升 `v2.0`，兼容性扩展升 `v1.1`。
-3. 任何人**不得**绕过接口直接改对方模块（例如前端不得直接调用后端函数）。
-4. 接口的**验证责任**在消费方：E2 验证前端产物，E3 验证 IR 输入契约，E5 验证端到端数值。
-
----
+本次修订替换旧草案的“融合节点强制”“INT32 三指针入口”“partial RoPE”提议。这是纠正草案与实际实现的冲突，不伪称团队已经批准这些变化。
 
 ## 2. 接口一：前端（ONNX → IR）
 
-### 2.1 现状
-
-**入口**（`scratchv/frontend/onnx_parser.py:14,24`）：
-
 ```python
-class ONNXParser:
-    def parse(self, model_path: str) -> Program
+parser = ONNXParser()
+program = parser.parse(model_path)
+result = IRInterpreter(program).run(inputs, initializers=parser.initializers)
 ```
 
-**异常**：`ONNXParseError`（同文件 `:9`）
+- `parse(model_path: str) -> Program` 保持主入口；`initializers` 是名称到 NumPy 数组的映射。仅传 `Program` 而丢失数组绑定不能运行带权重图。
+- 外部 ONNX 权重分片相对于模型文件目录解析。ONNX 结构检查与完整权重载入不是一回事；完整图数值执行必须准备真实分片，不能把 LFS pointer 当权重。
+- 不支持的 op/domain、属性或形状应显式报错。禁止跳过节点或替换成零张量来通过探测。
+- 当前以导出图的基础算子组合表达 RMSNorm、RoPE、SwiGLU 与 GQA。无需为证明正确性强制新增 `RMSNORM/ROPE/SWIGLU/ATTENTION` opcode；后续融合须保留等价语义，并同时更新 verifier、解释器、后端与对照用例。
+- 固定 batch=1、L=256、FP32、无 KV Cache。ONNX schema 中的 IDs 为 INT64，不能未经明确转换在前端改成 INT32。
 
-### 2.2 v1 冻结定义
+PR #89 合成图和官方 Qwen3 小模型是两种不同输入：前者无 Q/K RMSNorm且为 partial RoPE；后者保留官方实现的 Q/K RMSNorm、全 head_dim RoPE 和独立 head_dim。完整 Qwen 图也应按固定 revision 的官方配置解释。
 
-```python
-# 不变
-ONNXParser().parse(model_path: str) -> Program
-```
+## 3. 接口二：共享 IR 数据结构与算子契约
 
-**新增要求**：`parse()` 遇到不支持的算子时**必须抛 `ONNXParseError` 并列出算子名**，不得静默跳过。
+权威定义在 `scratchv/ir/types.py`，逐算子检查和 NumPy 语义在 `scratchv/verification/ir_numpy_ops.py`，解释器在 `scratchv/verification/ir_interpreter.py`。文档不再复制易过期的 opcode 数量表。
 
-> 依据：计划 §4.3 W2 的 `frontend:parse-qwen3` 要求"完整 Qwen3 解析无错误，28 层完整"。静默跳过会让缺算子在 W3 才暴露。
+`Value` 的名称/dtype/shape、`Instruction` 的 opcode/operands/attrs、`Function` 参数与返回值、`Program` globals 是跨阶段共享信息。SSA 名称唯一；输入、初始化数组、返回数组的 dtype/shape 必须与定义一致。新增 opcode 或语义属性必须同步其消费者，不能假定只改 enum 后 verifier 和 pass 就自动兼容。
 
-### 2.3 需新增的算子识别
+| 语义 | 当前基线 |
+|---|---|
+| FP32 舍入 | 常量折叠遵循算子 dtype 的逐步舍入，不用 Python double 折叠后只在末尾截断 |
+| 形状 | 本部署路线要求编译期确定，广播、Reshape、Slice、Gather 等按各自契约检查 |
+| RMSNorm | 沿对应末轴归一化；保留官方模型 Q/K 独立 RMSNorm，eps=`1e-6` |
+| RoPE | Qwen3 为**全 head_dim** 旋转；theta=`1e6`，positions 固定 `0..255` |
+| GQA | 按组重复 KV 头；小模型 Q/KV=4/2，完整模型 16/8；不能混淆 head_dim 与 hidden/heads |
+| mask | FP32 加性因果 + key-padding，允许位置 0、屏蔽位置 `finfo(float32).min` |
+| 返回 | 当前执行接口取单个返回张量；诊断图以 Flatten+Concat 打包 29 个检查点，schema 保存偏移/形状 |
 
-| 算子 | 状态 | 归属周 |
-|---|---|---|
-| RMSNorm | ❌ 不存在 | W2 |
-| RoPE | ❌ 不存在 | W2 |
-| SwiGLU | ❌ 不存在 | W2 |
-| GQA（分组查询注意力） | ❌ 不存在 | W2 |
-
-**冻结约定**：上述四个是**复合模式**（由基础 ONNX 算子组合而成），识别后**必须 lowering 为 §3 的新增 IR 节点**，不得在前端直接展开成算术序列。
-
----
-
-## 3. 接口二：IR 数据结构与算子契约
-
-### 3.1 现状（`scratchv/ir/types.py`）
-
-```python
-class OpCode(enum.Enum):          # 28 个取值
-    ADD SUB MUL DIV NEG EXP LOAD STORE LOAD_CONST ALLOCA
-    FOR ENDFOR BR BR_IF LABEL RETURN
-    MATMUL RELU MAXPOOL SOFTMAX GELU DOT CONV GEMM SIGMOID
-    TRANSPOSE RESHAPE CONCAT
-
-class DataType(enum.Enum):
-    FLOAT32 INT32 FLOAT64 INT64
-
-@dataclass
-class Value:      name: str; dtype: DataType; is_constant: bool
-                  const_value; shape: tuple[int, ...]
-
-@dataclass
-class Instruction: opcode: OpCode; dest: Value|None
-                   operands: list[Value]; attrs: dict; target: str|None
-
-class Function:   name; params; returns; blocks; locals
-class Program:    functions: list[Function]; global_values: list[Value]
-```
-
-### 3.2 v1 冻结定义
-
-**以上结构全部冻结，不改。** 新增能力**只通过新增 `OpCode` 取值**获得，这样既有 pass、printer、verifier 无需改动。
-
-### 3.3 需新增的 IR 节点
-
-| 新 OpCode | 语义 | attrs | 归属周 |
-|---|---|---|---|
-| `RMSNORM` | `x / sqrt(mean(x²)+eps) * weight` | `eps`, `axis` | W2 |
-| `ROPE` | 旋转位置编码，partial | `head_dim`, `rope_theta`, `partial_ratio` | W2 |
-| `SWIGLU` | `silu(gate) * up` | — | W2 |
-| `ATTENTION` | Q/K/V + 因果掩码 → 输出 | `num_heads`, `num_kv_heads`, `head_dim`, `causal` | W2 |
-
-**冻结约定**：
-- `ATTENTION` **必须**是单个节点，不得在前端展开为 MatMul/Softmax 序列。理由：计划 §2.2 把"fused attention"列为可选优化——若前端已展开，后续无法融合。
-- 形状信息**编译期完全确定**（计划 §1.3：固定 L=256），因此 `Value.shape` 必须全部落实，不得出现动态维度。
-
----
+解释器支持循环/分支，不意味着所有后端也支持。本次 `tensor-c` 只接受单函数直线图；控制流、动态形状或不支持的 dtype 应在编译时失败。融合 Attention 是可选优化，不是当前正确性验收的前置；从基础算子模式识别融合仍然可行。
 
 ## 4. 接口三：后端（IR → RISC-V）
 
-### 4.1 现状
-
-| 组件 | 位置 | 状态 |
-|---|---|---|
-| 指令选择 | `backend/instruction_select.py` | ⚠️ 26/28 opcode 有 handler；**MATMUL 为占位** |
-| 扩展选择 | `backend/inst_select_ext.py` | ✅ 有 FLOAT64 选择器（`_select_fadd_d` 等） |
-| 机器指令 | `backend/machine_types.py` | ✅ `MachineOp` 含 FP32（`FADD_S FMUL_S FLW FSW`）与 FP64 |
-| 汇编发射 | `backend/asm_emit.py` | ✅ 有 FP32 助记符映射 |
-| 寄存器分配 | `backend/regalloc_linear.py`, `regalloc_cfg.py` | ✅ |
-| 驱动 | `scratchv/compiler.py:439` | ✅ `InstructionSelector(program).run()` → `AsmEmitter(...).emit()` |
-
-### 4.2 ⚠️ 已确认的三处能力缺口（静态勘察结论，待探测验证）
-
-**缺口 1：MATMUL 是占位实现**（`instruction_select.py`）
-
 ```python
-def _select_matmul(self, instr: Instruction) -> None:
-    a_reg = self._op(instr, 0); b_reg = self._op(instr, 1); dst = self._dst(instr)
-    if dst:
-        self._emit(MachineOp.MUL, dst, a_reg, b_reg, comment="matmul: a * b")
+driver = CompilerDriver(
+    CompilerConfig(backend="tensor-c", optimize_level="all", verify_ir=True)
+)
+result = driver.compile("model.onnx", "model.c")
+# result.success 为真后使用 driver.tensor_artifact 和 driver.initializers
 ```
 
-只做了一次**标量整数乘**，没有 m/n/k 循环。而 `ir/builder.py:179` 已经传入了 `m=, n=, k=` 属性。**这是 Transformer 最核心的算子。**
+标准 CLI：
 
-**缺口 2：FP32 无选择器**——`asm_emit.py` 有条目、`machine_semantics.py` 有 def/use，但**全后端 0 处 emit** `MachineOp.FMUL_S / FADD_S / FLW / FSW`。FP64 反而有选择器（`inst_select_ext.py`）。
-
-**缺口 3：2 个 opcode 无 handler**——`TRANSPOSE`、`CONCAT` 会直接 `raise ValueError`。Transformer 的 attention 需要 transpose，GQA 需要 concat。
-
-### 4.3 待决议：目标 ISA 是 RV32 还是 RV64？（冻结会议必须拍板）
-
-仓库里两种目标混用，证据：
-
-| 位置 | 目标 |
-|---|---|
-| `backend/asm_emit.py:3` 文档串 | `riscv64-unknown-elf-gcc` |
-| `backend/llvm_codegen.py:51` target triple | `riscv64-unknown-elf` |
-| `standalone/onnx_to_riscv_standalone.py` | **RV32IM** |
-| `tests/test_standalone_execution.py:29` | `qemu-riscv32` |
-| `.github/workflows/ci.yml:94` | `qemu-riscv32` |
-| **`开发计划.md` §1.3 / §4.1** | **QEMU riscv64** |
-| `backend/machine_types.py` `MachineOp` | 只有 `LW/SW`（32 位），**无 `LD/SD`** |
-
-> `MachineOp` 缺 64 位整数load/store，暗示 IR→asm 路径实际是 **RV32 + F/D**，尽管文档串写的是 riscv64。
-
-**这个决定影响**：工具链选择、`qemu-riscv32/64`、指针宽度（4 vs 8 字节）、ABI（ilp32 vs lp64）、**以及 0.6B 模型全部权重与激活的地址空间规划**。
-
-**建议**：与计划保持一致取 **RV64**，则需确认 `MachineOp` 补齐 `LD/SD` 的成本；若取 RV32，则计划 §1.3/§4.1 需修订。
-
-### 4.4 v1 冻结定义
-
-```python
-InstructionSelector(program).run() -> list[MachineInstr]
-AsmEmitter(allocated_machine_instrs).emit() -> str   # GNU GAS 语法
+```bash
+python -X utf8 -B -m scratchv.main model.onnx --backend tensor-c --optimize all --verify-ir -o model.c
 ```
 
-**新增要求**：选择器遇到无 handler 的 opcode，**必须**在编译期报错并指出 opcode 名（现状 `raise ValueError` 已满足，保留）。
+`TensorCArtifact` 提供 `source`、有序 `inputs: tuple[TensorSpec, ...]`、`output`、`workspace_bytes`、`constant_bytes`、`function_name` 与 `compile_flags`。`TensorSpec` 包含 name/dtype/shape，并可读取 numpy_dtype/nbytes/size；dtype 是 IR `DataType`，不是任意字符串。
 
----
+代码生成器将静态权重放只读段，中间张量放有界静态 arena，按 SSA 最后使用复用空间；不在栈上分配大张量。默认工作区上限 256 MiB。编译 flags 包含 `-fno-fast-math -ffp-contract=off -fno-strict-aliasing`；数学函数使用 Zig 随附 musl libm，不用粗略近似。
 
-## 5. 接口四：运行时 FFI（host ↔ RISC-V）**新增**
+目标为 RV64GC、LP64D、小端、64 位指针。Zig/LLVM 承担 C 到机器码，ScratchV 负责 ONNX/IR、优化、循环生成与内存规划。Zig 命令采用 `riscv64-linux-musl` 以获得数学库，但 guest 入口、链接布局与执行均为裸机，不运行 Linux，也不依赖 Linux syscall。
 
-### 5.1 现状：不存在
+编译验证 `none/basic/all` 优化后的 IR，QEMU 验证 `none/all` 的普通图与诊断图。`--verify-ir` 只证明 IR 契约；最终数值必须用探测脚本执行 ELF。旧 `--verify` 不会执行这份 C 产物，不能用它替代 QEMU gate。
 
-`scratchv/runtime/` 目录不存在。计划 §2.2 明确"运行时 | 无 | Tokenizer、采样、掩码、token 循环 | **新增 `runtime/`**"。
+## 5. 接口四：运行时 FFI
 
-### 5.2 现有先例（可沿用）
+### 5.1 模型调用 ABI
 
-`standalone/onnx_to_riscv_standalone.py` 文档串定义了 bare-metal ABI：
-
-```
-On entry:
-  a0 = pointer to input tensor (float32, NCHW layout)
-  a1 = pointer to output buffer
-The binary is position-independent (uses auipc for data addressing).
-Returns via jalr zero, ra, 0.
+```c
+int scratchv_run(const void *const inputs[], void *output);
 ```
 
-**冻结建议：沿用这一约定**，降低 E3/E4 的对接成本。
+在 LP64D ABI 下，a0 是输入指针数组的地址，a1 是输出缓冲区地址，返回 a0 为状态码。输入顺序由 artifact.inputs 定义，不能靠字段名字猜测。调用者提供匹配 dtype/shape、连续、适当对齐的数组；输出不得覆盖输入或内部工作区。当前返回码 0 成功，1 指针错误、2 数值错误、3 Gather 越界。Python 运行器会先验证输入形状/dtype，收到非零 guest 状态或损坏帧即报错。
 
-### 5.3 v1 冻结定义（提议）
+权重和工作区是生成函数的私有静态存储；函数**不可重入**，不支持并发共享 arena。
 
-**入口签名**
-
-```
-a0 = pointer to input_ids      (int32 连续数组, 长度 256)
-a1 = pointer to attention_mask (float32 连续数组, 长度 256*256)
-a2 = pointer to logits 输出缓冲 (float32 连续数组, 长度 256*151936)
-返回：jalr zero, ra, 0；a0 = 0 表示成功，非 0 为错误码
-```
-
-**内存布局**：一律**行主序、连续、无 padding**。
-
-| 张量 | dtype | 形状 | 元素数 |
+| 张量 | dtype | 小模型 shape | 完整导出 shape |
 |---|---|---|---|
-| `input_ids` | int32 | `[1,256]` | 256 |
-| `attention_mask` | float32 | `[1,1,256,256]` | 65536 |
-| `logits` | float32 | `[1,256,151936]` | 38,895,616 |
+| input_ids | INT64 | `[1,256]` | `[1,256]` |
+| attention_mask | FP32 | `[1,1,256,256]` | `[1,1,256,256]` |
+| logits | FP32 | `[1,256,128]` | `[1,256,151936]` |
 
-> ⚠️ `logits` 约 **148 MB**（FP32）。RV32 的 4 GB 地址空间够用，但需在 W1 确认 QEMU 内存配置（计划风险表已列"QEMU 内存不足"，缓解措施 `-m 8G`）。
+这是模型调用 ABI，不是 HTTP/tokenizer 接口。mask 不是二维 0/1 mask。完整 logits 为 155,582,464 bytes（约 148.4 MiB）；当前小模型内存验证不能覆盖完整模型。
 
-**权重**：编译期嵌入或运行时 mmap，**由 W4 决定**（计划 §4.3 W4 `unit:weight-mmap`）。接口层面冻结为"权重对 host 不可见，仅通过入口指针访问"。
+### 5.2 构建和 QEMU 传输
 
-**数据类型约定**：v1 内部统一 FP32（计划 §1.3）。`input_ids` 用 int32 而非 int64，避免 RV32 下的 64 位整数运算。
+`scratchv/runtime/riscv_tensor.py` 提供 `discover_toolchain`、`build_riscv_tensor`、`run_riscv_tensor`。工具可从环境变量或仓库 `output/tools/` 发现；缺工具显式失败，不隐式下载安装。
 
-### 5.4 运行时模块结构（提议）
+当前 QEMU 使用 virt/TCG、512 MiB RAM、无 BIOS/OS，自带启动汇编和链接脚本。输入通过 raw loader 写入保留区域（地址 `0x9c000000`，容量 64 MiB），输出通过 UART 二进制帧返回。帧包含标识、状态、长度、校验和和结束标记；解析拒绝截断/损坏/异常状态，超时失败并清理本次子进程。该传输是现有探测协议，不应误写为通用 Linux FFI 或 mmap。
 
-```
-scratchv/runtime/
-  __init__.py
-  tokenizer.py     # prompt → input_ids
-  mask.py          # 因果掩码 + padding
-  sampler.py       # greedy / top-k / top-p
-  runner.py        # token 循环 + FFI 调用
-```
+### 5.3 后续运行时边界
 
----
+Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收。当前小模型权重静态嵌入；完整 0.6B 权重不应直接套用 512 MiB guest 配置。W4 需明确大权重装载策略、容量检查、生命周期及分块输出；选择 Linux mmap 时须另建 Linux guest/user-mode 路线，裸机不具备该系统调用。
 
-## 6. 能力缺口与责任分配
+## 6. 能力与剩余缺口
 
-| # | 缺口 | 影响周 | 责任 | 依据 |
-|---|---|---|---|---|
-| 1 | MATMUL 占位（无 m/n/k 循环） | W2–W4 | E3 | §4.2 缺口 1 |
-| 2 | FP32 无指令选择器 | W2–W4 | E3 | §4.2 缺口 2 |
-| 3 | `TRANSPOSE` 无 handler | W2 | E3 | §4.2 缺口 3 |
-| 4 | `CONCAT` 无 handler | W2 | E3 | §4.2 缺口 3 |
-| 5 | RMSNorm/RoPE/SwiGLU/GQA 无 IR 节点 | W2 | E2 | §3.3 |
-| 6 | 四个算子无前端解析 | W2 | E1 | §2.3 |
-| 7 | 运行时模块不存在 | W2 | E4 | §5.1 |
-| 8 | 目标 ISA 未定（RV32/RV64） | **W1** | E2 拍板 | §4.3 |
-| 9 | FFI 调用约定未实现 | W4 | E4 | §5.3 |
-| 10 | **IR 解释器不存在**（探测 2 判据「IR 解释器 vs ORT」与 W2 `numeric:ir-small` 的共同前置） | **W1** | E2 | §3.2 / §3.3 |
+| 项目 | 当前状态 | 后续责任 |
+|---|---|---|
+| 前端基础算子与 IR 数值 | 已补齐本次图所需算子与用例，真实两层图通过 | E1/E2 继续完整图对照 |
+| 旧选择器张量 MatMul/FP32 | 未修复；新路径不经过它 | E3：保留范围说明，是否另行补齐由团队决定 |
+| tensor-c / RV64 运行器 | 本地 28 次两层 QEMU 执行通过 | E3/E4/E5：Linux CI、独立复现 |
+| 完整模型 IR 数值与容量 | 未由小模型验收 | E2/E4/E5：逐步扩大配置及预训练权重验证 |
+| 完整 ONNX 门禁 | 历史导出通过；新入口verify本地完成真实四文件hash/checker/ORT两case | E1/E5：手动/定时CI、第二人复现；不冒称本轮重新导出 |
+| Tokenizer / 生成 / 大权重加载 | 当前探测不覆盖 | E4：W4 实现及专项验收 |
 
-> 第 10 条是补录：它在 `开发计划.md`（E2 职责、W1 验收判据）与
-> [W1-探测方案.md](W1-探测方案.md) §3.2/§3.3/§3.5 共 7 处被引用，但从未进入任何一周的任务清单，
-> 也不在本表内——即"幽灵依赖"。W1 排期见 [W1-执行计划.md](W1-执行计划.md) §3.1。
+## 7. 团队待决议与确认
 
----
+以下均为**候选决定，待团队确认**，不自动勾选：
 
-## 7. 待决议项（W1 D4 冻结会议逐条拍板）
+- [ ] D1：接受 RV64GC/LP64D + QEMU virt 裸机为当前部署探测路线；保留其他后端范围。
+- [ ] D2：接受输入指针数组/单输出 ABI、不可重入及 UART 传输边界。
+- [ ] D3：接受 ONNX INT64 IDs；如另需 INT32 接口，显式设计转换与范围校验。
+- [ ] D4：接受 tensor-c + Zig/LLVM FP32 实现；不宣称原标量选择器已修复。
+- [ ] D5：接受基础算子图作为正确性基线，融合节点作为后续优化。
+- [ ] D6：确认小模型静态嵌入边界，另行设计完整权重加载和内存计划。
+- [ ] D7：确认接口版本、变更审批及消费方测试责任。
 
-- [ ] **D1**：目标 ISA 取 RV32 还是 RV64？（§4.3）
-- [ ] **D2**：FFI 入口约定是否沿用 `a0/a1` + `jalr zero, ra, 0`？（§5.3）
-- [ ] **D3**：`input_ids` 用 int32 是否可接受？（§5.3）
-- [ ] **D4**：FP32 选择器补齐 vs 改用 FP64（后者已有选择器）？（§4.2 缺口 2）
-- [ ] **D5**：`ATTENTION` 单节点 vs 前端展开？（§3.3）
-- [ ] **D6**：权重嵌入 vs mmap 的接口边界？（§5.3）
-- [ ] **D7**：接口版本号与变更审批流程确认？（§1）
-
----
+| 项 | 记录 |
+|---|---|
+| 会议日期 / 对应 commit | 待填写 |
+| E1 前端 / E2 IR / E3 后端 / E4 运行时 / E5 测试确认 | 待逐人填写 |
+| 尚未同意的条款 / 后续责任人与截止时间 | 待填写 |
+| 最终冻结版本 | 待 E2 确认后填写 |
 
 ## 8. 变更记录
 
-| 日期 | 版本 | 变更 | 作者 |
-|---|---|---|---|
-| — | v0.1 | 初稿：四类接口现状勘察 + 缺口清单 | — |
-| — | v1.0 | 待 W1 D4 会议确认 | — |
+| 日期 | 版本 | 变更 |
+|---|---|---|
+| 原草案 | v0.1 / v1.0 提议 | 四接口勘察与初始融合节点/三指针入口设想；未完成团队冻结 |
+| 2026-10-02 | v1.1 候选 | 按实际实现校正基础图、全 RoPE、INT64 与指针数组 ABI、tensor-c/RV64 裸机及验收边界 |

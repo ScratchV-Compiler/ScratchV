@@ -6,7 +6,6 @@ import io
 import os
 from pathlib import Path
 import re
-import resource
 import shutil
 import struct
 import subprocess
@@ -16,6 +15,7 @@ import onnx
 from onnx import TensorProto, helper, numpy_helper
 import pytest
 
+from benchmarks.cnn_schedule_execution import qemu_process_options
 from scratchv.standalone.onnx_to_riscv_standalone import (
     RISCVEmitter, convert_onnx_to_riscv, rv_bne, rv_j,
 )
@@ -88,7 +88,7 @@ output_tensor:
     ], capture_output=True, check=True, timeout=30)
     result = subprocess.run(
         ["qemu-riscv32", str(elf)], capture_output=True, timeout=60,
-        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)),
+        **qemu_process_options(),
     )
     assert result.returncode == 0, (result.returncode, result.stderr.decode(errors="replace"))
     assert len(result.stdout) == total

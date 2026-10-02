@@ -29,6 +29,10 @@ from scratchv.compiler import CompilerConfig, CompilerDriver
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = ROOT / "models/graph/cnn.onnx"
+LEGACY_TENSOR_REJECTION = (
+    "Codegen error: Legacy riscv/llvm backends cannot lower tensor buffers; "
+    "use --backend tensor-c and the RISC-V tensor runtime"
+)
 
 
 def sha256(data: bytes) -> str:
@@ -199,7 +203,7 @@ def run_benchmark(model_path: Path = DEFAULT_MODEL, *, standalone_asm: Path | No
     model_bytes = model_path.read_bytes()
     model = onnx.load_model_from_string(model_bytes)
     cpu_model = model_metadata(llvm_mca)
-    cases = []
+    cases, unsupported_cases = [], []
     with tempfile.TemporaryDirectory(prefix="cnn-schedule-") as directory:
         work = Path(directory)
         out = artifacts.resolve() if artifacts else work
@@ -230,7 +234,7 @@ def run_benchmark(model_path: Path = DEFAULT_MODEL, *, standalone_asm: Path | No
         if standalone_asm is not None and standalone_asm.read_bytes() != default_asm.read_bytes():
             raise ValueError("Standalone assembly does not match this ONNX model and --const-merge")
         primary = analyze_assembly(generated, "standalone/const-merge", llvm_mca)
-        if primary["assembly"]["after"] != scheduled.read_text():
+        if primary["assembly"]["after"] != scheduled.read_bytes().decode("utf-8"):
             raise ValueError("Standalone scheduled binary differs from the public assembly pass")
         if baseline_bin.read_bytes()[metadata["code_bytes"]:] != scheduled_bin.read_bytes()[metadata["code_bytes"]:]:
             raise ValueError("Scheduling changed weight bytes")
@@ -250,6 +254,13 @@ def run_benchmark(model_path: Path = DEFAULT_MODEL, *, standalone_asm: Path | No
             config = CompilerConfig(reg_alloc=allocator, optimize_level="none")
             compiled = CompilerDriver(config).compile(str(model_path), str(path))
             if not compiled.success:
+                if compiled.errors == [LEGACY_TENSOR_REJECTION]:
+                    unsupported_cases.append({
+                        "case": f"CompilerDriver/{allocator}", "role": "supplemental",
+                        "status": "unsupported", "reason": LEGACY_TENSOR_REJECTION,
+                        "compiler_errors": list(compiled.errors),
+                    })
+                    continue
                 raise RuntimeError("; ".join(compiled.errors))
             case = analyze_assembly(path, f"CompilerDriver/{allocator}", llvm_mca)
             (out / f"compiler-{allocator}-after.s").write_text(case["assembly"]["after"])
@@ -273,8 +284,11 @@ def run_benchmark(model_path: Path = DEFAULT_MODEL, *, standalone_asm: Path | No
         if any(value is False for value in primary["acceptance"].values()):
             primary["status"] = "failed"
     return {
-        "schema_version": 4, "benchmark_type": "cnn-scheduling-ab",
+        "schema_version": 5, "benchmark_type": "cnn-scheduling-ab",
         "status": "passed" if all(c["status"] == "passed" for c in cases) else "failed",
+        "acceptance_scope": "standalone CNN scheduling and execution",
+        "supplemental_status": "unsupported" if unsupported_cases else "passed",
+        "unsupported_cases": unsupported_cases,
         "validation_scope": "static_and_llvm" + ("_and_execution" if execute else ""),
         "whole_cnn_execution": primary["execution"]["status"],
         "input": {"path": model_path.relative_to(ROOT).as_posix() if model_path.is_relative_to(ROOT) else str(model_path),
@@ -299,6 +313,11 @@ def markdown(report: dict) -> str:
     lines = ["# Topic 18：CNN 指令调度验证", "", f"验证状态：**{report['status']}**。"]
     if "error" in report:
         return "\n".join(lines + ["", report["error"], ""])
+    lines += ["", "验收范围：**standalone CNN 调度与执行**；是否实际执行见下方完整执行状态。"]
+    if report["unsupported_cases"]:
+        lines += ["", "**CompilerDriver CNN 张量未支持；以下补充路径为 unsupported，未生成汇编、未测量周期，也未通过执行验证。**"]
+        lines += [f"- `{case['case']}`：{case['status']}；{case['reason']}"
+                  for case in report["unsupported_cases"]]
     lines += [
         f"输入：`{report['input']['path']}`，{report['input']['nodes']} 个节点；SHA-256：`{report['input']['sha256']}`。",
         "主路径为 standalone CNN 编译器，固定启用常量合并；CompilerDriver 两种分配器仅作补充回归。",
@@ -392,7 +411,7 @@ def markdown(report: dict) -> str:
               "未建模指令作为调度边界：自身固定，前后指令分别在各自区域内分析，禁止跨越该边界移动。其他未建模原因及所在行见 JSON 的 `scheduling.diagnostics`；CFG 活跃性遇到未知寄存器语义时标为 N/A，不能解释为零活跃寄存器。",
               "",
               "测试对象与结论范围：", "",
-              "- **CompilerDriver 是补充编译回归。** 它将 Conv/Gemm 等算子简化为少量乘加，没有展开完整张量计算；与 standalone 的静态指令数差异不能归因于调度。完整执行列的 `not_run` 表示未执行机器码做结果验证；静态结构检查通过不等于完整 CNN 推理正确。",
+              "- **CompilerDriver 是补充编译回归。** 旧标量后端拒绝 CNN 张量输入，拒绝原因单列于 `unsupported_cases`，不提供虚构的汇编或周期数据。完整执行列的 `not_run` 表示未执行机器码做结果验证；静态结构检查通过不等于完整 CNN 推理正确。",
               "- **静态区域只计一次。** 完整 standalone 代码也包含循环；例如 4 条循环体指令执行 1000 次，静态仍是 4 条，动态执行量为 4000 次。报告不按循环次数或分支频率加权，各区域从周期 0、入口操作数就绪开始独立估算，没有贯通跨区域的动态等待。",
               "- **性能结论限于模型。** llvm-mca 使用 SiFive7 的资源约束；报告未测量真实硬件周期、缓存未命中或分支预测开销，因此局部周期合计下降不能直接换算为整网运行时间下降。",
               "- **执行验证覆盖已测输入。** QEMU 用于比较调度前后执行状态，不用于测量硬件加速；固定输入上的一致性不等于所有输入的证明，也不验证定点结果与 ONNX 浮点参考的精度。", ""]

@@ -70,7 +70,7 @@ def test_static_ab_retains_zero_gain_and_never_simulates(tmp_path, monkeypatch):
 @pytest.mark.parametrize("source", ["custom t0, t1\n", "addi t0, t0, 1\n" * 1025])
 def test_unmodeled_inputs_are_not_reported_as_zero_cycle_runs(tmp_path, source):
     path = tmp_path / "unmodeled.s"
-    path.write_text(source)
+    path.write_bytes(source.encode("utf-8"))
     report = reports.run_case(path, static_only=True, repeats=1)
     assert report["status"] == "passed"
     assert report["scheduling"]["modeled_instructions"] == 0
@@ -84,7 +84,7 @@ def test_standalone_listing_labels_and_numeric_branches_are_reported_accurately(
 ):
     source = "_op_/layer1.0/Conv_5:\n  lw t0, 0(a0)\n  bne t1, zero, -4\n"
     path = tmp_path / "cnn-listing.s"
-    path.write_text(source)
+    path.write_bytes(source.encode("utf-8"))
     report = reports.run_case(path, static_only=True, repeats=1)
     assert report["source_instructions"] == {"before": 2, "after": 2}
     assert report["comparison_status"] == "not_modeled"

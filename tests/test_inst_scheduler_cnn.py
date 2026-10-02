@@ -104,27 +104,43 @@ def test_tracked_cnn_all_paths_and_existing_standalone_identity(tmp_path):
     report = cnn.run_benchmark()
     assert report["status"] == "passed"
     assert report["input"]["sha256"] == cnn.sha256(cnn.DEFAULT_MODEL.read_bytes())
-    standalone, greedy, linear = report["cases"]
-    for case in (greedy, linear):
-        saved = case["metric"]["saved"]
-        assert saved >= 0
-        assert (case["assembly"]["before"] == case["assembly"]["after"]) == (saved == 0)
-        assert all(case["side_effects"]["checks"].values())
-        assert case["simulation"]["output_equal"] is None
+    standalone, = report["cases"]
+    assert report["acceptance_scope"] == "standalone CNN scheduling and execution"
+    assert report["supplemental_status"] == "unsupported"
+    assert [case["case"] for case in report["unsupported_cases"]] == [
+        "CompilerDriver/greedy", "CompilerDriver/linear"]
+    for case in report["unsupported_cases"]:
+        assert case["status"] == "unsupported"
+        assert case["compiler_errors"] == [cnn.LEGACY_TENSOR_REJECTION]
+        assert "metric" not in case and "assembly" not in case
+    assert all(standalone["side_effects"]["checks"].values())
     assert standalone["comparison_status"] == "changed"
-    assert report["schema_version"] == 4
+    assert report["schema_version"] == 5
     assert report["model"]["name"] == "llvm-mca/sifive-e76"
     from scratchv.backend.llvm_mca import model_metadata
     assert report["model"]["llvm_version"] == model_metadata()["llvm_version"]
     assert standalone["scheduling"]["metrics_after"]["peak_parallelism"] == 2
     assert standalone["scheduling"]["metrics_after"]["critical_path_max"] is None
     assert standalone["side_effects"]["checks"]["fixed_lines_equal"]
-    assert "N/A" in cnn.markdown(report)
+    assert "CompilerDriver CNN 张量未支持" in cnn.markdown(report)
     # A supplied CI assembly must belong to this model, not another CNN.
     mismatch = tmp_path / "wrong.s"
     mismatch.write_text("addi t0, t0, 1\n")
     with pytest.raises(ValueError, match="does not match"):
         cnn.run_benchmark(standalone_asm=mismatch)
+
+
+@pytest.mark.parametrize("errors", [
+    ["Unexpected compiler regression"],
+    [cnn.LEGACY_TENSOR_REJECTION, "Unexpected compiler regression"],
+])
+def test_other_compiler_failures_are_not_reclassified_as_unsupported(monkeypatch, errors):
+    from scratchv.compiler import CompileResult
+
+    monkeypatch.setattr(cnn.CompilerDriver, "compile",
+                        lambda *args: CompileResult(success=False, errors=errors))
+    with pytest.raises(RuntimeError, match="Unexpected compiler regression"):
+        cnn.run_benchmark()
 
 
 @pytest.mark.parametrize("execution_status", ["baseline_failed", "failed"])

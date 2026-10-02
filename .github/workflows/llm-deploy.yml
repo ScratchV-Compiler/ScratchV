@@ -6,17 +6,12 @@ name: LLM Deploy v1.0
 # one tests the deployment project. A failure here should not read as "the
 # compiler is broken".
 #
-# ONE job, steps in sequence. Steps cover W1 probes and the W2 real-Qwen3
-# architecture gate (开发计划.md §4.3):
+# The PR job executes small numeric gates. A separate manual/nightly job
+# downloads and validates the pinned full-model release with ORT.
 #
 #   docs:interfaces  docs:risks
 #   probe:qemu-matmul  probe:small-transformer  probe:qwen3-onnx
 #   numeric:ir-qwen3-small
-#
-# Trade-off being made deliberately: one job means one sidebar row and one
-# thing to look at, at the cost of knowing only the FIRST failure per run —
-# steps after a failed one are skipped. If that becomes annoying, split them
-# back out; the step groups below are the seams.
 #
 # Later weeks' gates (numeric:ir-full-qwen3 at W3, numeric:qemu-full-qwen3 at
 # W4, e2e:qemu-paris at W5, release:gate at W8) are NOT stubbed here. They get
@@ -30,8 +25,12 @@ on:
       - 'scripts/check_llm_deploy_docs.py'
       - 'export_qwen3_onnx.py'
       - 'scratchv/**'
-      - 'requirements/qwen3-small-probe.txt'
+      - 'requirements/**'
       - 'tests/test_qwen3_small*.py'
+      - 'tests/test_tensor*.py'
+      - 'tests/test_riscv_tensor*.py'
+      - 'tests/test_optimizer*.py'
+      - 'tests/test_w1_qwen3*.py'
       - '.github/workflows/llm-deploy.yml'
   schedule:
     # Nightly, off the hour: 19:23 UTC = 03:23 北京时间.
@@ -42,9 +41,7 @@ permissions:
   contents: read
 
 env:
-  # Deliverables the probes are expected to provide. A probe step only runs
-  # once its script exists, so the pipeline is green while a week's work is in
-  # flight and goes hard-red the moment the script is there but wrong.
+  # Delivered numeric gates are mandatory: missing scripts/tools are failures.
   PROBE_MATMUL: probes/w1_matmul_4x4/run.py
   PROBE_TRANSFORMER: probes/w1_tiny_transformer/run.py
   PROBE_QWEN3_EXPORT: probes/w1_qwen3_export/run.py
@@ -55,9 +52,6 @@ jobs:
   llm-deploy:
     name: "LLM Deploy v1.0 / W1"
     runs-on: ubuntu-latest
-    # Sized for the whole sequence. The Qwen3 export is the long pole; if it
-    # ever needs more than a hosted runner has (7 GB RAM, 2 cores), that step
-    # has to move to the self-hosted runner and this job splits in two.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -72,12 +66,12 @@ jobs:
       - name: Install RISC-V toolchain and QEMU
         run: |
           set -euo pipefail
-          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null; then
+          if ! command -v clang >/dev/null || ! command -v ld.lld >/dev/null || ! command -v qemu-riscv32 >/dev/null || ! command -v qemu-system-riscv64 >/dev/null; then
             sudo apt-get update
-            sudo apt-get install --no-install-recommends -y clang lld qemu-user
+            sudo apt-get install --no-install-recommends -y clang lld qemu-user qemu-system-misc
           fi
           missing=""
-          for tool in clang ld.lld qemu-riscv32; do
+          for tool in clang ld.lld qemu-riscv32 qemu-system-riscv64; do
             command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
           done
           if [ -n "$missing" ]; then
@@ -86,37 +80,37 @@ jobs:
           fi
           clang --version | head -1
           qemu-riscv32 --version | head -1
+          qemu-system-riscv64 --version | head -1
 
       - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install -e ".[all]"
-          python3 -m pip install numpy
+          python3 -m pip install numpy "pytest==9.1.1"
+          python3 -m pip install "ziglang==0.14.1"
+          echo "SCRATCHV_CC=$(python3 -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')" >> "$GITHUB_ENV"
 
       # ── docs:interfaces / docs:risks ──────────────────────────────────
       - name: "docs:interfaces + docs:risks"
+        id: docs
         run: python3 scripts/check_llm_deploy_docs.py --week W1
 
       # ── probe:qemu-matmul ─────────────────────────────────────────────
       - name: "probe:qemu-matmul"
-        # The file check lives inside the step rather than in an `if`, because
-        # a job-level condition is evaluated before the repository is on disk.
+        id: matmul
         run: |
           set -euo pipefail
-          if [ ! -f "$PROBE_MATMUL" ]; then
-            echo "::notice::$PROBE_MATMUL not delivered yet — W1 probe pending"
-            exit 0
-          fi
           python3 "$PROBE_MATMUL"
+
+      - name: Tensor compiler and runtime regressions
+        run: |
+          python3 -m pytest tests/test_tensor_c_codegen.py tests/test_tensor_compiler.py tests/test_riscv_tensor_runtime.py tests/test_optimizer_numeric_semantics.py tests/test_w1_qwen3_export.py -q
 
       # ── probe:small-transformer ───────────────────────────────────────
       - name: "probe:small-transformer"
+        id: transformer
         run: |
           set -euo pipefail
-          if [ ! -f "$PROBE_TRANSFORMER" ]; then
-            echo "::notice::$PROBE_TRANSFORMER not delivered yet — W1 probe pending"
-            exit 0
-          fi
           python3 "$PROBE_TRANSFORMER" --model probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx
 
       # The real architecture probe uses random weights, needs no checkpoint
@@ -161,6 +155,40 @@ jobs:
             tests/test_qwen3_small_gate.py -q \
             --junit-xml=output/qwen3-small/tests.xml
 
+      - name: "numeric:qemu-qwen3-small"
+        id: qwen3_riscv
+        timeout-minutes: 25
+        env:
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+        run: |
+          set -euo pipefail
+          "$QWEN3_PY" probes/w2_qwen3_small/riscv.py \
+            --model-dir output/qwen3-small --output-dir output/qwen3-riscv
+
+      - name: Upload RISC-V tensor evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: riscv-tensor-probe-output
+          path: |
+            output/qemu-matmul/
+            output/qwen3-riscv/
+          if-no-files-found: ignore
+
+      - name: Summarize RISC-V numeric gate
+        if: always()
+        env:
+          PROBE_OUTCOME: ${{ steps.qwen3_riscv.outcome }}
+        run: |
+          {
+            echo "## numeric:qemu-qwen3-small"
+            echo "Outcome: $PROBE_OUTCOME"
+            if [ -f output/qwen3-riscv/report.md ]; then
+              cat output/qwen3-riscv/report.md
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Summarize Qwen3 small probe
         if: always()
         env:
@@ -186,19 +214,6 @@ jobs:
           path: output/qwen3-small/
           if-no-files-found: ignore
 
-      # ── probe:qwen3-onnx ──────────────────────────────────────────────
-      - name: "probe:qwen3-onnx"
-        # Skipped on PRs so the fast gate stays fast; it is the heavy one.
-        if: github.event_name != 'pull_request'
-        run: |
-          set -euo pipefail
-          python3 -m pip install onnxruntime transformers
-          if [ ! -f "$PROBE_QWEN3_EXPORT" ]; then
-            echo "::notice::$PROBE_QWEN3_EXPORT not delivered yet — W1 probe pending"
-            exit 0
-          fi
-          python3 "$PROBE_QWEN3_EXPORT"
-
       - name: Upload probe artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -210,26 +225,75 @@ jobs:
       # ── 状态汇总 ──────────────────────────────────────────────────────
       - name: W1 交付物状态
         if: always()
+        env:
+          DOCS_OUTCOME: ${{ steps.docs.outcome }}
+          MATMUL_OUTCOME: ${{ steps.matmul.outcome }}
+          TRANSFORMER_OUTCOME: ${{ steps.transformer.outcome }}
+          QWEN_IR_OUTCOME: ${{ steps.qwen3_small.outcome }}
+          QWEN_RISCV_OUTCOME: ${{ steps.qwen3_riscv.outcome }}
         run: |
-          echo "## W1 交付物状态" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| 交付物 | 状态 |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          # scratchv/verification/ir_interpreter.py is not a probe but is the
-          # prerequisite for probe:small-transformer's criterion ("IR
-          # interpreter vs ORT"). It was a phantom dependency: referenced in
-          # seven places, scheduled nowhere, so nothing ever reported it
-          # missing. Listing it here is the whole point.
-          for f in docs/llm-deploy-v1.0/W1/interfaces.md \
-                   docs/llm-deploy-v1.0/W1/risks.md \
-                   scratchv/verification/ir_interpreter.py \
-                   probes/w1_matmul_4x4/run.py \
-                   probes/w1_tiny_transformer/run.py \
-                   probes/w1_qwen3_export/run.py ; do
-            if [ -f "$f" ]; then
-              echo "| \`$f\` | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## W1 / small Qwen3 execution status"
+            echo ""
+            echo "| Gate | Actual step outcome |"
+            echo "|---|---|"
+            echo "| Document structure | $DOCS_OUTCOME |"
+            echo "| QEMU MatMul | $MATMUL_OUTCOME |"
+            echo "| Synthetic Transformer IR | $TRANSFORMER_OUTCOME |"
+            echo "| Real Qwen3 structure IR | $QWEN_IR_OUTCOME |"
+            echo "| Real Qwen3 structure QEMU | $QWEN_RISCV_OUTCOME |"
+            echo ""
+            echo "Full-model ORT validation runs in the separate manual/nightly job."
+            echo "Document checks do not certify team interface approval or second-person reproduction."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  full-qwen3-onnx:
+    name: "W1 / full Qwen3 ONNX release validation"
+    # This downloads 1.24 GB and executes the 2.38 GB FP32 model. It is not
+    # counted as a passing gate on PRs where it did not execute.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned full-model validation dependencies
+        run: |
+          python3 -m pip install "numpy==2.2.6" "onnx==1.18.0" "onnxruntime==1.22.1" "protobuf==5.29.5"
+          python3 -m pip check
+      - name: "probe:qwen3-onnx"
+        id: full_model
+        env:
+          OMP_NUM_THREADS: "2"
+          OPENBLAS_NUM_THREADS: "2"
+        run: |
+          set -euo pipefail
+          python3 "$PROBE_QWEN3_EXPORT" --mode download \
+            --model-dir output/qwen3-full-model \
+            --output-dir output/qwen3-full-probe --threads 2
+      - name: Summarize full-model gate
+        if: always()
+        env:
+          PROBE_OUTCOME: ${{ steps.full_model.outcome }}
+        run: |
+          {
+            echo "## probe:qwen3-onnx (complete FP32 release, ORT CPU)"
+            echo "Outcome: $PROBE_OUTCOME"
+            if [ -f output/qwen3-full-probe/report.md ]; then
+              cat output/qwen3-full-probe/report.md
             else
-              echo "| \`$f\` | ❌ 未交付 |" >> "$GITHUB_STEP_SUMMARY"
-              echo "::notice::W1 交付物未完成: $f"
+              echo "No report produced; inspect the failed step."
             fi
-          done
+            echo "This validates the complete ONNX artifact, not ScratchV full-model execution."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload full-model validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen3-full-onnx-probe-output
+          path: output/qwen3-full-probe/
+          if-no-files-found: ignore

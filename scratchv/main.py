@@ -35,7 +35,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # ── Backend ─────────────────────────────────────────────────────────
     parser.add_argument(
         "--backend",
-        choices=["riscv", "llvm"],
+        choices=["riscv", "llvm", "ir", "tensor-c"],
         default="riscv",
         help="Target backend (default: riscv)",
     )
@@ -48,6 +48,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["none", "basic", "all"],
         default="none",
         help="Optimization level (none, basic, all)",
+    )
+    parser.add_argument(
+        "--tensor-workspace-mib", type=int, default=256,
+        help="Maximum static workspace for tensor-c (default: 256 MiB)",
     )
 
     # ── Register allocation ─────────────────────────────────────────────
@@ -195,6 +199,7 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         dump_ir=args.dump_ir,
         verify=args.verify,
         verify_ir=args.verify_ir,
+        max_tensor_workspace_bytes=args.tensor_workspace_mib * 1024 * 1024,
         rtol=args.rtol,
         atol=args.atol,
         use_logger=args.log_level is not None,

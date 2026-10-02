@@ -1,96 +1,68 @@
-# 风险清单 v0.1
+# 风险清单 v1.1 候选
 
-> 上游文档：[开发计划.md](../开发计划.md) §5
-> 状态：**W1 D1 风险工作坊的输入**，会议后升为 v1.0
-> 本文档是 W1 的交付物之一，对应 CI Job `docs:risks`（要求 ≥15 条）
+> 上游：[开发计划.md](../开发计划.md) §5。
+> 状态（2026-10-02）：**已按本地实测回填；责任人及处置路线待团队确认**。
+> 对应 `docs:risks` 的结构检查：20 条风险，每条有触发信号和 Plan B。自动检查不替代人工评审。
 
----
+## 0. 阅读约定
 
-## 0. 怎么读这份清单
+“旧路径已确认”指原标量选择器，不泛指新增 tensor-c 后端；“小模型通过”只覆盖两层缩小配置的固定随机权重；“本地通过”不代表新 Linux CI 已通过。历史失败仍保留，不因替代路线成功而删除。完整 28 层、预训练权重、内存与性能风险不得凭小模型结果排除。
 
-- **状态**列区分两类：
-  - `✅ 已确认` —— 撰写本文档时通过**静态代码勘察**确认存在，附证据
-  - `待验证` —— 假设，由 W1 的四项探测证实或排除
-- **Plan B** 列是硬性要求：W1 出口标准规定"高风险项均有 Plan B"。空白项必须在 D4 前补齐。
+## 1. 高影响风险
 
-**当前计数：20 条**（要求 ≥15）
-
----
-
-## 1. 高影响风险（会改变 v1 方案）
-
-| # | 风险 | 概率 | 影响 | 状态 | 触发信号 | Plan B | 责任 |
+| # | 风险 | 概率 | 影响 | 当前状态 / 证据 | 触发信号 | Plan B | 责任 |
 |---|---|---|---|---|---|---|---|
-| R1 | **MATMUL 是占位实现**——`_select_matmul` 只做一次标量整数乘，无 m/n/k 循环，而 `ir/builder.py` 已传入 m/n/k 属性 | **高** | **高** | ✅ 已确认<br>`backend/instruction_select.py` | `probe:qemu-matmul` 4×4 数值错误 | 在 W2 重写 MATMUL lowering（三重循环 + 累加）。**这是 Transformer 最核心算子，必须第一个解决** | E3 |
-| R2 | **FP32 无指令选择器**——`asm_emit` 有 `FADD_S/FMUL_S/FLW/FSW` 映射，但全后端 0 处 emit | **高** | **高** | ✅ 已确认<br>全后端 grep 无 emit 点 | `probe:qemu-matmul` 出整数结果或报错 | 二选一：<br>**(a)** 补 FP32 选择器（汇编层已就绪，成本低）<br>**(b)** 改用 FP64（`inst_select_ext.py` 已有选择器）<br>**(c)** 退到 Q16.16 定点（CNN 路径已有先例） | E3 |
-| R3 | **目标 ISA 未统一**——`asm_emit`/LLVM 写 riscv64，CI 与 standalone 用 riscv32；`MachineOp` 只有 `LW/SW` 无 `LD/SD` | 高 | 高 | ✅ 已确认<br>`asm_emit.py:3` vs `ci.yml:94` | 工具链链接失败 / 指针宽度错乱 | W1 D4 拍板。取 RV64 需补 `LD/SD`；取 RV32 需修订计划 §1.3/§4.1。**不可两边都留** | E2 |
-| R4 | **IR 缺 `TRANSPOSE` / `CONCAT` handler**，遇到直接 `raise ValueError` | 高 | 高 | ✅ 已确认<br>28 个 opcode 中 2 个无 handler | W2 解析 Qwen3 时抛异常 | W2 补两个 handler。若不补，attention 的 Q/K/V 转置与 GQA 的头拼接都无法表达 | E3 |
-| R5 | **自托管 runner 基础设施不可用**——RISC-V 工具链不全且无免密 sudo；到 GitHub 的 HTTPS 不通 | **已发生** | **高** | ✅ 已确认<br>CI 实测报错 | CI job 起不来 | 见 [W1-执行计划.md](W1-执行计划.md) §2.2 / §7。**W1 全部 CI 验收依赖它，D1 上午必须闭环** | E5 |
-| R6 | IR 无法表达注意力 | 中 | 高 | 待验证（`probe:small-transformer`） | 探测 2 无法构造 Attention 节点 | 方案见计划 §5：改用 host 端循环 + 静态图 | E2 |
-| R7 | **数值误差累积**（28 层） | 中 | 高 | 待验证（W3 硬门槛） | 逐层误差工具显示误差随层数放大 | 三层验证（小/中/完整）+ 逐层对比定位误差源；必要时中间层用 FP64 | E2+E5 |
-| R8 | **注意力掩码错误** | 中 | 高 | 待验证 | 输出乱码 / logits 全等 | 用 PyTorch 小模型对比验证；E5 逐层误差定位 | E5 |
+| R1 | 旧选择器 MATMUL 为标量整数乘占位 | 已确认 | 高 | `instruction_select.py::_select_matmul` 的旧路径未修复；新 tensor-c MatMul 7 用例通过 | 选错旧后端，或新后端 MatMul 与 ORT 不符 | 本次采用有显式矩阵循环的 tensor-c；旧路径保持范围限制。若回归失败，停止扩模，先定位 MatMul shape/累加/广播 | E3，当前路线确认 |
+| R2 | 旧选择器缺张量 FP32 lowering | 已确认 | 高 | 不把助记符存在视为张量实现；新 RV64GC + musl 路线本地已通过 | 缺浮点目标、非有限值或绝对误差达阈值 | 保留 FP32目标、禁用 fast-math/FMA并逐层定位；是否另补旧选择器由团队另立项，不静默换 FP64/定点通过原 gate | E3 |
+| R3 | 多后端 ISA / ABI 混用 | 已确认 | 高 | 新路线 RV64GC/LP64D/裸机；旧 RV32 CNN 配方另存，不能互用 | 用 qemu-riscv32、错误 ABI 或把 Linux triple 当成 Linux guest | 按 artifact/runtime 固定工具与 ABI；编译/加载失败即终止。团队确认路线；其他后端独立验收 | E2/E3/E4 |
+| R4 | 不同执行器的算子支持范围被混淆 | 已确认 | 高 | 前端/IR 的 Transpose、Concat 已能执行，新 tensor-c 支持所需图；旧 selector 范围未修复 | 前端通过而选定后端拒绝/错误执行 | 每个后端显式拒绝未支持操作，新增能力时补后端数值用例；不能把 parser 成功当 backend 通过 | E1/E3 |
+| R5 | 新 CI 工具链或网络不可用、门禁被跳过 | 待验收 | 高 | Windows 便携执行已通过；本轮新 Linux CI 尚无实际 run 证据。保留早期 runner sudo/HTTPS 失败历史 | 缺 Zig/QEMU/LFS 分片；job pending/skip；报告无实际执行 | 缺必需工具/输入显式失败；可先本地跑并标 CI 未验收。重型 ONNX 按模式分别展示结构与 ORT 状态，E5补真实 run/artifact | E5 |
+| R6 | IR 不能表达 Attention | 小模型已验证 | 高 | 官方 Qwen3 基础算子图经 IR 及 QEMU 通过；不需要强制融合 Attention opcode | 新配置解析/执行失败或 checkpoint 首次偏差 | 保留基础算子基线，缩小到失败子图并修相应语义；若使用 host 分段必须标明路线变化 | E2 |
+| R7 | 完整 28 层数值误差累积 | 待验证 | 高 | 两层 29 检查点通过不等于完整层数已通过 | 随层数增加误差越过既定阈值 | 逐步扩大层数/尺寸并比较首次偏差；先定位数学/累加/优化问题。任何更改精度或容差需独立评审，不能改 gate 掩盖错误 | E2/E5，W3 |
+| R8 | 因果/padding mask 错误 | 小模型已验证 | 高 | 7 输入含 future/padding 改动；IR/QEMU 不变性通过。完整导出 padding query 数值差异仍记录 | 被屏蔽位置概率泄漏或有效前缀受未来/padding token 影响 | 固定加性 mask 与位置约定，检查 attention probabilities/首个偏差；把有效位置和全张量结果分开报告，不删 padding 失败证据 | E2/E5 |
 
----
+## 2. 其余风险
 
-## 2. 常规风险
-
-| # | 风险 | 概率 | 影响 | 状态 | 触发信号 | Plan B | 责任 |
+| # | 风险 | 概率 | 影响 | 当前状态 / 证据 | 触发信号 | Plan B | 责任 |
 |---|---|---|---|---|---|---|---|
-| R9 | ONNX 导出失败（Qwen3 → ONNX） | 中 | 高 | 待验证（`probe:qwen3-onnx`） | 导出报错或形状不符 | `torch.onnx.export` 手动导出，`dynamic_axes=None`；退而手动构造等价子图 | E1 |
-| R10 | QEMU 内存不足（logits 约 148 MB + 权重） | 中 | 中 | 待验证 | QEMU OOM / 被 kill | `-m 8G` + 权重 mmap + 分块写 logits | E4 |
-| R11 | **固定 L=256 的 O(N²) 计算量**——每次前向都跑满 256 长度（含 pad） | **高** | 中 | 计划已述，未入风险表 | 单次前向耗时过长，W5 无法出结果 | 缩短 L（如 64）做功能验证；或只对最后 N 个位置算 attention | E3 |
-| R12 | **LM Head 规模**（151936 词表 × 1024 hidden） | 高 | 中 | ✅ 已确认（配置） | W4 单次前向超时 | 只算最后一个位置的 logits（计划 §2.4 本就如此）；必要时分块 | E3 |
-| R13 | **RoPE partial 实现错误**（Qwen3 用 partial RoPE） | 中 | 高 | 待验证 | 长序列输出退化 | 小模型 vs PyTorch 逐层对比锁定 | E2 |
-| R14 | **GQA 头映射错误**（16 Q 头 : 8 KV 头） | 中 | 高 | 待验证 | attention 输出形状/数值错误 | KV 头复制策略单测；对比 PyTorch | E2 |
-| R15 | 初级工程师卡住 | 高 | 中 | — | 站会持续无进展 | 结对编程 + 外部导师每周 review；E2/E5 介入 | E2 |
-| R16 | 接口不统一 | 中 | 高 | — | 联调时签名不符 | W1 冻结接口 + 每日站会 + PR review | E2 |
-| R17 | 集成冲突 | 中 | 中 | — | 合并冲突频繁 | 每周集成日 + 小步提交 + 分支保护 | 全员 |
-| R18 | W3 硬门槛（`numeric:ir-full-qwen3`）不通过 | 中 | 高 | — | W3 Nightly 红 | 顺延 1 周，W8 缓冲吸收；集中 E2+E5+E1 攻关 | E2+E5 |
-| R19 | **权重获取与许可**——Qwen3-0.6B 权重下载、版本一致性 | 中 | 中 | 未评估 | 下载失败 / 版本漂移导致数值不可复现 | 固定 revision + 校验和；权重不入库，用脚本拉取 | E1 |
-| R20 | **数值基准不可复现**——ORT 版本/线程数/算子实现差异导致参考值漂移 | 中 | 中 | 未评估 | 同一 ONNX 两次 ORT 结果不同 | 固定 ORT 版本 + 单线程 + 固定随机种子；参考 logits 入库并做校验和 | E5 |
+| R9 | 完整 Qwen3 ONNX 导出/载入失败 | 本地已验证 | 高 | 历史导出通过；新入口verify已通过真实hash/checker/ORT两case，验证器峰值RSS约6.40 GB；新CI待运行 | 缺/损坏分片、版本漂移、shape 不符或 ORT 失败 | 固定 revision/依赖与哈希，从已批准来源重新准备产物；必要时重导出。子图只能作定位工具，不代替完整导出 gate | E1/E5 |
+| R10 | 完整权重/激活超出内存布局 | 待验证 | 高 | 当前 guest 512 MiB、workspace 上限256 MiB；完整 logits 约148.4 MiB，权重约2.4 GB，未完整装载 | arena/ELF 与输入区冲突、容量超限、OOM | 先做完整容量预算，再设计大权重装载/分块/释放；若选择 mmap 须另有 Linux 路线，不能在现裸机上只增加 -m 就声称解决 | E4，W4 |
+| R11 | L=256 无 KV Cache 前向耗时过长 | 待测完整规模 | 中 | 小模型 QEMU 时间只用于功能回归，不代表硬件性能 | 完整前向超时或生成循环不可用 | 记录真实耗时，按算子分块/优化；短 L 仅作诊断且另标配置，不降低固定 L=256 验收 | E3/E5 |
+| R12 | 151936×1024 LM Head 计算/输出开销 | 配置已确认 | 高 | 小词表128不覆盖完整词表开销 | 完整 LM Head 超时或输出传输过大 | 保留完整 logits oracle；生产生成路径可另设计最后位置/分块接口，并与完整输出对照，不能替换 W1 完整形状 gate | E3/E4 |
+| R13 | Q/K RMSNorm、全 head_dim RoPE 语义误解 | 小模型已验证 | 高 | 官方 Qwen3 为全 head_dim RoPE；旧草案 partial 说法已纠正。PR89 partial 图不作该项证据 | Q/K normalize 或 rope_q/rope_k checkpoint 出现偏差 | 对照固定版本官方实现和逐层输出；保留 hidden≠Qwidth 的小模型配置，禁止套用 PR89 partial 逻辑 | E1/E2 |
+| R14 | GQA 头映射错误 | 小模型已验证 | 高 | 4 Q/2 KV 通过独立 NumPy repeat/context 检查；完整16/8尚需规模对照 | attention probability/context 数值或形状异常 | 对每组 KV head 重复映射做数值对照，再扩大到完整配置；不以比例相同替代完整验收 | E2 |
+| R15 | 工程任务长期无进展 | 持续管理 | 中 | 无法由测试自动判断 | 负责人连续无法给出可复现进展/阻塞 | E2安排结对定位和明确小任务，必要时调整排期并记录原因 | E2 |
+| R16 | 文档接口与实现不一致或未经团队确认 | 待确认 | 高 | 已更新候选接口：基础图、INT64、指针数组、RV64裸机；团队签字未完成 | 对接签名/dtype/shape不同或未经记录修改接口 | 消费方契约测试 + interfaces决议表 + PR review；冻结前逐项确认，冻结后版本化修改 | E2，全员 |
+| R17 | 合并冲突或证据对应旧源码 | 持续管理 | 中 | 本地报告保留源码/模型/输入/ELF哈希；提交后须关联CI | 报告哈希与待评审实现不同或大改后未复跑 | 小步合并；对当前提交重新执行受影响gate，保留旧报告并标历史，不覆盖后复用旧PASS | 全员 |
+| R18 | W3 numeric:ir-full-qwen3 硬门槛失败 | 待验证 | 高 | 两层随机模型和完整 ONNX ORT 不能替代完整 IR 数值 | 完整 IR 不可执行或逐层数值不通过 | E1/E2/E5联合定位，按原计划缓冲调整排期；阻塞明确写报告，不误写完整模型部署完成 | E2/E5 |
+| R19 | 权重来源/许可/外部分片/版本不可复现 | 部分已落实 | 中 | 历史导出固定revision/checkpoint SHA并保留LICENSE；新clone仍需准备真实分片 | 下载失败、LFS pointer、哈希不一致或缺许可记录 | 从固定revision重建或按仓库LFS/artifact约定获取，校验每个分片和manifest；不要把多GiB普通Git文件塞进PR | E1 |
+| R20 | 数值基准或工具版本漂移 | 部分已落实 | 中 | 小模型依赖固定，报告含哈希/工具版本；历史完整ORT threads=4，不能冒称单线程 | 同输入跨环境结果漂移或导出图变化 | 使用requirements固定环境，记录ORT线程、provider、seed、revision；新环境重新产参考并比较，不复用不明来源数组 | E5 |
 
----
+## 3. 证据与状态维护
 
-## 3. 已确认风险的证据（便于复核）
-
-| 风险 | 证据 |
+| 对象 | 证据 / 对应风险 |
 |---|---|
-| R1 | `backend/instruction_select.py` 的 `_select_matmul`：`self._emit(MachineOp.MUL, dst, a_reg, b_reg, comment="matmul: a * b")` |
-| R2 | `backend/asm_emit.py:60,62,70,71` 有 `FADD_S→"fadd.s"` / `FMUL_S→"fmul.s"` / `FLW` / `FSW` 映射；但 `grep -rn "MachineOp.FMUL_S" scratchv/backend/` 仅命中 `asm_emit` 与 `machine_semantics`，**选择器里 0 处** |
-| R3 | `backend/asm_emit.py:3` 写 `riscv64-unknown-elf-gcc`；`.github/workflows/ci.yml:94` 装的是 `qemu-riscv32`；`machine_types.py` 的 `MachineOp` 只有 `LW/SW` |
-| R4 | IR `OpCode` 28 个取值中，`TRANSPOSE`、`CONCAT` 在 `instruction_select.py` 里无 `_select_*` 方法 |
-| R5 | CI 实测：`sudo: a password is required`；`git ls-remote https://github.com/...` 挂死超时（SSH 正常） |
-| R12 | 计划 §2.3：`vocab_size = 151936`，`hidden_size = 1024` |
+| 旧后端边界 | `scratchv/backend/instruction_select.py` 与 `llvm_codegen.py`；R1–R4 不因新路径成功自动关闭 |
+| 原两层 IR | `probes/w1_tiny_transformer/run.py`；基础表达能力，不覆盖官方 Q/K RMSNorm/全 RoPE |
+| 官方两层 IR/QEMU | `probes/w2_qwen3_small/run.py`、`riscv.py`；R6/R8/R13/R14 在小配置范围缓解 |
+| 本地 QEMU 结果 | `output/qemu-matmul-final/report.json`、`output/qwen3-riscv-final/report.json`，28次两层执行通过；忽略产物需独立复现或从CI artifact取得 |
+| 完整导出 | 固定revision `c1899de289a04d12100db370d81485cdf75e47ca`；历史导出通过，本轮`output/qwen3-full-local/report.json`为新verify的真实hash/checker/ORT结果；R9/R19部分缓解 |
+| 新 CI | 关联实际commit/run/artifact后更新R5；脚本存在、job启动、结构检查都不是完整数值证据 |
 
----
+新增证据时记录模型范围、执行路径、环境、误差与源码指纹；失败保留首次偏差和日志。不要把所有状态统一改成“已排除”。
 
-## 4. W1 探测与风险的对应关系
+## 4. 评审与触发责任
 
-| 探测 | 证实/排除的风险 |
-|---|---|
-| `probe:qemu-matmul` | R1、R2、R3 |
-| `probe:small-transformer` | R6、R13、R14 |
-| `probe:qwen3-onnx` | R9、R19、R12（形状） |
-| 环境闭环 | R5 |
+- [x] 20 条风险均列出触发信号和 Plan B。
+- [x] 回填新路线，保留旧选择器和完整模型的未覆盖边界。
+- [ ] E1–E5确认各自责任、处置范围与排期；E2记录决议。
+- [ ] 新 Linux CI及完整 ONNX 重型门禁取得真实执行证据，更新R5/R9。
+- [ ] E4/E5完成第二人独立复现，按 [模板](README.md)记录。
+- [ ] 完整权重加载、容量及28层数值验收另有计划和责任人。
 
-**探测结果回填方式**：探测完成后，把上表对应行的 `状态` 从 `待验证` 改为 `已排除` 或 `已确认`，并补 `触发信号` 的实际观测值。
+## 5. 变更记录
 
----
-
-## 5. 复盘检查点
-
-W1 D5 出口评审时逐条核对：
-
-- [ ] 20 条风险中，所有 `影响=高` 的项**都有 Plan B 且写明触发条件**
-- [ ] 五项 `✅ 已确认` 风险（R1–R5）的处置方案已定，且指定了责任人与周次
-- [ ] R1/R2/R3 的处置结论**已回写** [interfaces.md](interfaces.md) §4.3 与 §7
-- [ ] R5 已闭环（否则 W1 CI 验收无意义）
-
----
-
-## 6. 变更记录
-
-| 日期 | 版本 | 变更 | 作者 |
-|---|---|---|---|
-| — | v0.1 | 初稿：计划 §5 的 10 条 + 静态勘察新增 10 条 | — |
-| — | v1.0 | 待 W1 D1 工作坊确认 | — |
+| 日期 | 版本 | 变更 |
+|---|---|---|
+| 原草案 | v0.1 | 原计划与静态勘察20项 |
+| 2026-10-02 | v1.1 候选 | 回填本地结果，区分旧/新后端与小/完整模型；明确所有触发条件、替代路线和人工确认项 |

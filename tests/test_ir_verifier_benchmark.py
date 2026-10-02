@@ -54,7 +54,7 @@ def test_benchmark_rejects_changed_codegen(monkeypatch):
         CompilerDriver, "_generate_code",
         lambda driver, program: f"output verify_ir={driver.config.verify_ir}\n",
     )
-    with pytest.raises(RuntimeError, match="assembly differs"):
+    with pytest.raises(RuntimeError, match="IR differs"):
         benchmark(DEFAULT_MODEL, repeats=1, warmup=0, levels=("none",))
 
 

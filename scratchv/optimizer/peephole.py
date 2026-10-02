@@ -1,120 +1,74 @@
-"""Peephole optimization: eliminates redundant instruction patterns.
-
-Scans basic blocks for common redundant patterns:
-  - addi rd, rs, 0  →  (delete, no-op)
-  - mul rd, rs, 1   →  mv rd, rs
-  - mul rd, rs, 0   →  li rd, 0
-  - j L immediately followed by L:  →  delete jump
-"""
+"""Eliminate proven identities while preserving SSA and tensor semantics."""
 
 from __future__ import annotations
 
-from scratchv.ir.types import OpCode, Instruction, BasicBlock, Program
+from scratchv.ir.types import DataType, OpCode, Program
+from scratchv.optimizer.hoist_safety import HoistSafety
 from scratchv.pass_interface import OptimizationPass
 
 
 class IRPeepholeOptimizer(OptimizationPass):
-    """Eliminate redundant instruction patterns in IR."""
+    """Redirect uses of safe identities to their existing typed source.
+
+    Floating addition by zero can change signed zero; multiplication by zero
+    needs a tensor-shaped result and must retain numeric errors. Keep those
+    operations. Floating multiplication by one is removable only when its
+    source is already proven finite, since kernels reject nonfinite results.
+    """
 
     name = "ir-peephole"
 
     def optimize(self, program: Program) -> int:
-        """Run peephole optimization.
-
-        Returns number of eliminated instructions.
-        """
-        return sum(
-            self._optimize_block(block)
-            for func in program.functions
-            for block in func.blocks
-        )
-
-    def _optimize_block(self, block: BasicBlock) -> int:
         changes = 0
-        instrs = block.instructions
-        i = 0
-        while i < len(instrs):
-            instr = instrs[i]
+        for function in program.functions:
+            safety = HoistSafety(program, function)
+            # FOR counters are updated implicitly by ENDFOR. An identity can
+            # capture their last body value for use after the loop exits.
+            counters = {instr.dest.name for block in function.blocks
+                        for instr in block.instructions
+                        if instr.opcode == OpCode.FOR and instr.dest is not None}
+            aliases = {}
 
-            # Pattern 1: addi rd, rs, 0 → delete (no-op)
-            if self._is_addi_zero(instr):
-                instrs.pop(i)
-                changes += 1
-                continue
+            def resolve(value):
+                while value.name in aliases:
+                    value = aliases[value.name]
+                return value
 
-            # Pattern 2: mul rd, rs, 1 → mv rd, rs (use add rd, rs, x0)
-            if self._is_mul_one(instr):
-                dest = instr.dest
-                src = instr.operands[0]
-                instrs[i] = Instruction(
-                    opcode=OpCode.ADD,
-                    dest=dest,
-                    operands=[src, self._make_zero_operand(instr)],
-                )
-                changes += 1
-                i += 1
-                continue
-
-            # Pattern 3: mul rd, rs, 0 → li rd, 0 (load_const 0)
-            if self._is_mul_zero(instr):
-                dest = instr.dest
-                instrs[i] = Instruction(
-                    opcode=OpCode.LOAD_CONST,
-                    dest=dest,
-                    attrs={"value": 0},
-                )
-                changes += 1
-                i += 1
-                continue
-
-            # Pattern 4: j L followed immediately by L:
-            if self._is_jump_to_next(instrs, i):
-                instrs.pop(i)
-                changes += 1
-                continue
-
-            i += 1
-
+            for block in function.blocks:
+                retained = []
+                for instr in block.instructions:
+                    instr.operands = [resolve(value) for value in instr.operands]
+                    if self._is_safe_identity(instr, safety, counters):
+                        aliases[instr.dest.name] = instr.operands[0]
+                        changes += 1
+                    else:
+                        retained.append(instr)
+                block.instructions = retained
+            # A use may be in another block, including one listed before its
+            # dominating definition. Update all uses after collecting aliases.
+            for block in function.blocks:
+                for instr in [*block.instructions, *block.phi_nodes]:
+                    instr.operands = [resolve(value) for value in instr.operands]
+            function.returns = [resolve(value) for value in function.returns]
         return changes
 
-    def _is_addi_zero(self, instr: Instruction) -> bool:
-        """Check for: add rd, rs, 0  (or  add rd, rs, const where const=0)."""
-        if instr.opcode != OpCode.ADD:
+    @staticmethod
+    def _is_safe_identity(instr, safety, counters):
+        if (instr.opcode not in (OpCode.ADD, OpCode.MUL) or instr.dest is None
+                or len(instr.operands) != 2 or instr.attrs):
             return False
-        if len(instr.operands) < 2:
+        source, constant = instr.operands
+        if (source.name == instr.dest.name or source.name in counters
+                or source.dtype != instr.dest.dtype or constant.dtype != source.dtype
+                or (instr.dest.shape and instr.dest.shape != source.shape)):
             return False
-        rhs = instr.operands[1]
-        return rhs.is_constant and rhs.const_value == 0
-
-    def _is_mul_one(self, instr: Instruction) -> bool:
-        if instr.opcode != OpCode.MUL:
+        literal = safety.facts(constant).constant
+        expected = 0 if instr.opcode == OpCode.ADD else 1
+        if literal is None or literal.shape != () or literal.item() != expected:
             return False
-        if len(instr.operands) < 2:
+        source_facts = safety.facts(source)
+        if not source_facts.tensor:
             return False
-        rhs = instr.operands[1]
-        return rhs.is_constant and rhs.const_value == 1
-
-    def _is_mul_zero(self, instr: Instruction) -> bool:
-        if instr.opcode != OpCode.MUL:
-            return False
-        if len(instr.operands) < 2:
-            return False
-        rhs = instr.operands[1]
-        return rhs.is_constant and rhs.const_value == 0
-
-    def _is_jump_to_next(self, instrs: list[Instruction], i: int) -> bool:
-        """Check for: br L  followed by label L."""
-        if i + 1 >= len(instrs):
-            return False
-        instr = instrs[i]
-        if instr.opcode != OpCode.BR:
-            return False
-        next_instr = instrs[i + 1]
-        return (next_instr.opcode == OpCode.LABEL
-                and next_instr.target == instr.target)
-
-    def _make_zero_operand(self, instr: Instruction):
-        """Create a zero constant value."""
-        from scratchv.ir.types import Value, DataType
-        return Value(name="_zero", dtype=DataType.INT32,
-                     is_constant=True, const_value=0)
+        if source.dtype in (DataType.INT32, DataType.INT64):
+            return True
+        return instr.opcode == OpCode.MUL and source_facts.finite
