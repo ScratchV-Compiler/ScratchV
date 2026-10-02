@@ -242,11 +242,12 @@ jobs:
         run: |
           mkdir -p benchmark_reports/ir_verifier_smoke
           for level in none basic all; do
+            # Verify tensor IR without invoking the scalar-only legacy backend.
             $PY -m scratchv models/graph/cnn.onnx \
-              --verify-ir --optimize "$level" --dump-ir \
-              -o "benchmark_reports/ir_verifier_smoke/cnn_${level}.s" \
+              --backend ir --verify-ir --optimize "$level" --dump-ir \
+              -o "benchmark_reports/ir_verifier_smoke/cnn_${level}.ir" \
               2>&1 | tee "benchmark_reports/ir_verifier_smoke/cnn_${level}.log"
-            test -s "benchmark_reports/ir_verifier_smoke/cnn_${level}.s"
+            test -s "benchmark_reports/ir_verifier_smoke/cnn_${level}.ir"
           done
         shell: bash
 
