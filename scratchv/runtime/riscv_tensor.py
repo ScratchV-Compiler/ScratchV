@@ -17,6 +17,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import threading
 import time
 from typing import Any, Mapping, Sequence
 
@@ -165,6 +166,13 @@ def _run_process(command, *, cwd, timeout, env=None) -> subprocess.CompletedProc
     with subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, **options) as process:
         job = _windows_job(process)
+        # The W2 supervisor first sends SIGTERM to the probe. This invocation
+        # owns a different session, so killing the probe group alone would
+        # orphan its compiler/QEMU. Unwind through cleanup before exiting.
+        previous_term = None
+        if os.name != "nt" and threading.current_thread() is threading.main_thread():
+            previous_term = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, _terminate_invocation)
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
@@ -182,10 +190,42 @@ def _run_process(command, *, cwd, timeout, env=None) -> subprocess.CompletedProc
                 process.wait(timeout=5)
                 stdout, stderr = drain.output or b"", drain.stderr or b""
             raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from exc
+        except BaseException:
+            # Cancellation and Ctrl-C must also close the owned invocation.
+            # Do not replace the primary interruption with a cleanup failure.
+            try:
+                _stop_process_tree(process, job)
+                process.communicate(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                process.kill()
+                for stream in (process.stdout, process.stderr):
+                    if stream:
+                        stream.close()
+            raise
         finally:
+            if previous_term is not None:
+                signal.signal(signal.SIGTERM, previous_term)
             if job is not None:
                 job[0].CloseHandle(job[1])
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _terminate_invocation(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+def _save_process_logs(directory: Path, prefix: str, stdout, stderr):
+    """Attempt both logs without allowing a secondary I/O error to hide execution."""
+    errors = []
+    for stream, content in (("stdout", stdout), ("stderr", stderr)):
+        path = directory / f"{prefix}.{stream}"
+        try:
+            path.write_bytes(content or b"")
+        except OSError as exc:
+            errors.append((path.name, exc))
+    detail = "; ".join(f"{name}: {error}" for name, error in errors)
+    suffix = f"; failed to preserve {prefix} logs: {detail}" if errors else ""
+    return suffix, errors[0][1] if errors else None
 
 
 def toolchain_versions(toolchain: RiscVToolchain) -> dict[str, str]:
@@ -516,15 +556,15 @@ def build_riscv_tensor(
     try:
         process = _run_process(command, cwd=build_dir, timeout=timeout, env=environment)
     except subprocess.TimeoutExpired as exc:
-        (build_dir / "compiler.stdout").write_bytes(exc.stdout or b"")
-        (build_dir / "compiler.stderr").write_bytes(exc.stderr or b"")
-        raise TimeoutError(f"RISC-V compilation exceeded {timeout} seconds") from exc
+        log_message, _ = _save_process_logs(build_dir, "compiler", exc.stdout, exc.stderr)
+        raise TimeoutError(f"RISC-V compilation exceeded {timeout} seconds{log_message}") from exc
     elapsed = time.perf_counter() - started
-    (build_dir / "compiler.stdout").write_bytes(process.stdout)
-    (build_dir / "compiler.stderr").write_bytes(process.stderr)
+    log_message, log_error = _save_process_logs(build_dir, "compiler", process.stdout, process.stderr)
     if process.returncode:
         message = process.stderr.decode("utf-8", errors="replace")[-12000:]
-        raise RuntimeError(f"RISC-V tensor compilation failed ({process.returncode}):\n{message}")
+        raise RuntimeError(f"RISC-V tensor compilation failed ({process.returncode}):\n{message}{log_message}")
+    if log_error is not None:
+        raise RuntimeError(log_message.lstrip("; ")) from log_error
     validate_riscv_elf(elf)
     return RiscVTensorExecutable(elf, tuple(artifact.inputs), artifact.output, toolchain,
                                 tuple(command), elapsed, int(artifact.workspace_bytes),
@@ -562,17 +602,12 @@ def run_riscv_tensor(
     except subprocess.TimeoutExpired as exc:
         elapsed = time.perf_counter() - started
         message = f"RISC-V QEMU execution exceeded {timeout} seconds"
-        try:
-            stdout_path.write_bytes(exc.stdout or b"")
-            stderr_path.write_bytes(exc.stderr or b"")
-        except OSError as log_error:
-            message += f"; failed to preserve QEMU logs: {log_error}"
-        raise RiscVTensorTimeoutError(message, elapsed_s=elapsed,
+        log_message, _ = _save_process_logs(run_dir, "qemu", exc.stdout, exc.stderr)
+        raise RiscVTensorTimeoutError(message + log_message, elapsed_s=elapsed,
                                      command=command, timeout_s=timeout) from exc
     elapsed = time.perf_counter() - started
+    log_message, log_error = _save_process_logs(run_dir, "qemu", process.stdout, process.stderr)
     try:
-        stdout_path.write_bytes(process.stdout)
-        stderr_path.write_bytes(process.stderr)
         if process.returncode:
             diagnostic = process.stderr.decode("utf-8", errors="replace")[-4000:]
             if uart_path.exists():
@@ -584,5 +619,8 @@ def run_riscv_tensor(
             raise RuntimeError("QEMU exited without producing UART tensor output")
         result = decode_tensor_frame(uart_path.read_bytes(), executable.output)
     except Exception as exc:
-        raise RiscVTensorExecutionError(str(exc), elapsed_s=elapsed, command=command) from exc
+        raise RiscVTensorExecutionError(str(exc) + log_message, elapsed_s=elapsed, command=command) from exc
+    if log_error is not None:
+        raise RiscVTensorExecutionError(log_message.lstrip("; "), elapsed_s=elapsed,
+                                       command=command) from log_error
     return RiscVTensorRun(result, elapsed, tuple(command), uart_path, stdout_path, stderr_path)
