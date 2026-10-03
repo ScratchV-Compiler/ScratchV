@@ -8,6 +8,7 @@ import numpy as np
 import onnx
 import pytest
 from onnx import helper, numpy_helper
+from onnx.reference import ReferenceEvaluator
 
 from scratchv.frontend.onnx_parser import ONNXParseError, ONNXParser
 from scratchv.verification.ir_interpreter import IRExecutionError, IRInterpreter
@@ -46,14 +47,15 @@ def _run_ir(path, feed):
     return IRInterpreter(program).run(feed, initializers=parser.initializers).return_value
 
 
-def _compare(path, feed):
+def _compare(path, feed, *, reference_evaluator=False):
     options = ort.SessionOptions()
     options.intra_op_num_threads = 1
     options.inter_op_num_threads = 1
     # Exercise the operator itself rather than relying on an ORT graph rewrite.
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-    expected = ort.InferenceSession(str(path), options,
-                                    providers=["CPUExecutionProvider"]).run(None, feed)[0]
+    session = (ReferenceEvaluator(str(path)) if reference_evaluator else
+               ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"]))
+    expected = session.run(None, feed)[0]
     actual = _run_ir(path, feed)
     assert actual.shape == expected.shape
     assert actual.dtype == expected.dtype
@@ -144,7 +146,11 @@ def test_reduce_mean(tmp_path, dtype, opset, axes, keepdims, noop):
     feed = {"x": x}
     path = _model(tmp_path, "ReduceMean", feed, constants=constants, attrs=attrs,
                   output_shape=expected_shape, opset=opset)
-    _compare(path, feed)
+    # ORT 1.22.1's CPU kernel rejects omitted axes + noop=1 even though ONNX
+    # specifies identity. Validate that exact case against the ONNX evaluator.
+    actual = _compare(path, feed, reference_evaluator=(opset == 18 and axes is None and noop == 1))
+    if opset == 18 and axes is None and noop == 1:
+        np.testing.assert_array_equal(actual, x)
 
 
 @pytest.mark.parametrize("dtype", FLOATS)

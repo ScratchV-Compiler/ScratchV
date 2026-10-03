@@ -12,6 +12,7 @@ from html import escape
 import json
 import math
 from pathlib import Path
+import platform
 import sys
 import time
 import traceback
@@ -21,6 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import numpy as np
+import onnx
 import onnxruntime as ort
 
 from probes.w2_qwen3_small.diagnostics import compare_outputs, tensor_diff, unpack_trace
@@ -83,8 +85,31 @@ def validated_model_artifacts(model_dir):
                 "model_sha256": model_hashes,
                 "schema_sha256": hashlib.sha256(schema_bytes).hexdigest(),
                 "model_seed": source.get("model_seed"), "weights_sha256": source.get("weights_sha256"),
-                "config": source.get("config"), "provenance": source.get("provenance")}
+                "config": source.get("config"), "provenance": source.get("provenance"),
+                "environment": source.get("environment")}
     return files, schema, evidence
+
+
+def execution_evidence():
+    """Describe this execution, independently of the earlier export's environment."""
+    sources = [ROOT / "scratchv/compiler.py", Path(__file__),
+               ROOT / "probes/w2_qwen3_small/run.py", ROOT / "probes/w2_qwen3_small/diagnostics.py",
+               ROOT / "scratchv/frontend/onnx_parser.py", ROOT / "scratchv/ir/types.py",
+               ROOT / "scratchv/ir/builder.py", ROOT / "scratchv/pass_manager.py",
+               ROOT / "scratchv/pass_interface.py", ROOT / "scratchv/verification/ir_interpreter.py",
+               ROOT / "scratchv/verification/ir_numpy_ops.py",
+               *sorted((ROOT / "scratchv/analysis").glob("*.py")),
+               *sorted((ROOT / "scratchv/optimizer").glob("*.py")),
+               ROOT / "scratchv/backend/tensor_c_codegen.py", ROOT / "scratchv/runtime/riscv_tensor.py"]
+    return {
+        "environment": {"scope": "Current RISC-V probe process, including its ORT and IR references",
+                        "python": platform.python_version(), "executable": sys.executable,
+                        "platform": platform.platform(),
+                        "packages": {"numpy": np.__version__, "onnx": onnx.__version__,
+                                     "onnxruntime": ort.__version__}},
+        "source_sha256": {path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                          for path in sources},
+    }
 
 
 def execute_qemu_case(executable, feed, folder, expected, *, graph, level,
@@ -188,6 +213,8 @@ def format_seconds(value):
 
 
 def run_probe(model_dir, out, report, *, cc=None, qemu=None, timeout=180):
+    report["stage"] = "environment"
+    report.update(execution_evidence())
     report["stage"] = "model-artifacts"
     files, schema, evidence = validated_model_artifacts(model_dir)
     report["export_evidence"] = evidence
@@ -200,12 +227,6 @@ def run_probe(model_dir, out, report, *, cc=None, qemu=None, timeout=180):
     report["checkpoints"] = schema
     report["model_sha256"] = evidence["model_sha256"]
     report["schema_sha256"] = evidence["schema_sha256"]
-    sources = [ROOT / "scratchv/compiler.py", Path(__file__),
-               *sorted((ROOT / "scratchv/optimizer").glob("*.py")),
-               ROOT / "scratchv/backend/tensor_c_codegen.py",
-               ROOT / "scratchv/runtime/riscv_tensor.py"]
-    report["source_sha256"] = {path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-                               for path in sources}
     report["stage"] = "compile"
     report["builds"] = []
     sessions, programs, parsers, executables = {}, {}, {}, {}
@@ -292,11 +313,9 @@ def run_probe(model_dir, out, report, *, cc=None, qemu=None, timeout=180):
     report["stage"] = "complete"
 
 
-def write_reports(out, report):
-    report["timing"] = summarize_timing(report)
+def _report_views(report):
     timing = report["timing"]
     counts = timing["status_counts"]
-    (out / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     lines = ["# Two-layer Qwen3: ScratchV IR → C tensor kernels → RV64GC → QEMU", "",
              f"Result: **{'PASS' if report['passed'] else 'FAIL'}**; stage: {report['stage']}", "",
              "## 仿真耗时", "",
@@ -346,7 +365,7 @@ def write_reports(out, report):
                      row.get('checkpoints', {}).get('first_divergence') or 'none', row['status']]
             execution_rows.append(cells)
             lines.append("| " + " | ".join(cells) + " |")
-    (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    markdown = "\n".join(lines) + "\n"
     details = []
     for case in report.get("cases", []):
         details.append(f"<details><summary>{escape(case['name'])}: "
@@ -381,13 +400,66 @@ def write_reports(out, report):
         execution_rows)
     if report.get("error"):
         overview += f"<p>Error: {escape(report['error'])}</p>"
-    (out / "report.html").write_text(
+    html = (
         "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><title>Qwen3 RV64 probe</title>"
         "<style>body{font:16px/1.5 system-ui;max-width:1100px;margin:32px auto}pre{white-space:pre-wrap}"
         ".table-wrap{overflow:auto}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}"
         "details{padding:12px;border:1px solid #ddd;margin:10px 0}</style>"
         f"<h1>Qwen3 RV64 QEMU: {'PASS' if report['passed'] else 'FAIL'}</h1>"
-        + overview + "".join(details) + "</html>", encoding="utf-8")
+        + overview + "".join(details) + "</html>")
+    return {"report.md": markdown, "report.html": html}
+
+
+def write_reports(out, report):
+    """Publish JSON last and atomically; failed evidence is a failed gate."""
+    report["timing"] = summarize_timing(report)
+    failures = []
+
+    def write(name, content):
+        # A write can leave complete bytes and still raise (for example on
+        # close). Never expose those bytes as the final machine-readable PASS.
+        temporary = out / f".{name}.tmp"
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            temporary.replace(out / name)
+            return True
+        except OSError as exc:
+            failures.append(f"{name}: {type(exc).__name__}: {exc}")
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                failures.append(f"{temporary.name}: cleanup failed: {cleanup_error}")
+            return False
+
+    def fail():
+        if report["passed"]:
+            report.update(passed=False, stage="report-write", error="Incomplete QEMU gate evidence")
+        report["report_write_errors"] = list(failures)
+
+    def recover_views():
+        summary = ("# Two-layer Qwen3 RV64 gate\n\nResult: **FAIL**\n\n"
+                   f"Stage: {report['stage']}\n\nError: {report.get('error', 'Gate failed')}\n\n"
+                   + "Report write errors:\n" + "\n".join(f"- {item}" for item in failures) + "\n")
+        for name, content in (("report.md", summary), ("report.html",
+                              '<!doctype html><meta charset="utf-8"><pre>' + escape(summary) + "</pre>")):
+            write(name, content)
+        report["report_write_errors"] = list(failures)
+
+    for name, content in _report_views(report).items():
+        write(name, content)
+    if failures:
+        fail()
+        recover_views()
+    payload = json.dumps(report, indent=2, allow_nan=False) + "\n"
+    if not write("report.json", payload):
+        fail()
+        recover_views()
+        # A transient publication error may still allow the failure evidence
+        # to be saved; a permanent error leaves no final PASS JSON.
+        write("report.json", json.dumps(report, indent=2, allow_nan=False) + "\n")
+        report["report_write_errors"] = list(failures)
+    if failures:
+        print("[RV64 gate] Report write failed: " + "; ".join(failures), file=sys.stderr)
 
 
 def main(argv=None):
