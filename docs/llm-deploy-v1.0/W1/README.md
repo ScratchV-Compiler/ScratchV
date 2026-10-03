@@ -1,10 +1,14 @@
 # W1 独立复现与验收记录
 
-本指南用于另一名成员从目标提交重新生成参考结果、编译产物并运行探测。当前已知本地结果见 [执行计划](W1-执行计划.md)，接口候选见 [interfaces.md](interfaces.md)，风险见 [risks.md](risks.md)。**第二人复现和团队确认尚未完成**；请填写末尾模板，不要把这些文字当作签字记录。
+本指南用于另一名成员从目标提交重新生成参考结果、编译产物并运行探测。当前已知本地结果见 [执行计划](W1-执行计划.md)，接口候选见 [interfaces.md](interfaces.md)，风险见 [risks.md](risks.md)。**Mastttttter 已于 2026-10-03 完成 `df18b02f` 的两层数值链路独立复现并本人确认；团队接口确认和 W1 出口评审仍待完成。** 原始证据见 [独立复现报告](https://github.com/ScratchV-Compiler/ScratchV/pull/91#issuecomment-5958157573)。该确认归属所列提交，不自动覆盖后续修复。
 
 本次 PR #91 集成此前本地收尾修复、复现预检和 QEMU 时长记录；历史本地结果与待决策问题见 [收尾与审查报告](W1-本地收尾与审查报告.md)。本次提交的实际测试、CI 与精确 SHA 以 PR 说明和对应运行报告为准，不用历史结果替代。
 
 所有命令在仓库根目录执行。先记录 `git rev-parse HEAD` 和 `git status --short`；干净checkout便于关联提交，存在本地改动则保留diff并明确标记。不要使用第一人的预生成参考数组代替自己的运行。下述输出目录用完后保留，下一轮使用不同名称，不删除旧证据。
+
+本次依据第二人报告修复两个复现问题：Linux 超时测试遗漏 `X` 死亡状态、错误解析含空格的进程名；三项优化集成测试依赖固定目录，导致自选产物目录和 CI 中被跳过。退出测试现在区分原进程身份，允许短暂退出过程，验证无关进程仍存活；CI 另连续运行 20 次真实进程用例，每次保留 JUnit，任一次失败即停止。没有修改编译器数值算法、模型配置或精度阈值，W2 扩展继续独立交付。
+
+修复工作树的本地验证：452 项专项回归全部通过、0 跳过（`output/pr91-final-regressions-zig.xml`）；显式产物集成单独实跑 3/3（`output/pr91-artifact-integration.xml`，与前者重叠）。本轮新导出及两层 QEMU 报告在 `output/pr91-repro-host/`、`output/pr91-repro-qemu/`，28/28 通过，最大目标误差 `1.6689300537109375e-6`，QEMU 进程累计 130.701 秒。以上为 Windows 上提交前的实际工作树证据，不冒充 Linux 退出竞态复验；新提交的 Linux 20 次执行结果以 PR CI 对应 SHA 为准。项目指定的 `.claude/harness/verify/run.py` 本地缺失，未宣称执行 L2。
 
 ## 0. 确定复现版本与领取任务
 
@@ -94,7 +98,7 @@ python -X utf8 -B -m pytest tests/test_tensor_c_codegen.py tests/test_tensor_com
 python -X utf8 -B -m pytest tests/test_qwen3_small_probe.py tests/test_qwen3_small_model.py tests/test_qwen3_small_gate.py -q
 ```
 
-保留pytest实际输出中的passed/skipped/failed和依赖版本；没有torch导致skip不能当成官方模型测试通过。本轮历史“237项”是当时的专项集合计数；未来新增测试后以新输出为准。
+保留pytest实际输出中的passed/skipped/failed和依赖版本；没有torch导致skip不能当成官方模型测试通过。尚未设置 `SCRATCHV_QWEN_ARTIFACT_DIR` 时，三个产物优化集成项会明确 skip，须在生成本轮模型后执行第 3.1 节。此时普通单测成功不等于这三项通过。本轮历史“237项”是当时的专项集合计数；未来新增测试后以新输出为准。
 
 原PR89模型使用Git LFS。若checkout中只有pointer，先取得真实对象：
 
@@ -127,7 +131,33 @@ python -X utf8 -B probes/w2_qwen3_small/riscv.py --model-dir output/w1-repro-qwe
 
 阈值固定 `max_abs < 1e-5`、`rtol=0`，shape/dtype/有限值均须一致，包括padding query。失败时先看stage/current_case/first_divergence；保留报告，不提高容差或只重新运行成功的case。
 
-### 3.1 查看运行时长
+### 3.1 显式验收本轮产物的三种优化
+
+在本轮模型导出成功后执行；目录可以是仓库外的绝对路径，不需要符号链接。
+
+```bash
+SCRATCHV_QWEN_ARTIFACT_DIR=output/w1-repro-qwen3-small python -X utf8 -B -m pytest \
+  tests/test_optimizer_numeric_semantics.py::test_real_qwen_artifact_optimization_matches_ort \
+  -q -rs -o junit_family=xunit1 --junit-xml=output/w1-repro-qwen3-small/optimization-tests.xml
+```
+
+PowerShell 使用同一固定解释器：
+
+```powershell
+$env:SCRATCHV_QWEN_ARTIFACT_DIR = 'output/w1-repro-qwen3-small'
+& $probePython -X utf8 -B -m pytest tests/test_optimizer_numeric_semantics.py::test_real_qwen_artifact_optimization_matches_ort -q -rs -o junit_family=xunit1 --junit-xml=output/w1-repro-qwen3-small/optimization-tests.xml
+$artifactTestExit = $LASTEXITCODE
+Remove-Item Env:SCRATCHV_QWEN_ARTIFACT_DIR
+if ($artifactTestExit -ne 0) { throw "Qwen artifact integration failed: $artifactTestExit" }
+```
+
+必须 **3 passed、0 skipped**，分别对应 none/basic/all，每项执行全部 7 组输入。显式目录为空、缺文件、导出失败、模型/输入/源码指纹不符均失败；没有配置目录才允许普通单测跳过，不再查找历史 `output/qwen3-small-pr91`。
+
+测试复用现有导出报告及模型校验，并验证实际 NPZ 文件。ORT 参考和未优化 IR 基线当次计算，不读取旧 `logits_*.npy` 作为真值；每种优化要求对 ORT 严格误差 `<1e-5`，同时与当次未优化 IR 数组逐元素相等。JUnit 的 testcase properties 记录模型、导出报告与源码哈希，以及导出/测试提交和实际 case 数。哈希一致只能证明内容配套；仍须在本轮新目录导出，保留执行命令及报告，不能把旧产物改名后宣称新导出。
+
+CI 在模型导出之后使用相同固定 Python 显式运行此项，并检查 JUnit 中恰好三项且无 skip/error/failure。其结果与原有 42 项 IR、28 项 QEMU 对照分别记录，不互相替代。
+
+### 3.2 查看运行时长
 
 第三条命令执行后，直接打开 `output/qwen3-riscv/report.md` 或 `report.html`；机器读取使用同目录 `report.json`。更换 `--output-dir` 时，到相应目录查看。CI 将 Markdown 写入 Actions Summary，同时保留报告 artifact，失败时已经生成的报告也应查看。
 

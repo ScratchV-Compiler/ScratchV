@@ -31,6 +31,8 @@ on:
       - 'tests/test_tensor*.py'
       - 'tests/test_riscv_tensor*.py'
       - 'tests/test_optimizer*.py'
+      - 'tests/qwen_artifacts.py'
+      - 'tests/test_qwen_artifact_selection.py'
       - 'tests/test_w1_qwen3*.py'
       - 'tests/test_w1_repro_env.py'
       - '.github/workflows/llm-deploy.yml'
@@ -106,7 +108,20 @@ jobs:
 
       - name: Tensor compiler and runtime regressions
         run: |
-          python3 -m pytest tests/test_tensor_c_codegen.py tests/test_tensor_compiler.py tests/test_riscv_tensor_runtime.py tests/test_optimizer_numeric_semantics.py tests/test_w1_qwen3_export.py tests/test_qwen3_small_riscv_gate.py tests/test_w1_repro_env.py -q
+          python3 -m pytest tests/test_tensor_c_codegen.py tests/test_tensor_compiler.py tests/test_riscv_tensor_runtime.py tests/test_optimizer_numeric_semantics.py tests/test_qwen_artifact_selection.py tests/test_w1_qwen3_export.py tests/test_qwen3_small_riscv_gate.py tests/test_w1_repro_env.py -q
+
+      - name: Repeated Linux timeout cleanup regression
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          mkdir -p output/process-cleanup-repeats
+          for attempt in $(seq 1 20); do
+            python3 -B -m pytest \
+              tests/test_riscv_tensor_runtime.py::test_timeout_terminates_only_owned_process_tree \
+              -q -p no:cacheprovider \
+              --basetemp "output/process-cleanup-repeats/temp-$attempt" \
+              --junit-xml="output/process-cleanup-repeats/attempt-$attempt.xml"
+          done
 
       # ── probe:small-transformer ───────────────────────────────────────
       - name: "probe:small-transformer"
@@ -150,6 +165,27 @@ jobs:
           set -euo pipefail
           "$QWEN3_PY" "$PROBE_QWEN3_SMALL" --output-dir output/qwen3-small
 
+      - name: Explicit Qwen3 artifact optimization integration
+        id: qwen3_artifact_tests
+        env:
+          SCRATCHV_QWEN_ARTIFACT_DIR: output/qwen3-small
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
+        run: |
+          set -euo pipefail
+          "$QWEN3_PY" -B -m pytest \
+            tests/test_optimizer_numeric_semantics.py::test_real_qwen_artifact_optimization_matches_ort \
+            -q -rs -o junit_family=xunit1 --junit-xml=output/qwen3-small/optimization-tests.xml
+          "$QWEN3_PY" - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = ET.parse('output/qwen3-small/optimization-tests.xml').getroot().findall('.//testcase')
+          expected = {f'test_real_qwen_artifact_optimization_matches_ort[{level}]' for level in ('none', 'basic', 'all')}
+          assert len(cases) == 3 and {case.get('name') for case in cases} == expected
+          assert not any(case.find(tag) is not None for case in cases for tag in ('skipped', 'failure', 'error'))
+          print('Qwen artifact integration: 3 passed, 0 skipped')
+          PY
+
       - name: Qwen3 small probe regressions
         id: qwen3_small_tests
         env:
@@ -182,6 +218,7 @@ jobs:
           path: |
             output/qemu-matmul/
             output/qwen3-riscv/
+            output/process-cleanup-repeats/*.xml
           if-no-files-found: ignore
 
       - name: Summarize RISC-V numeric gate
@@ -202,10 +239,12 @@ jobs:
         env:
           PROBE_OUTCOME: ${{ steps.qwen3_small.outcome }}
           TEST_OUTCOME: ${{ steps.qwen3_small_tests.outcome }}
+          ARTIFACT_TEST_OUTCOME: ${{ steps.qwen3_artifact_tests.outcome }}
         run: |
           {
             echo "## numeric:ir-qwen3-small"
             echo "Probe: $PROBE_OUTCOME; regression tests: $TEST_OUTCOME"
+            echo "Explicit artifact integration (requires 3 passed / 0 skipped): $ARTIFACT_TEST_OUTCOME"
             echo ""
             if [ -f output/qwen3-small/report.md ]; then
               cat output/qwen3-small/report.md

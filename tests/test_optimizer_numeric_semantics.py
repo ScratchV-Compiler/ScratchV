@@ -1,7 +1,8 @@
 """Optimization must preserve executable SSA, tensors and checked arithmetic."""
 
 import copy
-from pathlib import Path
+import json
+import os
 
 import numpy as np
 import pytest
@@ -255,16 +256,45 @@ def test_mul_add_keeps_shared_products_and_binary_tensor_semantics(shared, dtype
     assert count == 0 and changed.dump() == b.program.dump()
 
 
-@pytest.mark.parametrize("level", ["none", "basic", "all"])
-def test_real_qwen_artifact_optimization_matches_ort(level):
-    """Optional local integration; ordinary unit tests need no downloaded model."""
-    directory = Path(__file__).resolve().parents[1] / "output/qwen3-small-pr91"
-    if not (directory / "model.onnx").is_file():
-        pytest.skip("Local Qwen3 probe artifacts have not been generated")
+@pytest.fixture(scope="module")
+def real_qwen_artifacts():
+    """Unconfigured unit runs may skip; explicitly requested evidence must work."""
+    directory = os.environ.get("SCRATCHV_QWEN_ARTIFACT_DIR")
+    if directory is None:
+        pytest.skip("Set SCRATCHV_QWEN_ARTIFACT_DIR to freshly exported Qwen3 artifacts")
+    if not directory.strip():
+        pytest.fail("SCRATCHV_QWEN_ARTIFACT_DIR must not be empty")
+    from tests.qwen_artifacts import load_qwen_artifact_inputs
+    import onnxruntime as ort
     from scratchv.frontend.onnx_parser import ONNXParser
 
+    model, feeds, evidence = load_qwen_artifact_inputs(directory)
     parser = ONNXParser()
-    program = parser.parse(str(directory / "model.onnx"))
+    program = parser.parse(str(model))
+    assert verify_ir(program) == (True, [])
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    session = ort.InferenceSession(str(model), options, providers=["CPUExecutionProvider"])
+    # Compute both references now; never trust NPY arrays left by another run.
+    references = {}
+    for name, feed in feeds.items():
+        reference = session.run(None, feed)[0]
+        baseline = IRInterpreter(program).run(feed, initializers=parser.initializers).return_value
+        references[name] = reference, baseline
+    return program, parser.initializers, feeds, references, evidence
+
+
+@pytest.mark.parametrize("level", ["none", "basic", "all"])
+def test_real_qwen_artifact_optimization_matches_ort(level, real_qwen_artifacts, record_property):
+    source, initializers, feeds, references, evidence = real_qwen_artifacts
+    record_property("export_report_sha256", evidence["report_sha256"])
+    record_property("model_sha256", evidence["model_sha256"]["normal"])
+    record_property("source_sha256", json.dumps(evidence["current_provenance"]["source_sha256"], sort_keys=True))
+    record_property("export_commit", evidence["provenance"].get("git_commit"))
+    record_property("test_commit", evidence["current_provenance"].get("git_commit"))
+    record_property("optimization", level)
+    record_property("input_case_count", len(feeds))
+    program = copy.deepcopy(source)
     manager = create_optimization_pass_manager(level)
 
     def check(pass_, current):
@@ -272,17 +302,11 @@ def test_real_qwen_artifact_optimization_matches_ort(level):
 
     manager.before_pass = manager.after_pass = check
     manager.run(program)
-    cases = sorted(directory.glob("inputs_*.npz"))
-    assert len(cases) == 7
-    for path in cases:
-        name = path.stem.removeprefix("inputs_")
-        with np.load(path) as inputs:
-            feed = dict(inputs)
-        actual = IRInterpreter(program).run(feed, initializers=parser.initializers).return_value
-        reference = np.load(directory / f"logits_{name}_ort.npy")
-        baseline = np.load(directory / f"logits_{name}_ir.npy")
-        assert actual.shape == reference.shape == (1, 256, 128)
-        assert actual.dtype == reference.dtype == np.float32
-        assert np.isfinite(actual).all()
+    for name, feed in feeds.items():
+        actual = IRInterpreter(program).run(feed, initializers=initializers).return_value
+        reference, baseline = references[name]
+        assert actual.shape == reference.shape == baseline.shape == (1, 256, 128)
+        assert actual.dtype == reference.dtype == baseline.dtype == np.float32
+        assert all(np.isfinite(array).all() for array in (actual, reference, baseline))
         assert np.max(np.abs(actual - reference)) < 1e-5
         np.testing.assert_array_equal(actual, baseline)

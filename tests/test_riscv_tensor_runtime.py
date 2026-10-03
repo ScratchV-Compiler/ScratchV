@@ -2,11 +2,13 @@
 
 from types import SimpleNamespace
 import hashlib
+import json
 import os
 from pathlib import Path
 import struct
 import subprocess
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -95,16 +97,30 @@ def test_guest_error_cannot_be_misreported_as_valid_empty_output():
         decode_tensor_frame(frame(b"", status=258), spec("y", (2,), "float32"))
 
 
-def _assert_posix_process_terminated(pid):
-    # A killed Linux orphan can remain a zombie until PID 1 reaps it. Reaping
-    # can also happen while /proc is being read, so do not use exists() first.
-    try:
-        status = Path(f"/proc/{pid}/stat").read_text()
-    except (FileNotFoundError, ProcessLookupError):
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
-    else:
-        assert status.split()[2] == "Z", "Timed-out compiler child is still running"
+def _assert_posix_process_terminated(pid, *, starttime=None, timeout=1.0):
+    # SIGKILL, pipe closure and orphan reaping are not one atomic event. Both
+    # X (dead) and Z (zombie) have stopped executing. Never accept a live state.
+    deadline = time.monotonic() + timeout
+    state = "unknown"
+    while True:
+        try:
+            status = Path(f"/proc/{pid}/stat").read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+        else:
+            # comm may contain spaces and ')'; state follows the final ')'.
+            fields = status.rsplit(")", 1)[1].split()
+            state = fields[0]
+            if starttime is not None and int(fields[19]) != starttime:
+                return  # The original child exited; this PID has been reused.
+            if state in {"Z", "X"}:
+                return
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"Timed-out compiler child is still running: pid={pid}, state={state}")
+        time.sleep(0.01)
 
 
 @pytest.mark.parametrize("read_error", [FileNotFoundError, ProcessLookupError])
@@ -124,24 +140,64 @@ def test_process_exit_check_accepts_reaping_during_proc_read(monkeypatch, read_e
     assert checked == [(123, 0)]
 
 
-@pytest.mark.parametrize("state", ["R", "S"])
+@pytest.mark.parametrize("state", ["R", "S", "D", "T", "t", "I"])
 def test_process_exit_check_rejects_live_child(monkeypatch, state):
-    monkeypatch.setattr(Path, "read_text", lambda self: f"123 (python) {state} 0")
+    monkeypatch.setattr(Path, "read_text", lambda self: f"123 (worker Z ) name) {state} 0")
     with pytest.raises(AssertionError, match="still running"):
-        _assert_posix_process_terminated(123)
+        _assert_posix_process_terminated(123, timeout=0)
+
+
+@pytest.mark.parametrize("state", ["Z", "X"])
+@pytest.mark.parametrize("comm", ["python", "worker a", "worker Z ) name"])
+def test_process_exit_check_accepts_dead_states_and_comm_spaces(monkeypatch, state, comm):
+    monkeypatch.setattr(Path, "read_text", lambda self: f"123 ({comm}) {state} 0")
+    _assert_posix_process_terminated(123, timeout=0)
+
+
+def test_process_exit_check_waits_for_exit_transition(monkeypatch):
+    statuses = iter(["123 (python) R 0", "123 (python) X 0"])
+    monkeypatch.setattr(Path, "read_text", lambda self: next(statuses))
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    _assert_posix_process_terminated(123)
+
+
+def test_process_exit_check_distinguishes_reused_pid(monkeypatch):
+    fields = ["R", *(["0"] * 18), "200"]
+    monkeypatch.setattr(Path, "read_text", lambda self: "123 (python) " + " ".join(fields))
+    _assert_posix_process_terminated(123, starttime=100, timeout=0)
+    with pytest.raises(AssertionError, match="still running"):
+        _assert_posix_process_terminated(123, starttime=200, timeout=0)
 
 
 def test_timeout_terminates_only_owned_process_tree(tmp_path):
     # The child inherits the compiler's stdout pipe. Killing only the direct
     # process would leave it alive and keep communicate() blocked indefinitely.
     source = (
-        "import subprocess,sys,time; "
+        "import subprocess,sys,time,json; from pathlib import Path; "
         "child=subprocess.Popen([sys.executable,'-B','-c','import time; time.sleep(60)']); "
-        "print(child.pid,flush=True); time.sleep(60)"
+        "started=int(Path(f'/proc/{child.pid}/stat').read_text().rsplit(')',1)[1].split()[19]) "
+        "if sys.platform=='linux' else None; "
+        "print(json.dumps([child.pid,started]),flush=True); time.sleep(60)"
     )
-    with pytest.raises(subprocess.TimeoutExpired) as captured:
-        _run_process([sys.executable, "-B", "-c", source], cwd=tmp_path, timeout=5)
-    pid = int(captured.value.output.strip())
+    # A separate process/group must survive cleanup of the timed-out command.
+    unrelated = subprocess.Popen(
+        [sys.executable, "-B", "-c", "import time; time.sleep(60)"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=os.name != "nt",
+    )
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as captured:
+            _run_process([sys.executable, "-B", "-c", source], cwd=tmp_path, timeout=5)
+        assert unrelated.poll() is None, "Timeout cleanup killed an unrelated process"
+        pid, started = json.loads(captured.value.output.strip())
+        _assert_timed_child_terminated(pid, started)
+    finally:
+        if unrelated.poll() is None:
+            unrelated.kill()
+        unrelated.wait(timeout=5)
+
+
+def _assert_timed_child_terminated(pid, started):
     if os.name == "nt":
         import ctypes
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -158,7 +214,7 @@ def test_timeout_terminates_only_owned_process_tree(tmp_path):
             finally:
                 kernel.CloseHandle(handle)
     else:
-        _assert_posix_process_terminated(pid)
+        _assert_posix_process_terminated(pid, starttime=started)
 
 
 @pytest.mark.parametrize("field,value", [
