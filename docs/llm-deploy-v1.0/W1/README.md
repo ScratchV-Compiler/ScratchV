@@ -2,7 +2,7 @@
 
 本指南用于另一名成员从目标提交重新生成参考结果、编译产物并运行探测。当前已知本地结果见 [执行计划](W1-执行计划.md)，接口候选见 [interfaces.md](interfaces.md)，风险见 [risks.md](risks.md)。**Mastttttter 已于 2026-10-03 完成 `df18b02f` 的两层数值链路独立复现并本人确认；团队接口确认和 W1 出口评审仍待完成。** 原始证据见 [独立复现报告](https://github.com/ScratchV-Compiler/ScratchV/pull/91#issuecomment-5958157573)。该确认归属所列提交，不自动覆盖后续修复。
 
-本次 PR #91 集成此前本地收尾修复、复现预检和 QEMU 时长记录；历史本地结果与待决策问题见 [收尾与审查报告](W1-本地收尾与审查报告.md)。本次提交的实际测试、CI 与精确 SHA 以 PR 说明和对应运行报告为准，不用历史结果替代。
+PR #91 已合并，最终 head 为 `5903c1381d57f24062de7395f24385a59e279325`，合并提交为 `3bb88e81498d6d9293aed70e25a4e5a2104465d0`。报告落盘失败和源码身份归属修复单独见 [PR #93](https://github.com/ScratchV-Compiler/ScratchV/pull/93)；发布前整合工作树记录见 [本轮修复与验收报告](../W2/W1修复与W2本地验收报告.md)。人工确认和完整模型第二人复现继续由 [Issue #92](https://github.com/ScratchV-Compiler/ScratchV/issues/92) 跟踪。下方原 PR 修复数据均为历史记录。
 
 所有命令在仓库根目录执行。先记录 `git rev-parse HEAD` 和 `git status --short`；干净checkout便于关联提交，存在本地改动则保留diff并明确标记。不要使用第一人的预生成参考数组代替自己的运行。下述输出目录用完后保留，下一轮使用不同名称，不删除旧证据。
 
@@ -12,7 +12,7 @@
 
 ## 0. 确定复现版本与领取任务
 
-`5ea22ecc7fd314025f6453c556dbb3e3f16a3175` 是已有 Linux CI 证据的**历史基线**，不包含本次新增的环境预检和时长汇总。复现本次更新时，应先从 [PR #91](https://github.com/ScratchV-Compiler/ScratchV/pull/91) 确认维护者/作者约定的完整 head SHA，再获取 PR head 并核对；PR 分支可能继续更新，不能仅记录分支名。
+`5ea22ecc7fd314025f6453c556dbb3e3f16a3175` 是较早的 Linux CI **历史基线**。复现已合并 W1 时可使用下述固定合并 SHA；若复现本次尚未提交的修复，则必须在该基线上另取得完整增量文件，并核对验收报告中的源码哈希，不能把仅检出的合并提交称为已包含本地修复。
 
 在新目录获取本次版本的示例（需已安装 Git 和 Git LFS，PowerShell/bash 均可逐条执行）：
 
@@ -20,11 +20,11 @@
 git clone --no-checkout https://github.com/ScratchV-Compiler/ScratchV.git ScratchV-w1-repro
 cd ScratchV-w1-repro
 git lfs install --local
-git fetch origin pull/91/head
+git fetch origin 3bb88e81498d6d9293aed70e25a4e5a2104465d0
 git rev-parse FETCH_HEAD
 ```
 
-先确认输出与约定的 PR head SHA 完全一致，再执行以下命令；不一致时先确认目标版本，不要继续运行后误写为原约定提交的结果。
+先确认输出与约定的合并 SHA 完全一致，再执行以下命令；不一致时先确认目标版本，不要继续运行后误写为原约定提交的结果。
 
 ```bash
 git checkout --detach FETCH_HEAD

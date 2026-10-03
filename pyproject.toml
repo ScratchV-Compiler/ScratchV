@@ -34,6 +34,7 @@ classifiers = [
 riscv = ["tinyfive"]
 llvm = ["llvmlite"]      # optional: LLVM IR JIT execution
 verify = ["onnxruntime"] # optional: ONNX Runtime comparison
+llm = ["tokenizers>=0.21,<0.22"] # optional: local Qwen3 text tokenizer; no Torch
 all = ["tinyfive", "llvmlite", "onnxruntime"]
 topic06 = ["tinyfive", "pytest"]
 topic06-report = ["tinyfive", "pytest", "jinja2", "matplotlib"]

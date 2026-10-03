@@ -217,6 +217,32 @@ def _assert_timed_child_terminated(pid, started):
         _assert_posix_process_terminated(pid, starttime=started)
 
 
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+def test_interruption_stops_actual_owned_process(monkeypatch, tmp_path, interruption):
+    communicate = subprocess.Popen.communicate
+    interrupted = []
+
+    def interrupt_once(process, *args, **kwargs):
+        if not interrupted:
+            interrupted.append(process)
+            raise interruption(143)
+        return communicate(process, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", interrupt_once)
+    with pytest.raises(interruption):
+        _run_process([sys.executable, "-B", "-c", "import time;time.sleep(60)"],
+                     cwd=tmp_path, timeout=30)
+    assert len(interrupted) == 1
+    assert interrupted[0].poll() is not None
+
+
+def test_termination_signal_requests_normal_cleanup():
+    from scratchv.runtime.riscv_tensor import _terminate_invocation
+    with pytest.raises(SystemExit) as caught:
+        _terminate_invocation(15, None)
+    assert caught.value.code == 143
+
+
 @pytest.mark.parametrize("field,value", [
     ("class", 1), ("endian", 2), ("machine", 62), ("entry", INPUT_BASE), ("abi", 0),
 ])
@@ -347,6 +373,68 @@ def test_failed_qemu_attempt_retains_measured_wall_time(tmp_path, monkeypatch, t
     assert error.__cause__ is not None
 
 
+@pytest.mark.parametrize("outcome,message", [
+    ("guest", "failure status 3"), ("nonzero", r"QEMU failed \(7\): rejected"),
+    ("bad_frame", "truncated or missing"),
+])
+def test_qemu_log_failure_keeps_primary_error_and_other_log(
+        tmp_path, monkeypatch, timed_guest, outcome, message):
+    runtime, executable, feed, clock = timed_guest
+    original_write = Path.write_bytes
+
+    def write(path, data):
+        if path.name == "qemu.stdout":
+            raise PermissionError("stdout is locked")
+        return original_write(path, data)
+
+    def process(command, *, cwd, timeout):
+        clock.now += 2.5
+        if outcome == "guest":
+            (cwd / "uart.bin").write_bytes(frame(b"", status=3))
+        elif outcome == "bad_frame":
+            (cwd / "uart.bin").write_bytes(b"broken")
+        return subprocess.CompletedProcess(command, 7 if outcome != "bad_frame" else 0,
+                                           b"partial stdout", b"rejected")
+
+    monkeypatch.setattr(Path, "write_bytes", write)
+    monkeypatch.setattr(runtime, "_run_process", process)
+    run_dir = tmp_path / "run"
+    with pytest.raises(RiscVTensorExecutionError, match=message) as captured:
+        run_riscv_tensor(executable, feed, run_dir)
+    assert "stdout is locked" in str(captured.value)
+    assert captured.value.elapsed_s == 2.5 and clock.reads == 2
+    assert (run_dir / "qemu.stderr").read_bytes() == b"rejected"
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_compiler_log_failure_keeps_primary_error_and_other_log(tmp_path, monkeypatch, timeout):
+    from scratchv.runtime import riscv_tensor as runtime
+
+    original_write = Path.write_bytes
+
+    def write(path, data):
+        if path.name == "compiler.stdout":
+            raise PermissionError("compiler stdout is locked")
+        return original_write(path, data)
+
+    def process(command, **kwargs):
+        if timeout:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=b"partial", stderr=b"rejected")
+        return subprocess.CompletedProcess(command, 11, b"partial", b"rejected")
+
+    artifact = SimpleNamespace(source="int scratchv_run(void){return 0;}", inputs=(),
+                               output=spec("result", (1,), "float32"), function_name="scratchv_run")
+    tools = SimpleNamespace(cc=("fixture-clang",), qemu="fixture-qemu", is_zig=False)
+    monkeypatch.setattr(Path, "write_bytes", write)
+    monkeypatch.setattr(runtime, "_run_process", process)
+    error = TimeoutError if timeout else RuntimeError
+    message = "compilation exceeded 2" if timeout else r"compilation failed \(11\)"
+    with pytest.raises(error, match=message) as captured:
+        build_riscv_tensor(artifact, tmp_path / "build", tools, timeout=2)
+    assert "compiler stdout is locked" in str(captured.value)
+    assert (tmp_path / "build/compiler.stderr").read_bytes() == b"rejected"
+
+
 @pytest.mark.parametrize("log_error", [False, True])
 def test_timeout_reports_actual_time_including_cleanup(tmp_path, monkeypatch, timed_guest, log_error):
     runtime, executable, feed, clock = timed_guest
@@ -380,7 +468,7 @@ def test_timeout_reports_actual_time_including_cleanup(tmp_path, monkeypatch, ti
         assert "cannot preserve timeout log" in str(error)
     else:
         assert (tmp_path / "run/qemu.stdout").read_bytes() == b"partial"
-        assert (tmp_path / "run/qemu.stderr").read_bytes() == b"timed out"
+    assert (tmp_path / "run/qemu.stderr").read_bytes() == b"timed out"
 
 
 @pytest.mark.parametrize("failure", ["elf", "input", "stale", "write_input", "spawn"])

@@ -304,6 +304,15 @@ class TensorCCodegen:
         spec = self.specs[value.name]
         if not isinstance(data, np.ndarray) or data.shape != spec.shape or data.dtype != spec.numpy_dtype:
             raise TensorCCodegenError(f"Initializer {value.name} dtype/shape disagrees with IR")
+        if value.is_constant:
+            # A scalar literal is part of the IR's meaning (and may have been
+            # used by optimizations). A caller binding cannot override it.
+            try:
+                expected = np.asarray(value.const_value, dtype=spec.numpy_dtype)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise TensorCCodegenError(f"Invalid scalar constant {value.name}") from exc
+            if data.shape != () or expected.shape != () or not np.array_equal(data, expected):
+                raise TensorCCodegenError(f"Initializer {value.name} disagrees with scalar constant")
         self.constant_bytes += spec.nbytes
         if self.constant_bytes > self.max_constant_bytes:
             raise TensorCCodegenError("Constant tensor storage exceeds configured limit")
