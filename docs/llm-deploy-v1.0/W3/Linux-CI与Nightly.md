@@ -1,6 +1,6 @@
 # W3 Linux CI 与 Nightly
 
-当前完成的是本地配置和静态/脚本验证。本次没有提交、上传、触发 GitHub Actions 或设置仓库变量；没有远端 Linux 或 Nightly 通过记录。下面的远端操作是后续执行说明，不能作为已经执行的证明。独立复现和团队确认内容见 [独立复现与验收清单](独立复现与验收清单.md)。
+配置已随 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96) 提交，并完成本地静态/脚本验证。已检查的 `b5a4f58` 提交上通用 CI 和 W1/W2 专项通过，但 W3 的 `preparation`、`full-numeric` 和 Nightly 尚未实际执行。没有设置 Nightly 远端开关。下面的远端操作是后续执行说明，不能作为已经执行的证明，也不能把通用 Linux 单测通过表述为完整 W3 Linux 数值通过。独立复现和团队确认内容见 [独立复现与验收清单](独立复现与验收清单.md)。
 
 ## 入口与验收范围
 
@@ -16,13 +16,13 @@ Nightly 使用仓库内相对路径调用，因此被调用工作流与调用者
 
 ## 先做 Linux 手动验证
 
-1. 后续获得上传授权后，将完整 W3 源码提交放入个人 fork 或有写权限的仓库。先保持 `W3_NIGHTLY_ENABLED` 未设置；这一步不会启动定时重计算。
+1. 选定个人 fork 或有写权限的运行仓库及包含完整 W3 改动的提交；代码现已在 PR 中，不需要重新创建一笔 W3 PR。复核目标分支的实际 SHA，先保持 `W3_NIGHTLY_ENABLED` 未设置；这一步不会启动定时重计算。
 2. 确认仓库已启用 Actions，并允许本工作流使用的 actions/reusable workflows。手动入口文件必须已经存在于默认分支，才能正常通过 `workflow_dispatch` 发起；之后可以选择含 W3 修改的目标分支。仅上传到一个没有默认分支入口的功能分支，不应预期必然出现 Run workflow 按钮。[GitHub 手动运行说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 3. 在 Actions 页面运行 `W3 nightly` 的手动入口，可一次执行两套流程；或分别运行 `W3 preparation` 和 `W3 full IR numeric`，后者选择 `all`。记录 run URL、commit SHA 和 attempt，确认两套结果来自同一代码版本。
 4. 检查资源日志、依赖安装、资产获取与哈希、回归、QEMU、数值比较和产物上传。需要整个流程完成，不能只看某一步为绿。
 5. 在原始产物过期前下载留存，按下文核对。出现 Linux 数值差异时保留失败数组和环境信息，用已有 layer-diff/localize 入口定位；不得通过缩减 case、忽略 padding 或放宽阈值取得通过。
 
-需要命令行时，可以在未来已授权的远端阶段使用以下示例；替换仓库与分支占位符，本次未执行：
+需要命令行时，可在确定运行仓库和分支后使用以下示例；替换占位符，以下 W3 远端命令尚未执行：
 
 ```bash
 gh workflow run w3-nightly.yml --repo YOUR_ACCOUNT/ScratchV --ref YOUR_W3_BRANCH

@@ -46,7 +46,7 @@ $LASTEXITCODE
 
 ## CI 与阶段结论
 
-[完整模型手动 CI](../../.github/workflows/w3-full-numeric.yml) 在本地准备，尚未提交或在 GitHub 执行。默认完整数值失败会使 job 失败；没有自动忽略 padding、调大阈值、启用低精度或回退到小模型。
+[完整模型手动 CI](../../.github/workflows/w3-full-numeric.yml) 已随 PR #96 发布，完整 W3 Linux 执行尚待完成。已通过的通用 PR CI 和 W1/W2 工作流不替代该专项运行。默认完整数值失败会使 job 失败；没有自动忽略 padding、调大阈值、启用低精度或回退到小模型。
 
 该流程同时支持 `workflow_call`，供显式启用的 [Nightly 编排](../../.github/workflows/w3-nightly.yml) 复用；两套自动检查均成功才能通过汇总。Linux 运行、定时启用和资源限制说明见 [Linux CI 与 Nightly](../../docs/llm-deploy-v1.0/W3/Linux-CI与Nightly.md)。收到完整保存目录后，可按 [离线证据复核](EVIDENCE.md) 重新检查数组；这不执行模型，也不替代独立复现。
 

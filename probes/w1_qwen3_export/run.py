@@ -362,6 +362,62 @@ def export_model(args):
     return manifest
 
 
+def _report_markdown(report):
+    summary = ["# probe:qwen3-onnx", "", f"Result: {'PASS' if report['passed'] else 'FAIL'}",
+               f"Mode: {report['mode']}; revision: {report['revision']}", "", report["scope"], "",
+               f"Duration: {report['seconds']:.3f} s; verifier peak RSS: {report['peak_memory']['bytes']} bytes."]
+    if "error" in report:
+        summary += ["", f"Failed stage: {report['failed_stage']}", report["error"]]
+    if report.get("report_write_errors"):
+        summary += ["", "Report write errors:", *[f"- {item}" for item in report["report_write_errors"]]]
+    summary += ["", "| Probe source | SHA-256 |", "|---|---|"]
+    for name, fingerprint in report["source_fingerprints"].items():
+        summary.append(f"| `{name}` | `{fingerprint['sha256'] or 'unavailable'}` |")
+    return "\n".join(summary) + "\n"
+
+
+def write_reports(out, report):
+    """Publish complete JSON last and keep evidence failures non-successful."""
+    failures = []
+
+    def write(name, content):
+        temporary = out / f".{name}.tmp"
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            temporary.replace(out / name)
+            return True
+        except OSError as exc:
+            failures.append(f"{name}: {type(exc).__name__}: {exc}")
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                failures.append(f"{temporary.name}: cleanup failed: {cleanup_error}")
+            return False
+
+    def fail():
+        if report["passed"]:
+            report.update(passed=False, failed_stage="report-write",
+                          error="Incomplete full ONNX gate evidence")
+        # Keep the original environment/model/ORT error when the probe failed.
+        report["report_write_errors"] = list(failures)
+
+    def recover_view():
+        write("report.md", _report_markdown(report))
+        report["report_write_errors"] = list(failures)
+
+    if not write("report.md", _report_markdown(report)):
+        fail()
+        recover_view()
+    if not write("report.json", json.dumps(report, indent=2, allow_nan=False) + "\n"):
+        fail()
+        recover_view()
+        # A retry may publish only FAIL, even if a failed close wrote all bytes.
+        write("report.json", json.dumps(report, indent=2, allow_nan=False) + "\n")
+        report["report_write_errors"] = list(failures)
+    if failures:
+        print("[gate] FAIL; report write errors: " + "; ".join(failures), file=sys.stderr)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("verify", "download", "export"), default="verify")
@@ -378,6 +434,11 @@ def main(argv=None):
     if args.output_dir == args.model_dir or args.output_dir.is_relative_to(args.model_dir):
         parser.error("Report output must be outside the model directory")
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    # This entry point permits output-directory reuse. Invalidate the previous
+    # result before any work, so interruption or a failed atomic publish cannot
+    # leave an old successful JSON attributed to the current attempt.
+    for name in ("report.json", "report.md"):
+        (args.output_dir / name).unlink(missing_ok=True)
     started = time.perf_counter()
     report = {"schema_version": 1, "gate": "probe:qwen3-onnx", "passed": False,
               "created_at": datetime.now(timezone.utc).isoformat(), "mode": args.mode,
@@ -413,16 +474,7 @@ def main(argv=None):
         report["error"] = f"{type(exc).__name__}: {exc}"
     report["seconds"] = time.perf_counter() - started
     report["peak_memory"] = peak_memory()
-    (args.output_dir / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    summary = ["# probe:qwen3-onnx", "", f"Result: {'PASS' if report['passed'] else 'FAIL'}",
-               f"Mode: {args.mode}; revision: {MANIFEST['revision']}", "", report["scope"], "",
-               f"Duration: {report['seconds']:.3f} s; verifier peak RSS: {report['peak_memory']['bytes']} bytes."]
-    if "error" in report:
-        summary += ["", f"Failed stage: {stage}", report["error"]]
-    summary += ["", "| Probe source | SHA-256 |", "|---|---|"]
-    for name, fingerprint in report["source_fingerprints"].items():
-        summary.append(f"| `{name}` | `{fingerprint['sha256'] or 'unavailable'}` |")
-    (args.output_dir / "report.md").write_text("\n".join(summary) + "\n", encoding="utf-8")
+    write_reports(args.output_dir, report)
     print(json.dumps({key: report[key] for key in ("gate", "passed", "mode", "seconds")}), flush=True)
     if not report["passed"]:
         print(report["error"], file=sys.stderr)

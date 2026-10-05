@@ -2,7 +2,7 @@
 
 本指南用于另一名成员从目标提交重新生成参考结果、编译产物并运行探测。当前已知本地结果见 [执行计划](W1-执行计划.md)，接口候选见 [interfaces.md](interfaces.md)，风险见 [risks.md](risks.md)。**Mastttttter 已于 2026-10-03 完成 `df18b02f` 的两层数值链路独立复现并本人确认；团队接口确认和 W1 出口评审仍待完成。** 原始证据见 [独立复现报告](https://github.com/ScratchV-Compiler/ScratchV/pull/91#issuecomment-5958157573)。该确认归属所列提交，不自动覆盖后续修复。
 
-PR #91 已合并，最终 head 为 `5903c1381d57f24062de7395f24385a59e279325`，合并提交为 `3bb88e81498d6d9293aed70e25a4e5a2104465d0`。报告落盘失败和源码身份归属修复单独见 [PR #93](https://github.com/ScratchV-Compiler/ScratchV/pull/93)；发布前整合工作树记录见 [本轮修复与验收报告](../W2/W1修复与W2本地验收报告.md)。人工确认和完整模型第二人复现继续由 [Issue #92](https://github.com/ScratchV-Compiler/ScratchV/issues/92) 跟踪。下方原 PR 修复数据均为历史记录。
+PR #91 已合并，最终 head 为 `5903c1381d57f24062de7395f24385a59e279325`，合并提交为 `3bb88e81498d6d9293aed70e25a4e5a2104465d0`。报告落盘失败和源码身份归属修复 [PR #93](https://github.com/ScratchV-Compiler/ScratchV/pull/93) 已于 2026-10-04 合并为 `faab6a81562710e105d87265dafd2dc769a67c72`；发布前整合工作树记录见 [本轮修复与验收报告](../W2/W1修复与W2本地验收报告.md)。人工确认和完整模型第二人复现继续由 [Issue #92](https://github.com/ScratchV-Compiler/ScratchV/issues/92) 跟踪。下方原 PR 修复数据均为历史记录。
 
 所有命令在仓库根目录执行。先记录 `git rev-parse HEAD` 和 `git status --short`；干净checkout便于关联提交，存在本地改动则保留diff并明确标记。不要使用第一人的预生成参考数组代替自己的运行。下述输出目录用完后保留，下一轮使用不同名称，不删除旧证据。
 
@@ -12,7 +12,7 @@ PR #91 已合并，最终 head 为 `5903c1381d57f24062de7395f24385a59e279325`，
 
 ## 0. 确定复现版本与领取任务
 
-`5ea22ecc7fd314025f6453c556dbb3e3f16a3175` 是较早的 Linux CI **历史基线**。复现已合并 W1 时可使用下述固定合并 SHA；若复现本次尚未提交的修复，则必须在该基线上另取得完整增量文件，并核对验收报告中的源码哈希，不能把仅检出的合并提交称为已包含本地修复。
+`5ea22ecc7fd314025f6453c556dbb3e3f16a3175` 和 `3bb88e8` 是较早的 **历史基线**。下述已合并 W1 复现固定为包含 PR #93 的 `faab6a8`。若核对后续 PR 的追加修复，应另外取得该 PR 的提交并记录完整 SHA，不得将旧基线结果当作后续版本的复验。
 
 在新目录获取本次版本的示例（需已安装 Git 和 Git LFS，PowerShell/bash 均可逐条执行）：
 
@@ -20,7 +20,7 @@ PR #91 已合并，最终 head 为 `5903c1381d57f24062de7395f24385a59e279325`，
 git clone --no-checkout https://github.com/ScratchV-Compiler/ScratchV.git ScratchV-w1-repro
 cd ScratchV-w1-repro
 git lfs install --local
-git fetch origin 3bb88e81498d6d9293aed70e25a4e5a2104465d0
+git fetch origin faab6a81562710e105d87265dafd2dc769a67c72
 git rev-parse FETCH_HEAD
 ```
 
@@ -34,6 +34,8 @@ git status --short
 ```
 
 将最终 `HEAD` 填入复现记录。若只复现历史 `5ea22ec`，请使用该提交自带的旧指南和脚本；不要检出旧 SHA 后调用本次新增入口。需要验证额外本地改动时，另保留完整 diff、增量文件哈希和交付方式，不能把 dirty 工作树写成精确提交复现。
+
+验收 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96) 中集成的最新 W1/W2/W3 代码时，在独立 checkout 中改用 `git fetch origin pull/96/head`，核对 `git rev-parse FETCH_HEAD` 后再 `git checkout --detach FETCH_HEAD`，并记录实际完整 SHA。PR 引用会随修复更新；其他人的报告和 CI 只覆盖各自记载的提交。
 
 E4 建议领取 MatMul/两层 QEMU，E5 建议领取合成图/真实结构 IR/完整 ONNX ORT；同一位其他成员也可执行全部探测。
 开始前在群里记录领取人和目标 SHA，结束后填写第 6 节。维护者 review、CI、第一人再次运行都不自动替代第二人执行。
@@ -213,10 +215,10 @@ peak_memory是验证器进程峰值RSS，**不包含导出子进程**，不能�
 
 工作流为 `.github/workflows/llm-deploy.yml`：
 
-- PR执行原合成图、小模型IR、小模型QEMU和 `tests/test_w1_qwen3_export.py` 的轻量回归，不下载完整模型。
+- PR 的小模型 job 执行原合成图、小模型 IR/QEMU 和 `tests/test_w1_qwen3_export.py` 的轻量回归；另一个 W2 完整前端 job 会下载完整模型并解析、审计，但不执行完整 IR/ORT 前向。
 - 手动或定时运行另启 `full-qwen3-onnx` job，使用 `--mode download --threads 2` 校验固定发布产物并真实运行ORT两case，上传 `output/qwen3-full-probe/` 报告。
 - 完整模型job只需要固定NumPy2.2.6、ONNX1.18.0、ORT1.22.1、protobuf5.29.5，不需要PyTorch；这也意味着它不重新导出或比较PyTorch。
-- PR中完整模型job按条件未执行，应明确记录“ORT重型门禁未执行”，不能用轻量测试通过代替。
+- PR 中 `full-qwen3-onnx` 按条件未执行，应明确记录“完整 ORT 重型门禁未执行”，不能用完整解析或轻量测试通过代替。
 
 已确认本地28次两层QEMU执行，以及完整模型新入口verify的hash/checker/ORT两case通过（验证器峰值RSS约6.40 GB，报告 `output/qwen3-full-local/report.json`）。提交 `545e696` 已有两项Linux成功证据：
 

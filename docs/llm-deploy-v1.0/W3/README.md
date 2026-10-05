@@ -1,6 +1,8 @@
 # W3 完整 Qwen3 IR 验证与交付
 
-本目录汇总完整 Qwen3 IR 数值验证、准备探测、诊断与复现交付。实现与本地硬门槛已有验证记录，团队正式验收仍待完成。本轮基于 W2 提交 `65616a8cde6a581661ac3734378da78a9fcbe5ed`，改动保留在独立的 `codex/w3-preparation` 工作树，尚未提交或推送。
+本目录汇总完整 Qwen3 IR 数值验证、准备探测、诊断与复现交付。W3 已提交至 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96)，本地开发工作树为 `codex/w3-preparation`，原 W2 基线为 `65616a8cde6a581661ac3734378da78a9fcbe5ed`。实现与本地硬门槛已有验证记录，团队正式验收仍待完成。PR 可能继续更新，复现时按清单获取 head 并记录实际完整 SHA，不能只记录分支名或旧基线。
+
+已核对的 `b5a4f58` 提交上，通用 CI 为 3699 passed、5 skipped，W1/W2 专项也通过；这些检查不包含 W3 完整七组数值工作流。W3 专项 Linux preparation/full 和 Nightly 尚无实际运行通过记录。
 
 初次预备阶段的数据见 [历史预备工作本地验收报告](W3-预备工作本地验收报告.md)。这些历史记录不会随代码修改自动更新；本次验收应使用当前代码实际生成的报告、源码指纹和数值模式。
 
@@ -11,7 +13,7 @@
 - [Linux CI 与 Nightly](Linux-CI与Nightly.md)：可复用的手动 CI、显式启用的定时编排及尚未实跑的边界。
 - [保存证据的离线复核](../../../probes/w3_qwen3_full/EVIDENCE.md)：重新读取原始数组核对，不能替代另一位开发者执行模型。
 
-未提交代码可通过 `scripts/package_w3_repro.py` 生成带文件哈希和 snapshot ID 的本地源码包；它不是新的 Git 提交，不包含模型、运行产物或环境。解压后先校验源码，再按清单准备已有资产和依赖。报告中的历史源码指纹保持原样。
+优先使用 PR 的固定提交复现；需要交付未提交修改或离线源码时，可通过 `scripts/package_w3_repro.py` 生成带文件哈希和 snapshot ID 的本地源码包。源码包不是新的 Git 提交，不包含模型、运行产物或环境。解压后先校验源码，再按清单准备已有资产和依赖。报告中的历史源码指纹保持原样，旧报告不会自动成为新提交重新执行的证据。
 
 完整 28 层的实际 ORT/IR 执行、内存受控模式和同输入局部诊断见 [完整模型入口](../../../probes/w3_qwen3_full/README.md)。完整入口默认采用显式版本化的 `reference` FP32 模式，解释器 API 仍默认 `native`；复现时必须记录并核对模式与 profile。统一 preparation 的五项 PASS 只代表准备范围通过，完整模型 gate 另行执行。
 
@@ -71,7 +73,7 @@ IRInterpreter.run 新增可选 collect_memory_stats=True，返回结果增加 me
 
 ## CI 与后续阶段
 
-新增 [.github/workflows/w3-preparation.yml](../../../.github/workflows/w3-preparation.yml) 保留手动准备验收入口，并允许 [Nightly 编排](../../../.github/workflows/w3-nightly.yml) 复用。它安装固定依赖，下载并校验固定 checkpoint 和 ONNX 资产，运行回归与五项入口。Nightly 定时任务需要仓库变量显式启用；手动触发 Nightly 则明确请求运行两套流程。本轮没有发布/运行远端 CI，也没有设置远端开关；本地配置存在不算 CI 已通过。
+新增 [.github/workflows/w3-preparation.yml](../../../.github/workflows/w3-preparation.yml) 保留手动准备验收入口，并允许 [Nightly 编排](../../../.github/workflows/w3-nightly.yml) 复用。它安装固定依赖，下载并校验固定 checkpoint 和 ONNX 资产，运行回归与五项入口。配置已随 PR 提交；W3 专项工作流尚未实跑。Nightly 定时任务需要仓库变量显式启用，手动触发 Nightly 则明确请求运行两套流程。PR 的通用 CI 通过与配置存在都不等于这两套 W3 门禁已通过。
 
 完整模型 preflight 仅验证资产与静态大小，峰值是 metadata-only 进程，不能替代完整 IR 的容量实测。完整 logits 必须包括 padding 位置；PyTorch/ORT 的导出诊断与正式 IR/ORT 门槛分别记录，不能用局部子图或有效位置通过覆盖。
 
