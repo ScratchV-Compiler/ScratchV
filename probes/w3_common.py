@@ -28,6 +28,74 @@ def new_output_dir(path):
     out.mkdir(parents=True, exist_ok=False)
     return out
 
+def _already_loaded_library(path):
+    """Get an existing module only; never load a candidate BLAS library."""
+    if sys.platform == "win32":
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_module = kernel.GetModuleHandleW
+        get_module.argtypes = [wintypes.LPCWSTR]
+        get_module.restype = wintypes.HMODULE
+        handle = get_module(str(path))
+        if not handle:
+            raise OSError("NumPy library is not already loaded")
+        return ctypes.CDLL(str(path), handle=handle)
+    if sys.platform not in ("linux", "darwin") or not hasattr(os, "RTLD_NOLOAD"):
+        raise OSError("Loaded-only library lookup is unavailable on this platform")
+    return ctypes.CDLL(str(path), mode=os.RTLD_NOLOAD | getattr(os, "RTLD_LOCAL", 0))
+
+
+def _openblas_text(library, name):
+    for prefix in ("scipy_", ""):
+        for suffix in ("64_", "_64", ""):
+            symbol = f"{prefix}openblas_get_{name}{suffix}"
+            try:
+                function = getattr(library, symbol)
+            except AttributeError:
+                continue
+            function.argtypes = []
+            function.restype = ctypes.c_char_p
+            value = function()
+            if not value:
+                raise ValueError(f"{symbol} returned no metadata")
+            return value.decode("utf-8", errors="replace")
+    raise AttributeError(f"OpenBLAS get_{name} symbol is unavailable")
+
+
+def numpy_openblas_evidence(np):
+    """Optional loaded NumPy-wheel BLAS metadata, separate from SIMD support.
+
+    Only NumPy's private library directories are inspected. Other builds (for
+    example system BLAS or MKL) remain explicitly unavailable rather than
+    loading a library or inferring an active kernel from CPU capabilities.
+    """
+    result = {"status": "unavailable", "libraries": []}
+    try:
+        package = Path(np.__file__).resolve().parent
+        candidates = set()
+        for directory in (package.parent / "numpy.libs", package / ".libs", package / ".dylibs"):
+            if directory.is_dir():
+                candidates.update(path for path in directory.iterdir()
+                                  if "openblas" in path.name.lower() and path.is_file()
+                                  and (path.name.lower().endswith((".dll", ".dylib", ".so"))
+                                       or ".so." in path.name.lower()))
+        for path in sorted(candidates):
+            row = {"path": str(path), "status": "unavailable"}
+            result["libraries"].append(row)
+            try:
+                library = _already_loaded_library(path)
+                row["core_name"] = _openblas_text(library, "corename")
+                row["config"] = _openblas_text(library, "config")
+                row["status"] = result["status"] = "available"
+            except Exception as exc:
+                row["error"] = f"{type(exc).__name__}: {exc}"
+        if not candidates:
+            result["reason"] = "No private NumPy OpenBLAS library found"
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
 def numpy_runtime_evidence():
     """Record host math details without importing the ORT backend.
 
@@ -39,7 +107,9 @@ def numpy_runtime_evidence():
 
     result = {"machine": platform.machine(), "processor": platform.processor(),
               "thread_environment": {name: os.environ.get(name) for name in (
-                  "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")}}
+                  "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")},
+              "blas_environment": {"OPENBLAS_CORETYPE": os.environ.get("OPENBLAS_CORETYPE")},
+              "numpy_openblas": numpy_openblas_evidence(np)}
     for field, function in (("numpy_build", "show_config"), ("numpy_runtime", "show_runtime")):
         stream = io.StringIO()
         try:
