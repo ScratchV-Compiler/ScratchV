@@ -1,7 +1,7 @@
 """Optional pinned-stack checks for the official Qwen3 diagnostic model.
 
-The ordinary compiler test environment does not need torch/transformers. The
-dedicated Qwen probe environment runs these tests with transformers 4.51.3.
+Minimal compiler installations do not need torch/transformers. The full CI
+and dedicated Qwen probe environments run these tests with transformers 4.51.3.
 """
 
 import numpy as np
