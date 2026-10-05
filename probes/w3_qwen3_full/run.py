@@ -47,7 +47,26 @@ def load_logits(path):
     return value
 
 
-def validate_worker(folder, backend, input_path, sources, assets, *, expected_fp32_mode=None):
+def saved_arithmetic_profile(mode, recorded):
+    """Validate saved arithmetic without guessing it from the auditing host CPU."""
+    require(isinstance(recorded, dict), "Missing saved FP32 arithmetic profile")
+    if mode == "reference":
+        from scratchv.verification.fp32_reference import profile
+        strategy = recorded.get("cpu_strategy")
+        require(strategy in ("avx2-fma3", "avx512"), "Unsupported saved FP32 CPU profile")
+        canonical = profile(cpu_strategy=strategy)
+    else:
+        require(mode == "native", "Unsupported saved FP32 arithmetic profile")
+        canonical = {"name": "numpy-native"}
+    require(recorded == canonical and all(type(recorded[key]) is type(value)
+                for key, value in canonical.items()), "Noncanonical saved FP32 arithmetic profile")
+    return canonical
+
+
+def validate_worker(folder, backend, input_path, sources, assets, *, expected_fp32_mode=None,
+                    expected_fp32_profile=None):
+    require(expected_fp32_profile is None or expected_fp32_mode is not None,
+            "Saved FP32 profile requires an explicit mode")
     for name in ("report.json", "report.md", "report.html"):
         require((folder/name).is_file(), f"Missing worker {name}")
     report = json.loads((folder/"report.json").read_text(encoding="utf-8"))
@@ -104,7 +123,12 @@ def validate_worker(folder, backend, input_path, sources, assets, *, expected_fp
             from scratchv.verification.fp32_reference import profile
             require(report.get("fp32_mode") == expected_fp32_mode,
                     "Worker FP32 execution mode differs")
-            expected_profile = profile() if expected_fp32_mode == "reference" else {"name": "numpy-native"}
+            # Live runs require the selected local strategy. Saved-array audits
+            # can explicitly supply a known producer strategy from another CPU;
+            # the complete canonical profile still has to match.
+            expected_profile = (saved_arithmetic_profile(expected_fp32_mode, expected_fp32_profile)
+                                if expected_fp32_profile is not None else
+                                profile() if expected_fp32_mode == "reference" else {"name": "numpy-native"})
             require(ir.get("fp32_mode") == expected_fp32_mode
                     and ir.get("fp32_profile") == expected_profile,
                     "Worker FP32 arithmetic profile differs")

@@ -101,6 +101,53 @@ def test_real_saved_arrays_rechecked_without_model_execution(evidence, monkeypat
     assert not result["w3_exit_accepted"] and not result["pinned_model_files_checked"]
 
 
+@pytest.mark.parametrize("saved_strategy,local_strategy", [
+    ("avx2-fma3", "avx512"), ("avx512", "avx2-fma3"),
+])
+def test_offline_audit_checks_saved_cpu_policy_without_selecting_local_cpu(
+        evidence, monkeypatch, saved_strategy, local_strategy):
+    root, top = evidence
+    saved_profile = profile(cpu_strategy=saved_strategy)
+    for name in CASE_NAMES:
+        update_worker(root, top, name, "ir", lambda report, folder:
+                      report["ir"].update(fp32_profile=saved_profile))
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", local_strategy)
+    # Local CPU inference must not be needed for a saved-array-only audit.
+    monkeypatch.setenv("NPY_DISABLE_CPU_FEATURES", "AVX2,AVX512F")
+    result = audit.verify(root, expected_report_sha256=sha256_file(root / "report.json"))
+    assert result["passed"] and result["fp32_profile"] == saved_profile
+    assert result["model_executed"] is False
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "auto", "missing", "lanes", "legacy", "extra"])
+def test_offline_audit_rejects_noncanonical_saved_cpu_policy(evidence, mutation):
+    root, top = evidence
+    def modify(report, folder):
+        saved = report["ir"]["fp32_profile"]
+        if mutation == "missing":
+            saved.pop("cpu_strategy")
+        elif mutation in ("auto", "unknown"):
+            saved["cpu_strategy"] = mutation
+        elif mutation == "lanes":
+            saved["softmax_lanes"] = float(saved["softmax_lanes"])
+        elif mutation == "legacy":
+            saved["name"] = "numpy-fp32-reference-v2"
+        else:
+            saved["unrecognized"] = True
+    update_worker(root, top, CASE_NAMES[0], "ir", modify)
+    with pytest.raises(ValueError, match="profile"):
+        audit.verify(root)
+
+
+def test_offline_audit_rejects_mixed_supported_cpu_policies(evidence):
+    root, top = evidence
+    alternative = "avx2-fma3" if profile()["cpu_strategy"] == "avx512" else "avx512"
+    update_worker(root, top, CASE_NAMES[0], "ir", lambda report, folder:
+                  report["ir"].update(fp32_profile=profile(cpu_strategy=alternative)))
+    with pytest.raises(ValueError, match="Inconsistent numerical profiles"):
+        audit.verify(root)
+
+
 @pytest.mark.parametrize("change", ["missing_case", "duplicate_case", "partial", "wrong_asset", "relaxed_atol"])
 def test_pass_flags_do_not_replace_coverage_and_contract(evidence, change):
     root, top = evidence

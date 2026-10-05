@@ -10,6 +10,14 @@ import time
 from scripts.run_w2_acceptance import terminate_process_tree as _legacy_terminate
 
 
+class _ResidentMemoryUnavailable(OSError):
+    """Linux can drop VmRSS while exit is still in progress, before zombie state."""
+
+
+_RSS_EXIT_GRACE_SECONDS = 0.2
+_RSS_EXIT_RECHECK_SECONDS = 0.01
+
+
 class _VerifiedProcessHandle:
     """A handle already verified as a member of the owned Windows Job."""
     def __init__(self, handle):
@@ -211,6 +219,7 @@ class _PosixGroup:
     """Linux session/group membership, including children outliving launcher."""
     def __init__(self, process):
         self.process = process
+        self.rss_exit_rechecks = 0
 
     @staticmethod
     def identity(pid):
@@ -227,20 +236,44 @@ class _PosixGroup:
                 state, group, session, _ = self.identity(int(entry.name))
             except (FileNotFoundError, ProcessLookupError):
                 continue
-            if group == session == self.process.pid and state != "Z":
+            if group == session == self.process.pid and state not in {"Z", "X", "x"}:
                 found.append(int(entry.name))
         return found
+
+    def _member_memory(self, pid, before):
+        # exit_mm() can remove VmRSS before the process becomes a zombie or
+        # waitpid observes its exit. Only this specific missing-field case gets
+        # a short grace period; permission errors and malformed RSS fail closed.
+        deadline = None
+        while True:
+            try:
+                value = process_memory(pid)
+            except _ResidentMemoryUnavailable:
+                after = self.identity(pid)
+                if before[1:] != after[1:] or after[0] in {"Z", "X", "x"}:
+                    return None
+                if deadline is None:
+                    deadline = time.perf_counter() + _RSS_EXIT_GRACE_SECONDS
+                if time.perf_counter() >= deadline:
+                    raise  # Still the same live process and still unobservable.
+                self.rss_exit_rechecks += 1
+                time.sleep(_RSS_EXIT_RECHECK_SECONDS)
+                continue
+            after = self.identity(pid)
+            if before[1:] != after[1:] or after[0] in {"Z", "X", "x"}:
+                return None
+            return value
 
     def sample(self):
         total = {"rss_bytes": 0, "private_commit_bytes": None, "pids": []}
         for pid in self.pids():
             try:
                 before = self.identity(pid)
-                if before[1] != self.process.pid or before[2] != self.process.pid:
+                if (before[1] != self.process.pid or before[2] != self.process.pid
+                        or before[0] in {"Z", "X", "x"}):
                     continue
-                value = process_memory(pid)
-                after = self.identity(pid)
-                if before[1:] != after[1:] or after[0] == "Z":
+                value = self._member_memory(pid, before)
+                if value is None:
                     continue  # PID was reused/exited during sampling.
             except (FileNotFoundError, ProcessLookupError):
                 continue
@@ -249,7 +282,7 @@ class _PosixGroup:
                     after = self.identity(pid)
                 except (FileNotFoundError, ProcessLookupError):
                     continue
-                if after[0] == "Z":
+                if after[0] in {"Z", "X", "x"}:
                     continue
                 raise
             total["rss_bytes"] += value["rss_bytes"]
@@ -290,6 +323,8 @@ def process_memory(pid):
                 kernel.CloseHandle(handle)
     status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
     rows = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+    if "VmRSS" not in rows:
+        raise _ResidentMemoryUnavailable(f"Cannot observe worker {pid} resident memory")
     try:
         resident = rows["VmRSS"].split()
         if len(resident) != 2 or resident[1] != "kB":
@@ -297,10 +332,7 @@ def process_memory(pid):
         rss = int(resident[0]) * 1024
         if rss < 0:
             raise ValueError("VmRSS cannot be negative")
-    except (KeyError, ValueError) as exc:
-        # A just-exited zombie can still have a /proc status file, but no
-        # VmRSS. Treat unavailable sampling like an exited Windows handle:
-        # the supervisor polls once more before deciding it is an error.
+    except ValueError as exc:
         raise OSError(f"Cannot observe worker {pid} resident memory") from exc
     return {"rss_bytes": rss, "private_commit_bytes": None}
 
@@ -359,6 +391,8 @@ def wait_bounded(process, *, timeout, max_memory_bytes, row, interval=0.2):
                 row["cleanup_error"] = f"{type(cleanup).__name__}: {cleanup}"
         raise
     finally:
+        if isinstance(tree, _PosixGroup):
+            observation["rss_exit_rechecks"] = tree.rss_exit_rechecks
         if getattr(process, "_scratchv_job", None) is not None:
             try:
                 job.close()

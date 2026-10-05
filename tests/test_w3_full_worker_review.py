@@ -187,6 +187,25 @@ def test_worker_arithmetic_profile_cannot_be_silently_substituted(tmp_path, monk
         gate.validate_worker(folder, "ir", feed, sources, assets, expected_fp32_mode="reference")
 
 
+def test_live_worker_rejects_other_cpu_profile_but_explicit_saved_audit_accepts_it(tmp_path, monkeypatch):
+    from scratchv.verification.fp32_reference import profile
+    monkeypatch.setattr(gate, "LOGIT_SHAPE", (1, 2, 3))
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", "avx512")
+    feed = tmp_path / "inputs.npz"
+    feed.write_bytes(b"fixture input")
+    sources, assets = {"source.py": "sha"}, [{"name": "fixture.onnx"}]
+    folder = tmp_path / "ir"
+    report = _worker_evidence(folder, "ir", feed, sources, assets)
+    saved = profile(cpu_strategy="avx2-fma3")
+    report["fp32_mode"] = "reference"
+    report["ir"].update(fp32_mode="reference", fp32_profile=saved)
+    (folder / "report.json").write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="profile"):
+        gate.validate_worker(folder, "ir", feed, sources, assets, expected_fp32_mode="reference")
+    assert gate.validate_worker(folder, "ir", feed, sources, assets,
+                                expected_fp32_mode="reference", expected_fp32_profile=saved) == report
+
+
 @pytest.mark.parametrize("change", ["source", "assets", "input", "backend", "optimization",
                                    "full_execution", "team_acceptance", "missing_artifact",
                                    "altered_array", "diagnostic_changed", "missing_view",

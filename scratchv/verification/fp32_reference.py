@@ -6,7 +6,8 @@ build/CPU. No model names, positions, weights, or expected outputs are used.
 Default interpreter execution continues to use the native NumPy kernels.
 
 MLAS polynomial constants/evaluation are adapted from ONNX Runtime v1.22.1:
-core/mlas/lib/logistic.cpp, compute.cpp, amd64/TransKernelAvx512F.asm.
+core/mlas/lib/logistic.cpp, compute.cpp, x86_64/TransKernelFma3.S and
+x86_64/TransKernelAvx512F.S (including their amd64 Windows equivalents).
 Copyright (c) Microsoft Corporation. All rights reserved.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -29,6 +30,9 @@ SOFTWARE.
 """
 from __future__ import annotations
 
+import os
+import re
+
 import numpy as np
 
 from scratchv.ir.types import OpCode
@@ -36,19 +40,70 @@ from scratchv.verification.fp32_eigen import mean_last, trig
 from scratchv.verification.fp32_fma import fma
 
 
-def profile():
-    """Versioned arithmetic policy, recorded separately from graph optimization."""
+_CPU_ENV = "SCRATCHV_FP32_REFERENCE_CPU"
+_CPU_STRATEGIES = ("avx2-fma3", "avx512")
+
+
+def _cpu_features():
+    # NumPy checks both hardware capabilities and usable OS vector state.
+    # This private diagnostic is optional: an explicit strategy works without it.
+    try:
+        from numpy._core._multiarray_umath import __cpu_features__
+    except ImportError:
+        try:
+            from numpy.core._multiarray_umath import __cpu_features__
+        except ImportError:
+            return {}
+    return __cpu_features__
+
+
+def _cpu_strategy(requested=None):
+    """Resolve a reference arithmetic policy; never change ORT dispatch.
+
+    Explicit policies also allow reproducing saved arithmetic on another CPU.
+    NumPy's disable list does not constrain MLAS, so automatic inference must
+    not treat deliberately hidden NumPy capabilities as hardware evidence.
+    """
+    requested = os.environ.get(_CPU_ENV, "auto") if requested is None else requested
+    if requested in _CPU_STRATEGIES:
+        return requested
+    if requested != "auto":
+        raise ValueError(f"{_CPU_ENV} must be auto, avx2-fma3, or avx512")
+    disabled = re.split(r"[\s,]+", os.environ.get("NPY_DISABLE_CPU_FEATURES", "").upper())
+    if any(feature in ("AVX", "AVX2", "FMA3") or feature.startswith("AVX512")
+           for feature in disabled):
+        raise ValueError(f"NPY_DISABLE_CPU_FEATURES obscures MLAS capabilities; set {_CPU_ENV} explicitly")
+    features = _cpu_features()
+    if features.get("AVX2") and features.get("FMA3"):
+        return "avx512" if features.get("AVX512F") else "avx2-fma3"
+    raise ValueError(f"Cannot infer a supported FP32 CPU strategy; set {_CPU_ENV} explicitly")
+
+
+def profile(cpu_strategy=None):
+    """Return a canonical arithmetic contract, independent of selection method.
+
+    Passing a supported explicit cpu_strategy validates a saved profile on a
+    different host without claiming that the local ORT uses that strategy.
+    """
+    strategy = _cpu_strategy(cpu_strategy)
+    lanes = 8 if strategy == "avx2-fma3" else 16
     return {
-        "name": "numpy-fp32-reference-v2",
+        "name": "numpy-fp32-reference-v3",
         "dtype": "float32",
+        "cpu_strategy": strategy,
         "matmul_k_block": 128,
         "mean": "two-four-lane-last-axis",
         "trig": "non-fused-range-reduction-polynomial",
-        "softmax": "exp-polynomial-16-lane-sum-reciprocal-multiply",
+        "softmax": f"exp-polynomial-{lanes}-lane-sum-reciprocal-multiply",
+        "softmax_lanes": lanes,
+        "softmax_exp_lower_bound": float(np.float32(
+            -88.3762626647949 if lanes == 8 else -103.9720840454)),
+        "softmax_exp_scaling": "binary32-exponent-bits" if lanes == 8 else "ldexp",
         "sigmoid": "bounded-rational-polynomial-clamped-to-[0,1]",
         "multiply_add": "binary32-round-to-nearest-even",
         "reference_basis": "ORT 1.22.1 CPU arithmetic; no ORT runtime dependency",
         "scope": "Explicit FP32 reference evaluation; other dtypes unchanged. "
+                 "CPU strategy specifies reference arithmetic, not ORT dispatch. "
                  "Not a promise of bitwise matching every CPU or ORT version.",
     }
 
@@ -111,10 +166,11 @@ def sigmoid(xs, attrs, dtype):
                    np.float32(0), np.float32(1))
 
 
-def _exp_nonpositive(x):
+def _exp_nonpositive(x, *, cpu_strategy="avx512"):
     # The bounded polynomial's smallest result rounds to zero; masked -inf
     # from stable subtraction is consequently normalized to probability zero.
-    x = np.maximum(x, np.float32(-103.9720840454))
+    x = np.maximum(x, np.float32(
+        -88.3762626647949 if cpu_strategy == "avx2-fma3" else -103.9720840454))
     bias = np.float32(12582912)
     rounded = fma(x, np.float32(1.44269504088896341), bias)
     exponent = rounded - bias
@@ -123,18 +179,29 @@ def _exp_nonpositive(x):
     polynomial = np.full_like(x, _EXP[0])
     for coefficient in _EXP[1:]:
         polynomial = fma(polynomial, x, coefficient)
+    if cpu_strategy == "avx2-fma3":
+        # FMA3 reconstructs 2**m directly in the binary32 exponent field.
+        # In particular m=-127 becomes zero, unlike AVX512's VSCALEFPS.
+        bits = (rounded.view(np.uint32) << np.uint32(23)) + np.uint32(0x3f800000)
+        return polynomial * bits.view(np.float32)
     return np.ldexp(polynomial, exponent.astype(np.int32))
 
 
-def _sum_sixteen(values):
-    sums = np.zeros(values.shape[:-1] + (16,), dtype=np.float32)
-    for start in range(0, values.shape[-1], 16):
-        block = values[..., start:start + 16]
+def _sum_lanes(values, lanes):
+    sums = np.zeros(values.shape[:-1] + (lanes,), dtype=np.float32)
+    for start in range(0, values.shape[-1], lanes):
+        block = values[..., start:start + lanes]
         sums[..., :block.shape[-1]] += block
-    sums = sums[..., :8] + sums[..., 8:]
+    if lanes == 16:
+        sums = sums[..., :8] + sums[..., 8:]
     first = (sums[..., 0] + sums[..., 1]) + (sums[..., 2] + sums[..., 3])
     last = (sums[..., 4] + sums[..., 5]) + (sums[..., 6] + sums[..., 7])
     return (first + last)[..., None]
+
+
+def _sum_sixteen(values):
+    # Retain the named primitive for existing standalone arithmetic diagnostics.
+    return _sum_lanes(values, 16)
 
 
 def softmax(xs, attrs, dtype):
@@ -149,8 +216,10 @@ def softmax(xs, attrs, dtype):
         raise OpError("NumericError", "SOFTMAX row is entirely masked or nonfinite")
     with np.errstate(over="ignore"):
         reduced = x - maximum
-    weights = _exp_nonpositive(reduced)
-    result = weights * (np.float32(1) / _sum_sixteen(weights))
+    strategy = _cpu_strategy()
+    weights = _exp_nonpositive(reduced, cpu_strategy=strategy)
+    result = weights * (np.float32(1) / _sum_lanes(
+        weights, 8 if strategy == "avx2-fma3" else 16))
     return np.moveaxis(result, -1, selected)
 
 

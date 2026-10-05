@@ -313,3 +313,132 @@ assert not any(name.split(".")[0] == "onnxruntime" for name in sys.modules)
                                cwd=Path(__file__).resolve().parents[1],
                                capture_output=True, text=True, timeout=30)
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("avx512,strategy,lanes", [
+    (False, "avx2-fma3", 8), (True, "avx512", 16),
+])
+def test_auto_profile_records_the_resolved_cpu_arithmetic(monkeypatch, avx512, strategy, lanes):
+    from scratchv.verification import fp32_reference as reference
+
+    monkeypatch.delenv("SCRATCHV_FP32_REFERENCE_CPU", raising=False)
+    monkeypatch.delenv("NPY_DISABLE_CPU_FEATURES", raising=False)
+    monkeypatch.setattr(reference, "_cpu_features", lambda: {
+        "AVX2": True, "FMA3": True, "AVX512F": avx512})
+    actual = reference.profile()
+    assert actual["name"] == "numpy-fp32-reference-v3"
+    assert actual["cpu_strategy"] == strategy and actual["softmax_lanes"] == lanes
+    assert actual == reference.profile(cpu_strategy=strategy)
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", strategy)
+    assert reference.profile() == actual
+
+
+@pytest.mark.parametrize("disabled", ["AVX2", "FMA3", "AVX512F", "AVX512_SKX", "AVX2, FMA3"])
+def test_auto_policy_rejects_cpu_features_hidden_only_from_numpy(monkeypatch, disabled):
+    from scratchv.verification import fp32_reference as reference
+
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", "auto")
+    monkeypatch.setenv("NPY_DISABLE_CPU_FEATURES", disabled)
+    monkeypatch.setattr(reference, "_cpu_features", lambda: {"AVX2": True, "FMA3": True})
+    with pytest.raises(ValueError, match="obscures MLAS"):
+        reference.profile()
+    # The explicit contract is reproducible on other CPUs and independent of
+    # NumPy's feature controls; it makes no claim to reconfigure ORT.
+    assert reference.profile(cpu_strategy="avx512")["softmax_lanes"] == 16
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", "avx2-fma3")
+    assert reference.profile()["softmax_lanes"] == 8
+
+
+@pytest.mark.parametrize("features", [{}, {"AVX2": True}, {"FMA3": True}, {"AVX512F": True}])
+def test_unknown_hardware_requires_an_explicit_policy(monkeypatch, features):
+    from scratchv.verification import fp32_reference as reference
+
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", "auto")
+    monkeypatch.delenv("NPY_DISABLE_CPU_FEATURES", raising=False)
+    monkeypatch.setattr(reference, "_cpu_features", lambda: features)
+    with pytest.raises(ValueError, match="Cannot infer"):
+        reference.profile()
+    assert reference.profile(cpu_strategy="avx2-fma3")["softmax_lanes"] == 8
+
+
+@pytest.mark.parametrize("bad", ["", "AVX512", "sse", "automatic"])
+def test_invalid_cpu_policy_cannot_silently_select_another_kernel(monkeypatch, bad):
+    from scratchv.verification import fp32_reference as reference
+
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", bad)
+    with pytest.raises(ValueError, match="SCRATCHV_FP32_REFERENCE_CPU"):
+        reference.profile()
+    with pytest.raises(IRExecutionError, match="SCRATCHV_FP32_REFERENCE_CPU"):
+        execute(O.SOFTMAX, [np.array([1, 2], "float32")], fp32_mode="reference")
+    # The pre-existing native interpreter never consults reference policy.
+    np.testing.assert_allclose(execute(O.SOFTMAX, [np.array([1, 2], "float32")]),
+                               [0.26894142, 0.73105858], rtol=2e-7)
+
+
+@pytest.mark.parametrize("strategy", ["avx2-fma3", "avx512"])
+@pytest.mark.parametrize("width", [1, 7, 8, 9, 15, 16, 17, 23, 24, 47, 48, 255, 256])
+def test_both_cpu_softmax_policies_preserve_shapes_masks_and_accuracy(monkeypatch, strategy, width):
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", strategy)
+    rng = np.random.default_rng(7600 + width)
+    x = rng.normal(size=(2, width, 3)).astype(np.float32)
+    if width > 1:
+        x[:, -1, :] = -np.inf
+    original = x.copy()
+    x.setflags(write=False)
+    actual = execute(O.SOFTMAX, [x], {"axis": 1}, fp32_mode="reference")
+    wide = x.astype(np.float64)
+    weights = np.exp(wide - np.max(wide, axis=1, keepdims=True))
+    expected = weights / np.sum(weights, axis=1, keepdims=True)
+    np.testing.assert_allclose(actual, expected, rtol=4e-7, atol=3e-8)
+    np.testing.assert_array_equal(x, original)
+    assert actual.dtype == np.float32 and actual.shape == x.shape
+    if width > 1:
+        np.testing.assert_array_equal(actual[:, -1, :], 0)
+
+
+def test_fma3_exponent_scaling_preserves_its_distinct_underflow_contract(monkeypatch):
+    # AVX2 MLAS packs m into binary32 exponent bits: m=-127 is zero.
+    # AVX512 VSCALEFPS retains representable subnormal results instead.
+    # This catches replacing the FMA3 scaling step with the AVX512 ldexp.
+    x = np.array([[0, -88, -90, -100, -104, -np.inf]], np.float32)
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", "avx2-fma3")
+    avx2 = execute(O.SOFTMAX, [x], fp32_mode="reference")
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", "avx512")
+    avx512 = execute(O.SOFTMAX, [x], fp32_mode="reference")
+    np.testing.assert_array_equal(avx2, [[1, 0, 0, 0, 0, 0]])
+    assert np.all(avx512[0, 1:4] > 0)
+    assert np.all(avx512[0, 1:4] < np.finfo(np.float32).tiny)
+    np.testing.assert_array_equal(avx512[0, 4:], 0)
+
+
+def test_host_softmax_reference_matches_ort1221_random_tail_and_mask_kernels(monkeypatch):
+    # The CPU matrix matters: CI's EPYC exercises FMA3, the Windows AVX512 host
+    # exercises VSCALEFPS. ORT is only the independent test oracle.
+    ort = pytest.importorskip("onnxruntime")
+    if ort.__version__ != "1.22.1":
+        pytest.skip("The explicit arithmetic contract targets ORT 1.22.1")
+    from onnx import helper, TensorProto
+    from scratchv.verification import fp32_reference as reference
+
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", "auto")
+    # Deliberately retain NPY_DISABLE_CPU_FEATURES: if present, automatic
+    # inference must fail rather than claim an unverified ORT dispatch.
+    reference.profile()
+    model = helper.make_model(helper.make_graph(
+        [helper.make_node("Softmax", ["x"], ["y"], axis=-1)], "softmax_cpu_arithmetic",
+        [helper.make_tensor_value_info("x", TensorProto.FLOAT, None)],
+        [helper.make_tensor_value_info("y", TensorProto.FLOAT, None)]),
+        opset_imports=[helper.make_opsetid("", 17)])
+    model.ir_version = 10
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    session = ort.InferenceSession(model.SerializeToString(), sess_options=options,
+                                  providers=["CPUExecutionProvider"])
+    rng = np.random.default_rng(20261005)
+    for width in (1, 3, 7, 8, 9, 15, 16, 17, 23, 24, 31, 32, 47, 48, 127, 128, 255, 256):
+        x = (rng.normal(size=(32, width)) * 8).astype(np.float32)
+        x[1::2, width // 2 + 1:] = np.finfo(np.float32).min
+        actual = execute(O.SOFTMAX, [x], fp32_mode="reference")
+        expected = session.run(None, {"x": x})[0]
+        np.testing.assert_array_equal(actual, expected, err_msg=f"host kernel width={width}")

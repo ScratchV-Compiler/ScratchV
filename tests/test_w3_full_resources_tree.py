@@ -13,6 +13,156 @@ import pytest
 from probes.w3_qwen3_full import resources
 
 
+class _SampleClock:
+    def __init__(self, on_sleep=None):
+        self.now = 0.0
+        self.on_sleep = on_sleep
+
+    def perf_counter(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        if self.on_sleep is not None:
+            self.on_sleep()
+
+
+class _SampleProcess:
+    pid = 42
+    returncode = None
+    _scratchv_owned_group = True
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout):
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("fake-worker", timeout)
+        return self.returncode
+
+
+def _fake_posix_tree(monkeypatch, process):
+    monkeypatch.setattr(resources._PosixGroup, "pids", lambda self: [42] if process.poll() is None else [])
+    monkeypatch.setattr(resources._PosixGroup, "identity", staticmethod(
+        lambda pid: ("R" if process.poll() is None else "Z", 42, 42, 100)))
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_rss_disappearing_before_waitable_exit_preserves_real_exit(monkeypatch, exit_code):
+    process = _SampleProcess()
+    _fake_posix_tree(monkeypatch, process)
+    clock = _SampleClock(lambda: setattr(process, "returncode", exit_code))
+    monkeypatch.setattr(resources, "time", clock)
+
+    def missing(pid):
+        raise resources._ResidentMemoryUnavailable("exit_mm removed VmRSS before zombie state")
+
+    monkeypatch.setattr(resources, "process_memory", missing)
+    monkeypatch.setattr(resources, "terminate_process_tree", lambda _: pytest.fail("Completed worker must not be killed"))
+    row = {}
+    assert resources.wait_bounded(process, timeout=2, max_memory_bytes=1000, row=row) == exit_code
+    assert row["returncode"] == exit_code
+    assert row["resource_monitor"]["rss_exit_rechecks"] == 1
+    assert row["resource_monitor"]["observed_pids"] == []
+
+
+@pytest.mark.parametrize("error", ["missing", "permission", "malformed"])
+def test_live_worker_with_unobservable_rss_still_fails_and_is_reaped(monkeypatch, error):
+    process = _SampleProcess()
+    _fake_posix_tree(monkeypatch, process)
+    clock = _SampleClock()
+    monkeypatch.setattr(resources, "time", clock)
+    failure = {"missing": resources._ResidentMemoryUnavailable("missing VmRSS"),
+               "permission": PermissionError("status access denied"),
+               "malformed": OSError("malformed VmRSS")}[error]
+
+    def missing(pid):
+        raise failure
+
+    monkeypatch.setattr(resources, "process_memory", missing)
+    monkeypatch.setattr(resources, "terminate_process_tree", lambda child: setattr(child, "returncode", -9))
+    row = {}
+    with pytest.raises(type(failure)) as caught:
+        resources.wait_bounded(process, timeout=2, max_memory_bytes=1000, row=row)
+    assert caught.value is failure
+    assert process.returncode == -9
+    if error == "missing":
+        assert resources._RSS_EXIT_GRACE_SECONDS <= clock.now < 0.3
+        assert row["resource_monitor"]["rss_exit_rechecks"] > 0
+    else:
+        assert clock.now == 0  # Unrelated observer failures get no grace period.
+        assert row["resource_monitor"]["rss_exit_rechecks"] == 0
+
+
+def test_rss_recovery_during_grace_still_enforces_memory_limit(monkeypatch):
+    process = _SampleProcess()
+    _fake_posix_tree(monkeypatch, process)
+    clock = _SampleClock()
+    monkeypatch.setattr(resources, "time", clock)
+
+    def sample(pid):
+        if clock.now == 0:
+            raise resources._ResidentMemoryUnavailable("temporarily missing VmRSS")
+        return {"rss_bytes": 2000, "private_commit_bytes": None}
+
+    monkeypatch.setattr(resources, "process_memory", sample)
+    monkeypatch.setattr(resources, "terminate_process_tree", lambda child: setattr(child, "returncode", -9))
+    row = {}
+    with pytest.raises(MemoryError):
+        resources.wait_bounded(process, timeout=2, max_memory_bytes=1000, row=row)
+    assert process.returncode == -9
+    assert row["resource_monitor"]["rss_peak_sampled_bytes"] == 2000
+    assert row["resource_monitor"]["rss_exit_rechecks"] == 1
+
+
+@pytest.mark.parametrize("identity", [("Z", 42, 42, 100), ("X", 42, 42, 100),
+                                     ("R", 99, 99, 100), ("R", 42, 42, 101)])
+def test_missing_rss_recheck_never_attributes_exited_or_reused_pid(monkeypatch, identity):
+    tree = resources._PosixGroup(_SampleProcess())
+    monkeypatch.setattr(tree, "identity", lambda pid: identity)
+    monkeypatch.setattr(resources, "process_memory", lambda pid: (_ for _ in ()).throw(
+        resources._ResidentMemoryUnavailable("missing VmRSS")))
+    assert tree._member_memory(42, ("R", 42, 42, 100)) is None
+    assert tree.rss_exit_rechecks == 0
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux real /proc worker-exit sampling")
+def test_real_linux_exit_rss_race_is_repeatable_without_false_failures(tmp_path, monkeypatch):
+    actual_memory = resources.process_memory
+    for attempt in range(20):
+        marker = tmp_path / f"exit-{attempt}"
+        ready_file = tmp_path / f"ready-{attempt}"
+        code = ("import os,time;from pathlib import Path;"
+                f"ready=Path({str(ready_file)!r});ready.write_text(str(os.getpid()));"
+                f"marker=Path({str(marker)!r});"
+                "\nwhile not marker.exists():time.sleep(0.001)\n")
+        process = resources.spawn_owned([sys.executable, "-B", "-c", code],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        injected = []
+
+        def sample(pid):
+            if not injected:
+                assert process.poll() is None
+                injected.append(pid)
+                marker.touch()
+                # Force the otherwise scheduler-dependent kernel exit window.
+                raise resources._ResidentMemoryUnavailable("exit-time VmRSS loss")
+            return actual_memory(pid)
+
+        try:
+            ready(ready_file, process)
+            monkeypatch.setattr(resources, "process_memory", sample)
+            row = {}
+            assert resources.wait_bounded(process, timeout=5, max_memory_bytes=2**30,
+                                          row=row, interval=0.01) == 0
+            assert injected == [process.pid]
+            assert row["returncode"] == 0 and "cleanup_error" not in row
+        finally:
+            monkeypatch.setattr(resources, "process_memory", actual_memory)
+            if process.poll() is None:
+                resources.terminate_process_tree(process)
+
+
 def ready(path, process):
     deadline = time.monotonic() + 10
     while not path.exists():

@@ -137,9 +137,12 @@ def verify(directory, *, model_dir=None, expected_report_sha256=None, progress=N
                              "checkpoints.npz", "checkpoint_schema.json"):
                 safe_file(directory, f"{name}/{backend}/{filename}")
             read_json(folder / backend / "checkpoint_schema.json")
+            saved_profile = (full.saved_arithmetic_profile(top["fp32_mode"],
+                                report.get("ir", {}).get("fp32_profile")) if backend == "ir" else None)
             evidence = full.validate_worker(folder / backend, backend, input_path,
                                             top["source_sha256"], top["files"],
-                                            expected_fp32_mode=top["fp32_mode"])
+                                            expected_fp32_mode=top["fp32_mode"],
+                                            expected_fp32_profile=saved_profile)
             require(evidence == report, "Worker report changed during audit")
             require(evidence["input"].get("valid_length") == valid, "Wrong worker valid length")
             if backend == "ir":
