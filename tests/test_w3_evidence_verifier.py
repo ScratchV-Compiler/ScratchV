@@ -119,7 +119,7 @@ def test_offline_audit_checks_saved_cpu_policy_without_selecting_local_cpu(
     assert result["model_executed"] is False
 
 
-@pytest.mark.parametrize("mutation", ["unknown", "auto", "missing", "lanes", "legacy", "extra"])
+@pytest.mark.parametrize("mutation", ["unknown", "auto", "missing", "lanes", "legacy", "legacy_v3", "extra"])
 def test_offline_audit_rejects_noncanonical_saved_cpu_policy(evidence, mutation):
     root, top = evidence
     def modify(report, folder):
@@ -132,6 +132,8 @@ def test_offline_audit_rejects_noncanonical_saved_cpu_policy(evidence, mutation)
             saved["softmax_lanes"] = float(saved["softmax_lanes"])
         elif mutation == "legacy":
             saved["name"] = "numpy-fp32-reference-v2"
+        elif mutation == "legacy_v3":
+            saved["name"] = "numpy-fp32-reference-v3"
         else:
             saved["unrecognized"] = True
     update_worker(root, top, CASE_NAMES[0], "ir", modify)

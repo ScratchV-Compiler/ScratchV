@@ -88,10 +88,15 @@ def profile(cpu_strategy=None):
     strategy = _cpu_strategy(cpu_strategy)
     lanes = 8 if strategy == "avx2-fma3" else 16
     return {
-        "name": "numpy-fp32-reference-v3",
+        "name": "numpy-fp32-reference-v4",
         "dtype": "float32",
         "cpu_strategy": strategy,
         "matmul_k_block": 128,
+        "matmul_row_tile": 2 if lanes == 8 else None,
+        "matmul_row_tail": "zero-pad-to-two-then-trim" if lanes == 8 else "native",
+        "matmul_column_tail": "zero-pad-single-column-to-two-then-trim" if lanes == 8 else "native",
+        "matmul_layout": "contiguous-matrix-operands-per-k-block" if lanes == 8 else "native-strides",
+        "matmul_vector_policy": "native-numpy-vector-promotion",
         "mean": "two-four-lane-last-axis",
         "trig": "non-fused-range-reduction-polynomial",
         "softmax": f"exp-polynomial-{lanes}-lane-sum-reciprocal-multiply",
@@ -117,15 +122,46 @@ def matmul(xs, attrs, dtype):
             a, b = a.reshape(m, k), b.reshape(k, n)
         elif a.shape != (m, k) or b.shape != (k, n):
             raise OpError("ShapeError", "MATMUL m/n/k disagree with tensor shapes")
-    # Preserve NumPy's vector promotion, empty reductions and shape errors.
-    if a.ndim < 2 or b.ndim < 2 or a.shape[-1] <= 128:
+    # Preserve NumPy's existing vector-promotion arithmetic and shape errors.
+    if a.ndim < 2 or b.ndim < 2:
         return np.matmul(a, b)
     if a.shape[-1] != b.shape[-2]:
         raise OpError("ShapeError", "MATMUL reduction dimensions differ")
+    strategy = _cpu_strategy()
+    if strategy == "avx512" and a.shape[-1] <= 128:
+        return np.matmul(a, b)
     shape = np.broadcast_shapes(a.shape[:-2], b.shape[:-2]) + (a.shape[-2], b.shape[-1])
     result = np.zeros(shape, dtype=np.float32)
+    if strategy == "avx512":
+        # Retain the existing wide-matrix policy. SkylakeX small-matrix kernels
+        # have a different reduction order from its ordinary wide GEMM path.
+        for start in range(0, a.shape[-1], 128):
+            result += np.matmul(a[..., start:start + 128], b[..., start:start + 128, :])
+        return result
+    # Haswell OpenBLAS 0.3.29's wider SGEMM tiles use two interleaved K
+    # accumulators on selected boundaries (sgemm_kernel_8x4_haswell_2.c).
+    # A fixed two-row tile avoids those boundaries; padding a single-row
+    # tail also avoids switching to a different GEMV reduction. This applies
+    # to K<=128 too: attention score products use exactly K=128.
+    if not a.shape[-2] or not b.shape[-1]:
+        return result
     for start in range(0, a.shape[-1], 128):
-        result += np.matmul(a[..., start:start + 128], b[..., start:start + 128, :])
+        # Packing once per K block also handles stepped/transposed inputs:
+        # non-BLAS NumPy strided loops have a different arithmetic order.
+        left = np.ascontiguousarray(a[..., start:start + 128])
+        right = np.ascontiguousarray(b[..., start:start + 128, :])
+        if left.shape[-2] % 2:
+            padded = np.zeros(left.shape[:-2] + (left.shape[-2] + 1, left.shape[-1]), dtype=np.float32)
+            padded[..., :-1, :] = left
+            left = padded
+        if right.shape[-1] == 1:
+            padded = np.zeros(right.shape[:-1] + (2,), dtype=np.float32)
+            padded[..., :1] = right
+            right = padded
+        for row in range(0, a.shape[-2], 2):
+            rows = min(2, a.shape[-2] - row)
+            product = np.matmul(left[..., row:row + 2, :], right)
+            result[..., row:row + rows, :] += product[..., :rows, :b.shape[-1]]
     return result
 
 

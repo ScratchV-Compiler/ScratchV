@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 import numpy as np
@@ -326,7 +327,9 @@ def test_auto_profile_records_the_resolved_cpu_arithmetic(monkeypatch, avx512, s
     monkeypatch.setattr(reference, "_cpu_features", lambda: {
         "AVX2": True, "FMA3": True, "AVX512F": avx512})
     actual = reference.profile()
-    assert actual["name"] == "numpy-fp32-reference-v3"
+    assert actual["name"] == "numpy-fp32-reference-v4"
+    assert actual["matmul_row_tile"] == (2 if lanes == 8 else None)
+    assert actual["matmul_row_tail"] == ("zero-pad-to-two-then-trim" if lanes == 8 else "native")
     assert actual["cpu_strategy"] == strategy and actual["softmax_lanes"] == lanes
     assert actual == reference.profile(cpu_strategy=strategy)
     monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", strategy)
@@ -442,3 +445,94 @@ def test_host_softmax_reference_matches_ort1221_random_tail_and_mask_kernels(mon
         actual = execute(O.SOFTMAX, [x], fp32_mode="reference")
         expected = session.run(None, {"x": x})[0]
         np.testing.assert_array_equal(actual, expected, err_msg=f"host kernel width={width}")
+
+
+@pytest.mark.parametrize("strategy", ["avx2-fma3", "avx512"])
+@pytest.mark.parametrize("rows,cols,reduction", [
+    (1, 1, 1), (1, 7, 127), (3, 9, 128), (5, 17, 129), (17, 31, 257),
+])
+def test_fixed_row_matmul_preserves_broadcast_strides_and_odd_tail(monkeypatch, strategy, rows, cols, reduction):
+    monkeypatch.setenv("SCRATCHV_FP32_REFERENCE_CPU", strategy)
+    rng = np.random.default_rng(7000 + rows)
+    a = rng.uniform(-1, 1, (2, 1, reduction, rows)).astype(np.float32).swapaxes(-1, -2)
+    b = rng.uniform(-1, 1, (1, 3, cols, reduction)).astype(np.float32).swapaxes(-1, -2)
+    a, b = a[..., ::-1], b[..., ::-1, :]
+    left, right = a.copy(), b.copy()
+    a.setflags(write=False)
+    b.setflags(write=False)
+    actual = execute(O.MATMUL, [a, b], fp32_mode="reference")
+    expected = left.astype(np.float64) @ right.astype(np.float64)
+    np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-5)
+    np.testing.assert_array_equal(a, left)
+    np.testing.assert_array_equal(b, right)
+    assert actual.shape == (2, 3, rows, cols) and actual.dtype == np.float32
+
+
+def test_haswell_matmul_regression_executes_the_real_blas_kernel_in_a_child():
+    # Force only this child's NumPy OpenBLAS to Haswell, even on AVX512 CI.
+    # This catches a CPU-specific accumulation-order regression that an
+    # AVX512-only ORT/NumPy comparison cannot see. No real gate is reconfigured.
+    from scratchv.verification import fp32_reference as reference
+    if np.__version__ != "2.2.6":
+        pytest.skip("The Haswell dispatch regression targets the pinned NumPy 2.2.6 wheel")
+    features = reference._cpu_features()
+    if not (features.get("AVX2") and features.get("FMA3")):
+        pytest.skip("Haswell BLAS regression requires usable AVX2/FMA3")
+    ort = pytest.importorskip("onnxruntime")
+    if ort.__version__ != "1.22.1":
+        pytest.skip("Exact arithmetic oracle is pinned to ORT 1.22.1")
+    libraries = list((Path(np.__file__).parent.parent / "numpy.libs").glob("*openblas*"))
+    if not libraries:
+        pytest.skip("Haswell regression requires the NumPy OpenBLAS wheel")
+    script = r'''
+import ctypes, json
+from pathlib import Path
+import numpy as np
+import onnxruntime as ort
+from onnx import helper, TensorProto
+from scratchv.verification.fp32_reference import matmul
+libraries = list((Path(np.__file__).parent.parent / "numpy.libs").glob("*openblas*"))
+assert len(libraries) == 1, libraries
+library = ctypes.CDLL(str(libraries[0]))
+get_core = library.scipy_openblas_get_corename64_
+get_core.restype = ctypes.c_char_p
+assert get_core().decode().lower() == "haswell", get_core()
+model = helper.make_model(helper.make_graph(
+    [helper.make_node("MatMul", ["a", "b"], ["y"])], "haswell_matmul_regression",
+    [helper.make_tensor_value_info(name, TensorProto.FLOAT, None) for name in ("a", "b")],
+    [helper.make_tensor_value_info("y", TensorProto.FLOAT, None)]),
+    opset_imports=[helper.make_opsetid("", 17)])
+model.ir_version = 10
+options = ort.SessionOptions()
+options.intra_op_num_threads = options.inter_op_num_threads = 1
+options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+session = ort.InferenceSession(model.SerializeToString(), sess_options=options,
+                              providers=["CPUExecutionProvider"])
+rng = np.random.default_rng(373)
+old_mismatch = 0
+for shape in ((256, 128, 256), (17, 128, 256), (1, 128, 256), (17, 1024, 256)):
+    m, k, n = shape
+    a = rng.normal(size=(m, k)).astype(np.float32)
+    b = rng.normal(size=(k, n)).astype(np.float32)
+    expected = session.run(None, {"a": a, "b": b})[0]
+    actual = matmul([a, b], {}, np.dtype("float32"))
+    if m == 1:
+        # ORT itself selects GEMV for an entire one-row operation. Padding
+        # retains our matrix contract; its mathematical accuracy still holds.
+        truth = a.astype(np.float64) @ b.astype(np.float64)
+        np.testing.assert_allclose(actual, truth, rtol=2e-5, atol=2e-5)
+    else:
+        np.testing.assert_array_equal(actual, expected, err_msg=str(shape))
+    if shape == (256, 128, 256):
+        old_mismatch = int(np.count_nonzero(np.matmul(a, b) != expected))
+assert old_mismatch > 0, "Fixture must expose the original Haswell accumulation bug"
+print(json.dumps({"core": get_core().decode(), "old_mismatch": old_mismatch, "cases": 4}))
+'''
+    environment = dict(os.environ, SCRATCHV_FP32_REFERENCE_CPU="avx2-fma3",
+                       OPENBLAS_CORETYPE="Haswell", OPENBLAS_NUM_THREADS="1",
+                       OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+    completed = subprocess.run([sys.executable, "-B", "-c", script],
+                               cwd=Path(__file__).resolve().parents[1], env=environment,
+                               capture_output=True, text=True, timeout=60)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert '"core": "Haswell"' in completed.stdout
