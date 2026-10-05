@@ -1,10 +1,10 @@
-"""Qwen3 numeric contracts vs ORT, with a standard-library double-Cos reference."""
+"""Qwen3 ONNX numeric operators and exported static-parameter chains vs ORT."""
 
-import math
 import numpy as np
 import onnx
 import pytest
 from onnx import TensorProto as T, helper, numpy_helper
+from onnx.reference import ReferenceEvaluator
 
 from scratchv.analysis.ir_verifier import verify_ir
 from scratchv.frontend.onnx_parser import ONNXParser, ONNXParseError
@@ -28,19 +28,17 @@ def save(tmp_path, nodes, feed, output_dtype, output_shape, initializers=None):
     return path
 
 
-def compare(path, feed, *, exact=False, explicit_reference=None):
+def compare(path, feed, *, exact=False, reference_evaluator=False):
     parser = ONNXParser()
     program = parser.parse(str(path))
     assert verify_ir(program) == (True, [])
     actual = IRInterpreter(program).run(feed, initializers=parser.initializers).return_value
-    if explicit_reference is None:
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = 1
-        options.inter_op_num_threads = 1
-        reference = ort.InferenceSession(str(path), options,
-                                         providers=["CPUExecutionProvider"]).run(None, feed)[0]
-    else:
-        reference = explicit_reference
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    options.inter_op_num_threads = 1
+    session = (ReferenceEvaluator(str(path)) if reference_evaluator else
+               ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"]))
+    reference = session.run(None, feed)[0]
     assert actual.shape == reference.shape
     assert actual.dtype == reference.dtype
     if exact or actual.dtype.kind in "iu":
@@ -90,16 +88,10 @@ def test_abs_preserves_numeric_type(tmp_path, dtype):
 def test_float_unary_ops(tmp_path, dtype, op, values):
     feed = {"x": np.array(values, dtype=dtype)}
     path = save(tmp_path, [helper.make_node(op, ["x"], ["y"])], feed, DTYPES[dtype], [5])
-    if op == "Cos" and dtype == "float64":
-        # ONNX Cos-7 permits doubles; ORT 1.22.1 CPU has no double kernel.
-        # Use scalar math.cos rather than the interpreter's np.cos kernel.
-        # Keep the original checked
-        # ONNX graph, parser, IR verification, or output shape/dtype checks.
-        # https://onnx.ai/onnx/operators/onnx__Cos.html#cos-7
-        expected = np.array([math.cos(float(x)) for x in feed["x"]], dtype=np.float64)
-        compare(path, feed, explicit_reference=expected)
-    else:
-        compare(path, feed)
+    # ONNX permits DOUBLE Cos, but pinned ORT 1.22.1 has no CPU kernel for it.
+    # Keep the real parser/interpreter test using ONNX's reference evaluator;
+    # do not skip the case or catch arbitrary numerical comparison failures.
+    compare(path, feed, reference_evaluator=(op == "Cos" and dtype == "float64"))
 
 
 @pytest.mark.parametrize("base_dtype,exponent_dtype", [
