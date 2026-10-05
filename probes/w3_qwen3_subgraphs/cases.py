@@ -7,6 +7,7 @@ it neither exports nor executes the same ONNX graph to define correctness.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 
 import numpy as np
 import onnx
@@ -52,10 +53,22 @@ def rms_reference(x, weight):
                * torch.from_numpy(weight))
 
 
-def rope_reference(x, position):
+def rope_inverse_frequency():
+    """Materialize Qwen3's FP32 rotary buffer once, as in Transformers.
+
+    NumPy power and Torch power need not round to the same FP32 constants.
+    The graph and independent rotation oracle must consume the same model
+    parameters, just as they consume the same pretrained linear weights.
+    """
+    dimension, theta = DIMENSIONS["head_dim"], DIMENSIONS["rope_theta"]
+    exponent = torch.arange(0, dimension, 2, dtype=torch.int64).to(torch.float32) / dimension
+    return arr(1.0 / (theta ** exponent))
+
+
+def rope_reference(x, position, inv_freq=None):
     # Pair formula is deliberately separate from ONNX Slice/Neg/Concat.
     value = torch.from_numpy(x)
-    inv = 1.0 / (1000000 ** (torch.arange(0, 128, 2, dtype=torch.float32) / 128))
+    inv = torch.from_numpy(rope_inverse_frequency() if inv_freq is None else inv_freq)
     angle = torch.from_numpy(position).reshape(-1, 1) * inv.reshape(1, -1)
     first, second = value[..., :64], value[..., 64:]
     return arr(torch.cat((first * angle.cos() - second * angle.sin(),
@@ -87,7 +100,7 @@ def norm_case(kind, x, weight, suffix):
 def rope_case(kind, x):
     length = x.shape[-2]
     positions = np.arange(length, dtype=np.float32).reshape(1, length, 1)
-    inv = (1.0 / np.power(np.float32(1000000), np.arange(0, 128, 2, dtype=np.float32) / 128))
+    inv = rope_inverse_frequency()
     return graph(f"rope_{kind}", "rope", [
         node("Mul", ["position", "inv_freq"], "angle"),
         node("Concat", ["angle", "angle"], "full_angle", axis=-1),
@@ -102,13 +115,17 @@ def rope_case(kind, x):
         node("Mul", ["x", "cos"], "real"),
         node("Mul", ["rotated", "sin"], "imaginary"),
         node("Add", ["real", "imaginary"], "y"),
-    ], {"x": x, "position": positions}, {"y": rope_reference(x, positions)},
+    ], {"x": x, "position": positions}, {"y": rope_reference(x, positions, inv)},
         {"inv_freq": inv.reshape(1, 1, 64), "head_axis": np.array([1], np.int64),
          "zero": np.array([0], np.int64), "half": np.array([64], np.int64),
          "end": np.array([128], np.int64), "last": np.array([-1], np.int64)},
         source_weights=[f"model.layers.0.self_attn.{kind}_proj.weight",
                         f"model.layers.0.self_attn.{kind}_norm.weight"],
         purpose="Full head_dim=128 rotate-half, every position 0..L-1, theta=1e6",
+        rotary_parameters={"head_dim": DIMENSIONS["head_dim"], "theta": DIMENSIONS["rope_theta"],
+                           "source": "Transformers default RoPE Torch FP32 inverse-frequency buffer",
+                           "sharing": "One materialized buffer supplies ONNX and the independent Torch rotation",
+                           "inv_freq_sha256": hashlib.sha256(inv.tobytes()).hexdigest()},
         activation_origin="Synthetic hidden -> authentic projection and Q/K RMSNorm, computed in Torch")
 
 

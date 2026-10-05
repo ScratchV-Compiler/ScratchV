@@ -5,6 +5,7 @@ import hashlib
 import json
 
 import numpy as np
+from onnx import numpy_helper
 import onnxruntime as ort
 import pytest
 import torch
@@ -80,6 +81,51 @@ def test_full_head_rope_rotates_coordinate_127_with_coordinate_63():
     np.testing.assert_allclose(result[:, :, 1, 63], np.cos(angle) - 2 * np.sin(angle), atol=1e-7, rtol=0)
     np.testing.assert_allclose(result[:, :, 1, 127], 2 * np.cos(angle) + np.sin(angle), atol=3e-7, rtol=0)
     assert np.count_nonzero(result[..., :63]) == 0
+
+
+@pytest.mark.parametrize("kind,heads", [("q", 16), ("k", 8)])
+def test_rope_graph_and_independent_oracle_share_one_exact_parameter_buffer(monkeypatch, kind, heads):
+    # An explicit fixture buffer distinguishes correct parameter reuse from
+    # independently recomputing the nominal formula in either backend.
+    inv = cases.rope_inverse_frequency()
+    inv[3] = np.nextafter(inv[3], np.float32(np.inf))
+    calls = []
+    def supplied_buffer():
+        calls.append(True)
+        return inv.copy()
+    monkeypatch.setattr(cases, "rope_inverse_frequency", supplied_buffer)
+    monkeypatch.setattr(np, "power", lambda *a, **k: pytest.fail("RoPE parameters were recomputed in NumPy"))
+    x = np.zeros((1, heads, 256, 128), np.float32)
+    x[..., 3], x[..., 67] = 8, -8
+    case = cases.rope_case(kind, x)
+    assert calls == [True]
+    stored = next(numpy_helper.to_array(value) for value in case.model.graph.initializer
+                  if value.name == "inv_freq")
+    np.testing.assert_array_equal(stored.reshape(-1), inv)
+    assert stored.dtype == np.float32
+    assert case.metadata["rotary_parameters"]["inv_freq_sha256"] == hashlib.sha256(inv.tobytes()).hexdigest()
+    positions = torch.arange(256, dtype=torch.float32)
+    angle = positions * torch.from_numpy(inv)[3]
+    expected_first = 8 * angle.cos() + 8 * angle.sin()
+    expected_second = -8 * angle.cos() + 8 * angle.sin()
+    np.testing.assert_array_equal(case.expected["y"][0, 0, :, 3], expected_first.numpy())
+    np.testing.assert_array_equal(case.expected["y"][0, 0, :, 67], expected_second.numpy())
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    session = ort.InferenceSession(case.model.SerializeToString(), options, providers=["CPUExecutionProvider"])
+    assert run.tensor_diff(session.run(None, case.feed)[0], case.expected["y"])["passed"]
+
+
+def test_rope_parameter_buffer_matches_the_default_transformers_contract():
+    # Qwen's buffer is constructed before forward/export. Sharing this buffer
+    # does not share the rotation implementation or execute ORT as an oracle.
+    from transformers import Qwen3Config
+    from transformers.modeling_rope_utils import _compute_default_rope_parameters
+    config = Qwen3Config(hidden_size=1024, num_attention_heads=16,
+                         num_key_value_heads=8, head_dim=128, rope_theta=1000000)
+    expected, scale = _compute_default_rope_parameters(config, torch.device("cpu"))
+    assert scale == 1
+    np.testing.assert_array_equal(cases.rope_inverse_frequency(), expected.numpy())
 
 
 def test_real_gqa_head_mapping_causal_and_key_padding_have_manual_oracle():
