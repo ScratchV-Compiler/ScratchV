@@ -16,6 +16,14 @@ Nightly 使用仓库内相对路径调用，因此被调用工作流与调用者
 
 ## 先做 Linux 手动验证
 
+若 W3 新入口尚未进入默认分支，但仓库已注册并运行过 `LLM Deploy v1.0`，可从该既有手动入口选择包含 W3 代码的分支，显式设置 `run_w3_validation=true`。它从同一提交复用 W3 完整编排，执行 preparation、七组 full-numeric 和汇总；原 W1/W2 任务也照常执行。默认值为 false，普通 PR 和原 schedule 不会因此自动增加 W3 重型任务。首次远端通过前仍须按实际日志核对，手动调用不算定时 Nightly 记录。
+
+```bash
+gh workflow run llm-deploy.yml --repo YOUR_ACCOUNT/ScratchV --ref YOUR_W3_BRANCH -f run_w3_validation=true
+```
+
+这个入口不要求更改默认分支，也不设置 Nightly 开关。若既有入口也未注册，则仍需按下列默认分支条件准备入口。[GitHub 手动触发与目标 ref](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
+
 1. 选定个人 fork 或有写权限的运行仓库及包含完整 W3 改动的提交；代码现已在 PR 中，不需要重新创建一笔 W3 PR。复核目标分支的实际 SHA，先保持 `W3_NIGHTLY_ENABLED` 未设置；这一步不会启动定时重计算。
 2. 确认仓库已启用 Actions，并允许本工作流使用的 actions/reusable workflows。手动入口文件必须已经存在于默认分支，才能正常通过 `workflow_dispatch` 发起；之后可以选择含 W3 修改的目标分支。仅上传到一个没有默认分支入口的功能分支，不应预期必然出现 Run workflow 按钮。[GitHub 手动运行说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 3. 在 Actions 页面运行 `W3 nightly` 的手动入口，可一次执行两套流程；或分别运行 `W3 preparation` 和 `W3 full IR numeric`，后者选择 `all`。记录 run URL、commit SHA 和 attempt，确认两套结果来自同一代码版本。

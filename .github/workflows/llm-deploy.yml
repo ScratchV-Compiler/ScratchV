@@ -15,9 +15,8 @@ name: LLM Deploy v1.0
 #   numeric:ir-qwen3-small  frontend:parse-qwen3
 #   unit:frontend-ops  unit:backend-ops  unit:runtime  integration:runtime-model
 #
-# Later weeks' gates (numeric:ir-full-qwen3 at W3, numeric:qemu-full-qwen3 at
-# W4, e2e:qemu-paris at W5, release:gate at W8) are NOT stubbed here. They get
-# added when their week arrives, from the plan's §4.3 table.
+# Explicit manual runs can also call the delivered W3 workflows from the same
+# commit. The default W1/W2 checks do not imply full-model IR acceptance.
 
 on:
   pull_request:
@@ -50,6 +49,12 @@ on:
     # Nightly, off the hour: 19:23 UTC = 03:23 北京时间.
     - cron: '23 19 * * *'
   workflow_dispatch:
+    inputs:
+      run_w3_validation:
+        description: Also run complete W3 preparation and seven-case IR validation
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -64,6 +69,11 @@ env:
   QWEN3_PY: output/qwen3-probe-venv/bin/python
 
 jobs:
+  w3-validation:
+    name: "W3 / explicit full validation"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_w3_validation }}
+    uses: ./.github/workflows/w3-nightly.yml
+
   llm-deploy:
     name: "LLM Deploy v1.0 / W1 + W2"
     runs-on: ubuntu-latest

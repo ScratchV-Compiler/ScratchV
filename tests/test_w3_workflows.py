@@ -46,11 +46,12 @@ def run_script(bash, script, tmp_path, **values):
                           cwd=tmp_path, env=env, capture_output=True, text=True)
 
 
-def evaluate_guard(expression, event, enabled):
+def evaluate_guard(expression, event, enabled, w3_validation=False):
     """Evaluate only the tiny boolean subset used by the real job guards."""
     value = expression.removeprefix("${{").removesuffix("}}").strip()
     value = value.replace("github.event_name", repr(event))
     value = value.replace("vars.W3_NIGHTLY_ENABLED", repr(enabled))
+    value = value.replace("inputs.run_w3_validation", repr(w3_validation))
     value = value.replace("always()", "True").replace("||", "or").replace("&&", "and")
 
     def visit(node):
@@ -104,7 +105,7 @@ def test_preparation_fetches_history_required_by_real_onnx_benchmark_regression(
 ])
 def test_nightly_expensive_jobs_require_opt_in_or_explicit_dispatch(event, enabled, expected):
     data = workflow("w3-nightly.yml")
-    assert set(data["on"]) == {"schedule", "workflow_dispatch"}
+    assert set(data["on"]) == {"schedule", "workflow_dispatch", "workflow_call"}
     assert data["on"]["schedule"] == [{"cron": "23 19 * * *"}]
     for job in data["jobs"].values():
         assert evaluate_guard(job["if"], event, enabled) is expected
@@ -116,6 +117,23 @@ def test_nightly_expensive_jobs_require_opt_in_or_explicit_dispatch(event, enabl
     groups = {workflow(name)["concurrency"]["group"] for name in (
         "w3-nightly.yml", "w3-preparation.yml", "w3-full-numeric.yml")}
     assert len(groups) == 3
+
+
+@pytest.mark.parametrize("event", ["pull_request", "schedule", "workflow_dispatch"])
+@pytest.mark.parametrize("selected", [False, True])
+def test_existing_manual_entry_runs_w3_only_when_explicitly_requested(event, selected):
+    data = workflow("llm-deploy.yml")
+    option = data["on"]["workflow_dispatch"]["inputs"]["run_w3_validation"]
+    assert option["type"] == "boolean" and option["default"] == "false"
+    job = data["jobs"]["w3-validation"]
+    assert job["uses"] == "./.github/workflows/w3-nightly.yml"
+    assert evaluate_guard(job["if"], event, "", selected) is (
+        event == "workflow_dispatch" and selected)
+    # The called workflow inherits the caller event. A manual call must run
+    # both complete gates even while the scheduled nightly opt-in is disabled.
+    if event == "workflow_dispatch" and selected:
+        assert all(evaluate_guard(item["if"], event, "")
+                   for item in workflow("w3-nightly.yml")["jobs"].values())
 
 
 @pytest.mark.parametrize("selected,expected", [

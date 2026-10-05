@@ -1,6 +1,7 @@
 name: W3 nightly
 on:
   workflow_dispatch:
+  workflow_call:
   schedule:
     # 03:23 Asia/Shanghai. Jobs stay disabled until the repository opts in.
     - cron: '23 19 * * *'
