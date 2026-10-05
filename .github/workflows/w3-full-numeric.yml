@@ -1,0 +1,140 @@
+name: W3 full IR numeric
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: Full suite or one-case diagnostic (subset returns PARTIAL if numerically correct)
+        type: choice
+        default: all
+        options:
+          - all
+          - short_17
+  workflow_call:
+    inputs:
+      case:
+        description: Full suite or short_17 diagnostic; partial coverage never passes acceptance
+        type: string
+        required: false
+        default: all
+permissions:
+  contents: read
+concurrency:
+  group: w3-full-numeric-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  full-numeric:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      PYTHONIOENCODING: utf-8
+      SELECTED_CASE: ${{ inputs.case || 'all' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Validate requested coverage
+        run: |
+          set -euo pipefail
+          case "${SELECTED_CASE:-all}" in
+            all|short_17) ;;
+            *) printf 'Unsupported case: %s\n' "$SELECTED_CASE" >&2; exit 1 ;;
+          esac
+      - name: Record Linux runner resources
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          {
+            printf 'commit=%s\nrun_id=%s\nattempt=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            cat /etc/os-release
+            uname -a
+            lscpu
+            free -b
+            df -B1 .
+          } | tee output/w3-runner-resources.txt
+      - name: Install fixed CPU environment
+        run: |
+          set -euo pipefail
+          python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements/qwen3-small-probe.txt PyYAML==6.0.3
+          python -m pip install -e .
+          python -m pip check
+          python -m pip freeze > output/w3-dependencies.txt
+          python --version >> output/w3-runner-resources.txt
+      - name: Full runner and memory policy regressions
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python -B -X utf8 -m pytest tests/test_w3_full*.py tests/test_ir_interpreter*.py tests/test_onnx_initializers.py -q -p no:cacheprovider --basetemp output/pytest-w3-full --junitxml output/w3-full-tests.xml
+      - name: Download fixed ONNX assets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from probes.w1_qwen3_export.run import acquire_model
+          acquire_model(Path("output/assets/onnx"))
+          PY
+      - name: Compare complete IR and ORT outputs
+        run: |
+          set -euo pipefail
+          args=()
+          SELECTED_CASE="${SELECTED_CASE:-all}"
+          if [[ "$SELECTED_CASE" != "all" ]]; then args=(--case "$SELECTED_CASE"); fi
+          python -B -X utf8 probes/w3_qwen3_full/run.py --model-dir output/assets/onnx --output-dir output/w3-full --worker-timeout 1800 --max-worker-memory-gib 8 --fp32-mode reference "${args[@]}"
+      - name: Record evidence retention scope
+        if: always()
+        run: |
+          mkdir -p output
+          cat > output/w3-full-evidence-retention.json <<'JSON'
+          {
+            "reports_retention_days": 30,
+            "raw_evidence_retention_days": 3,
+            "reports_scope": "Reports, hashes and schemas record the original run's checks; reports alone cannot independently revalidate the numerical results.",
+            "independent_revalidation": "Download w3-full-numeric-raw before expiry to retain the complete emitted inputs, logits, diagnostic logits and checkpoints together with reports. Failed or interrupted runs may contain incomplete evidence."
+          }
+          JSON
+      - name: Upload numerical reports (30 days)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w3-full-numeric-reports
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            output/w3-runner-resources.txt
+            output/w3-dependencies.txt
+            output/w3-full-tests.xml
+            output/w3-full-evidence-retention.json
+            output/w3-full/**/report.json
+            output/w3-full/**/report.md
+            output/w3-full/**/report.html
+            output/w3-full/**/progress.json
+            output/w3-full/**/*.log
+            output/w3-full/**/checkpoint_schema.json
+      - name: Upload full raw numerical evidence (3 days)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w3-full-numeric-raw
+          if-no-files-found: warn
+          retention-days: 3
+          compression-level: 1
+          path: |
+            output/w3-runner-resources.txt
+            output/w3-dependencies.txt
+            output/w3-full-tests.xml
+            output/w3-full-evidence-retention.json
+            output/w3-full/**/report.json
+            output/w3-full/**/report.md
+            output/w3-full/**/report.html
+            output/w3-full/**/progress.json
+            output/w3-full/**/*.log
+            output/w3-full/**/inputs.npz
+            output/w3-full/**/checkpoint_schema.json
+            output/w3-full/**/checkpoints.npz
+            output/w3-full/**/logits.npy
+            output/w3-full/**/diagnostic_logits.npy

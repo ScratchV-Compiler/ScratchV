@@ -1,0 +1,42 @@
+name: W3 nightly
+on:
+  workflow_dispatch:
+  schedule:
+    # 03:23 Asia/Shanghai. Jobs stay disabled until the repository opts in.
+    - cron: '23 19 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: w3-nightly-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  preparation:
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.W3_NIGHTLY_ENABLED == 'true' }}
+    uses: ./.github/workflows/w3-preparation.yml
+  full-numeric:
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.W3_NIGHTLY_ENABLED == 'true' }}
+    uses: ./.github/workflows/w3-full-numeric.yml
+    with:
+      case: all
+  acceptance:
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || vars.W3_NIGHTLY_ENABLED == 'true') }}
+    needs: [preparation, full-numeric]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PREPARATION_RESULT: ${{ needs.preparation.result }}
+      FULL_NUMERIC_RESULT: ${{ needs.full-numeric.result }}
+    steps:
+      - name: Require both complete gates
+        run: |
+          set -euo pipefail
+          {
+            printf '## W3 automated gates\n\n'
+            printf 'Commit: `%s`\n\n' "$GITHUB_SHA"
+            printf '| Gate | Result |\n| --- | --- |\n'
+            printf '| Preparation | %s |\n' "$PREPARATION_RESULT"
+            printf '| Complete seven-case Qwen3 IR numeric | %s |\n\n' "$FULL_NUMERIC_RESULT"
+            printf 'Only two successful gates pass this run. This does not approve the W3 team milestone or replace independent reproduction.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$PREPARATION_RESULT" = success
+          test "$FULL_NUMERIC_RESULT" = success

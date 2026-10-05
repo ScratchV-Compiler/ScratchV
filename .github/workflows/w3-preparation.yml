@@ -1,0 +1,106 @@
+name: W3 preparation
+on:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: w3-preparation-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  preparation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # The ONNX benchmark regression archives a pinned historical baseline.
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Record Linux runner resources
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          {
+            printf 'commit=%s\nrun_id=%s\nattempt=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            cat /etc/os-release
+            uname -a
+            lscpu
+            free -b
+            df -B1 .
+          } | tee output/w3-runner-resources.txt
+      - name: Install fixed CPU environment and QEMU
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y qemu-system-misc
+          python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements/qwen3-small-probe.txt PyYAML==6.0.3
+          python -m pip install -e . ziglang==0.14.1
+          python -m pip check
+          python -m pip freeze > output/w3-dependencies.txt
+          python --version >> output/w3-runner-resources.txt
+          qemu-system-riscv64 --version >> output/w3-runner-resources.txt
+          python -m ziglang version >> output/w3-runner-resources.txt
+          echo "SCRATCHV_CC=$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')" >> "$GITHUB_ENV"
+      - name: W3 and affected W2/IR regressions
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          python -B -X utf8 -m pytest tests/test_w3*.py tests/test_qwen3_medium*.py tests/test_ir_interpreter*.py tests/test_onnx*.py tests/test_qwen3_small_model.py tests/test_qwen3_small_probe.py tests/test_qwen3_small_gate.py tests/test_qwen3_small_riscv_gate.py tests/test_w2_runtime_model.py -q -p no:cacheprovider --basetemp output/pytest-w3 --junitxml output/w3-tests.xml
+      - name: Download and verify fixed assets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from huggingface_hub import snapshot_download
+          from probes.w1_qwen3_export.run import MANIFEST, acquire_model
+          from probes.w3_qwen3_subgraphs.assets import verify_source
+          source = Path("output/assets/source")
+          snapshot_download(repo_id=MANIFEST["model_id"], revision=MANIFEST["revision"],
+                            local_dir=source, allow_patterns=["model.safetensors"] + [x["name"] for x in MANIFEST["source_files"]])
+          verify_source(source)
+          acquire_model(Path("output/assets/onnx"))
+          PY
+      - name: Five preparation checks (not full-model acceptance)
+        run: |
+          python -B -X utf8 scripts/run_w3_preparation.py --source-dir output/assets/source --model-dir output/assets/onnx --output-dir output/w3-preparation --cc "$SCRATCHV_CC" --qemu qemu-system-riscv64
+      - name: Retain bounded selected trace and failure evidence
+        if: always()
+        run: |
+          python -B -X utf8 scripts/collect_w3_ci_evidence.py --source output/w3-preparation --destination output/w3-diagnostics
+      - name: Upload preparation reports (30 days)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w3-preparation-reports
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            output/w3-runner-resources.txt
+            output/w3-dependencies.txt
+            output/w3-tests.xml
+            output/w3-preparation/**/report.json
+            output/w3-preparation/**/report.md
+            output/w3-preparation/**/report.html
+            output/w3-preparation/**/trace_schema.json
+            output/w3-preparation/logs/*.log
+            output/w3-diagnostics/retained-files.json
+            output/w3-diagnostics/retained-evidence.json
+      - name: Upload selected diagnostic evidence (7 days)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w3-preparation-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 1
+          path: |
+            output/w3-diagnostics/

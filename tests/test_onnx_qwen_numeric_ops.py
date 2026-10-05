@@ -1,5 +1,6 @@
-"""Qwen3 ONNX numeric operators and exported static-parameter chains vs ORT."""
+"""Qwen3 numeric contracts vs ORT, with a standard-library double-Cos reference."""
 
+import math
 import numpy as np
 import onnx
 import pytest
@@ -27,12 +28,19 @@ def save(tmp_path, nodes, feed, output_dtype, output_shape, initializers=None):
     return path
 
 
-def compare(path, feed, *, exact=False):
+def compare(path, feed, *, exact=False, explicit_reference=None):
     parser = ONNXParser()
     program = parser.parse(str(path))
     assert verify_ir(program) == (True, [])
     actual = IRInterpreter(program).run(feed, initializers=parser.initializers).return_value
-    reference = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]).run(None, feed)[0]
+    if explicit_reference is None:
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        reference = ort.InferenceSession(str(path), options,
+                                         providers=["CPUExecutionProvider"]).run(None, feed)[0]
+    else:
+        reference = explicit_reference
     assert actual.shape == reference.shape
     assert actual.dtype == reference.dtype
     if exact or actual.dtype.kind in "iu":
@@ -82,7 +90,16 @@ def test_abs_preserves_numeric_type(tmp_path, dtype):
 def test_float_unary_ops(tmp_path, dtype, op, values):
     feed = {"x": np.array(values, dtype=dtype)}
     path = save(tmp_path, [helper.make_node(op, ["x"], ["y"])], feed, DTYPES[dtype], [5])
-    compare(path, feed)
+    if op == "Cos" and dtype == "float64":
+        # ONNX Cos-7 permits doubles; ORT 1.22.1 CPU has no double kernel.
+        # Use scalar math.cos rather than the interpreter's np.cos kernel.
+        # Keep the original checked
+        # ONNX graph, parser, IR verification, or output shape/dtype checks.
+        # https://onnx.ai/onnx/operators/onnx__Cos.html#cos-7
+        expected = np.array([math.cos(float(x)) for x in feed["x"]], dtype=np.float64)
+        compare(path, feed, explicit_reference=expected)
+    else:
+        compare(path, feed)
 
 
 @pytest.mark.parametrize("base_dtype,exponent_dtype", [

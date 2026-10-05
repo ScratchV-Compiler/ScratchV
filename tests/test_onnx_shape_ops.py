@@ -1,4 +1,4 @@
-"""ORT-backed contracts for the eight shape/tensor ops used by the W1 probe.
+"""ORT and explicit NumPy contracts for the W1 shape/tensor operators.
 
 The frontend currently freezes shape/axis tensors at parse time. These tests
 cover that static contract, including failures, rather than every ONNX type.
@@ -46,18 +46,21 @@ def _run_ir(path, feed):
     return IRInterpreter(program).run(feed, initializers=parser.initializers).return_value
 
 
-def _compare(path, feed):
-    options = ort.SessionOptions()
-    options.intra_op_num_threads = 1
-    options.inter_op_num_threads = 1
-    # Exercise the operator itself rather than relying on an ORT graph rewrite.
-    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-    expected = ort.InferenceSession(str(path), options,
-                                    providers=["CPUExecutionProvider"]).run(None, feed)[0]
+def _compare(path, feed, *, numpy_reference=None, exact=False):
+    if numpy_reference is None:
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        # Exercise the operator itself rather than relying on an ORT graph rewrite.
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        expected = ort.InferenceSession(str(path), options,
+                                        providers=["CPUExecutionProvider"]).run(None, feed)[0]
+    else:
+        expected = numpy_reference
     actual = _run_ir(path, feed)
     assert actual.shape == expected.shape
     assert actual.dtype == expected.dtype
-    if actual.dtype.kind in "iu":
+    if exact or actual.dtype.kind in "iu":
         np.testing.assert_array_equal(actual, expected)
     else:
         np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-6)
@@ -144,7 +147,14 @@ def test_reduce_mean(tmp_path, dtype, opset, axes, keepdims, noop):
     feed = {"x": x}
     path = _model(tmp_path, "ReduceMean", feed, constants=constants, attrs=attrs,
                   output_shape=expected_shape, opset=opset)
-    _compare(path, feed)
+    if opset == 18 and axes is None and noop == 1:
+        # ONNX ReduceMean-18 defines omitted axes with noop=1 as identity.
+        # ORT 1.22.1 CPU internally asserts for this valid graph. Compare the
+        # original omitted-input graph against an exact NumPy identity oracle.
+        # https://onnx.ai/onnx/operators/onnx__ReduceMean.html#reducemean-18
+        _compare(path, feed, numpy_reference=x.copy(), exact=True)
+    else:
+        _compare(path, feed)
 
 
 @pytest.mark.parametrize("dtype", FLOATS)
