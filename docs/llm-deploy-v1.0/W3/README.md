@@ -1,8 +1,8 @@
 # W3 完整 Qwen3 IR 验证与交付
 
-本目录汇总完整 Qwen3 IR 数值验证、准备探测、诊断与复现交付。W3 已提交至 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96)，本地开发工作树为 `codex/w3-preparation`，原 W2 基线为 `65616a8cde6a581661ac3734378da78a9fcbe5ed`。实现与本地硬门槛已有验证记录，团队正式验收仍待完成。PR 可能继续更新，复现时按清单获取 head 并记录实际完整 SHA，不能只记录分支名或旧基线。
+本目录汇总完整 Qwen3 IR 数值验证、准备探测、诊断与复现交付。W3 已提交至 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96)，本地开发工作树为 `codex/w3-preparation`，原 W2 基线为 `65616a8cde6a581661ac3734378da78a9fcbe5ed`。当前同提交 Linux 全部硬门槛和下载数组 audit 已通过，下一步由团队确认口径、独立复现并验收 Nightly。PR 可能继续更新，复现时按清单获取 head 并记录实际完整 SHA，不能只记录分支名或旧基线。
 
-已核对的 `b5a4f58` 提交上，通用 CI 为 3699 passed、5 skipped，W1/W2 专项也通过；这些检查不包含 W3 完整七组数值工作流。W3 专项 Linux preparation/full 和 Nightly 尚无实际运行通过记录。
+提交 `1c49e8acbcd9174491b2d0c2a5a0072178ae5f9a` 的[第四轮 Linux 手动编排](https://github.com/yuki-328/ScratchV/actions/runs/37299235103)已完成 preparation 五项、完整七组 full 及汇总，全部通过；v4/avx2-fma3 下普通/诊断完整 logits 最大误差为 0，完整 runner 约 24.6 分钟。通用 CI 为 3821 passed、5 skipped，W1/W2 和 Topic06 通过。preparation 下载诊断已复核；完整 raw 已下载验真、七组数组离线 audit 通过。前三轮失败记录与历史 v2/v3 证据均保留，不能跨提交拼接。定时 Nightly 未启用，E1/E2/E5 团队独立复现尚未登记。各轮结果和下载方法见 [Linux CI 与 Nightly](Linux-CI与Nightly.md)。
 
 初次预备阶段的数据见 [历史预备工作本地验收报告](W3-预备工作本地验收报告.md)。这些历史记录不会随代码修改自动更新；本次验收应使用当前代码实际生成的报告、源码指纹和数值模式。
 
@@ -10,12 +10,12 @@
 
 - [W3 工作总结与验收进度](W3-工作总结与验收进度.md)：开发计划对照、改动分组、实测证据及待团队推进的事项。
 - [独立复现与验收清单](独立复现与验收清单.md)：候选验收口径、源码快照、实际执行命令，以及 E1/E2/E5 各自填写的记录。
-- [Linux CI 与 Nightly](Linux-CI与Nightly.md)：可复用的手动 CI、显式启用的定时编排及尚未实跑的边界。
+- [Linux CI 与 Nightly](Linux-CI与Nightly.md)：手动 Linux 实测、原始产物下载与离线核对，以及尚未启用的定时编排。
 - [保存证据的离线复核](../../../probes/w3_qwen3_full/EVIDENCE.md)：重新读取原始数组核对，不能替代另一位开发者执行模型。
 
 优先使用 PR 的固定提交复现；需要交付未提交修改或离线源码时，可通过 `scripts/package_w3_repro.py` 生成带文件哈希和 snapshot ID 的本地源码包。源码包不是新的 Git 提交，不包含模型、运行产物或环境。解压后先校验源码，再按清单准备已有资产和依赖。报告中的历史源码指纹保持原样，旧报告不会自动成为新提交重新执行的证据。
 
-完整 28 层的实际 ORT/IR 执行、内存受控模式和同输入局部诊断见 [完整模型入口](../../../probes/w3_qwen3_full/README.md)。完整入口默认采用显式版本化的 `reference` FP32 模式，解释器 API 仍默认 `native`；复现时必须记录并核对模式与 profile。统一 preparation 的五项 PASS 只代表准备范围通过，完整模型 gate 另行执行。
+完整 28 层的实际 ORT/IR 执行、内存受控模式和同输入局部诊断见 [完整模型入口](../../../probes/w3_qwen3_full/README.md)。完整入口默认采用显式版本化的 `reference` FP32 模式，当前已提交接口为 `numpy-fp32-reference-v4`；`SCRATCHV_FP32_REFERENCE_CPU=auto|avx2-fma3|avx512` 选择 IR 参考算术策略，默认 `auto`，不控制 ORT dispatch。解释器 API 仍默认 `native`；复现时记录并核对模式、完整 profile 和解析后的 `cpu_strategy`。历史 v2/v3 证据保留原契约，应使用对应历史源码核对；这些通过记录不能作为 v4 的验收结果，v4 完整七组已在第四轮实际通过，原始数组已下载验真、离线 audit 通过。统一 preparation 的五项 PASS 只代表准备范围通过，完整模型 gate 另行执行。
 
 本轮完成可独立执行的数值与资源准备，不代表 W3 阶段出口通过。开发计划要求的完整 28 层 IR/ORT 数值 <1e-4、W1 人工验收前置、E1/E2/E5 三人复现及 Nightly 仍单独验收。
 
@@ -23,7 +23,7 @@
 
 | 项目 | 本地入口 | 通过含义 |
 |---|---|---|
-| 完整 Qwen3 IR | [full](../../../probes/w3_qwen3_full/README.md) | 固定真实 28 层、reference-v2、七输入，普通/诊断完整 logits 含 padding，四项不变量；严格 <1e-4 |
+| 完整 Qwen3 IR | [full](../../../probes/w3_qwen3_full/README.md) | 固定真实 28 层、reference-v4 及明确 CPU/MatMul 策略、七输入，普通/诊断完整 logits 含 padding，四项不变量；严格 <1e-4 |
 | 六层 medium | [medium](../../../probes/w3_qwen3_medium/README.md) | 官方 Qwen3 类的六层随机小配置，7 输入、81 检查点、普通/诊断双图、none/basic/all；全部 <1e-5 |
 | 真实维度子图 | [subgraphs](../../../probes/w3_qwen3_subgraphs/README.md) | 固定 checkpoint 的第一层预训练权重，14 个 L256 子图及 10 项不变量；Torch/ORT/IR <1e-4 |
 | 组合 Attention 后端 | [attention](../../../probes/w3_attention/README.md) | Q/K RMSNorm、RoPE、GQA、因果/key-padding mask、Softmax 和 context 组合，6 图 × 2 优化等级，共 12 次实际 QEMU，<1e-4 |
@@ -73,7 +73,7 @@ IRInterpreter.run 新增可选 collect_memory_stats=True，返回结果增加 me
 
 ## CI 与后续阶段
 
-新增 [.github/workflows/w3-preparation.yml](../../../.github/workflows/w3-preparation.yml) 保留手动准备验收入口，并允许 [Nightly 编排](../../../.github/workflows/w3-nightly.yml) 复用。它安装固定依赖，下载并校验固定 checkpoint 和 ONNX 资产，运行回归与五项入口。配置已随 PR 提交；W3 专项工作流尚未实跑。Nightly 定时任务需要仓库变量显式启用，手动触发 Nightly 则明确请求运行两套流程。PR 的通用 CI 通过与配置存在都不等于这两套 W3 门禁已通过。
+新增 [.github/workflows/w3-preparation.yml](../../../.github/workflows/w3-preparation.yml) 保留手动准备验收入口，并允许 [Nightly 编排](../../../.github/workflows/w3-nightly.yml) 复用。它安装固定依赖，下载并校验固定 checkpoint 和 ONNX 资产，运行回归与五项入口。本轮通过已注册的 `llm-deploy.yml` 显式开启 `run_w3_validation=true`，从同一提交调用 W3 编排；preparation 已实际通过，完整模型状态另行记录。Nightly 定时任务需要仓库变量显式启用，手动调用不构成 schedule 运行记录。PR 的通用 CI 通过也不能替代 W3 专项门槛。
 
 完整模型 preflight 仅验证资产与静态大小，峰值是 metadata-only 进程，不能替代完整 IR 的容量实测。完整 logits 必须包括 padding 位置；PyTorch/ORT 的导出诊断与正式 IR/ORT 门槛分别记录，不能用局部子图或有效位置通过覆盖。
 

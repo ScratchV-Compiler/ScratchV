@@ -7,7 +7,7 @@
 
 ```sh
 python -B scripts/verify_w3_evidence.py \
-  --evidence-dir output/w3-full-review-v2-01 \
+  --evidence-dir output/downloaded-w3-run/raw/w3-full \
   --output-dir output/w3-evidence-audit-01
 ```
 
@@ -19,7 +19,7 @@ PowerShell 可将命令写成一行。输出目录必须不存在；不会覆盖
 
 需要 full runner 的完整输出目录：顶层报告，以及每个案例的 `inputs.npz`、两个后端的报告、
 普通/诊断 `logits.npy`、`diagnostic_logits.npy`、`checkpoints.npz` 和 `checkpoint_schema.json`。
-仅下载 reports artifact 不足以复核，必须同时保留 raw artifact 并保持目录结构。
+仅下载 reports artifact 不足以复核，必须同时保留 raw artifact 并保持目录结构。CI raw artifact 内含 `w3-full/` 前缀：指定 `gh run download ... -n w3-full-numeric-raw --dir output/downloaded-w3-run/raw` 后，证据根是 `output/downloaded-w3-run/raw/w3-full`。完整下载和报告 SHA256 获取方法见 [Linux CI 产物说明](../../docs/llm-deploy-v1.0/W3/Linux-CI与Nightly.md#产物与失败定位)。
 
 - 七组案例完整、顺序固定，输入 dtype/shape/有限值以及每个数值均符合确定性输入生成规则。
 - 模型文件描述符与固定 manifest 一致。可选 `--model-dir PATH` 进一步核对本地模型文件哈希，仍不执行模型。
@@ -28,7 +28,11 @@ PowerShell 可将命令写成一行。输出目录必须不存在；不会覆盖
 - 30 个检查点的 dtype、shape、有限值和误差重新计算；其误差用于诊断定位，不额外替代或改变 logits 验收门槛。
 - 两个后端各自的未来 token 隔离、padding 隔离，共四项 invariant 重新计算。
 - 重新计算结果必须与原报告一致；仅有 `passed: true` 不能通过。
-- 解释器数值模式和策略一致，并受当前验证器支持。旧策略若已不受支持会失败，需要匹配的旧验证器或重新运行。
+- 解释器数值模式和策略一致，并受当前验证器支持。当前已提交 reference 契约为 `numpy-fp32-reference-v4`，所有 IR worker 的 `cpu_strategy` 必须一致，且完整 profile 的字段和值须与 `avx2-fma3` 或 `avx512` 的规范契约匹配；不是仅检查一个策略名字。
+
+v4 复核读取生产报告保存的 `cpu_strategy`，不从审计机器 CPU 或 `SCRATCHV_FP32_REFERENCE_CPU` 环境变量推断生产策略。完整 profile 校验包括 `matmul_k_block`、`matmul_row_tile`、`matmul_row_tail`、`matmul_column_tail`、`matmul_layout` 和 `matmul_vector_policy`，不能缺字段或仅靠版本名字通过。因此可以在另一种 CPU 上核对已保存的数组，无需控制或执行本机 ORT。这里的跨机器数组核对不证明该机器实际执行模型也能通过。
+
+当前 v4 验证器不接受历史 v2/v3 profile，须使用报告对应源码版本中的验证器，或重新生成 v4 完整证据。不能手动改旧报告的 profile、CPU 策略或源码哈希。`SCRATCHV_FP32_REFERENCE_CPU=auto|avx2-fma3|avx512` 是实际 reference 执行的选项，默认 `auto`；它不用于把旧证据转换到新契约，也不控制 ORT dispatch。
 
 ## 结论边界
 
@@ -40,9 +44,11 @@ PowerShell 可将命令写成一行。输出目录必须不存在；不会覆盖
 可从可信渠道预先独立保留原始顶层报告哈希，然后传入：
 
 ```sh
-python -B scripts/verify_w3_evidence.py --evidence-dir output/w3-full-review-v2-01 --output-dir output/w3-evidence-audit-02 --expected-report-sha256 ORIGINAL_REPORT_SHA256
+python -B scripts/verify_w3_evidence.py --evidence-dir output/downloaded-w3-run/raw/w3-full --output-dir output/w3-evidence-audit-02 --expected-report-sha256 ORIGINAL_REPORT_SHA256
 ```
 
 `source_comparison` 明确列出原报告中生产源码与当前审计源码的更改、新增、缺失。
-源码不一致时仍可复核旧数组，但**不能将旧报告升级成当前源码执行的证明**。
-报告同时保存 producer 环境、审计器环境和版本化数值策略。
+源码不一致时，只要保存的数值契约仍受当前验证器支持，就可复核旧数组；但**不能将旧报告升级成当前源码执行的证明**。不受支持的旧 profile 仍会失败。
+报告同时保存 producer 环境、审计器环境和版本化数值策略。生产环境中的 `environment.numeric_runtime.blas_environment.OPENBLAS_CORETYPE` 是环境变量原值；`numpy_openblas` 的 `status/libraries` 及可用库项的 `core_name/config` 是可选运行诊断。审计不得以本机 CPU SIMD 或 BLAS 内核替填生产环境，也不能从该环境变量推断生产库已采用某个内核。诊断不可用或历史字段缺失不豁免任何数组数值门槛。
+
+当前已提交 v4 的[第四轮 Linux 执行](https://github.com/yuki-328/ScratchV/actions/runs/37299235103)（`1c49e8acbcd9174491b2d0c2a5a0072178ae5f9a`）已在七组完整执行、preparation 与手动汇总通过；完整 raw 数组已下载验真、离线 audit 通过。实际执行 PASS 和保存证据 audit PASS 分别记录，实际 audit 报告及 SHA256、原样保留的源码换行差异说明见 [第四轮实测记录](../../docs/llm-deploy-v1.0/W3/Linux-CI与Nightly.md)。本说明本身不替代该原始记录。
