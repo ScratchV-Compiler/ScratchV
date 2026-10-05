@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -181,6 +182,160 @@ def test_child_error_is_preserved(tmp_path):
 def test_timeout_is_failure(tmp_path):
     result = runner.run_gate(runner.Gate("runtime", (sys.executable, "-c", "import time;time.sleep(30)"), tmp_path / "gate"), {}, timeout=0.2)
     assert result["status"] == "FAIL" and "exceeded" in result["error"]
+
+
+@pytest.mark.parametrize("failure", [KeyboardInterrupt("cancelled"), SystemExit(143)])
+def test_cancellation_reclaims_live_gate_and_preserves_exception(tmp_path, monkeypatch, failure):
+    real_popen = subprocess.Popen
+    children = []
+
+    def launch(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        if args[0][0] != sys.executable:
+            return process
+        children.append(process)
+        original_wait = process.wait
+
+        def interrupt(*args, **kwargs):
+            process.wait = original_wait
+            raise failure
+
+        process.wait = interrupt
+        return process
+
+    monkeypatch.setattr(runner.subprocess, "Popen", launch)
+    try:
+        with pytest.raises(type(failure)) as caught:
+            runner.run_gate(runner.Gate("frontend", (sys.executable, "-c", "import time;time.sleep(60)"),
+                                        tmp_path / "frontend"), {}, timeout=90)
+        assert caught.value is failure
+        row = caught.value.w2_gate_result
+        assert row["status"] == "FAIL" and row["interrupted"] is True
+        assert row["seconds"] >= 0
+        assert type(failure).__name__ in row["error"]
+        assert children[0].poll() is not None
+    finally:
+        for process in children:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+
+
+def test_cancellation_cleanup_and_log_errors_preserve_original(tmp_path, monkeypatch):
+    failure = KeyboardInterrupt("primary interruption")
+
+    class Process:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def wait(self, **kwargs):
+            raise failure
+
+    class Log:
+        def close(self):
+            raise OSError("secondary close error")
+
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: Log())
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: Process())
+    monkeypatch.setattr(runner, "terminate_process_tree", lambda process: (_ for _ in ()).throw(OSError("cleanup failed")))
+    with pytest.raises(KeyboardInterrupt) as caught:
+        runner.run_gate(runner.Gate("frontend", ("unused",), tmp_path / "frontend"), {}, timeout=10)
+    assert caught.value is failure
+    row = failure.w2_gate_result
+    assert "primary interruption" in row["error"]
+    assert "cleanup failed" in row["cleanup_error"]
+    assert "secondary close error" in row["log_error"]
+    assert row["status"] == "FAIL" and row["passed"] is False
+
+
+@pytest.mark.parametrize("failure, code", [(KeyboardInterrupt(), 130), (SystemExit(143), 143)])
+def test_cancelled_main_saves_failure_report_without_running_next_gate(tmp_path, monkeypatch, failure, code):
+    monkeypatch.setattr(runner, "checkout_evidence", lambda: {"head": None})
+    monkeypatch.setattr(runner, "source_fingerprints", lambda: {})
+    launched = []
+
+    def cancel(gate, *args, **kwargs):
+        launched.append(gate.name)
+        failure.w2_gate_result = {"name": gate.name, "status": "FAIL", "passed": False,
+                                 "interrupted": True, "error": "original cancellation"}
+        raise failure
+
+    monkeypatch.setattr(runner, "run_gate", cancel)
+    previous_term = signal.getsignal(signal.SIGTERM)
+    out = tmp_path / "cancelled"
+    assert runner.main(["--output-dir", str(out)]) == code
+    assert signal.getsignal(signal.SIGTERM) == previous_term
+    report = json.loads((out / "report.json").read_text())
+    assert report["status"] == "FAIL" and report["interrupted"] is True
+    assert launched == ["frontend"]
+    assert report["gates"][0]["error"] == "original cancellation"
+    assert all(row["status"] == "NOT_RUN" for row in report["gates"][1:])
+    assert (out / "report.md").is_file() and (out / "report.html").is_file()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux supervisor signal and nested-session integration")
+@pytest.mark.parametrize("cancel_signal", [signal.SIGINT, signal.SIGTERM])
+def test_real_acceptance_supervisor_cancellation_cleans_nested_worker(tmp_path, cancel_signal):
+    pidfile = tmp_path / "worker.json"
+    out = tmp_path / "acceptance"
+    worker = ("import os,time,json;from pathlib import Path;"
+              "pid=os.getpid();stat=Path(f'/proc/{pid}/stat').read_text();"
+              f"Path({str(pidfile)!r}).write_text(json.dumps([pid,stat.rsplit(')',1)[1].split()[19]]));"
+              "time.sleep(60)")
+    probe = ("import sys;from scratchv.runtime.riscv_tensor import _run_process;"
+             f"_run_process([sys.executable,'-B','-c',{worker!r}],cwd=None,timeout=50)")
+    supervisor = (
+        "import sys;from scripts import run_w2_acceptance as r;"
+        "r.source_fingerprints=lambda:{};r.checkout_evidence=lambda:{'head':None};"
+        f"r.build_plan=lambda a:[r.Gate('frontend',(sys.executable,'-B','-c',{probe!r}),a.output_dir/'frontend')];"
+        f"raise SystemExit(r.main(['--output-dir',{str(out)!r},'--gates','frontend']))")
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)"], start_new_session=True)
+    process = subprocess.Popen([sys.executable, "-B", "-c", supervisor], cwd=runner.ROOT,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    pid = None
+    try:
+        deadline = time.monotonic() + 15
+        while True:
+            assert process.poll() is None, "Supervisor exited before worker readiness"
+            assert time.monotonic() < deadline, "Worker did not become ready"
+            try:
+                pid, started = json.loads(pidfile.read_text())
+                break
+            except (FileNotFoundError, ValueError):
+                time.sleep(0.01)
+        process.send_signal(cancel_signal)
+        stdout, stderr = process.communicate(timeout=25)
+        assert process.returncode == 128 + cancel_signal, (stdout, stderr)
+        report = json.loads((out / "report.json").read_text())
+        assert report["status"] == "FAIL" and report["interrupted"] is True
+        assert report["gates"][0]["interrupted"] is True
+        assert report["gates"][0]["status"] == "FAIL"
+        assert all(row["status"] == "NOT_RUN" for row in report["gates"][1:])
+        assert unrelated.poll() is None
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            except FileNotFoundError:
+                break
+            if fields[0] in {"Z", "X"} or fields[19] != started:
+                break
+            assert time.monotonic() < deadline, "Detached worker survived supervisor cancellation"
+            time.sleep(0.01)
+    finally:
+        for child in (process, unrelated):
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+            child.wait(timeout=5)
+        if pid is not None:
+            try:
+                fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                if fields[19] == started and fields[0] not in {"Z", "X"}:
+                    os.kill(pid, signal.SIGKILL)
+            except FileNotFoundError:
+                pass
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux nested-session SIGTERM integration")

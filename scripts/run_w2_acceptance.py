@@ -20,6 +20,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
 
@@ -288,35 +289,56 @@ def run_gate(gate, sources, *, timeout, root=ROOT):
            "output": str(gate.output), "timeout_seconds": timeout}
     log = gate.output.parent / "logs" / (gate.name + ".log")
     row["log"] = str(log)
+    process = stream = interruption = None
     try:
         require(not gate.output.exists(), "Gate output already exists; cannot reuse previous evidence")
         log.parent.mkdir(exist_ok=True)
         env = os.environ.copy()
         env.update(PYTHONHASHSEED="0", OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
         options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-        with log.open("xb") as stream:
-            process = subprocess.Popen(gate.command, cwd=root, stdout=stream, stderr=subprocess.STDOUT,
-                                       env=env, **options)
-            try:
-                row["returncode"] = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                row["error"] = f"Gate exceeded {timeout} seconds"
-                try:
-                    terminate_process_tree(process)
-                except (OSError, subprocess.SubprocessError) as exc:
-                    row["cleanup_error"] = f"{type(exc).__name__}: {exc}"
-                raise
-            if row["returncode"] != 0:
-                # Save the primary failure before closing the log; close itself
-                # can fail and must not replace a child model/tool error.
-                row["error"] = child_failure(row, gate, log)
-                raise ValueError(row["error"])
+        stream = log.open("xb")
+        process = subprocess.Popen(gate.command, cwd=root, stdout=stream, stderr=subprocess.STDOUT,
+                                   env=env, **options)
+        row["returncode"] = process.wait(timeout=timeout)
+        if row["returncode"] != 0:
+            row["error"] = child_failure(row, gate, log)
+            raise ValueError(row["error"])
         row["validation"] = validate_gate_report(gate, sources, root)
         row.update(status="PASS", passed=True)
-    except Exception as exc:
-        row.setdefault("error", f"{type(exc).__name__}: {exc}")
-    row["seconds"] = time.perf_counter() - started
+    except BaseException as exc:
+        row.update(status="FAIL", passed=False)
+        row.setdefault("error", f"Gate exceeded {timeout} seconds" if isinstance(exc, subprocess.TimeoutExpired)
+                       else f"{type(exc).__name__}: {exc}")
+        # Gates have their own process groups, so Ctrl-C sent to this supervisor
+        # does not reach them. Unwind their nested compiler/QEMU sessions too.
+        if process is not None and (process.poll() is None or not isinstance(exc, Exception)):
+            try:
+                terminate_process_tree(process)
+            except (OSError, subprocess.SubprocessError) as cleanup:
+                row["cleanup_error"] = f"{type(cleanup).__name__}: {cleanup}"
+            row["returncode"] = process.returncode
+        if not isinstance(exc, Exception):
+            row["interrupted"] = True
+            interruption = exc
+    finally:
+        # A log close/flush failure must not replace a cancellation or the
+        # original model error. It must still prevent a successful report.
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError as exc:
+                row.update(status="FAIL", passed=False, log_error=f"{type(exc).__name__}: {exc}")
+                row.setdefault("error", row["log_error"])
+        row["seconds"] = time.perf_counter() - started
+    if interruption is not None:
+        interruption.w2_gate_result = row
+        raise interruption
     return row
+
+
+def cancel_acceptance(signum, frame):
+    """Let the supervisor save failure evidence and stop its owned children."""
+    raise SystemExit(128 + signum)
 
 
 def finalize_status(report):
@@ -411,6 +433,11 @@ def main(argv=None):
               "created_at": datetime.now(timezone.utc).isoformat(), "gates": [], "requested_gates": args.gates,
               "python": args.python, "checkout": checkout_evidence()}
     started = time.perf_counter()
+    interrupted_exit = None
+    previous_term = None
+    if os.name != "nt" and threading.current_thread() is threading.main_thread():
+        previous_term = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, cancel_acceptance)
     try:
         report["source_sha256"] = source_fingerprints()
         plan = {gate.name: gate for gate in build_plan(args)}
@@ -434,13 +461,28 @@ def main(argv=None):
         if final_sources != report["source_sha256"]:
             report["error"] = "Source files changed while acceptance was running; rerun after edits finish"
             report["final_source_sha256"] = final_sources
+    except (KeyboardInterrupt, SystemExit) as exc:
+        interrupted_exit = 130 if isinstance(exc, KeyboardInterrupt) else (
+            exc.code if isinstance(exc.code, int) and exc.code != 0 else 1)
+        report.update(interrupted=True, error=f"{type(exc).__name__}: W2 acceptance cancelled")
+        current = getattr(exc, "w2_gate_result", None)
+        if current is not None:
+            report["gates"].append(current)
+        completed = {row["name"] for row in report["gates"]}
+        report["gates"].extend({"name": name, "status": "NOT_RUN", "passed": False,
+                                "error": "Acceptance cancelled before execution"}
+                               for name in GATES if name not in completed)
     except Exception as exc:
         report.setdefault("error", f"{type(exc).__name__}: {exc}")
+    finally:
+        if previous_term is not None:
+            signal.signal(signal.SIGTERM, previous_term)
     report["seconds"] = time.perf_counter() - started
     finalize_status(report)
     write_reports(args.output_dir, report)
     print(f"[W2] {report['status']}: {args.output_dir / 'report.json'}", flush=True)
-    return 0 if report["passed"] else 2 if report["status"] == "PARTIAL" else 1
+    return interrupted_exit if interrupted_exit is not None else (
+        0 if report["passed"] else 2 if report["status"] == "PARTIAL" else 1)
 
 
 if __name__ == "__main__":
