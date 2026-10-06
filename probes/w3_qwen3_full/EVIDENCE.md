@@ -1,17 +1,20 @@
 # 完整 W3 结果的离线复核
 
+复现统一采用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 环境与资产准备](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)，再在同一个 Bash 会话、仓库根目录执行命令；该指南设置 `SCRATCHV_PYTHON`、`SCRATCHV_CC` 和 `SCRATCHV_QEMU`。
+
 `scripts/verify_w3_evidence.py` 对**已有七案例原始产物**重新计算误差，不执行模型、不下载资产。
 它复用完整模型 runner 的 `validate_worker`、`compare_case`、`invariants`，以及安全 NPZ 读取器。
 
 在仓库根目录，使用已有 Python 3.12 和项目锁定依赖运行：
 
-```sh
-python -B scripts/verify_w3_evidence.py \
+```bash
+set -euo pipefail
+"$SCRATCHV_PYTHON" -B scripts/verify_w3_evidence.py \
   --evidence-dir output/downloaded-w3-run/raw/w3-full \
   --output-dir output/w3-evidence-audit-01
 ```
 
-PowerShell 可将命令写成一行。输出目录必须不存在；不会覆盖被审核的原报告。
+输出目录必须不存在；不会覆盖被审核的原报告。
 输出为 `report.json`、`report.md`、`report.html`，退出码 `0` 表示复核通过，`1` 表示证据无效或不足。
 非法参数、已有输出目录等启动错误同样返回非零。
 
@@ -43,8 +46,9 @@ v4 复核读取生产报告保存的 `cpu_strategy`，不从审计机器 CPU 或
 默认 SHA-256 检查发现文件与报告不一致；若报告和数据同时被替换，它不能充当数字签名。
 可从可信渠道预先独立保留原始顶层报告哈希，然后传入：
 
-```sh
-python -B scripts/verify_w3_evidence.py --evidence-dir output/downloaded-w3-run/raw/w3-full --output-dir output/w3-evidence-audit-02 --expected-report-sha256 ORIGINAL_REPORT_SHA256
+```bash
+set -euo pipefail
+"$SCRATCHV_PYTHON" -B scripts/verify_w3_evidence.py --evidence-dir output/downloaded-w3-run/raw/w3-full --output-dir output/w3-evidence-audit-02 --expected-report-sha256 ORIGINAL_REPORT_SHA256
 ```
 
 `source_comparison` 明确列出原报告中生产源码与当前审计源码的更改、新增、缺失。

@@ -1,12 +1,14 @@
 # W3 完整 Qwen3 IR 验证与交付
 
+对外复现统一使用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)，并在同一个 Bash 会话、仓库根目录执行以下命令；`SCRATCHV_PYTHON`、`SCRATCHV_CC`、`SCRATCHV_QEMU` 由该指南设置。
+
 本目录汇总完整 Qwen3 IR 数值验证、准备探测、诊断与复现交付。W3 已提交至 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96)，本地开发工作树为 `codex/w3-preparation`，原 W2 基线为 `65616a8cde6a581661ac3734378da78a9fcbe5ed`。当前同提交 Linux 全部硬门槛和下载数组 audit 已通过，下一步由团队确认口径、独立复现并验收 Nightly。PR 可能继续更新，复现时按清单获取 head 并记录实际完整 SHA，不能只记录分支名或旧基线。
 
 提交 `1c49e8acbcd9174491b2d0c2a5a0072178ae5f9a` 的[第四轮 Linux 手动编排](https://github.com/yuki-328/ScratchV/actions/runs/37299235103)已完成 preparation 五项、完整七组 full 及汇总，全部通过；v4/avx2-fma3 下普通/诊断完整 logits 最大误差为 0，完整 runner 约 24.6 分钟。通用 CI 为 3821 passed、5 skipped，W1/W2 和 Topic06 通过。preparation 下载诊断已复核；完整 raw 已下载验真、七组数组离线 audit 通过。前三轮失败记录与历史 v2/v3 证据均保留，不能跨提交拼接。定时 Nightly 未启用，E1/E2/E5 团队独立复现尚未登记。各轮结果和下载方法见 [Linux CI 与 Nightly](Linux-CI与Nightly.md)。
 
-初次预备阶段的数据见 [历史预备工作本地验收报告](W3-预备工作本地验收报告.md)。这些历史记录不会随代码修改自动更新；本次验收应使用当前代码实际生成的报告、源码指纹和数值模式。
+Linux 预备与完整执行的数据分别见 [预备验收记录](W3-预备工作本地验收报告.md) 和 [完整模型执行记录](W3-完整模型执行与数值诊断报告.md)。早期个人开发机记录只保留为固定提交历史索引，不用于 Linux 验收；本次说明调整没有重新执行模型。
 
-本地交付入口：
+Linux 交付入口：
 
 - [W3 工作总结与验收进度](W3-工作总结与验收进度.md)：开发计划对照、改动分组、实测证据及待团队推进的事项。
 - [独立复现与验收清单](独立复现与验收清单.md)：候选验收口径、源码快照、实际执行命令，以及 E1/E2/E5 各自填写的记录。
@@ -36,19 +38,18 @@ medium 候选配置为 6 层、hidden64、FFN192、Q4/KV2、head_dim16、vocab12
 
 ## 环境与统一复现
 
-使用 Python 3.12、[固定 CPU 依赖](../../../requirements/qwen3-small-probe.txt)、Zig 0.14.1 和 qemu-system-riscv64。环境安装方法见 [Qwen3 小模型说明](../../../probes/w2_qwen3_small/README.md)。固定 HF snapshot 及 ONNX 发布目录均需真实完整资产，不能是 LFS 指针。统一入口离线校验已有资产，不会安装依赖或下载模型。
+使用 Python 3.12、[固定 CPU 依赖](../../../requirements/qwen3-small-probe.txt)、Zig 0.14.1 和 qemu-system-riscv64。环境安装方法见 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)。固定 HF snapshot 及 ONNX 发布目录均需真实完整资产，不能是 LFS 指针。统一入口离线校验已有资产，不会安装依赖或下载模型。
 
 在这个 W3 checkout 的根目录执行；输出目录必须不存在：
 
-~~~powershell
-$w3Python = 'D:/cyq/code/ScratchV/.venv-qwen-export/Scripts/python.exe'
-& $w3Python -B -X utf8 scripts/run_w3_preparation.py `
-  --source-dir D:/cyq/code/ScratchV/models/qwen3-source/c1899de289a04d12100db370d81485cdf75e47ca `
-  --model-dir D:/cyq/code/ScratchV/models/qwen3-0.6b-onnx `
-  --output-dir output/w3-team-preparation-new `
-  --cc D:/path/to/zig.exe `
-  --qemu D:/path/to/qemu-system-riscv64.exe
-$LASTEXITCODE
+~~~bash
+set -euo pipefail
+W3_SOURCE=/absolute/path/to/qwen3-source/c1899de289a04d12100db370d81485cdf75e47ca
+W3_MODEL=/absolute/path/to/qwen3-0.6b-onnx
+"$SCRATCHV_PYTHON" -B -X utf8 scripts/run_w3_preparation.py \
+  --source-dir "$W3_SOURCE" --model-dir "$W3_MODEL" \
+  --output-dir output/w3-team-preparation-new \
+  --cc "$SCRATCHV_CC" --qemu "$SCRATCHV_QEMU"
 ~~~
 
 五项都实际执行并通过、源码指纹一致、必需报告/产物齐全时，才返回 preparation:w3 的 PASS/0。它不是 numeric:ir-full-qwen3 的通过。失败保留子日志和 FAIL 报告，后续复跑必须换新目录。

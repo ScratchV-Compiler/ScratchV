@@ -1,5 +1,7 @@
 # W3 medium Qwen3 host numerical probe
 
+Reproduction targets **Ubuntu 24.04 x86_64, Bash and Python 3.12**. Complete the [Linux environment and asset setup](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) first. Run commands from the repository root in the same Bash session; the setup exports `SCRATCHV_PYTHON`, `SCRATCHV_CC` and `SCRATCHV_QEMU`.
+
 This is a fixed candidate for the W3 six-layer experiment. The plan fixes six
 layers; the dimensions below are the candidate chosen for this experiment,
 not a claim that the plan mandated a specific hidden or feed-forward width.
@@ -27,11 +29,12 @@ there is no KV cache. All numerical backends use one CPU thread.
 Use Python 3.12 and the existing pinned
 `requirements/qwen3-small-probe.txt` environment. From the W3 worktree:
 
-```powershell
-$env:OMP_NUM_THREADS = '1'
-$env:OPENBLAS_NUM_THREADS = '1'
-$env:MKL_NUM_THREADS = '1'
-D:/cyq/code/ScratchV/.venv-qwen-export/Scripts/python.exe -m probes.w3_qwen3_medium.run --output-dir output/w3-medium --model-seed 0
+```bash
+set -euo pipefail
+export OMP_NUM_THREADS='1'
+export OPENBLAS_NUM_THREADS='1'
+export MKL_NUM_THREADS='1'
+"$SCRATCHV_PYTHON" -m probes.w3_qwen3_medium.run --output-dir output/w3-medium --model-seed 0
 ```
 
 The output directory must not already exist, even if it is empty. Preserve a
@@ -95,8 +98,9 @@ mark, including export and every backend; it is not an IR memory measurement.
 
 ## Regression tests
 
-```powershell
-D:/cyq/code/ScratchV/.venv-qwen-export/Scripts/python.exe -m pytest tests/test_qwen3_medium_model.py tests/test_qwen3_medium_probe.py tests/test_qwen3_small_model.py tests/test_qwen3_small_probe.py tests/test_qwen3_small_gate.py -q
+```bash
+set -euo pipefail
+"$SCRATCHV_PYTHON" -m pytest tests/test_qwen3_medium_model.py tests/test_qwen3_medium_probe.py tests/test_qwen3_small_model.py tests/test_qwen3_small_probe.py tests/test_qwen3_small_gate.py -q
 ```
 
 Tests exercise all 81 medium shapes, a second configuration changing every

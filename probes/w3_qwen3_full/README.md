@@ -1,5 +1,7 @@
 # 完整 Qwen3 IR 数值验证
 
+复现统一采用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 环境与资产准备](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)，再在同一个 Bash 会话、仓库根目录执行命令；该指南设置 `SCRATCHV_PYTHON`、`SCRATCHV_CC` 和 `SCRATCHV_QEMU`。
+
 该入口实际执行固定发布的 28 层 Qwen3-0.6B FP32 ONNX，比较 ScratchV IR 与 ORT 的完整 logits，包括右侧 padding query。它使用优化前 IR（none），不会把资产检查、两层模型或部分输入通过视为完整模型数值验收。
 
 ## 验证范围
@@ -39,20 +41,18 @@ v4 把矩阵乘的分块与内存布局纳入版本化 profile；数值策略名
 
 AVX2 矩阵路径按两个输出行计算，尾行和单列临时补零后裁回原输出形状，每个 K 分块的两个矩阵操作数使用 C 连续切片；向量提升继续遵循 NumPy。以上是参考计算契约，不改模型图、权重、输出形状或误差门槛，也不是性能优化验收。本节描述已提交的 v4 实现；第四轮 Linux 已取得同提交七组完整运行 PASS，普通/诊断完整 logits 及四项不变量最大误差均为 0；这是 v4 的新实测证据，历史 v3 或单例结果不能替代它。
 
-~~~powershell
-$w3Python = 'D:/cyq/code/ScratchV/.venv-qwen-export/Scripts/python.exe'
-$env:SCRATCHV_FP32_REFERENCE_CPU = 'auto'
-& $w3Python -B -X utf8 probes/w3_qwen3_full/run.py `
-  --model-dir D:/cyq/code/ScratchV/models/qwen3-0.6b-onnx `
-  --output-dir output/w3-full-new `
-  --fp32-mode reference `
-  --worker-timeout 1800 --max-worker-memory-gib 10
-$LASTEXITCODE
+~~~bash
+set -euo pipefail
+W3_MODEL=/absolute/path/to/qwen3-0.6b-onnx
+export SCRATCHV_FP32_REFERENCE_CPU=auto
+"$SCRATCHV_PYTHON" -B -X utf8 probes/w3_qwen3_full/run.py \
+  --model-dir "$W3_MODEL" --output-dir output/w3-full-new \
+  --fp32-mode reference --worker-timeout 1800 --max-worker-memory-gib 10
 ~~~
 
 需要复现单个失败时追加 `--case short_17`。成功但仅覆盖部分 case 返回 PARTIAL/2，完整七组和不变量全部通过才返回 PASS/0；实际执行失败或数值超标返回 FAIL/1。中断返回 130。输出目录必须是新目录。
 
-每个 worker 的超时和采样内存上限覆盖本次拥有的整棵进程树，包括 Windows venv Python 启动器创建的实际计算进程。Windows 在恢复启动器执行前将其加入 Job Object，累计该 Job 内的 RSS 与私有提交内存；Linux 使用独立进程组并检查 RSS。采样间隔为 0.2 秒，共享内存页可能按进程重复计数。它是超限终止措施，不是操作系统的硬内存配额，短暂峰值仍可能超过界限。失败保留阶段进度、日志、已完成产物和报告；中断、超时及超限会清理本次拥有的进程树。
+每个 worker 的超时和采样内存上限覆盖本次拥有的整棵进程树。Linux 使用独立进程组，采样整个进程树的 RSS，并在超时、超限或中断时清理本次拥有的进程。采样间隔为 0.2 秒，共享内存页可能按进程重复计数。它是超限终止措施，不是操作系统的硬内存配额，短暂峰值仍可能超过界限。失败保留阶段进度、日志、已完成产物和报告；中断、超时及超限会清理本次拥有的进程树。
 
 ## 证据与时长
 
@@ -80,4 +80,4 @@ CPU SIMD 能力、IR 的 `cpu_strategy` 与实际 BLAS 内核须分别看待；�
 
 CI 将报告、哈希和 schema 放入 `w3-full-numeric-reports`（保留 30 天），完整原始输入、logits 和检查点另放入 `w3-full-numeric-raw`（保留 3 天，也包含报告）。需要独立复核原始数值时，应在过期前下载 raw 产物；其解压目录中保留 `w3-full/` 前缀，所以 `--evidence-dir` 应为 `下载目录/w3-full`。下载命令、报告 SHA256 获取与完整 audit 示例见 [产物与失败定位](../../docs/llm-deploy-v1.0/W3/Linux-CI与Nightly.md#产物与失败定位)。仅有摘要和哈希不足以重新比较数组。失败或中断运行的产物可能不完整，须先核对报告状态与覆盖范围。
 
-即使本地数值 PASS，`w3_exit_accepted` 仍为 false：W1 人工前置验收、团队确认、E1/E2/E5 独立复现及 Nightly 状态由团队单独核对。[历史本地验收报告](../../docs/llm-deploy-v1.0/W3/W3-完整模型执行与数值诊断报告.md) 保留当时的模式和数据，不代表之后版本的最新状态。当前结论以本次完整运行生成的 `report.json`、实际 profile 和源码指纹为准。
+即使本地数值 PASS，`w3_exit_accepted` 仍为 false：W1 人工前置验收、团队确认、E1/E2/E5 独立复现及 Nightly 状态由团队单独核对。[Linux 完整执行记录](../../docs/llm-deploy-v1.0/W3/W3-完整模型执行与数值诊断报告.md) 保留固定提交、模式和数据，不代表之后版本已经重跑。当前结论以本次完整运行生成的 `report.json`、实际 profile 和源码指纹为准。

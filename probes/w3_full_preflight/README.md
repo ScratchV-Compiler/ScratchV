@@ -1,7 +1,11 @@
 # W3 完整资产与静态尺寸预检
 
-~~~text
-python -B -X utf8 probes/w3_full_preflight/run.py --model-dir /path/to/qwen3-0.6b-onnx --output-dir output/w3-full-preflight-new
+复现统一采用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 环境与资产准备](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)，再在同一个 Bash 会话、仓库根目录执行命令；该指南设置 `SCRATCHV_PYTHON`、`SCRATCHV_CC` 和 `SCRATCHV_QEMU`。
+
+~~~bash
+set -euo pipefail
+W3_MODEL=/absolute/path/to/qwen3-0.6b-onnx
+"$SCRATCHV_PYTHON" -B -X utf8 probes/w3_full_preflight/run.py --model-dir "$W3_MODEL" --output-dir output/w3-full-preflight-new
 ~~~
 
 离线流式校验 W1 固定 manifest 的模型和三个 external-data 文件，复用 ONNX 静态契约/范围检查，统计 initializer、嵌入/外部 tensor、具名 value 与输出的逻辑字节。不加载外部数组进行 IR 运算，也不执行完整 ORT。

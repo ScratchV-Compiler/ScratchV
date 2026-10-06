@@ -1,19 +1,23 @@
 # 完整模型的局部数值定位
 
+复现统一采用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 环境与资产准备](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)，再在同一个 Bash 会话、仓库根目录执行命令；该指南设置 `SCRATCHV_PYTHON`、`SCRATCHV_CC` 和 `SCRATCHV_QEMU`。
+
 `localize.py` 将同一个完整 ORT 层输入送入原图切片的 ORT 和 ScratchV IR，帮助区分当前层局部误差与上游累计误差。它保留完整 FP32 运算、真实权重和所有 padding query。不会接受 W3 完整数值 gate，也不会修改固定模型或门槛。
 
 先用本目录的 `run.py` 生成完整模型证据，再运行：
 
-```powershell
-$env:OMP_NUM_THREADS = '1'
-$env:OPENBLAS_NUM_THREADS = '1'
-$env:MKL_NUM_THREADS = '1'
-$env:PYTHONIOENCODING = 'utf-8'
-$env:SCRATCHV_FP32_REFERENCE_CPU = 'auto'
-python -B -X utf8 probes/w3_qwen3_full/localize.py `
-  --model-dir /path/to/qwen3-0.6b-onnx `
-  --case-dir output/full-run/short_17 `
-  --output-dir output/full-localize-new `
+```bash
+set -euo pipefail
+W3_MODEL=/absolute/path/to/qwen3-0.6b-onnx
+export OMP_NUM_THREADS='1'
+export OPENBLAS_NUM_THREADS='1'
+export MKL_NUM_THREADS='1'
+export PYTHONIOENCODING='utf-8'
+export SCRATCHV_FP32_REFERENCE_CPU='auto'
+"$SCRATCHV_PYTHON" -B -X utf8 probes/w3_qwen3_full/localize.py \
+  --model-dir "$W3_MODEL" \
+  --case-dir output/full-run/short_17 \
+  --output-dir output/full-localize-new \
   --layer 0 --layer 21
 ```
 

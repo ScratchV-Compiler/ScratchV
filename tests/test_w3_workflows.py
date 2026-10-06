@@ -30,7 +30,7 @@ def step(name, label):
 
 @pytest.fixture(scope="module")
 def bash():
-    candidates = [shutil.which("bash"), "C:/Program Files/Git/bin/bash.exe"]
+    candidates = [os.environ.get("SCRATCHV_BASH"), shutil.which("bash")]
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             result = subprocess.run([candidate, "-c", "exit 0"], capture_output=True)

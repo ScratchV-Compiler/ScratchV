@@ -88,7 +88,8 @@ def test_duplicate_manifest_path_rejected(source, tmp_path):
 
 def test_empty_manifest_does_not_pass(tmp_path):
     (tmp_path / pack.MANIFEST).write_text(json.dumps(
-        {"schema_version": 1, "files": [], "snapshot_id": pack.snapshot_id([])}))
+        {"schema_version": pack.SCHEMA_VERSION, "reproduction": pack.REPRODUCTION,
+         "files": [], "snapshot_id": pack.snapshot_id([])}))
     with pytest.raises(ValueError, match="Empty"):
         pack.verify(tmp_path)
 
@@ -118,3 +119,23 @@ def test_changes_during_packaging_abort(source, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="changed during packaging"):
         pack.create(source, tmp_path / "unstable.zip")
     assert not (tmp_path / "unstable.zip").exists()
+
+
+def test_linux_handoff_requires_its_environment_guide(source, tmp_path):
+    (source / pack.REPRODUCTION["guide"]).unlink()
+    with pytest.raises(ValueError, match="Missing required source"):
+        pack.create(source, tmp_path / "incomplete.zip")
+    assert not (tmp_path / "incomplete.zip").exists()
+
+
+def test_reproduction_contract_is_verified_and_does_not_claim_execution(source, tmp_path):
+    extracted, result = unpack(source, tmp_path)
+    path = extracted / pack.MANIFEST
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    assert manifest["reproduction"] == pack.REPRODUCTION
+    assert manifest["numerical_acceptance"] is False
+    assert pack.verify(extracted, result["snapshot_id"])["passed"]
+    manifest["reproduction"]["platform"] = "other"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="Linux reproduction contract"):
+        pack.verify(extracted)

@@ -1,11 +1,14 @@
 # W3 offline checkpoint comparison
 
+Reproduction targets **Ubuntu 24.04 x86_64, Bash and Python 3.12**. Complete the [Linux environment and asset setup](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) first. Run commands from the repository root in the same Bash session; the setup exports `SCRATCHV_PYTHON`, `SCRATCHV_CC` and `SCRATCHV_QEMU`.
+
 This tool compares recorded NPZ tensors without executing a model. It reuses
 `probes.w2_qwen3_small.diagnostics.compare_outputs`: exact shape and dtype,
 finite numeric values, and strict `max_abs < atol` (default `1e-5`).
 
-```powershell
-python probes/w3_layer_diff/run.py --actual output/w3/medium/traces/full_seed_0/ir_diagnostic_none.npz --reference output/w3/medium/traces/full_seed_0/reference.npz --schema output/w3/medium/trace_schema.json --out output/w3/layerdiff-full
+```bash
+set -euo pipefail
+"$SCRATCHV_PYTHON" probes/w3_layer_diff/run.py --actual output/w3/medium/traces/full_seed_0/ir_diagnostic_none.npz --reference output/w3/medium/traces/full_seed_0/reference.npz --schema output/w3/medium/trace_schema.json --out output/w3/layerdiff-full
 ```
 
 `--out` must be new. The shared W3 publisher writes `report.json`, `report.md`

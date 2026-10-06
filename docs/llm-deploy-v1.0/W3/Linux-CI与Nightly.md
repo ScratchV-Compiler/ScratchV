@@ -1,5 +1,7 @@
 # W3 Linux CI 与 Nightly
 
+对外复现统一使用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)，并在同一个 Bash 会话、仓库根目录执行以下命令；`SCRATCHV_PYTHON`、`SCRATCHV_CC`、`SCRATCHV_QEMU` 由该指南设置。
+
 配置已随 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96) 提交。2026-10-05，作者在提交 `1c49e8acbcd9174491b2d0c2a5a0072178ae5f9a` 的[第四轮 Linux 手动编排](https://github.com/yuki-328/ScratchV/actions/runs/37299235103)中完成同提交 preparation、完整七组 full-numeric 和汇总，均为 success。preparation 下载已复核；完整 reports/raw 均已下载验真，七组原始数组离线 audit 通过。前三轮失败与历史数值 profile 原样保留。下面区分实际运行记录与通用命令模板；没有设置 Nightly 远端开关，手动调用不等于 schedule，也不替代他人独立复现。团队确认内容见 [独立复现与验收清单](独立复现与验收清单.md)。
 
 ## 2026-10-05 Linux 实测记录
@@ -10,7 +12,7 @@
 
 | 检查 | 实际结果 | 用时 |
 |---|---|---:|
-| preparation 回归 | 1203 passed、1 skipped；跳过项仅适用于 Windows Job ownership | 46.80 s |
+| preparation 回归 | 1203 passed、1 skipped；跳过项仅适用于非 Linux 平台进程所有权兼容测试 | 46.80 s |
 | 六层 medium | 7/7 输入、81 检查点、18 不变量；各项对比最大绝对误差 `2.771615982055664e-6 < 1e-5` | 97.052790 s |
 | 真实权重子图 | 14/14 输入；各项对比最大绝对误差 `3.0517578125e-5 < 1e-4` | 5.894554 s |
 | 小 Attention 后端 | 12/12 执行；QEMU vs ORT 最大绝对误差 `3.5762786865234375e-7 < 1e-4` | 22.863963 s |
@@ -51,7 +53,7 @@ preparation 产物上传成功且已下载核对：
 
 | 检查 | 第三轮实际结果 | 用时 |
 |---|---|---:|
-| preparation 回归 | 1270 passed、1 skipped；skip 仅为 Windows Job ownership 测试 | 49.64 s |
+| preparation 回归 | 1270 passed、1 skipped；skip 仅为非 Linux 平台进程所有权兼容测试 | 49.64 s |
 | 六层 medium | 7/7 输入、81 检查点、18 不变量；全部比较最大绝对误差 `2.771615982055664e-6 < 1e-5` | 99.530785 s |
 | 真实权重子图 | 14/14 输入、10 不变量；全部比较最大绝对误差 `3.0517578125e-5 < 1e-4` | 5.807397 s |
 | 小 Attention 后端 | 12/12 执行；QEMU vs ORT 最大绝对误差 `3.5762786865234375e-7 < 1e-4` | 23.216017 s |
@@ -75,7 +77,7 @@ preparation 主报告 SHA256 为 `2f12bdf97f18356829c6222bc86e2da7175983619e17c3
 
 | 检查 | 第四轮实际结果 | 用时 |
 |---|---|---:|
-| preparation 回归 | 1297 passed、1 skipped；skip 为 Windows Job ownership 测试；真实 Haswell BLAS 回归通过 | JUnit 50.074 s |
+| preparation 回归 | 1297 passed、1 skipped；skip 为非 Linux 平台进程所有权兼容测试；真实 Haswell BLAS 回归通过 | JUnit 50.074 s |
 | 六层 medium | 7/7 输入、81 检查点、18 不变量；全部比较最大绝对误差 `2.771615982055664e-6 < 1e-5` | 97.368098 s |
 | 真实权重子图 | 14/14 输入、10 不变量；全部比较最大绝对误差 `3.0517578125e-5 < 1e-4` | 5.775279 s |
 | 小 Attention 后端 | 12/12 QEMU 执行；QEMU vs ORT 最大绝对误差 `3.5762786865234375e-7 < 1e-4` | 22.837814 s |
@@ -127,6 +129,7 @@ Nightly 使用仓库内相对路径调用，因此被调用工作流与调用者
 若 W3 新入口尚未进入默认分支，但仓库已注册并运行过 `LLM Deploy v1.0`，可从该既有手动入口选择包含 W3 代码的分支，显式设置 `run_w3_validation=true`。它从同一提交复用 W3 完整编排，执行 preparation、七组 full-numeric 和汇总；原 W1/W2 任务也照常执行。默认值为 false，普通 PR 和原 schedule 不会因此自动增加 W3 重型任务。首次远端通过前仍须按实际日志核对，手动调用不算定时 Nightly 记录。
 
 ```bash
+set -euo pipefail
 gh workflow run llm-deploy.yml --repo YOUR_ACCOUNT/ScratchV --ref YOUR_W3_BRANCH -f run_w3_validation=true
 ```
 
@@ -141,6 +144,7 @@ gh workflow run llm-deploy.yml --repo YOUR_ACCOUNT/ScratchV --ref YOUR_W3_BRANCH
 需要命令行时，可在确定运行仓库和分支后使用以下模板；替换占位符。实际已执行记录见本文首节，命令模板本身不是运行证据：
 
 ```bash
+set -euo pipefail
 gh workflow run w3-nightly.yml --repo YOUR_ACCOUNT/ScratchV --ref YOUR_W3_BRANCH
 gh run list --repo YOUR_ACCOUNT/ScratchV --workflow w3-nightly.yml
 gh run view RUN_ID --repo YOUR_ACCOUNT/ScratchV
@@ -181,6 +185,7 @@ CPU 的 SIMD 支持、IR 选择的 `cpu_strategy` 和 NumPy 实际 BLAS 内核�
 完整 raw artifact 内的相对根路径为 `w3-full/`。用 `gh run download` 指定单个 `-n` 时，它直接解压到 `--dir`；所以传给离线工具的是 `--dir` 下的 `w3-full`，不能把下载根目录直接当作模型证据根。下面使用新目录，先分别下载 reports 与 raw，再要求两份主报告字节哈希一致：
 
 ```bash
+set -euo pipefail
 W3_REPO=YOUR_ACCOUNT/ScratchV
 W3_RUN_ID=RUN_ID
 W3_DOWNLOAD=output/downloaded-w3-RUN_ID
@@ -188,15 +193,15 @@ gh run download "$W3_RUN_ID" --repo "$W3_REPO" \
   -n w3-full-numeric-reports --dir "$W3_DOWNLOAD/reports"
 gh run download "$W3_RUN_ID" --repo "$W3_REPO" \
   -n w3-full-numeric-raw --dir "$W3_DOWNLOAD/raw"
-W3_REPORT_SHA=$(python -c 'import hashlib,pathlib,sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$W3_DOWNLOAD/reports/w3-full/report.json")
+W3_REPORT_SHA=$("$SCRATCHV_PYTHON" -c 'import hashlib,pathlib,sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$W3_DOWNLOAD/reports/w3-full/report.json")
 printf '%s\n' "$W3_REPORT_SHA"
-python -B -X utf8 scripts/verify_w3_evidence.py \
+"$SCRATCHV_PYTHON" -B -X utf8 scripts/verify_w3_evidence.py \
   --evidence-dir "$W3_DOWNLOAD/raw/w3-full" \
   --output-dir output/w3-ci-evidence-audit-RUN_ID \
   --expected-report-sha256 "$W3_REPORT_SHA"
 ```
 
-先核对 Actions run 的完整 SHA、attempt、结果和 artifact 身份，再单独保存 `W3_REPORT_SHA`。这里从 reports 产物取哈希，用它校验 raw 中的报告，能发现两包混用；两包本身来自同一次运行，不构成额外的发布者身份认证。若发件人已通过另一可信渠道给出报告 SHA，应直接用该值作为 `--expected-report-sha256`。Windows 可用 `(Get-FileHash -Algorithm SHA256 -LiteralPath '下载目录/reports/w3-full/report.json').Hash.ToLowerInvariant()` 获取同一值。每次 audit 使用新输出目录，检查返回码以及生成的 `report.json`。
+先核对 Actions run 的完整 SHA、attempt、结果和 artifact 身份，再单独保存 `W3_REPORT_SHA`。这里从 reports 产物取哈希，用它校验 raw 中的报告，能发现两包混用；两包本身来自同一次运行，不构成额外的发布者身份认证。若发件人已通过另一可信渠道给出报告 SHA，应直接用该值作为 `--expected-report-sha256`。Linux 也可用 `sha256sum` 读取报告哈希。每次 audit 使用新输出目录，检查返回码以及生成的 `report.json`。
 
 完整原始数组可以用 [复现清单](独立复现与验收清单.md) 中的离线复核入口重新核对。仅有报告和哈希不能重新计算数组误差；选定 preparation 轨迹也不能替代完整七组数组。v4 auditor 依据报告保存的 CPU 策略核对完整规范 profile（包括 MatMul 布局字段），不根据下载者 CPU 推断生产策略，不需要为数组核对更改本机 CPU 策略；旧 v2/v3 证据必须使用对应历史源码的验证器，不能手改报告升级。`audit:w3-full-saved-evidence` PASS 表示保存证据满足其契约，`source_comparison` 明列生成时与当前审计源码的差异；它不执行 ORT/IR，也不能替代第二人在其环境重新执行模型。
 
@@ -219,10 +224,11 @@ W3_NIGHTLY_ENABLED=true
 ## 本地配置验证
 
 ```bash
-python -B -X utf8 -m pytest tests/test_w3_workflows.py -q -p no:cacheprovider
+set -euo pipefail
+"$SCRATCHV_PYTHON" -B -X utf8 -m pytest tests/test_w3_workflows.py -q -p no:cacheprovider
 actionlint -shellcheck= -pyflakes= .github/workflows/w3-preparation.yml .github/workflows/w3-full-numeric.yml .github/workflows/w3-nightly.yml
 ```
 
-测试读取实际 YAML，校验默认全覆盖、手动/复用入口、opt-in 条件、独立并发组、失败汇总和产物范围；通过 Bash 执行实际参数组装及汇总片段，确保 `FAIL/1`、`PARTIAL/2` 不被吞掉，并对所有 shell 块做语法检查。Windows 可使用已有 Git Bash；没有 Bash 时 shell 执行测试会明确跳过，不能据此声称该部分已经验证。
+测试读取实际 YAML，校验默认全覆盖、手动/复用入口、opt-in 条件、独立并发组、失败汇总和产物范围；通过 Bash 执行实际参数组装及汇总片段，确保 `FAIL/1`、`PARTIAL/2` 不被吞掉，并对所有 shell 块做语法检查。Linux 复现环境必须安装 Bash 并实际执行这些检查；跳过 shell 检查不能作为该部分通过。
 
 本轮使用 actionlint 1.7.12 对上述三个文件静态检查通过；工具放在本地忽略的 output 下，未安装系统服务。actionlint 不执行下载、Python 环境安装、QEMU 或数值模型；实际 Linux 执行与产物核对另见本文首节。

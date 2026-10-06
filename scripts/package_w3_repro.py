@@ -16,6 +16,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = "W3_SOURCE_MANIFEST.json"
+SCHEMA_VERSION = 2
 ROOT_FILES = {"pyproject.toml", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.txt",
               ".gitignore", ".gitattributes"}
 TREES = {"scratchv", "scratchv_dag", "benchmarks", "examples", "probes", "scripts", "requirements",
@@ -28,7 +29,12 @@ MAX_FILE_BYTES = 8 * 1024**2
 MAX_TOTAL_BYTES = 64 * 1024**2
 REQUIRED = {"pyproject.toml", "LICENSE", "scripts/package_w3_repro.py",
             "probes/w3_qwen3_full/run.py", "requirements/qwen3-small-probe.txt",
-            "examples/run_ir_interpreter.py"}
+            "examples/run_ir_interpreter.py",
+            "docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md",
+            "docs/llm-deploy-v1.0/W3/README.md"}
+REPRODUCTION = {"platform": "linux", "shell": "bash",
+                "guide": "docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md",
+                "stage_guide": "docs/llm-deploy-v1.0/W3/README.md"}
 
 
 def digest(data):
@@ -110,10 +116,11 @@ def create(root, output):
             raise ValueError(f"Missing required source: {required}")
     files = [{"path": name, "bytes": len(value), "sha256": digest(value)}
              for name, value in payload.items()]
-    manifest = {"schema_version": 1, "snapshot_id": snapshot_id(files),
+    manifest = {"schema_version": SCHEMA_VERSION, "snapshot_id": snapshot_id(files),
                 "base_commit": git(root, "rev-parse", "HEAD").decode().strip(),
                 "scope": "Selected current working-tree source bytes; includes uncommitted W3 files.",
                 "excludes": "Git history, model weights/binaries, environments and run evidence.",
+                "reproduction": dict(REPRODUCTION),
                 "is_commit": False, "numerical_acceptance": False, "files": files}
     if candidates(root) != list(payload):
         raise ValueError("Source inventory changed during packaging; retry after edits finish")
@@ -139,9 +146,11 @@ def create(root, output):
 def verify(root, expected_snapshot_id=None):
     root = Path(root).resolve()
     manifest = json.loads(read_source(root, MANIFEST))
-    if (not isinstance(manifest, dict) or manifest.get("schema_version") != 1
+    if (not isinstance(manifest, dict) or manifest.get("schema_version") != SCHEMA_VERSION
             or not isinstance(manifest.get("files"), list)):
         raise ValueError("Unsupported source manifest")
+    if manifest.get("reproduction") != REPRODUCTION:
+        raise ValueError("Source manifest must declare the Linux reproduction contract")
     files = manifest["files"]
     if not files:
         raise ValueError("Empty source manifest")
