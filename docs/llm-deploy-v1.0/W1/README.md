@@ -1,30 +1,33 @@
-# W1 独立复现与验收记录
+# W1 Linux 独立复现与验收记录
 
 本指南用于另一名成员从目标提交重新生成参考结果、编译产物并运行探测。当前已知本地结果见 [执行计划](W1-执行计划.md)，接口候选见 [interfaces.md](interfaces.md)，风险见 [risks.md](risks.md)。**Mastttttter 已于 2026-10-03 完成 `df18b02f` 的两层数值链路独立复现并本人确认；团队接口确认和 W1 出口评审仍待完成。** 原始证据见 [独立复现报告](https://github.com/ScratchV-Compiler/ScratchV/pull/91#issuecomment-5958157573)。该确认归属所列提交，不自动覆盖后续修复。
 
 PR #91 已合并，最终 head 为 `5903c1381d57f24062de7395f24385a59e279325`，合并提交为 `3bb88e81498d6d9293aed70e25a4e5a2104465d0`。报告落盘失败和源码身份归属修复单独见 [PR #93](https://github.com/ScratchV-Compiler/ScratchV/pull/93)；发布前整合工作树记录见 [本轮修复与验收报告](../W2/W1修复与W2本地验收报告.md)。人工确认和完整模型第二人复现继续由 [Issue #92](https://github.com/ScratchV-Compiler/ScratchV/issues/92) 跟踪。下方原 PR 修复数据均为历史记录。
 
+正式交付、CI 和独立复现统一使用 **Ubuntu 24.04 x86_64 / Bash / Python 3.12**，环境总入口见 [Linux 复现约定](../LINUX_REPRODUCTION.md)。Linux 是运行 ScratchV 和 QEMU 的宿主环境；当前 RISC-V guest 仍为裸机。
+
 所有命令在仓库根目录执行。先记录 `git rev-parse HEAD` 和 `git status --short`；干净checkout便于关联提交，存在本地改动则保留diff并明确标记。不要使用第一人的预生成参考数组代替自己的运行。下述输出目录用完后保留，下一轮使用不同名称，不删除旧证据。
 
 本次依据第二人报告修复两个复现问题：Linux 超时测试遗漏 `X` 死亡状态、错误解析含空格的进程名；三项优化集成测试依赖固定目录，导致自选产物目录和 CI 中被跳过。退出测试现在区分原进程身份，允许短暂退出过程，验证无关进程仍存活；CI 另连续运行 20 次真实进程用例，每次保留 JUnit，任一次失败即停止。没有修改编译器数值算法、模型配置或精度阈值，W2 扩展继续独立交付。
 
-修复工作树的本地验证：452 项专项回归全部通过、0 跳过（`output/pr91-final-regressions-zig.xml`）；显式产物集成单独实跑 3/3（`output/pr91-artifact-integration.xml`，与前者重叠）。本轮新导出及两层 QEMU 报告在 `output/pr91-repro-host/`、`output/pr91-repro-qemu/`，28/28 通过，最大目标误差 `1.6689300537109375e-6`，QEMU 进程累计 130.701 秒。以上为 Windows 上提交前的实际工作树证据，不冒充 Linux 退出竞态复验；新提交的 Linux 20 次执行结果以 PR CI 对应 SHA 为准。项目指定的 `.claude/harness/verify/run.py` 本地缺失，未宣称执行 L2。
+提交前个人环境的测量保留于 [固定提交中的历史报告](https://github.com/ScratchV-Compiler/ScratchV/blob/2d07ccc42936dcfde19d552bca02a324cd33821c/docs/llm-deploy-v1.0/W1/README.md)，不作为 Linux 验收数据。Linux 既有执行记录见第 5 节；新代码必须关联新的 run 和源码身份。
 
 ## 0. 确定复现版本与领取任务
 
-`5ea22ecc7fd314025f6453c556dbb3e3f16a3175` 是较早的 Linux CI **历史基线**。复现已合并 W1 时可使用下述固定合并 SHA；若复现本次尚未提交的修复，则必须在该基线上另取得完整增量文件，并核对验收报告中的源码哈希，不能把仅检出的合并提交称为已包含本地修复。
+`3bb88e81498d6d9293aed70e25a4e5a2104465d0` 是 W1 的历史合并基线，`5ea22ec` 是更早的 Linux CI 记录。复现新交付时必须取得待验收 PR 的精确版本；下面以含 W1 基础能力的 PR #94 为例，W3 集成版本改用 96。历史提交只能按其自带的功能和证据验收。
 
-在新目录获取本次版本的示例（需已安装 Git 和 Git LFS，PowerShell/bash 均可逐条执行）：
+在新目录获取本次版本的示例（需已安装 Git 和 Git LFS，以下为 Bash 命令）：
 
 ```bash
 git clone --no-checkout https://github.com/ScratchV-Compiler/ScratchV.git ScratchV-w1-repro
 cd ScratchV-w1-repro
 git lfs install --local
-git fetch origin 3bb88e81498d6d9293aed70e25a4e5a2104465d0
+REPRO_PR=94
+git fetch origin "pull/$REPRO_PR/head"
 git rev-parse FETCH_HEAD
 ```
 
-先确认输出与约定的合并 SHA 完全一致，再执行以下命令；不一致时先确认目标版本，不要继续运行后误写为原约定提交的结果。
+先确认输出与本次约定的完整 PR head SHA 完全一致，再执行以下命令；不一致时先确认目标版本，不要继续运行后误写为原约定提交的结果。
 
 ```bash
 git checkout --detach FETCH_HEAD
@@ -42,41 +45,30 @@ E4 建议领取 MatMul/两层 QEMU，E5 建议领取合成图/真实结构 IR/�
 
 要求Python3.12，固定依赖在 `requirements/qwen3-small-probe.txt`。先安装CPU PyTorch，再装其余依赖，避免默认索引解析成CUDA包。
 
-Windows PowerShell：
-
-```powershell
-python -m venv output/w1-repro-venv
-$probePython = ".\output\w1-repro-venv\Scripts\python.exe"
-& $probePython -m pip install --upgrade pip
-& $probePython -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
-& $probePython -m pip install -r requirements/qwen3-small-probe.txt
-& $probePython -m pip install --no-deps -e .
-& $probePython -m pip install "ziglang==0.14.1"
-& $probePython -m pip check
-$env:SCRATCHV_CC = (& $probePython -c "from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / 'zig.exe')")
-```
-
-准备 `qemu-system-riscv64.exe` 便携工具，可放 `output/tools/` 由运行器自动查找；否则将 `SCRATCHV_QEMU` 设为已安装可执行文件的实际路径。QEMU Windows分发入口见 [QEMU下载页](https://www.qemu.org/download/#windows)。不需要WSL或Linux镜像。
-
-Linux shell：
+Ubuntu 24.04 / Bash：
 
 ```bash
-python3.12 -m venv output/w1-repro-venv
-. output/w1-repro-venv/bin/activate
+set -euo pipefail
+sudo apt-get update
+sudo apt-get install --no-install-recommends python3.12-venv git-lfs qemu-system-misc
+python3.12 -m venv .venv-linux
+. .venv-linux/bin/activate
 python -m pip install --upgrade pip
 python -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -r requirements/qwen3-small-probe.txt
 python -m pip install --no-deps -e .
 python -m pip install "ziglang==0.14.1"
 python -m pip check
-sudo apt-get install --no-install-recommends qemu-system-misc
 export SCRATCHV_CC="$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')"
-qemu-system-riscv64 --version
+export SCRATCHV_PYTHON="$(pwd)/.venv-linux/bin/python"
+export SCRATCHV_QEMU="$(command -v qemu-system-riscv64)"
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+"$SCRATCHV_QEMU" --version
 ```
 
-后续代码块中的 `python` 均指上述环境。PowerShell请将行首 `python` 换成 `& $probePython`。CPU小模型无需官方权重下载；首次编译Zig会建立缓存，应允许足够编译时间，不要将首次构建耗时解释为推理性能。
+后续代码块中的 `python` 均指已激活的 `.venv-linux/bin/python`。在新终端先执行 `source .venv-linux/bin/activate` 并恢复工具环境变量。CPU小模型无需官方权重下载；首次编译Zig会建立缓存，应允许足够编译时间，不要将首次构建耗时解释为推理性能。
 
-本次更新提供环境预检入口（历史 `5ea22ec` 没有此脚本）：
+当前交付提供环境预检入口（历史 `5ea22ec` 没有此脚本）：
 
 ```bash
 python -X utf8 -B scripts/check_w1_repro_env.py --require-clean --output-dir output/w1-repro-env
@@ -86,7 +78,7 @@ python -X utf8 -B scripts/check_w1_repro_env.py --require-clean --output-dir out
 
 完整 ONNX 的固定 ZIP 约 1.24 GB，解包模型约 2.41 GB；已有 ORT 验证进程峰值约 5.97 GiB。按实际机器预留下载、解包和运行余量；该内存记录不是导出峰值或最低内存承诺。完整模型可以单独安排，不能将未执行记为成功。
 
-运行脚本后立即检查退出码：PowerShell 用 `$LASTEXITCODE`，bash 用 `$?`。遇到非零退出先保存报告和日志，不要继续执行后用最后一条命令的成功覆盖前面的失败。
+Bash 使用 `set -euo pipefail`，任何命令失败即停止；记录失败码时使用 `if command; then ...; else status=$?; ...; fi`，不要用后续成功命令覆盖失败。数值失败仍须保存报告和日志。
 
 ## 2. 文档、回归与原两层合成图
 
@@ -139,16 +131,6 @@ python -X utf8 -B probes/w2_qwen3_small/riscv.py --model-dir output/w1-repro-qwe
 SCRATCHV_QWEN_ARTIFACT_DIR=output/w1-repro-qwen3-small python -X utf8 -B -m pytest \
   tests/test_optimizer_numeric_semantics.py::test_real_qwen_artifact_optimization_matches_ort \
   -q -rs -o junit_family=xunit1 --junit-xml=output/w1-repro-qwen3-small/optimization-tests.xml
-```
-
-PowerShell 使用同一固定解释器：
-
-```powershell
-$env:SCRATCHV_QWEN_ARTIFACT_DIR = 'output/w1-repro-qwen3-small'
-& $probePython -X utf8 -B -m pytest tests/test_optimizer_numeric_semantics.py::test_real_qwen_artifact_optimization_matches_ort -q -rs -o junit_family=xunit1 --junit-xml=output/w1-repro-qwen3-small/optimization-tests.xml
-$artifactTestExit = $LASTEXITCODE
-Remove-Item Env:SCRATCHV_QWEN_ARTIFACT_DIR
-if ($artifactTestExit -ne 0) { throw "Qwen artifact integration failed: $artifactTestExit" }
 ```
 
 必须 **3 passed、0 skipped**，分别对应 none/basic/all，每项执行全部 7 组输入。显式目录为空、缺文件、导出失败、模型/输入/源码指纹不符均失败；没有配置目录才允许普通单测跳过，不再查找历史 `output/qwen3-small-pr91`。
@@ -218,7 +200,7 @@ peak_memory是验证器进程峰值RSS，**不包含导出子进程**，不能�
 - 完整模型job只需要固定NumPy2.2.6、ONNX1.18.0、ORT1.22.1、protobuf5.29.5，不需要PyTorch；这也意味着它不重新导出或比较PyTorch。
 - PR中完整模型job按条件未执行，应明确记录“ORT重型门禁未执行”，不能用轻量测试通过代替。
 
-已确认本地28次两层QEMU执行，以及完整模型新入口verify的hash/checker/ORT两case通过（验证器峰值RSS约6.40 GB，报告 `output/qwen3-full-local/report.json`）。提交 `545e696` 已有两项Linux成功证据：
+提交 `545e696` 已有两项 Linux 成功证据；历史个人测量不充当 Linux 报告：
 
 - [完整ONNX重型任务](https://github.com/yuki-328/ScratchV/actions/runs/36983119833/job/110761955767)：真实固定release下载、校验、ORT两case及artifact上传。
 - [小模型部署功能任务](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/36983000988/job/110761571841)：所有部署步骤通过，含MatMul、合成图IR、官方Qwen3小模型IR和28次真实QEMU执行，artifacts上传成功。

@@ -8,7 +8,11 @@ push 使用 self-hosted）、Python 3.12
 
 ## 专项测试
 
-```powershell
+以下复现命令统一使用 Linux / Bash，在仓库根目录执行。先准备 Python 3.12 虚拟环境：
+
+```bash
+python3.12 -m venv .venv-dsl-diagnostics
+source .venv-dsl-diagnostics/bin/activate
 python -m pip install -e . "pytest>=7,<10"
 python -m pytest tests/test_dsl_errors.py tests/test_dsl_validator.py tests/test_dsl_diagnostics_cli.py tests/test_parser.py tests/test_dsl_extended.py tests/test_dsl_diagnostics_benchmark.py -v --tb=short
 ```
@@ -23,7 +27,7 @@ python -m pytest tests/test_dsl_errors.py tests/test_dsl_validator.py tests/test
 先为基线建立独立 checkout。以下 `997d2aa` 是本 PR 加入诊断实现之前的历史版本；
 rebase 后与最新上游比较时，应改用对应的 PR base SHA。
 
-```powershell
+```bash
 git worktree add --detach ../ScratchV-dsl-baseline 997d2aa
 python -m benchmarks.bench_dsl_diagnostics --baseline-root ../ScratchV-dsl-baseline --json-output benchmark_reports/dsl_diagnostics.json --markdown benchmark_reports/dsl_diagnostics.md --html benchmark_reports/dsl_diagnostics.html
 ```

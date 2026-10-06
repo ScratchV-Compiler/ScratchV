@@ -4,9 +4,9 @@
 
 这是 W2 的接口集成证据；权重随机，不代表预训练 Qwen3-0.6B 的语言能力。执行单步前向与一个 greedy token，不执行生成循环、KV cache 或 QEMU。
 
-## 本地复现
+## Linux 复现
 
-使用仓库 [固定 CPU 环境](../../requirements/qwen3-small-probe.txt)，Python 3.12。首先安装对应 CPU Torch，再安装固定依赖。Tokenizer 资产复用 [W2 Runtime 探测](../w2_runtime/README.md)下载的目录，或固定模型源目录；每次运行都会核验 [W1 manifest](../w1_qwen3_export/manifest.json) 的七个资产 SHA256，只读取小文件，不加载预训练权重。
+正式复现使用 Ubuntu 24.04 x86_64 / Bash；先按 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) 激活 `.venv-linux`。使用仓库 [固定 CPU 环境](../../requirements/qwen3-small-probe.txt)，Python 3.12。首先安装对应 CPU Torch，再安装固定依赖。Tokenizer 资产复用 [W2 Runtime 探测](../w2_runtime/README.md)下载的目录，或固定模型源目录；每次运行都会核验 [W1 manifest](../w1_qwen3_export/manifest.json) 的七个资产 SHA256，只读取小文件，不加载预训练权重。
 
 ```bash
 python probes/w2_runtime/run.py --mode download --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime

@@ -15,24 +15,19 @@ for blocked positions. Short-input predictions use the last valid token.
 
 ## Environment
 
-Use Python 3.12. The existing `requirements/qwen3-small-probe.txt` CPU
+The published reproduction target is Ubuntu 24.04 x86_64 with Bash and Python 3.12. See the [Linux reproduction contract](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md). The existing `requirements/qwen3-small-probe.txt` CPU
 environment also satisfies this gate. For a separate reproducible export
 environment:
 
-```sh
-python -m venv output/qwen3-export-venv
-source output/qwen3-export-venv/bin/activate
+```bash
+set -euo pipefail
+python3.12 -m venv .venv-linux
+source .venv-linux/bin/activate
 python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
 python -m pip install -r requirements/qwen3-export.txt
 ```
 
-Keep this environment activated for all `python` commands below. On Windows
-PowerShell, create it with `py -3.12 -m venv output/qwen3-export-venv`, then
-activate it with `& .\output\qwen3-export-venv\Scripts\Activate.ps1` and run
-the two installation commands above. If activation is unavailable, replace
-every later `python` with `& .\output\qwen3-export-venv\Scripts\python.exe`
-(or `output/qwen3-export-venv/bin/python` on Linux); put multiline commands on
-one line in PowerShell rather than using shell backslash continuations.
+Keep this environment activated for all `python` commands below; the interpreter is `.venv-linux/bin/python`. Record the checkout SHA and actual dependency versions with each new run.
 
 Verify/download
 mode enforces NumPy 2.2.6, ONNX 1.18.0, ONNX Runtime 1.22.1 and protobuf 5.29.5;
@@ -41,7 +36,7 @@ export mode additionally enforces the complete fixed export stack, including
 
 ## Verify the fixed release
 
-```sh
+```bash
 python probes/w1_qwen3_export/run.py --mode download \
   --model-dir output/qwen3-full-model \
   --output-dir output/qwen3-full-probe --threads 2
@@ -59,7 +54,7 @@ uses a previously downloaded ZIP with the same size/hash checks.
 
 For an already available complete model directory, skip network access:
 
-```sh
+```bash
 python probes/w1_qwen3_export/run.py --mode verify \
   --model-dir models/qwen3-0.6b-onnx \
   --output-dir output/qwen3-full-probe --threads 2
@@ -78,7 +73,7 @@ ScratchV's full-model execution or language quality.
 Obtain the official `Qwen/Qwen3-0.6B` Hugging Face snapshot at revision
 `c1899de289a04d12100db370d81485cdf75e47ca`. For example, in the pinned environment:
 
-```sh
+```bash
 python -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-0.6B', revision='c1899de289a04d12100db370d81485cdf75e47ca', local_dir='output/qwen3-source')"
 python probes/w1_qwen3_export/run.py --mode export \
   --source-dir output/qwen3-source \
@@ -110,7 +105,7 @@ measurement. Export mode also saves `export.log` and its reference artifacts.
 Source fingerprints are included in failed reports as well as successful ones.
 Upload the report directory as CI evidence, not the multi-gigabyte model.
 
-```sh
+```bash
 python -m pytest tests/test_w1_qwen3_export.py -q
 ```
 

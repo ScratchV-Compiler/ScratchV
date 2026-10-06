@@ -284,20 +284,32 @@ convert_onnx_to_llvm(model)     → LLVM IR (866K lines, 183MB)
 
 ## 7. 使用方式
 
+以下复现命令面向 Linux / Bash，在仓库根目录执行。先准备 Python 3.12 虚拟环境和依赖：
+
 ```bash
-# 运行全部 4 项 benchmark，生成三格式报告（Windows PowerShell）
-& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_regalloc_linear `
-    --repeats 30 `
-    --output-json report.json `
-    --output-html report.html `
-    --output-md report.md
+python3.12 -m venv .venv-regalloc
+source .venv-regalloc/bin/activate
+python -m pip install -e ".[all]"
+```
+
+CNN 用例还需要 `models/graph/cnn.onnx`；请先确认模型文件存在。LLVM 对比依赖
+`llvmlite`，报告中的 `llvm_available=false` 表示该项未执行，不能作为 LLVM 对比通过。
+
+```bash
+# 运行全部 4 项 benchmark，生成三格式报告
+mkdir -p benchmark_reports
+python -m benchmarks.test_regalloc.bench_regalloc_linear \
+    --repeats 30 \
+    --output-json benchmark_reports/regalloc_bench.json \
+    --output-html benchmark_reports/regalloc_bench.html \
+    --output-md benchmark_reports/regalloc_bench.md
 
 # 单独运行某项
-& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_simple --repeats 100
-& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_dense --repeats 50
-& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_cnn `
+python -m benchmarks.test_regalloc.bench_simple --repeats 100
+python -m benchmarks.test_regalloc.bench_dense --repeats 50
+python -m benchmarks.test_regalloc.bench_cnn \
     --cnn-path models/graph/cnn.onnx --repeats 30
-& .\.venv\Scripts\python.exe -m benchmarks.test_regalloc.bench_pseudo --repeats 30
+python -m benchmarks.test_regalloc.bench_pseudo --repeats 30
 ```
 
 ---

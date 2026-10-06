@@ -25,6 +25,8 @@ on:
       - 'docs/llm-deploy-v1.0/**'
       - 'probes/**'
       - 'scripts/check_llm_deploy_docs.py'
+      - 'scripts/check_linux_repro_docs.py'
+      - 'tests/test_linux_repro_docs.py'
       - 'scripts/check_w1_repro_env.py'
       - 'scripts/run_w2_acceptance.py'
       - 'scripts/check_w2_ci_results.py'
@@ -66,7 +68,7 @@ env:
 jobs:
   llm-deploy:
     name: "LLM Deploy v1.0 / W1 + W2"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -109,6 +111,9 @@ jobs:
       - name: "docs:interfaces + docs:risks"
         id: docs
         run: python3 scripts/check_llm_deploy_docs.py --week W1
+
+      - name: "docs:linux-reproduction"
+        run: python3 scripts/check_linux_repro_docs.py --check-bash
 
       # ── probe:qemu-matmul ─────────────────────────────────────────────
       - name: "probe:qemu-matmul"
@@ -399,7 +404,7 @@ jobs:
     # This downloads 1.24 GB and executes the 2.38 GB FP32 model. It is not
     # counted as a passing gate on PRs where it did not execute.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -449,7 +454,7 @@ jobs:
   full-qwen3-frontend:
     name: "W2 / complete Qwen3 frontend"
     # Required on PRs as well as manual/nightly runs. No full-model ORT or IR inference.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -497,7 +502,7 @@ jobs:
     name: "W2 / required acceptance"
     needs: [llm-deploy, full-qwen3-frontend]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
