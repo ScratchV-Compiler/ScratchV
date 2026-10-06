@@ -1,0 +1,38 @@
+name: Linux reproduction docs
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'probes/**/*.md'
+      - 'probes/**/*.txt'
+      - 'benchmarks/**/*.md'
+      - 'benchmarks/**/*.txt'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - 'scripts/check_linux_repro_docs.py'
+      - 'tests/test_linux_repro_docs.py'
+      - '.github/workflows/linux-reproduction-docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Check public instructions and Bash syntax
+        run: python scripts/check_linux_repro_docs.py --check-bash
+      - name: Exercise invalid-input rejection
+        run: |
+          set -euo pipefail
+          python -m pip install pytest==9.1.1
+          python -m pytest tests/test_linux_repro_docs.py -q

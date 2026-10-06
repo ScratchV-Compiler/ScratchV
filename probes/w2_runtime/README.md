@@ -8,18 +8,10 @@
 
 使用 [两层模型指南](../w2_qwen3_small/README.md) 中的 Python 3.12 固定 CPU 环境；其中已包含 `numpy==2.2.6`、`tokenizers==0.21.4`、`transformers==4.51.3`。仅使用生产 tokenizer 时可安装 `pip install -e ".[llm]"`，无需 Torch；复现 gate 仍使用固定版本和官方参考依赖。
 
-在仓库根目录运行，PowerShell：
-
-```powershell
-$runtimePython = ".\output\qwen3-probe-venv\Scripts\python.exe"
-& $runtimePython -B -X utf8 probes/w2_runtime/run.py --mode download --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime
-$LASTEXITCODE
-```
-
-Linux：
+正式复现使用 Ubuntu 24.04 x86_64 / Bash；先按 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) 激活环境，在仓库根目录运行：
 
 ```bash
-output/qwen3-probe-venv/bin/python -B -X utf8 probes/w2_runtime/run.py \
+.venv-linux/bin/python -B -X utf8 probes/w2_runtime/run.py \
   --mode download --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime
 ```
 

@@ -1,5 +1,7 @@
 # ScratchV IR 解释器使用文档
 
+正式交付、CI 和他人复现使用 Ubuntu 24.04 x86_64 / Bash / Python 3.12，环境与工具准备见 [Linux 复现约定](../LINUX_REPRODUCTION.md)。命令中的 `python` 指已激活的 `.venv-linux/bin/python`。
+
 > 日期：2026-09-30  
 > 输入：直接构造的 Program、输入数组及初始化数组。
 

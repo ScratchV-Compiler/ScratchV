@@ -1,7 +1,7 @@
 """Execute generated tensor C against ORT, plus static/numeric rejection cases.
 
-Host compilation uses clang/gcc, or SCRATCHV_ZIG (a zig executable). Repository
-local output/tools/zig-python/ziglang/zig.exe is also recognized on Windows.
+Host compilation uses clang/gcc, or SCRATCHV_ZIG (a zig executable). Optional
+repository-local tools are resolved for the actual host platform.
 Validation tests do not require a C toolchain; execution tests skip explicitly
 when no compiler is available rather than reporting unexecuted cases as passes.
 """
@@ -35,7 +35,7 @@ def builder(*params):
 @pytest.fixture(scope="module")
 def compiler():
     zig = os.environ.get("SCRATCHV_ZIG")
-    local = ROOT / "output/tools/zig-python/ziglang/zig.exe"
+    local = ROOT / "output/tools/zig-python/ziglang" / ("zig.exe" if os.name == "nt" else "zig")
     if zig or local.is_file():
         return [zig or str(local), "cc"]
     for name in ("clang", "gcc", "cc"):
