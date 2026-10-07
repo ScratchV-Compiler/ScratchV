@@ -308,7 +308,6 @@ scratchv/backend/kernels/
     add.py             [P0] 语义声明：叶子 + 循环形态 + 形状谓词
     reducesum.py       [P0]
     matmul.py          [P0]（先只做通用回退 + 固定展开，分块 [P1]）
-    fwht.py            [P1] 蝶形：内测比赛3
   __main__.py          [P0] CLI
 ```
 
@@ -325,4 +324,4 @@ scratchv/backend/kernels/
 | **S1** | `ShapeKnowledge` + `CoveragePlan` + `GenericPlus` | `Range` 下**区间里每个整数**都正确，且 cost 不退化 |
 | **S2** | `CacheBlocking`（B5）+ `PlanSearch` | 逐点 cost 逼近榜首（见 `OPTIMIZATION.md` §5 入口 1） |
 | **S3** | `kir.py` + 各 pass 真对象化 + `BankRegAlloc` | 现有 `.s` 成本逐点不变 |
-| **S4** | `Runtime` 形状（内测比赛3 的 winograd / spmm） | 该形态的形状契约测试通过 |
+| **S4** | `Runtime` 形状（规模写在输入张量头里的题） | 该形态的形状契约测试通过 |
