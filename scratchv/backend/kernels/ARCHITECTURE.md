@@ -195,7 +195,7 @@ CoveragePlan(shape_knowledge, kernel, dtype, target)
 | B2 | `LoopFormLower` | 整块展开 / 真循环 / 部分展开 | 展开体不得超出分支可达范围 | `[P0]`（只做「固定小因子展开」） |
 | B3 | `AddrStrengthReduce` | 索引 → 指针归纳；立即数偏移 vs 独立指针 | 偏移需在 `imm_max` 内 | `[P1]` |
 | B4 | `InvariantHoist` | k 不变式提到分块循环外 | **必须带前置条件检查** | `[P1]` |
-| B5 | `CacheBlocking` | 循环巢 → 分层分块 | 工作集须落入 L1 | `[P1]`（**当前最大收益口**，见 OPTIMIZATION §5） |
+| B5 | `CacheBlocking` | 循环巢 → 分层分块 | 工作集须落入 L1 | `[P1]` **实测判定不需要**：分块后未命中 773 ≈ 强制值 768（`DEVELOPMENT.md` §6.4） |
 | B6 | `DispatchLower` | 特化集合 → 分发代码 | 表外必落 generic | `[P0]`（只做比较链/直通） |
 
 ### C 数值类型层（dtype 相关、ISA 无关）
@@ -287,41 +287,64 @@ cost**，否则「结果对但慢一倍」会被判通过。
 
 ---
 
-## 8. 目录结构（目标）
+## 8. 目录结构
+
+### 8.1 实际建成的（**以这一节为准**）
 
 ```
 scratchv/backend/kernels/
-  ARCHITECTURE.md      ← 本文档
-  USAGE.md             ← 使用文档（选手操作手册）
-  OPTIMIZATION.md      ← 优化文档（入口清单 + 实测数据）
-  target.py            [P0] TargetDesc：march / 银行 / 助记符表 / 容量
-  dtypes.py            [P0] DtypePolicy：算术规则 + 前置条件 + 数值判据
-  cost.py              [P0] 唯一一份代价模型（含 CoverageRisk [P1]）
-  plan.py              [P0/P1] LegalityCheck + PlanSearch[P1] + PlanPin[P1]
-  loopgen.py           [P0] LoopBuild / LoopFormLower；[P1] 其余
-  coverage.py          [P1] ShapeKnowledge + CoveragePlan + ResidueLower
-  kir.py               [P1] LIR 数据结构 + 解释器钩子
-  isel.py              [P0] 表驱动 InstSelect；[P1] BranchRelax
-  layout.py            [P0] 段布局；[P1] RODATA_PAD 扫描
-  pipeline.py          [P0] 组装（复用 pass_manager.PassManager）
+  ARCHITECTURE.md  USAGE.md  DEVELOPMENT.md  OPTIMIZATION.md
+  __init__.py        包声明（必须有，否则 python -m 起不来）
+  target.py          TargetDesc + TARGETS（rv32im / rv32imf）
+  dtypes.py          DtypePolicy + POLICIES + mac_instrs + zero_acc
+  loopgen.py         prologue / epilogue / unrolled_body
   bodies/
-    add.py             [P0] 语义声明：叶子 + 循环形态 + 形状谓词
-    reducesum.py       [P0]
-    matmul.py          [P0]（先只做通用回退 + 固定展开，分块 [P1]）
-  __main__.py          [P0] CLI
+    __init__.py      BODIES + PROBLEMS（题册）
+    add.py           两档：展开 1 / 展开 u + 余数尾循环
+    reducesum.py     同上
+    matmul.py        _generic / _blocked + blocked_regs_needed + 派发 build
+  pipeline.py        build_program + UNROLL / BLOCKING（两张实测表）
+  __main__.py        CLI
 ```
 
-**每个 pass 实现 `scratchv.pass_interface.CompilerPass`**，因此报告 / 计时 /
-变更计数直接复用 `pass_manager`，`--json` / `--markdown` 与其他工具一致。
+### 8.2 设计里计划过、但**没有**单独建文件的
+
+| 设计里的名字 | 实际落在哪 |
+|---|---|
+| `LegalityCheck`（分块容量检查） | `bodies/matmul.blocked_regs_needed()` |
+| `LoopFormLower`（展开 vs 真循环） | `bodies/{add,reducesum}.build(unroll=...)` |
+| `InstSelect`（助记符表） | `target.py` 的 `load`/`store` + `dtypes.py` 的 `mac` |
+| `DtypeLower` | `dtypes.py` 的 `mac` 模板 |
+| **`CostModel` 对象** | **没有**。代价只出现在注释与实测表里，**没有可调用的成本模型** |
+| `plan.py` / `cost.py` / `coverage.py` / `kir.py` / `isel.py` / `layout.py` | **一个都没建** |
+
+**为什么没按设计分文件**：落地时发现这一阶段的量还不到需要拆那么多文件的程度——
+十条 pass 里有六条各自只有几行到几十行，彼此之间也没有可复用的接口。
+**拆成一堆空文件反而增加理解成本。** 等哪一条长到需要独立测试时再拆。
+
+### 8.3 没有兑现的设计承诺
+
+> ⚠️ **没有实现 `pass_interface.CompilerPass`。** 上面第 4 节的 pass 清单是按那个
+> 契约设计的，实际落地用的是普通函数（`bodies/*.build()`、`pipeline.build_program()`）。
+>
+> **所以"复用 `pass_manager` 的报告 / 计时 / 变更计数、`--json` / `--markdown`
+> 与其他工具一致"这件事，目前没有兑现。** 第 4 节表里的状态标记读作
+> 「这个能力在代码里有对应物」，**不是**「这个 pass 作为 pass 对象存在」。
 
 ---
 
-## 9. 分期
+## 9. 分期（含实际进度）
 
-| 阶段 | 内容 | 放行条件 |
-|---|---|---|
-| **S0** | `target.py` + `dtypes.py` + `bodies/*` + `pipeline.py`：打通内测比赛2 三题，只到 `-O0` 水平 | 正确性通过；三题 cost 明显优于 `-O0` 参考解；`ISel` 不含任何硬编码助记符 |
-| **S1** | `ShapeKnowledge` + `CoveragePlan` + `GenericPlus` | `Range` 下**区间里每个整数**都正确，且 cost 不退化 |
-| **S2** | `CacheBlocking`（B5）+ `PlanSearch` | 逐点 cost 逼近榜首（见 `OPTIMIZATION.md` §5 入口 1） |
-| **S3** | `kir.py` + 各 pass 真对象化 + `BankRegAlloc` | 现有 `.s` 成本逐点不变 |
-| **S4** | `Runtime` 形状（规模写在输入张量头里的题） | 该形态的形状契约测试通过 |
+| 阶段 | 内容 | 放行条件 | 状态 |
+|---|---|---|---|
+| **S0** | `target.py` + `dtypes.py` + `bodies/*` + `pipeline.py`：打通内测比赛2 三题，只到 `-O0` 水平 | 正确性通过；cost 明显优于 `-O0` 参考解；body 里不含任何硬编码助记符 | ✅ **已完成**（六题 10/10） |
+| **S0.5** | `LoopFormLower`（循环展开 + 余数尾循环） | 区间内每个 N 都正确（含非整除）；总 cost 下降 | ✅ **已完成**（u=32，见 `DEVELOPMENT.md` §5.1） |
+| **S0.6** | `LegalityCheck` + 寄存器分块（matmul） | 放不下时抛异常而不是静默出错；分块路径正确 | ✅ **已完成**（(4,4)，8.17→2.98 条/MAC） |
+| **S1** | `ShapeKnowledge` + `CoveragePlan` + 分发 | `Range` 下**区间里每个整数**都正确，且 cost 不退化 | ❌ **未做**（见 `DEVELOPMENT.md` §6.2） |
+| **S2** | `CacheBlocking` | 逐点 cost 逼近榜首 | ⏭️ **实测判定不需要**——分块后未命中仍是 773 ≈ 强制值 768，没有洞可补（§6.4） |
+| **S3** | `kir.py` + 各 pass 真对象化 + `BankRegAlloc` | 现有 `.s` 成本逐点不变 | ❌ 未做 |
+| **S4** | `Runtime` 形状（规模写在输入张量头里的题） | 该形态的形状契约测试通过 | ❌ 未做 |
+
+**下一步最有价值的不是 S3，是 S1。** 理由：现在没有分发层，所以 `UNROLL` 只能取
+一个全局折中值（32），而实测小 N（64/128）偏好 8（`DEVELOPMENT.md` §5.1）。
+S1 能把这部分收益拿回来；S3 只是重构，不产生收益。
