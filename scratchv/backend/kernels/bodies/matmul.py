@@ -14,7 +14,7 @@ from scratchv.backend.kernels.loopgen import prologue, epilogue
 from scratchv.backend.kernels.dtypes import zero_acc, mac_instrs
 
 
-def build(target, dtype) -> list[str]:
+def build(target, dtype, unroll: int = 1) -> list[str]:
     L = dtype.load
     S = dtype.store
     ACC, T1, T2 = dtype.acc, dtype.tmp1, dtype.tmp2
