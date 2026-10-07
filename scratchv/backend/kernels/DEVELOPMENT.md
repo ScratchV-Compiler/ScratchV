@@ -526,26 +526,44 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class DtypePolicy:
     name: str
-    load: str                   # 载入助记符
-    store: str                  # 存储助记符
-    add: str                    # 加法助记符
-    mul: str                    # 乘法助记符
-    zero: tuple[str, ...]       # 累加器置零的模板；{r} 由调用方填一个空闲整数寄存器
-    comparison: str             # 结果怎么比对：'exact'（逐位）或 'tolerance'（容差）
+    load: str                    # 载入助记符
+    store: str                   # 存储助记符
+    add: str                     # 加法助记符
+    acc: str                     # 累加器寄存器名
+    tmp1: str                    # 临时寄存器 1
+    tmp2: str                    # 临时寄存器 2
+    mac: tuple[str, ...]         # ★ 一次乘加的指令序列；{acc}/{t1}/{t2} 由 body 填
+    zero: tuple[str, ...]        # 累加器置零模板；{acc} = 累加器，{r} = 空闲整数寄存器
+    comparison: str              # 'exact'（逐位）或 'tolerance'（容差）
 
 
 POLICIES: dict[str, DtypePolicy] = {
     'q16': DtypePolicy(
-        name='q16', load='LW', store='SW', add='ADD', mul='MUL',
-        zero=('li {r}, 0', 'mv {r}, {r}'),
+        name='q16', load='lw', store='sw', add='add',
+        # 整数路径下累加器和临时值都是整数寄存器；用 s2/s3/s4，
+        # 与三个 body 用到的 t0-t6 / a3-a5 不相交。
+        acc='s2', tmp1='s3', tmp2='s4',
+        # ★ Q16.16 的乘积要**先右移 16 位**再累加（赛题语义 `Σ (A×B) >> 16`）。
+        mac=('mul {t1}, {t1}, {t2}', 'srai {t1}, {t1}, 16', 'add {acc}, {acc}, {t1}'),
+        zero=('li {acc}, 0',),
         comparison='exact',
     ),
     'f32': DtypePolicy(
-        name='f32', load='FLW', store='FSW', add='FADD.S', mul='FMUL.S',
-        zero=('li {r}, 0', 'fmv.w.x ft0, {r}'),
+        name='f32', load='flw', store='fsw', add='fadd.s',
+        # 浮点路径下累加器和临时值都在浮点寄存器组，与整数寄存器天然不相交。
+        acc='ft0', tmp1='ft1', tmp2='ft2',
+        # 浮点没有定点重标定，乘完直接累加。
+        mac=('fmul.s {t1}, {t1}, {t2}', 'fadd.s {acc}, {acc}, {t1}'),
+        zero=('li {r}, 0', 'fmv.w.x {acc}, {r}'),
         comparison='tolerance',          # 浮点不能逐位比，要看平台给的容差
     ),
 }
+
+
+def mac_instrs(dtype: DtypePolicy) -> list[str]:
+    """把一次乘加的模板填上寄存器名。"""
+    return [line.format(acc=dtype.acc, t1=dtype.tmp1, t2=dtype.tmp2)
+            for line in dtype.mac]
 
 
 def zero_acc(dtype: DtypePolicy, scratch: str) -> list[str]:
@@ -554,12 +572,33 @@ def zero_acc(dtype: DtypePolicy, scratch: str) -> list[str]:
     `scratch` 必须是一个**调用方确定此刻空闲**的整数寄存器。
     为什么不能写死一个？第 3.3 节有一个真实的翻车例子。
     """
-    return [line.format(r=scratch) for line in dtype.zero]
+    return [line.format(acc=dtype.acc, r=scratch) for line in dtype.zero]
 ```
 
-**为什么 `zero` 要带 `{r}` 占位符**：浮点寄存器不能直接用来装 0 这个整数，
+**为什么 `zero` 要带占位符**：浮点寄存器不能直接用来装 0 这个整数，
 必须借一个整数寄存器中转（`fmv.w.x` 就是"把整数寄存器的位原样搬进浮点寄存器"）。
 用哪个整数寄存器**取决于调用它的地方有没有在用**——所以由调用方给。
+
+#### ⚠️ 为什么是 `mac` 而不是 `mul`——抽象层级不够（实测撞到的）
+
+最初的 policy 里只有一个 `mul` 助记符，默认"乘法"在两种数值类型下是同一样东西。
+**错了**：
+
+| | 一次乘加（MAC）＝ 什么 |
+|---|---|
+| **f32** | `fmul.s` + `fadd.s`（2 条） |
+| **q16** | `mul` + **`srai 16`** + `add`（3 条） |
+
+Q16.16 的赛题语义是 `Σ ((A×B) >> 16)`——**每个乘积要先右移 16 位再累加**。
+所以"乘"在两边的**形状不一样**。
+
+只给 `mul` 的后果：q16 的 `matmul` 汇编能过、`add`/`reducesum` 全对，
+**但 matmul 0/10**（`invalid`，所有数据点数值不符）。把 `mac` 提进 policy 就好了。
+
+> **教训**：**policy 的粒度要落在「语义单元」上，不是「指令」上。**
+> 内测比赛1 那份交付把 q16 的 MAC 优化成了 `mulh(a << 16, b)` + `add`（2 条）——
+> 那是同一个 `mac` 字段的**另一个取值**，不是另一个抽象层。
+> **先定对粒度，优化才有地方放。**
 
 ### 2.4 一条必须守住的规矩
 
@@ -630,9 +669,10 @@ from scratchv.backend.kernels.loopgen import prologue, epilogue
 
 
 def build(target, dtype) -> list[str]:
-    L = dtype.load           # 载入助记符：f32 是 FLW，q16 是 LW
+    L = dtype.load           # 载入助记符：f32 是 flw，q16 是 lw
     S = dtype.store          # 存储助记符
     ADD = dtype.add          # 加法助记符
+    T1, T2 = dtype.tmp1, dtype.tmp2
 
     return [
         *prologue(),
@@ -640,10 +680,10 @@ def build(target, dtype) -> list[str]:
         '    slli t0, a2, 2',                # t0 = N * 4
         '    add  t1, a0, t0',               # t1 = &B[0]
         '.Lloop:',
-        f'    {L}  ft0, 0(a0)',              # 读 A[i]
-        f'    {L}  ft1, 0(t1)',              # 读 B[i]
-        f'    {ADD} ft0, ft0, ft1',          # 算
-        f'    {S}  ft0, 0(a1)',              # 写 C[i]
+        f'    {L}  {T1}, 0(a0)',             # 读 A[i]
+        f'    {L}  {T2}, 0(t1)',             # 读 B[i]
+        f'    {ADD} {T1}, {T1}, {T2}',       # 算
+        f'    {S}  {T1}, 0(a1)',             # 写 C[i]
         '    addi a0, a0, 4',                # 三个指针各前进一个元素
         '    addi t1, t1, 4',
         '    addi a1, a1, 4',
@@ -653,8 +693,8 @@ def build(target, dtype) -> list[str]:
     ]
 ```
 
-**和手写版对比**：只有中间那句 `f'    {ADD} ft0, ft0, ft1'` 是变的；
-读和写从 `dtype.load`/`dtype.store` 取。**注意这里没有任何指令助记符字面量。**
+**和手写版对比**：载入/存储/加法三个助记符，加上两个临时寄存器，
+全部从 `dtype` 取。**注意这里没有任何指令助记符字面量，也没有写死的寄存器名。**
 
 它的输出（`f32` 时）：
 
@@ -671,10 +711,10 @@ cnn_entry:
     slli t0, a2, 2
     add  t1, a0, t0
 .Lloop:
-    FLW  ft0, 0(a0)
-    FLW  ft1, 0(t1)
-    FADD.S ft0, ft0, ft1
-    FSW  ft0, 0(a1)
+    flw  ft1, 0(a0)
+    flw  ft2, 0(t1)
+    fadd.s ft1, ft1, ft2
+    fsw  ft1, 0(a1)
     addi a0, a0, 4
     addi t1, t1, 4
     addi a1, a1, 4
@@ -701,14 +741,13 @@ cnn_entry:
 """
 
 from scratchv.backend.kernels.loopgen import prologue, epilogue
-from scratchv.backend.kernels.dtypes import zero_acc
+from scratchv.backend.kernels.dtypes import zero_acc, mac_instrs
 
 
 def build(target, dtype) -> list[str]:
     L = dtype.load
     S = dtype.store
-    MUL = dtype.mul
-    ADD = dtype.add
+    ACC, T1, T2 = dtype.acc, dtype.tmp1, dtype.tmp2
 
     return [
         *prologue(),
@@ -729,17 +768,16 @@ def build(target, dtype) -> list[str]:
         '    add  a4, t5, a4',              # a4 = &B[0][j]
         '    li   a5, 0',                   # k = 0
         '.Lk:',
-        f'    {L}  ft1, 0(a3)',             # 读 A[i][k]
-        f'    {L}  ft2, 0(a4)',             # 读 B[k][j]
-        f'    {MUL} ft1, ft1, ft2',         # 乘
-        f'    {ADD} ft0, ft0, ft1',         # 累加
+        f'    {L}  {T1}, 0(a3)',            # 读 A[i][k]
+        f'    {L}  {T2}, 0(a4)',            # 读 B[k][j]
+        *mac_instrs(dtype),                 # ★ 乘加：f32 是 2 条，q16 是 3 条（含 >>16）
         '    addi a3, a3, 4',               # A 的 k 方向 +1
         '    add  a4, a4, t6',              # B 的 k 方向 +1 行
         '    addi a5, a5, 1',               # k++
         '    bne  a5, a2, .Lk',             # k != N 就继续
         '    slli t0, t2, 2',               # 算出 C[i][j] 的地址
         '    add  t0, t4, t0',
-        f'    {S}  ft0, 0(t0)',             # 写回
+        f'    {S}  {ACC}, 0(t0)',           # 写回
         '    addi t2, t2, 1',               # j++
         '    bne  t2, a2, .Lj',
         '    add  t3, t3, t6',              # A 的行指针 +1 行
@@ -804,23 +842,41 @@ def build(target, dtype) -> list[str]:
     L = dtype.load
     S = dtype.store
     ADD = dtype.add
+    ACC, T1 = dtype.acc, dtype.tmp1
 
     return [
         *prologue(),
         '    blez a2, .Lret',
         *zero_acc(dtype, 't6'),                 # t6 在这道题里没别的用途，安全
         '.Lloop:',
-        f'    {L}  ft1, 0(a0)',
-        f'    {ADD} ft0, ft0, ft1',
+        f'    {L}  {T1}, 0(a0)',
+        f'    {ADD} {ACC}, {ACC}, {T1}',
         '    addi a0, a0, 4',
         '    addi a2, a2, -1',
         '    bnez a2, .Lloop',
-        f'    {S}  ft0, 0(a1)',
+        f'    {S}  {ACC}, 0(a1)',
         *epilogue(),
     ]
 ```
 
 **5 条指令/元素。**
+
+#### ⚠️ 第二个坑：`mul` 不够，要 `mac`
+
+把 dtype 换成 q16 去跑内测比赛1 时：
+
+```
+add        q16 accepted  得分=30.0   ← 过
+reducesum  q16 accepted  得分=40.0   ← 过
+matmul     q16 invalid   得分=0.0    ← 0/10，全部数值不符
+```
+
+**原因不是 bug，是抽象层级错了**：Q16.16 的赛题语义是 `Σ ((A×B) >> 16)`——
+**每个乘积要先右移 16 位再累加**。而 policy 里只有一个 `mul` 助记符，body 写的是
+"乘完直接累加"（对 f32 对，对 q16 错）。
+
+修法见 §2.3：把 `mul` 换成 **`mac`（一次乘加的整条指令序列）**。
+改完之后六题全过（见 §3.7）。
 
 ### 3.5 题册与组装
 
@@ -851,8 +907,11 @@ PROBLEMS = {
 }
 ```
 
-**注意最后三行。** 内测比赛1 的三题在这里是**零成本接入**的——因为 body 不写死助记符。
+**注意最后三行。** 内测比赛1 的三题在这里是**零成本接入**的——因为 body 不写死助记符，
+把"乘加的形态"放在了 policy 的 `mac` 字段里（§2.3 的第二个坑）。
 这就是第 2.4 节那条规矩的回报。
+
+还要新建一个空的 `scratchv/backend/kernels/__init__.py`（让这个目录成为一个包）。
 
 新建 `scratchv/backend/kernels/pipeline.py`：
 
@@ -918,7 +977,7 @@ if __name__ == '__main__':
     raise SystemExit(main())
 ```
 
-### 3.6 跑通三题
+### 3.6 跑通六题
 
 ```bash
 cd /root/workspace/ScratchV
@@ -933,37 +992,47 @@ cd /root/workspace/ScratchV
 # 期望输出：已写出 /tmp/scv_add_fp32.s
 ```
 
-然后三题都跑评测（用第 1.4 节的 `/tmp/eval.py`）：
+然后生成并评测全部六题：
 
 ```bash
-cd /root/riscv-ai-compiler-platform
-set -a && . /root/.riscv_platform_env && set +a
-
-for p in "add-fp32 -o /tmp/scv_add_fp32.s"; do :; done   # 先生成
 cd /root/workspace/ScratchV
 for t in add reducesum matmul; do
-  ./scratchv_env/bin/python -m scratchv.backend.kernels \
-      --problem ${t}-fp32 -o /tmp/scv_${t}_fp32.s
+  for p in $t ${t}-fp32; do
+    ./scratchv_env/bin/python -m scratchv.backend.kernels --problem $p -o /tmp/scv_$p.s
+  done
 done
 
 cd /root/riscv-ai-compiler-platform
+set -a && . /root/.riscv_platform_env && set +a
+PY=./.venv/bin/python
+
+echo "── 内测比赛2（fp32）──"
 for t in add reducesum matmul; do
-  echo "=== ${t}-fp32 ==="
-  PLATFORM_ENABLE_SANDBOX=0 ./.venv/bin/python /tmp/eval.py \
-      /tmp/scv_${t}_fp32.s ${t}-fp32 riscv-ai-2 2>&1 | head -2
+  PLATFORM_ENABLE_SANDBOX=0 $PY /tmp/eval.py /tmp/scv_${t}-fp32.s ${t}-fp32 riscv-ai-2 | head -1
+done
+
+echo "── 内测比赛1（q16，不传场次就是默认场次）──"
+for t in add reducesum matmul; do
+  PLATFORM_ENABLE_SANDBOX=0 $PY /tmp/eval1.py /tmp/scv_$t.s $t | tail -1
 done
 ```
 
-**期望输出**：
+（`/tmp/eval1.py` = `/tmp/eval.py` 去掉 `contest` 参数，见第 1.4 节。）
+
+**期望输出（这份教程的作者自测结果）**：
 
 ```
-=== add-fp32 ===
-结论: accepted   得分: 30.0   说明: 全部 10/10 个数据点通过，得分 30.0/30
-=== reducesum-fp32 ===
-结论: accepted   得分: 30.0   说明: 全部 10/10 个数据点通过，得分 30.0/30
-=== matmul-fp32 ===
-结论: accepted   得分: 30.0   说明: 全部 10/10 个数据点通过，得分 30.0/30
+── 内测比赛2（fp32）──
+  add-fp32         结论: accepted   得分: 30.0   说明: 全部 10/10 个数据点通过，得分 30.0/30
+  reducesum-fp32   结论: accepted   得分: 40.0   说明: 全部 10/10 个数据点通过，得分 40.0/40
+  matmul-fp32      结论: accepted   得分: 30.0   说明: 全部 10/10 个数据点通过，得分 30.0/30
+── 内测比赛1（q16）──
+  add               accepted  得分=30.0  全部 10/10 个数据点通过
+  reducesum         accepted  得分=40.0  全部 10/10 个数据点通过
+  matmul            accepted  得分=30.0  全部 10/10 个数据点通过
 ```
+
+（`reducesum` 满分是 40 不是 30，因为它每点 4 分。）
 
 **现在你已经有 O0 档的实现了。** 对照第 0.7 节的参考解：
 
@@ -975,13 +1044,18 @@ done
 
 ### ✅ 检查点
 
-1. 现在要加一道 `add-q16` 并换成 `rv32im`，你要改几个文件？
+1. 现在要加一道 `abs-fp32`，你要改几个文件？
 2. `bodies/matmul.py` 里为什么用 `s0` 而不是 `t6` 做置零暂存？
-3. 如果把 `PROBLEMS` 里 `add-fp32` 的 dtype 改成 `q16` 但 target 不改，会发生什么？
+3. `mac` 字段为什么不能简化成一个 `mul` 助记符？
+4. 如果把 `PROBLEMS` 里 `add-fp32` 的 dtype 改成 `q16` 但 target 不改，会发生什么？
 
-答案：1) 一个 —— 在 `PROBLEMS` 加一行（`add` 这个 body 和 `q16` policy 都已存在）。
-2) 因为 `t6` 存着行步长 `N*4`。3) 会用 `lw` 载入浮点数据（助记符来自 q16 policy）
-——数值会完全错乱，但**汇编器不会报错**。
+答案：
+1) 两个——新建 `bodies/abs.py`，再在 `bodies/__init__.py` 里加两行（`BODIES` + `PROBLEMS`）。
+2) 因为 `t6` 存着行步长 `N*4`。
+3) 因为一次乘加在两种数值类型下**形状不同**：f32 是 `fmul.s`+`fadd.s`（2 条），
+q16 是 `mul`+`srai 16`+`add`（3 条）。只给"乘"这一个助记符，q16 的矩阵乘就会算错。
+4) 会用 `lw` 载入浮点数据（助记符来自 q16 policy）——数值会完全错乱，
+但**汇编器不会报错**。
 
 ---
 
