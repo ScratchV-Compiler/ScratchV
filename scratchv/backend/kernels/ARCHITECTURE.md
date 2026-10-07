@@ -2,11 +2,16 @@
 
 > 本目录是「把形状在编译期已知（或部分已知）的热点算子直接降低成 RISC-V 汇编」的
 > 内核框架。它与 `scratchv/backend/instruction_select.py` 的通用逐指令下降**并存**，
-> 不合并——理由见 §2.3。
+> 不合并——理由见 **§5**。
 >
-> **参考实现**：本分支（`dev/scratch`）从干净的 `origin/main` 起步。比赛1 的三份
-> int32 内核（`q16_matmul.py` / `vector_ops.py` / `_scaffold.py`）与 72 项真机对照
-> 测试只存在于本地 `main` 的 7 个未推送提交里，**是只读参考**，不随本分支演进。
+> **与整体设计的关系**：本文档讲的是**这个子系统**。ScratchV 整体面向 LLVM 的
+> 路线（11 层怎么互换、LLVM 做不到的四件事、三个不可逆决定）在
+> `docs/reference/ARCHITECTURE_DESIGN.md`。**两份是两个层次，不是一份的两半；
+> 分期编号也各用各的（这里 `S*`，那里 `P*`），不要混。**
+>
+> **参考实现**：比赛1 的三份 int32 内核（`q16_matmul.py` / `vector_ops.py` /
+> `_scaffold.py`）与 72 项真机对照测试**只在本地 `main`** 的 7 个未推送提交里，
+> `origin/main` 上没有——**是只读参考**，不随本文档这套演进。
 
 ---
 
@@ -16,7 +21,7 @@
 
 | 标记 | 含义 |
 |---|---|
-| `[P0]` | **本阶段实现**。当前开发目标是内测比赛2（fp32 三题），只做到「明显优于 `-O0` 参考解」的水平 |
+| `[P0]` | **已实现**。当前覆盖内测比赛1/2 六题。实际做到的是展开 + 寄存器分块 + 边角块，**已远超最初"明显优于 `-O0`"那个目标**（对 `-O0` 快 5~9 倍） |
 | `[P1]` | **只留接口与契约**，不实现。函数签名、前置条件、验收判据写清楚，函数体留空 |
 | `[P2]` | **明确不做**，并写明为什么不做（多半是因为当前成本模型下没有收益） |
 
@@ -104,24 +109,32 @@ mul(f32) → fmul.s                  前置: 无
 
 ### 2.3 指令集/目标（③）
 
-`TargetDesc` 是**唯一**可以直接写助记符和寄存器名的地方：
+`TargetDesc` 是**唯一**可以直接写助记符和寄存器名的地方。
+**下面是 `target.py` 里的实际字段**（不是设计稿——本文档早期版本画过一版带
+`banks={...}`、大写助记符、`triple` 的，那些都**没落地**）：
 
 ```python
 'rv32imf': TargetDesc(
-    march='rv32imf',
-    banks={'int': INT_POOL,            # 26 个可写整数寄存器
-           'fp':  F_POOL},             # 32 个 f 寄存器，可作叶子函数的临时
-    load={'int32': 'LW', 'f32': 'FLW'},
-    store={'int32': 'SW', 'f32': 'FSW'},
+    name='rv32imf',
+    march='rv32imf',                   # 传给 clang 的 -march
+    mabi='ilp32',                      # 传给 clang 的 -mabi
+    int_regs=INT_POOL,                 # **23 个**可写整数寄存器（不含 a0/a1/a2）
+    fp_regs=FP_POOL,                   # 32 个 f 寄存器，可作叶子函数的临时
+    load={'int32': 'lw', 'f32': 'flw'},        # 助记符**小写**（GNU as 认）
+    store={'int32': 'sw', 'f32': 'fsw'},
     imm_max=2047,                      # 12 位有符号立即数上限
     line_bytes=64,                     # L1 缓存行
 )
 ```
 
 **为什么要独立一层**：fp32 引入了一个**独立的寄存器银行**。int32 下分块约束是
-一条式子 `acc + hold + non_data ≤ 26`；f32 下 acc/hold 在 f 池、指针在 x 池，约束
-**分裂成两条独立的**。这意味着 f32 的合法分块集合与 int32 不同——容量必须从
-`TargetDesc` 取，不许硬编码 26。
+一条式子 `acc + hold + non_data ≤ len(int_regs)`（23）；f32 下 acc/hold 在 f 池、
+指针在 x 池，约束**分裂成两条独立的**。这意味着 f32 的合法分块集合与 int32 不同
+——容量必须从 `TargetDesc` 取，不许硬编码。
+
+> ⚠️ 实际代码里**没有** `triple`、**没有** `branch_reach`、**没有** `banks` 字典。
+> `docs/reference/ARCHITECTURE_DESIGN.md` §7.1 画的那版设计稿里有前两个——
+> 那是"设计里想要的"，不是"现在的代码"。
 
 ### 2.4 覆盖策略（④）
 
@@ -214,7 +227,7 @@ CoveragePlan(shape_knowledge, kernel, dtype, target)
 | D2 | `BankRegAlloc` | 虚拟寄存器 → 物理寄存器 | 按银行容量，**不硬编码 26** | `[P1]`（`[P0]` 用手工固定寄存器） |
 | D3 | `BranchRelax` | 近距离分支 → 近跳 + 远跳 | 循环体 > ±4KB | `[P1]` |
 | D4 | `SectionLayout` | `RODATA_PAD` 对齐扫描 | **换 wrapper/工具链必须重扫** | `[P1]` |
-| D5 | `CompressedEncoding` | `.option rvc` | **平台 ISA 闸门会判整题 0 分** | `[P2]`（见 §6.3） |
+| D5 | `CompressedEncoding` | `.option rvc` | **平台 ISA 闸门会判整题 0 分** | `[P2]`（见 `USAGE.md` §2.4） |
 
 ### E 明确不做
 
@@ -335,16 +348,22 @@ scratchv/backend/kernels/
 
 ## 9. 分期（含实际进度）
 
+> ⚠️ **这里的 `S*` 编号只属于本文档。** `docs/reference/ARCHITECTURE_DESIGN.md`
+> 用了另一套 `P0–P4`——那条线讲的是「ScratchV 整体怎么兼容 LLVM」，与这里的
+> 「内核框架怎么实施」不是一回事。**两套编号不要互相引用。**
+
 | 阶段 | 内容 | 放行条件 | 状态 |
 |---|---|---|---|
 | **S0** | `target.py` + `dtypes.py` + `bodies/*` + `pipeline.py`：打通内测比赛2 三题，只到 `-O0` 水平 | 正确性通过；cost 明显优于 `-O0` 参考解；body 里不含任何硬编码助记符 | ✅ **已完成**（六题 10/10） |
 | **S0.5** | `LoopFormLower`（循环展开 + 余数尾循环） | 区间内每个 N 都正确（含非整除）；总 cost 下降 | ✅ **已完成**（u=32，见 `DEVELOPMENT.md` §5.1） |
 | **S0.6** | `LegalityCheck` + 寄存器分块（matmul） | 放不下时抛异常而不是静默出错；分块路径正确 | ✅ **已完成**（(4,4)，8.17→2.98 条/MAC） |
 | **S1** | `ShapeKnowledge` + `CoveragePlan` + 分发 | `Range` 下**区间里每个整数**都正确，且 cost 不退化 | ❌ **未做**（见 `DEVELOPMENT.md` §6.2） |
-| **S2** | `CacheBlocking` | 逐点 cost 逼近榜首 | ⏭️ **实测判定不需要**——分块后未命中仍是 773 ≈ 强制值 768，没有洞可补（§6.4） |
+| **S2** | `CacheBlocking` | 逐点 cost 逼近榜首 | ⏭️ **实测判定不需要**——分块后未命中仍是 773 ≈ 强制值 768，没有洞可补（`DEVELOPMENT.md` §6.4） |
 | **S3** | `kir.py` + 各 pass 真对象化 + `BankRegAlloc` | 现有 `.s` 成本逐点不变 | ❌ 未做 |
 | **S4** | `Runtime` 形状（规模写在输入张量头里的题） | 该形态的形状契约测试通过 | ❌ 未做 |
 
 **下一步最有价值的不是 S3，是 S1。** 理由：现在没有分发层，所以 `UNROLL` 只能取
-一个全局折中值（32），而实测小 N（64/128）偏好 8（`DEVELOPMENT.md` §5.1）。
-S1 能把这部分收益拿回来；S3 只是重构，不产生收益。
+**一个全局值**。而实测（`DEVELOPMENT.md` §5.1）两个目标选出不同的值——
+按「总量最小」是 32，按「最坏情况最小」是 **16**；两者总量只差 1.4%，
+但最坏情况差 **10.4% vs 2.2%**。S1 的分发层能按 N 分别选，把这部分拿回来。
+**S3 只是重构，不产生收益。**

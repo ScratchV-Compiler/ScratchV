@@ -350,11 +350,15 @@ ScratchV 想做同一件事，但**做成数据而不是代码**——这就是 
 
 **唯一允许直接写助记符与寄存器名的地方。**
 
+**下面是设计稿**（`scratchv/backend/kernels/target.py` 里**已经有一个落地的版本**，
+但字段不完全一样——落地版用 `int_regs` / `fp_regs` 两个平级字段、助记符小写、
+**没有** `triple` 和 `branch_reach`）：
+
 ```python
 @dataclass(frozen=True)
 class TargetDesc:
     name: str                            # 'rv32imf'
-    triple: str                          # 'riscv32-unknown-elf'
+    triple: str                          # 'riscv32-unknown-elf'   ← 代码里没有
     march: str                           # 'rv32imf'
     mabi: str                            # 'ilp32'
     banks: dict[str, tuple[str, ...]]    # {'int': INT_POOL, 'fp': F_POOL}
@@ -362,8 +366,18 @@ class TargetDesc:
     store: dict[str, str]                # {'int32': 'SW',  'f32': 'FSW'}
     imm_max: int                         # 2047（12 位有符号）
     line_bytes: int                      # 64（L1 缓存行）
-    branch_reach: int                    # 400（条件分支 ±4KB 折算的行数）
+    branch_reach: int                    # 400（条件分支 ±4KB 折算的行数） ← 代码里没有
 ```
+
+> **`triple` 和 `branch_reach` 是"设计里想要的"，不是"现在的代码"：**
+>
+> - **`triple`** —— 对应 §6「目标描述」那条缝的终点（竞技场要求两边 triple 一致）。
+> - **`branch_reach`** —— 对应「循环体超过条件分支 ±4KB 时要拆成近跳 + 远跳」。
+>   **当前框架没有实现它**：`loopgen.unrolled_loop` 直接发 `bne`，没有拆跳逻辑。
+>   只有**本地 `main`** 上旧版比赛1 的 `_scaffold.py:42` 有 `BRANCH_REACH = 400`。
+>   （现在没暴露问题，是因为扫过的最大展开 u=128 循环体约 2KB，还在 ±4KB 内。）
+>
+> **要以代码为准时，看 `scratchv/backend/kernels/ARCHITECTURE.md` §2.3。**
 
 **约束**：
 
@@ -416,6 +430,10 @@ class CostModel(Protocol):
 
 ## 8. 分期
 
+> ⚠️ **这里的 `P*` 编号只属于本文档**，讲的是「ScratchV 整体怎么兼容 LLVM」。
+> `scratchv/backend/kernels/ARCHITECTURE.md` §9 用的是另一套 `S*`，讲的是
+> 「内核框架怎么实施」。**两套不是一回事，不要互相引用。**
+
 | 阶段 | 内容 | 放行条件（结构性） |
 |---|---|---|
 | **P0（当前）** | 预留接口：§6 的目标描述、成本模型、形状/值域进 IR 类型，其余只留空实现。**同时**：内测比赛2 三题做到「明显优于 `-O0`」 | ① 现有产物**逐字节不变**；② `.ll` 输出对 scalar 路径可用（**已实测**，附录 B.3） |
@@ -423,6 +441,11 @@ class CostModel(Protocol):
 | **P2** | 形状/值域开始被消费：形状特化 pass（同时把形状打通到后端） | 不特化时，填充形状与不填充产出**相同代码** |
 | **P3** | 接 MLIR 的转换器 | 同一份 MLIR 下，ScratchV 与 LLVM 后端产出可互换 |
 | **P4** | 组合式超越：ScratchV 前端 + 优化 → `.ll`（带 `!range`）→ `llc` | 端到端跑通一次 |
+
+> **P0 的前半句已经偏了**：说"其余只留空实现"，但内核框架那条线（`S0`–`S0.6`）
+> 实际做到了展开 + 寄存器分块 + 边角块，早已越过"明显优于 `-O0`"。
+> **本文件的 P0 讲的是"给 LLVM 兼容预留接口"这条线，与内核框架的实施进度不是
+> 同一件事。**
 
 ---
 
