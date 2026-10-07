@@ -97,48 +97,46 @@ def _blocked(target, dtype, mr: int, nr: int) -> list[str]:
     a_cur = ['s4', 's5', 's6', 's7'][:mr]       # A 的 mr 个游标
     b_cur, b_base, c_base = 's8', 's9', 's10'
     I, J, K, TMP, ADDR = 't1', 't2', 't3', 't4', 'a3'
+    MAINI, MAINJ = 'a4', 't5'                   # 完整块的行/列边界
+
+    def zero(reg: str) -> str:
+        return f'    fmv.w.x {reg}, zero' if dtype.bank == 'fp' else f'    li   {reg}, 0'
+
+    def reset_rows() -> list[str]:
+        """把 A 的行基址与 C 的块基址复位到第 0 行。②③ 段要靠它回到起点。"""
+        lines = [f'    mv   {a_base[0]}, a0']
+        for r in range(1, mr):
+            lines.append(f'    add  {a_base[r]}, {a_base[r - 1]}, {STRIDE}')
+        lines.append(f'    mv   {c_base}, a1')
+        return lines
 
     unit = max(mr, nr)                  # 两者都是 2 的幂，取大者即最小公倍数的掩码位数
     out = [
         '    blez a2, .Lret',
         f'    li   {TMP}, {unit}',
-        f'    bltu a2, {TMP}, .Lgeneric',         # N < 分块粒度：走通用实现
-        f'    andi {TMP}, a2, {unit - 1}',
-        f'    bnez {TMP}, .Lgeneric',             # N 不是粒度的倍数：走通用实现
+        f'    bltu a2, {TMP}, .Lgeneric',         # N < 分块粒度：太小，不值得分块
         '',
         f'    slli {STRIDE}, a2, 2',              # STRIDE = N*4
         f'    mul  {TMP}, a2, a2',
         f'    slli {TMP}, {TMP}, 2',              # N*N*4
         f'    add  {b_base}, a0, {TMP}',          # &B[0][0]
+        # 完整块边界：向下取整到 mr / nr。用 `andi x, x, -4` 取 N 的低位清零。
+        f'    andi {MAINI}, a2, {-mr}',
+        f'    andi {MAINJ}, a2, {-nr}',
     ]
-    # A 的 mr 个行基址，彼此相隔一个行步长
-    out.append(f'    mv   {a_base[0]}, a0')
-    for r in range(1, mr):
-        out.append(f'    add  {a_base[r]}, {a_base[r - 1]}, {STRIDE}')
-    out += [
-        f'    mv   {c_base}, a1',                 # C 的块基址
-        f'    li   {I}, 0',
-        '.Bli:',
-        f'    li   {J}, 0',
-        '.Blj:',
-    ]
-    # 每个 j：A 游标复位到行基址，B 游标指向 B[0][j]
+
+    # ── ① 主块：i ∈ [0, mainI)，j ∈ [0, mainJ) ──────────────────────────────
+    out += reset_rows()
+    out += [f'    li   {I}, 0', '.Bli:', f'    li   {J}, 0', '.Blj:']
     for r in range(mr):
         out.append(f'    mv   {a_cur[r]}, {a_base[r]}')
     out += [
         f'    slli {TMP}, {J}, 2',
         f'    add  {b_cur}, {b_base}, {TMP}',     # &B[0][j]
     ]
-    # 累加器清零（x0 恒为 0，直接搬）
     for reg in acc:
-        if dtype.bank == 'fp':
-            out.append(f'    fmv.w.x {reg}, zero')
-        else:
-            out.append(f'    li   {reg}, 0')
-    out += [
-        f'    li   {K}, 0',
-        '.Blk:',
-    ]
+        out.append(zero(reg))
+    out += [f'    li   {K}, 0', '.Blk:']
     for r in range(mr):
         out.append(f'    {L}  {av[r]}, 0({a_cur[r]})')
     for c in range(nr):
@@ -152,10 +150,9 @@ def _blocked(target, dtype, mr: int, nr: int) -> list[str]:
         f'    add  {b_cur}, {b_cur}, {STRIDE}',
         f'    addi {K}, {K}, 1',
         f'    bne  {K}, a2, .Blk',
+        f'    slli {TMP}, {J}, 2',
+        f'    add  {ADDR}, {c_base}, {TMP}',      # &C[i][j]
     ]
-    # 写回 C 的 mr × nr 块：一个地址寄存器逐行加行步长
-    out.append(f'    slli {TMP}, {J}, 2')
-    out.append(f'    add  {ADDR}, {c_base}, {TMP}')
     for r in range(mr):
         for c in range(nr):
             out.append(f'    {S}  {acc[r * nr + c]}, {c * 4}({ADDR})')
@@ -163,18 +160,98 @@ def _blocked(target, dtype, mr: int, nr: int) -> list[str]:
             out.append(f'    add  {ADDR}, {ADDR}, {STRIDE}')
     out += [
         f'    addi {J}, {J}, {nr}',
-        f'    bne  {J}, a2, .Blj',
-        f'    slli {TMP}, {STRIDE}, 2',           # mr == 4 时：前进 4 行
+        f'    bne  {J}, {MAINJ}, .Blj',           # j 到 mainJ（不是 N）
+        f'    slli {TMP}, {STRIDE}, {mr.bit_length() - 1}',   # mr 行 = mr * STRIDE
     ]
-    if mr != 4:
-        raise ValueError('分块前进的行数目前只实现了 mr == 4')
     for reg in a_base:
         out.append(f'    add  {reg}, {reg}, {TMP}')
     out += [
         f'    add  {c_base}, {c_base}, {TMP}',
         f'    addi {I}, {I}, {mr}',
-        f'    bne  {I}, a2, .Bli',
-        '    j    .Lret',                         # 分块跑完就出去，别落进通用实现
+        f'    bne  {I}, {MAINI}, .Bli',           # i 到 mainI（不是 N）
+    ]
+
+    # ── ② 右带：i ∈ [0, mainI)，j ∈ [mainJ, N) —— 每列一个 mr×1 块 ──────────
+    # ⚠️ 循环是「先做后判」，所以 mainJ == N（右边没有余列）时必须**整段跳过**，
+    #    否则会从第 N 列写出去。这一条在 N 是 4 的倍数时必然触发。
+    out.append(f'    beq  {MAINJ}, a2, .Brs')
+    out += reset_rows()
+    out += [f'    li   {I}, 0', '.Bri:', f'    mv   {J}, {MAINJ}', '.Brj:']
+    for r in range(mr):
+        out.append(f'    mv   {a_cur[r]}, {a_base[r]}')
+    out += [
+        f'    slli {TMP}, {J}, 2',
+        f'    add  {b_cur}, {b_base}, {TMP}',
+    ]
+    for r in range(mr):
+        out.append(zero(acc[r]))
+    out += [f'    li   {K}, 0', '.Brk:']
+    for r in range(mr):
+        out.append(f'    {L}  {av[r]}, 0({a_cur[r]})')
+    out.append(f'    {L}  {bv[0]}, 0({b_cur})')
+    for r in range(mr):
+        out += mac_instrs(dtype, acc[r], av[r], bv[0], prod)
+    for r in range(mr):
+        out.append(f'    addi {a_cur[r]}, {a_cur[r]}, 4')
+    out += [
+        f'    add  {b_cur}, {b_cur}, {STRIDE}',
+        f'    addi {K}, {K}, 1',
+        f'    bne  {K}, a2, .Brk',
+        f'    slli {TMP}, {J}, 2',
+        f'    add  {ADDR}, {c_base}, {TMP}',      # &C[i][j]，这一列
+    ]
+    for r in range(mr):
+        out.append(f'    {S}  {acc[r]}, 0({ADDR})')
+        if r != mr - 1:
+            out.append(f'    add  {ADDR}, {ADDR}, {STRIDE}')
+    out += [
+        f'    addi {J}, {J}, 1',                  # 一列一列走
+        f'    bne  {J}, a2, .Brj',                # j 到 N
+        f'    slli {TMP}, {STRIDE}, {mr.bit_length() - 1}',
+    ]
+    for reg in a_base:
+        out.append(f'    add  {reg}, {reg}, {TMP}')
+    out += [
+        f'    add  {c_base}, {c_base}, {TMP}',
+        f'    addi {I}, {I}, {mr}',
+        f'    bne  {I}, {MAINI}, .Bri',           # i 到 mainI
+        '.Brs:',
+    ]
+
+    # ── ③ 底带：i ∈ [mainI, N)，j ∈ [0, N) —— 标量 ─────────────────────────
+    # 同理：mainI == N（下边没有余行）时整段跳过。
+    out.append(f'    beq  {MAINI}, a2, .Lret')
+    out += [
+        f'    mul  {TMP}, {MAINI}, {STRIDE}',     # mainI 行处
+        f'    add  {a_base[0]}, a0, {TMP}',       # &A[mainI][0]
+        f'    add  {c_base}, a1, {TMP}',          # &C[mainI][0]
+        f'    mv   {I}, {MAINI}',
+        '.Bbi:',
+        f'    li   {J}, 0',
+        '.Bbj:',
+        zero(acc[0]),
+        f'    mv   {ADDR}, {a_base[0]}',          # &A[i][0]
+        f'    slli {TMP}, {J}, 2',
+        f'    add  {b_cur}, {b_base}, {TMP}',     # &B[0][j]
+        f'    li   {K}, 0',
+        '.Bbk:',
+        f'    {L}  {av[0]}, 0({ADDR})',
+        f'    {L}  {bv[0]}, 0({b_cur})',
+        *mac_instrs(dtype, acc[0], av[0], bv[0], prod),
+        f'    addi {ADDR}, {ADDR}, 4',
+        f'    add  {b_cur}, {b_cur}, {STRIDE}',
+        f'    addi {K}, {K}, 1',
+        f'    bne  {K}, a2, .Bbk',
+        f'    slli {TMP}, {J}, 2',
+        f'    add  {TMP}, {c_base}, {TMP}',
+        f'    {S}  {acc[0]}, 0({TMP})',
+        f'    addi {J}, {J}, 1',
+        f'    bne  {J}, a2, .Bbj',
+        f'    add  {a_base[0]}, {a_base[0]}, {STRIDE}',
+        f'    add  {c_base}, {c_base}, {STRIDE}',
+        f'    addi {I}, {I}, 1',
+        f'    bne  {I}, a2, .Bbi',
+        '    j    .Lret',                         # 三段跑完就出去，别落进通用实现
         '',
     ]
     return out
@@ -192,6 +269,6 @@ def build(target, dtype, unroll: int = 1, blocking: tuple[int, int] = (0, 0)) ->
         return [*head, *_generic(target, dtype)]
 
     mr, nr = blocking
-    if mr != 4:
-        raise ValueError('目前只实现了 mr == 4')
+    if mr > 4:
+        raise ValueError('分块的行数上限是 4（A 的行基址/游标各写死了 4 个）')
     return [*head, '', *_blocked(target, dtype, mr, nr), *_generic(target, dtype)]
