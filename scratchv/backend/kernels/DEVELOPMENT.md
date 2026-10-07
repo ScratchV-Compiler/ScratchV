@@ -10,6 +10,20 @@
 > **本文档的每一段代码都是完整、可复制、可运行、并且已经跑通过的。**
 > 每一步都给出「你应该看到什么」；如果你的输出不一样，附录 C 有排查表。
 
+### ⚠️ 读之前先知道两件事
+
+**一、本文档是分阶段搭的。** 第 2~3 章搭出能跑的 O0 版本，第 5~6 章在它上面加优化。
+所以**中途的代码不是最终代码**——比如 `bodies/matmul.py` 在第 3 章只有一个通用循环，
+到第 6 章才多出一个分块版。
+
+> **凡是文档与仓库不一致的地方，以仓库为准。** 仓库里那 10 个 `.py` 是**最终版**，
+> 完整清单见 [附录 B](#附录-b--完整代码清单)。文档里给出的每一段都是它的组成部分，
+> 只是出现的位置分散在各章。
+
+**二、本文档讲的是"怎么写内核"，不是"怎么拿名次"。**
+平台计分基准是**全场最优**、且超过基准不给额外分（第 0.7 节）。
+所以"比参考解快 4.7 倍"保证的是**过线**，不保证名次。
+
 ---
 
 ## 目录
@@ -530,10 +544,12 @@ class DtypePolicy:
     store: str                   # 存储助记符
     add: str                     # 加法助记符
     acc: str                     # 累加器寄存器名
-    tmp1: str                    # 临时寄存器 1
-    tmp2: str                    # 临时寄存器 2
-    mac: tuple[str, ...]         # ★ 一次乘加的指令序列；{acc}/{t1}/{t2} 由 body 填
+    tmp1: str                    # 操作数寄存器 1
+    tmp2: str                    # 操作数寄存器 2
+    prod: str                    # ★ 乘积落点，必须与两个操作数都不同（§6.3 第三个坑）
+    mac: tuple[str, ...]         # ★ 一次乘加的指令序列；{acc}/{t1}/{t2}/{p} 由 body 填
     zero: tuple[str, ...]        # 累加器置零模板；{acc} = 累加器，{r} = 空闲整数寄存器
+    bank: str                    # 数据寄存器取自哪个银行：'fp' 或 'int'（§6.3 的容量约束）
     comparison: str              # 'exact'（逐位）或 'tolerance'（容差）
 
 
@@ -542,27 +558,37 @@ POLICIES: dict[str, DtypePolicy] = {
         name='q16', load='lw', store='sw', add='add',
         # 整数路径下累加器和临时值都是整数寄存器；用 s2/s3/s4，
         # 与三个 body 用到的 t0-t6 / a3-a5 不相交。
-        acc='s2', tmp1='s3', tmp2='s4',
+        acc='s2', tmp1='s3', tmp2='s4', prod='s5',
         # ★ Q16.16 的乘积要**先右移 16 位**再累加（赛题语义 `Σ (A×B) >> 16`）。
-        mac=('mul {t1}, {t1}, {t2}', 'srai {t1}, {t1}, 16', 'add {acc}, {acc}, {t1}'),
+        mac=('mul {p}, {t1}, {t2}', 'srai {p}, {p}, 16', 'add {acc}, {acc}, {p}'),
         zero=('li {acc}, 0',),
+        bank='int',
         comparison='exact',
     ),
     'f32': DtypePolicy(
         name='f32', load='flw', store='fsw', add='fadd.s',
-        # 浮点路径下累加器和临时值都在浮点寄存器组，与整数寄存器天然不相交。
-        acc='ft0', tmp1='ft1', tmp2='ft2',
+        # 浮点路径下累加器和操作数都在浮点寄存器组，与整数寄存器天然不相交。
+        acc='ft0', tmp1='ft1', tmp2='ft2', prod='ft3',
         # 浮点没有定点重标定，乘完直接累加。
-        mac=('fmul.s {t1}, {t1}, {t2}', 'fadd.s {acc}, {acc}, {t1}'),
+        mac=('fmul.s {p}, {t1}, {t2}', 'fadd.s {acc}, {acc}, {p}'),
         zero=('li {r}, 0', 'fmv.w.x {acc}, {r}'),
+        bank='fp',                       # 数据寄存器取自浮点组（32 个）
         comparison='tolerance',          # 浮点不能逐位比，要看平台给的容差
     ),
 }
 
 
-def mac_instrs(dtype: DtypePolicy) -> list[str]:
-    """把一次乘加的模板填上寄存器名。"""
-    return [line.format(acc=dtype.acc, t1=dtype.tmp1, t2=dtype.tmp2)
+def mac_instrs(dtype: DtypePolicy, acc: str | None = None, t1: str | None = None,
+               t2: str | None = None, prod: str | None = None) -> list[str]:
+    """把一次乘加的模板填上寄存器名。
+
+    **`prod` 必须与 `t1`/`t2` 都不同。** 模板里 `{p}` 是乘积的落点：如果让它和
+    某个操作数重合（那正是最直觉的写法 `fmul {t1}, {t1}, {t2}`），通用循环里看不出
+    来（`t1` 每个 k 都重新载入），但**寄存器分块时操作数要在 nr 次乘加之间保持不变**，
+    一覆盖就全错——而且是静默错，汇编器不报。§6.3 有完整的翻车记录与现象指纹。
+    """
+    return [line.format(acc=acc or dtype.acc, t1=t1 or dtype.tmp1,
+                        t2=t2 or dtype.tmp2, p=prod or dtype.prod)
             for line in dtype.mac]
 
 
@@ -744,13 +770,14 @@ from scratchv.backend.kernels.loopgen import prologue, epilogue
 from scratchv.backend.kernels.dtypes import zero_acc, mac_instrs
 
 
-def build(target, dtype) -> list[str]:
+def _generic(target, dtype) -> list[str]:
+    """通用三重循环。第 6 章的分块版遇到"跑不了"的 N 时会跳进 `.Lgeneric`。"""
     L = dtype.load
     S = dtype.store
     ACC, T1, T2 = dtype.acc, dtype.tmp1, dtype.tmp2
 
     return [
-        *prologue(),
+        '.Lgeneric:',
         '    blez a2, .Lret',
         '    mul  t0, a2, a2',              # t0 = N * N
         '    slli t0, t0, 2',               # t0 = N * N * 4  （B 的起始偏移）
@@ -787,6 +814,10 @@ def build(target, dtype) -> list[str]:
         *epilogue(),
     ]
 ```
+
+> **§3 的 matmul 到这里就结束了。** 最终的 `bodies/matmul.py` 还多两样东西：
+> **`_blocked()`**（寄存器分块，§6.3）和**派发用的 `build()`**（按 `blocking` 参数
+> 选走哪条路）。本文档的每一段代码都在仓库里，**以仓库为准** —— 附录 B 有完整清单。
 
 #### ⚠️ 那个坑：`t6` 被吃掉了
 
@@ -1165,15 +1196,18 @@ q16 是 `mul`+`srai 16`+`add`（3 条）。只给"乘"这一个助记符，q16 �
 
 ```python
 def unrolled_body(dtype, unroll: int) -> list[str]:
-    """生成展开 unroll 次的循环体（不含指针前进和计数）。"""
-    out = []
+    """生成展开 unroll 次的循环体（不含指针前进和计数）。
+
+    只适用于 add 这类一对一映射的题。寄存器名从 dtype 取 —— 和 §3.2 同一个规矩。
+    """
+    out: list[str] = []
     for k in range(unroll):
         off = k * 4                       # 每个元素 4 字节
         out += [
-            f'    {dtype.load}  ft0, {off}(a0)',
-            f'    {dtype.load}  ft1, {off}(t1)',
-            f'    {dtype.add} ft0, ft0, ft1',
-            f'    {dtype.store} ft0, {off}(a1)',
+            f'    {dtype.load}  {dtype.tmp1}, {off}(a0)',
+            f'    {dtype.load}  {dtype.tmp2}, {off}(t1)',
+            f'    {dtype.add} {dtype.tmp1}, {dtype.tmp1}, {dtype.tmp2}',
+            f'    {dtype.store} {dtype.tmp1}, {off}(a1)',
         ]
     return out
 ```
@@ -1270,6 +1304,10 @@ B 就可以直接用 `a0` 加偏移寻址：
 
 **代价**：这需要**知道 N**。而平台不给——见下一章。
 
+> ⚠️ **本节描述的写法，本仓库也没有实现**（它同样依赖 6.2 的分发）。
+> 现在的 B 指针仍然是单独一个寄存器 + 每轮一条 `addi`，那正是第 5.1 节量到的
+> `(u×4 + 5)/u` 里的那个 5 的来源之一。**要实现它，先实现 6.2。**
+
 ### 5.3 尾循环必须单独测（否则等于没写）
 
 展开版的正确性有两条路径：
@@ -1297,7 +1335,10 @@ for n in [3, 7, 70, 103, 4095, 4097, 5000]:        # 含 N<u、N%u≠0、刚过�
     w    = riscv_runner.build_wrapper(spec, vals, n, f'/tmp/w{n}.s')
     ok, err = riscv_runner.compile_elf(w, player, f'/tmp/e{n}.elf', cfg, work,
                                        march=spec.get('march', 'rv32im'))
-    compile_elf 成功 → run_elf → parse_dump → check_output
+    rc, out, _ = riscv_runner.run_elf(f'/tmp/e{n}.elf', cfg, work)   # 跑
+    got, guard, msg = riscv_runner.parse_dump(out, spec, n)          # 取内存
+    match, mmsg = riscv_oracle.check_output(got, exp, spec, n)       # 比对
+    print(n, 'OK' if match else f'FAIL: {mmsg}')
 ```
 
 **实测结果**（`unroll=32` 的 add-fp32）：
@@ -1352,11 +1393,15 @@ for n in [3, 7, 70, 103, 4095, 4097, 5000]:        # 含 N<u、N%u≠0、刚过�
 
 修好这个代价，只有三条路：
 
-| 路 | 什么时候能用 | 代价 |
-|---|---|---|
-| **① 全区间覆盖** | 区间窄。matmul 是 `N ∈ [4, 64]`，**只有 61 个整数** | **几乎为零**——见下面的关键性质 |
-| **② 按展开粒度取余数类** | 区间宽（`[64, 4096]`）。按 `N % unroll` 分 `unroll` 类，每类一份代码，轮数是运行时值 | add/reducesum 只差 ~3%；matmul 要多几个行指针 |
-| **③ 只保持通用实现** | 拿不准 | 就是你现在这份，放弃这部分收益 |
+| 路 | 什么时候能用 | 代价 | 本仓库 |
+|---|---|---|---|
+| **① 全区间覆盖** | 区间窄。matmul 是 `N ∈ [4, 64]`，**只有 61 个整数** | **几乎为零**——见下面的关键性质 | ❌ **未实现** |
+| **② 按展开粒度取余数类** | 区间宽（`[64, 4096]`）。按 `N % unroll` 分 `unroll` 类，每类一份代码，轮数是运行时值 | add/reducesum 只差 ~3%；matmul 要多几个行指针 | ❌ 未实现 |
+| **③ 只保持通用实现** | 拿不准 | 就是你现在这份，放弃这部分收益 | ✅ **本仓库走的就是这条** |
+
+**注意最后那列。** 这份教程的代码**停在路 ③**：没有分发层，所以 `UNROLL` 只能取
+一个全局折中值（第 5.1 节量出来是 32，而小 N 其实偏好 8）。**要看路 ①/② 怎么落地，
+见 6.2 末尾给的补法。**
 
 ### 6.2 一条关键性质：没执行到的代码不收费
 
@@ -1375,6 +1420,25 @@ cost = 执行到的指令数 + 15 × (执行期间遇到的未命中)
 对 add/reducesum 区间太宽（4000 多个整数），用路 ② 更合适。
 
 **这就是为什么先问"区间有多宽"**，再决定用哪条路。
+
+> ### ⚠️ 本节描述的技术，**本仓库没有实现**
+>
+> 现在 `bodies/` 里**没有任何分发代码**——`__main__.py` 生成的每一份 `.s` 都只含
+> 一个通用实现（matmul 多一个 4×4 分块），入口直接就是 `cnn_entry`，
+> 没有"按 N 跳到不同特化版"这一层。
+>
+> **这也是为什么 `UNROLL` 只能取一个全局值**（第 5.1 节量出来的那个折中）：
+> 想按 N 分别取，就必须先有分发。
+>
+> 要真做，需要补三样：
+>
+> | 补什么 | 放在哪 | 注意 |
+> |---|---|---|
+> | 每个 N 生成一份特化体 | `pipeline.py` 循环调 `body.build(...)` | 每个 N 可以带自己的 `unroll` |
+> | 入口分发（跳转表或比较链） | `loopgen.py` 加一个 `dispatch(...)` | 表外/非候选的 N **必须落回通用实现** |
+> | 段布局重扫 | `RODATA_PAD` 那类填充 | 代码变长会平移后面的段（见 `OPTIMIZATION.md`） |
+>
+> **在补上之前，第 5 章的 `unroll` 折中就是你能拿到的最好结果。**
 
 ### 6.3 寄存器分块（matmul 的指令数大头）
 
@@ -1439,6 +1503,179 @@ cost = 执行到的指令数 + 15 × (执行期间遇到的未命中)
 浮点走 (4,4)，整数只能走更小的块或回退。`blocked_regs_needed()` 会算这个数，
 放不下就抛异常（而不是默默生成错代码）。
 
+#### 怎么写：寄存器分工与循环骨架
+
+先把 25 个数据寄存器和一个循环要用的整数寄存器分配清楚——**这一步错了，
+后面所有代码都是空谈**：
+
+| 装什么 | 从哪取 | (4,4) 时是哪些 |
+|---|---|---|
+| 16 个累加器 | `pool[0:16]` | f0–f15 |
+| 一行的 4 个 A 值 | `pool[16:20]` | f16–f19 |
+| 一列的 4 个 B 值 | `pool[20:24]` | f20–f23 |
+| 乘积落点（1 个） | `pool[24]` | f24 |
+| A 的 4 个行**基址** | 整数侧 | s0–s3 |
+| A 的 4 个行**游标** | 整数侧 | s4–s7 |
+| B 游标 / B 基址 | 整数侧 | s8 / s9 |
+| C 块基址 | 整数侧 | s10 |
+| i / j / k | 整数侧 | t1 / t2 / t3 |
+| 行步长 N×4 | 整数侧 | t0 |
+| 临时 / C 写回地址 | 整数侧 | t4 / a3 |
+
+**为什么 A 要"基址 + 游标"两套**：k 循环每轮把游标 +4，但 j 换一列时游标必须
+回到行首——所以基址要留着。
+
+循环骨架：
+
+```
+        for i in 0, 4, 8, … < N:          ← .Bli
+            for j in 0, 4, 8, … < N:      ← .Blj
+                A 游标 ← A 基址            ← 每个 j 复位
+                B 游标 ← &B[0][j]
+                16 个累加器清零
+                for k in 0 .. N-1:        ← .Blk
+                    载入 4 个 A / 4 个 B
+                    16 次乘加
+                    4 个 A 游标 +4；B 游标 + 行步长
+                写回 4×4 的 C 块
+            A 基址 + 4 行；C 块基址 + 4 行
+        j .Lret                            ← 跑完就走，别落进下面的通用实现
+```
+
+**完整实现**（`bodies/matmul.py` 的 `_blocked()`）：
+
+```python
+def blocked_regs_needed(mr: int, nr: int) -> int:
+    """分块需要多少个**数据**寄存器：累加器 + 一行 A + 一行 B + 一个乘积落点。"""
+    return mr * nr + mr + nr + 1
+
+
+def _blocked(target, dtype, mr: int, nr: int) -> list[str]:
+    pool = target.fp_regs if dtype.bank == 'fp' else target.int_regs
+    need = blocked_regs_needed(mr, nr)
+    if len(pool) < need:                       # ← 容量检查，放不下就报错而不是静默出错
+        raise ValueError(
+            f'{target.name}/{dtype.name} 上放不下 {mr}x{nr} 分块：'
+            f'需要 {need} 个 {dtype.bank} 寄存器，只有 {len(pool)} 个')
+
+    acc = list(pool[:mr * nr])
+    av = list(pool[mr * nr:mr * nr + mr])
+    bv = list(pool[mr * nr + mr:mr * nr + mr + nr])
+    prod = pool[mr * nr + mr + nr]             # 乘积落点，与 av/bv 都不同
+
+    L, S = dtype.load, dtype.store
+
+    STRIDE = 't0'
+    a_base = ['s0', 's1', 's2', 's3'][:mr]
+    a_cur = ['s4', 's5', 's6', 's7'][:mr]
+    b_cur, b_base, c_base = 's8', 's9', 's10'
+    I, J, K, TMP, ADDR = 't1', 't2', 't3', 't4', 'a3'
+
+    unit = max(mr, nr)                         # 两者都是 2 的幂，取大者作掩码位数
+    out = [
+        '    blez a2, .Lret',
+        f'    li   {TMP}, {unit}',
+        f'    bltu a2, {TMP}, .Lgeneric',      # N < 粒度：走通用实现
+        f'    andi {TMP}, a2, {unit - 1}',
+        f'    bnez {TMP}, .Lgeneric',          # N 不是粒度的倍数：走通用实现
+        '',
+        f'    slli {STRIDE}, a2, 2',           # STRIDE = N*4
+        f'    mul  {TMP}, a2, a2',
+        f'    slli {TMP}, {TMP}, 2',           # N*N*4
+        f'    add  {b_base}, a0, {TMP}',       # &B[0][0]
+    ]
+    out.append(f'    mv   {a_base[0]}, a0')
+    for r in range(1, mr):
+        out.append(f'    add  {a_base[r]}, {a_base[r - 1]}, {STRIDE}')
+    out += [
+        f'    mv   {c_base}, a1',
+        f'    li   {I}, 0',
+        '.Bli:',
+        f'    li   {J}, 0',
+        '.Blj:',
+    ]
+    for r in range(mr):
+        out.append(f'    mv   {a_cur[r]}, {a_base[r]}')     # A 游标复位
+    out += [
+        f'    slli {TMP}, {J}, 2',
+        f'    add  {b_cur}, {b_base}, {TMP}',                # &B[0][j]
+    ]
+    for reg in acc:                                          # 累加器清零
+        out.append(f'    fmv.w.x {reg}, zero' if dtype.bank == 'fp'
+                   else f'    li   {reg}, 0')
+    out += [f'    li   {K}, 0', '.Blk:']
+    for r in range(mr):
+        out.append(f'    {L}  {av[r]}, 0({a_cur[r]})')       # 4 个 A
+    for c in range(nr):
+        out.append(f'    {L}  {bv[c]}, {c * 4}({b_cur})')    # 4 个 B
+    for r in range(mr):                                      # 16 次乘加
+        for c in range(nr):
+            out += mac_instrs(dtype, acc[r * nr + c], av[r], bv[c], prod)
+    for r in range(mr):
+        out.append(f'    addi {a_cur[r]}, {a_cur[r]}, 4')
+    out += [
+        f'    add  {b_cur}, {b_cur}, {STRIDE}',
+        f'    addi {K}, {K}, 1',
+        f'    bne  {K}, a2, .Blk',
+    ]
+    out.append(f'    slli {TMP}, {J}, 2')                    # 写回 4×4
+    out.append(f'    add  {ADDR}, {c_base}, {TMP}')
+    for r in range(mr):
+        for c in range(nr):
+            out.append(f'    {S}  {acc[r * nr + c]}, {c * 4}({ADDR})')
+        if r != mr - 1:
+            out.append(f'    add  {ADDR}, {ADDR}, {STRIDE}')
+    out += [
+        f'    addi {J}, {J}, {nr}',
+        f'    bne  {J}, a2, .Blj',
+        f'    slli {TMP}, {STRIDE}, 2',
+    ]
+    for reg in a_base:
+        out.append(f'    add  {reg}, {reg}, {TMP}')
+    out += [
+        f'    add  {c_base}, {c_base}, {TMP}',
+        f'    addi {I}, {I}, {mr}',
+        f'    bne  {I}, a2, .Bli',
+        '    j    .Lret',
+        '',
+    ]
+    return out
+```
+
+**四处细节值得单独说**：
+
+| 细节 | 为什么 |
+|---|---|
+| 标签叫 `.Bli` / `.Blj` / `.Blk` 而不是 `.Li`/`.Lj`/`.Lk` | **通用实现用的是后一组**。两条路径在同一个文件里，标签重名会直接汇编失败 |
+| 分块末尾是 `j .Lret` 而不是落下去 | 下面紧跟的就是 `.Lgeneric`，**不跳走就会把通用实现再跑一遍** |
+| `.Lret: ret` 只在通用实现那边出现一次 | 两条路径共用同一个返回点，谁也别自己再定义一个 |
+| 回退条件是"`N < 粒度` **或** `N` 不是粒度的倍数" | 分块循环按 `mr`/`nr` 步进，边角块没法处理。**宁可整题退回通用实现，也不要生成错代码** |
+
+**派发**（`build()`，两条路径的入口）：
+
+```python
+def build(target, dtype, unroll: int = 1,
+          blocking: tuple[int, int] = (0, 0)) -> list[str]:
+    head = prologue()
+    if blocking == (0, 0):
+        return [*head, *_generic(target, dtype)]
+    mr, nr = blocking
+    return [*head, '', *_blocked(target, dtype, mr, nr), *_generic(target, dtype)]
+```
+
+`blocking` 从哪来？`pipeline.py` 的 **`BLOCKING` 表**（和 `UNROLL` 一样，是实测量）：
+
+```python
+BLOCKING = {
+    'matmul-fp32': (4, 4),      # 浮点：数据在 fp 银行（32 个），放得下
+    # 'matmul': (2, 2),         # 整数：数据在 int 银行（23 个），(4,4) 放不下
+}
+```
+
+**看那个注释**：q16 不是"还没做"，是**放不下**——25 > 23。
+要给它做分块，得先算最小的合法块（`blocked_regs_needed(mr, nr) ≤ 23`），
+比如 (2,2) 需要 9 个。
+
 #### ⚠️ 第三个坑：乘积寄存器不能和操作数重合
 
 分块版第一次跑出来 **10/10 全错**，但**第 0 列是对的、第 1~3 列全错**。
@@ -1493,9 +1730,7 @@ N=64 时三个矩阵 48KB，**装不下 32KB 的一级缓存**，于是反复去
 
 **773 ≈ 768，已经接近最优。没有洞可补。**
 
-**而且实测确认了：做完 6.3 的 (4,4) 分块之后，未命中仍然是 773。** 一点没涨。
-
-**但这一版分块下并没有发生**：实测 (4,4) 分块后 N=64 的 `d_miss` 仍是 773。
+**而且实测确认了：做完 6.3 的 (4,4) 分块之后，未命中仍然是 773** —— 一点没涨。
 
 可以算一下为什么：这份分块的循环顺序是 i-j-k（k 最内），每个 (i,j) 块的
 工作集是「A 的 4 行 × 整行 + B 的整列 × 4」——对 N=64 只有 2KB，离 32KB 很远。
@@ -1504,10 +1739,7 @@ N=64 时三个矩阵 48KB，**装不下 32KB 的一级缓存**，于是反复去
 跨度变了）。**本文档不去断言原因——量出来是多少就是多少。**
 
 **所以顺序是**：做 6.3 的分块 → **量一次**未命中 → 涨过 768 了才考虑缓存分块。
-**这一版量出来没涨，所以就跳过**。
-
-> **这一条是本文档里最值钱的经验**：同一个优化技术，在一种实现下是必需的，
-> 在另一种实现下是无用功。**判据不是"这个技术好不好"，是"我的未命中比强制值高多少"。**
+**这一版量出来没涨，所以就跳过**——别照着"缓存分块很重要"的说法去做无用功。
 
 > **这一条是本文档里最值钱的经验**：同一个优化技术，在一种实现下是必需的，
 > 在另一种实现下是无用功。**判据不是"这个技术好不好"，是"我的未命中比强制值高多少"。**
@@ -1609,18 +1841,44 @@ fwht（哈达玛变换）是**蝶形**结构：`log₂N` 个阶段，每个阶�
 
 ## 附录 B · 完整代码清单
 
+### B.1 仓库里的文件（**以这些为准**）
+
 | 文件 | 内容 | 参考章节 |
 |---|---|---|
-| `scratchv/backend/kernels/target.py` | `TargetDesc` + `TARGETS`（rv32im / rv32imf） | 2.2 |
-| `scratchv/backend/kernels/dtypes.py` | `DtypePolicy` + `POLICIES`（q16 / f32）+ `zero_acc` | 2.3 |
-| `scratchv/backend/kernels/loopgen.py` | `prologue` / `epilogue`（+ 第 5 章的 `unrolled_body`） | 3.1、5.1 |
-| `scratchv/backend/kernels/bodies/add.py` | add 的语义 | 3.2 |
-| `scratchv/backend/kernels/bodies/reducesum.py` | reducesum 的语义 | 3.4 |
-| `scratchv/backend/kernels/bodies/matmul.py` | matmul 的语义 | 3.3 |
+| `scratchv/backend/kernels/__init__.py` | 包声明（**必须有**，否则 `python -m` 起不来） | 3.5 |
+| `scratchv/backend/kernels/target.py` | `TargetDesc`（含 `int_regs` / `fp_regs` 两个银行）+ `TARGETS`（rv32im / rv32imf） | 2.2 |
+| `scratchv/backend/kernels/dtypes.py` | `DtypePolicy`（含 `prod` / `bank`）+ `POLICIES`（q16 / f32）+ `mac_instrs` + `zero_acc` | 2.3 |
+| `scratchv/backend/kernels/loopgen.py` | `prologue` / `epilogue` / `unrolled_body` | 3.1、5.1 |
+| `scratchv/backend/kernels/bodies/add.py` | add 的语义；两档（展开 1 / 展开 u + 尾循环） | 3.2、5.1 |
+| `scratchv/backend/kernels/bodies/reducesum.py` | 同上 | 3.4、5.1 |
+| `scratchv/backend/kernels/bodies/matmul.py` | 两档：`_generic` / `_blocked` + `blocked_regs_needed` + 派发 `build` | 3.3、6.3 |
 | `scratchv/backend/kernels/bodies/__init__.py` | `BODIES` + `PROBLEMS`（题册） | 3.5 |
-| `scratchv/backend/kernels/pipeline.py` | `build_program` | 3.5 |
-| `scratchv/backend/kernels/__main__.py` | 命令行 | 3.5 |
-| `/tmp/eval.py` | 本地评测脚本（本文档多处用到） | 1.4 |
+| `scratchv/backend/kernels/pipeline.py` | `build_program` + **两张实测表** `UNROLL` / `BLOCKING` | 3.5、5.1、6.3 |
+| `scratchv/backend/kernels/__main__.py` | 命令行（`--problem` / `-o` / `--list` / `--unroll`） | 3.5、5.1 |
+
+**文件之间的依赖**：
+
+```
+__main__.py ──▶ pipeline.py ──┬──▶ bodies/__init__.py ──▶ bodies/{add,reducesum,matmul}.py
+                              │                                  │
+                              ├──▶ dtypes.py ◀───────────────────┤
+                              └──▶ target.py                     └──▶ loopgen.py
+```
+
+`bodies/` 里的三个文件**只依赖 `loogen` 和 `dtypes`**，不依赖 `target` 的具体取值
+（它们收 `TargetDesc` 当参数）—— 这就是"加一个 target 不用改 body"的结构保证。
+
+### B.2 本文档用到的一次性脚本（不在仓库里）
+
+| 脚本 | 干什么 | 参考章节 |
+|---|---|---|
+| `/tmp/eval.py` | 评测一道题，打印逐点的指令数/未命中/cost | 1.4 |
+| `/tmp/eval1.py` | 同上，但不传场次（内测比赛1 用） | 3.6 |
+| `/tmp/oddn.py` | **用任意 N 测正确性**（比赛走不到的路径） | 5.3 |
+| `/tmp/dbg.py` | 打印某个 N 的实际输出 vs 期望输出（定位数值错） | 6.3 |
+
+**`oddn.py` 是这里最该常备的一个**：平台只会用固定的 10 个数据点评测，
+任何"比赛走不到的代码路径"都得靠它。
 
 ---
 
