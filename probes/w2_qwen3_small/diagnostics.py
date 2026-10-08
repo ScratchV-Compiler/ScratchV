@@ -15,6 +15,8 @@ import numpy as np
 import onnx
 from onnx import TensorProto, helper, numpy_helper
 
+from scratchv.verification.numeric_metrics import numeric_metrics, undefined_numeric_metrics
+
 
 def _names(names, label):
     names = list(names)
@@ -154,14 +156,18 @@ def tensor_diff(actual, expected, atol=1e-5) -> dict:
                   actual_finite=finite[0], expected_finite=finite[1], finite=all(finite),
                   empty=bool(comparable and actual.size == expected.size == 0),
                   worst_index=None, actual_value=None, expected_value=None, reason=None, atol=atol)
+    report.update(undefined_numeric_metrics("comparison is invalid"))
     if not comparable:
         report["reason"] = "outputs must be NumPy arrays"
+        report.update(undefined_numeric_metrics(report["reason"]))
         return report
     if not shape_matches or not dtype_matches:
         report["reason"] = "shape mismatch" if not shape_matches else "dtype mismatch"
+        report.update(undefined_numeric_metrics(report["reason"]))
         return report
     if actual.dtype.kind not in "biuf":
         report["reason"] = "outputs must have numeric dtypes"
+        report.update(undefined_numeric_metrics(report["reason"]))
         return report
     if not all(finite):
         invalid = ~np.isfinite(actual) | ~np.isfinite(expected)
@@ -169,7 +175,9 @@ def tensor_diff(actual, expected, atol=1e-5) -> dict:
         report.update(worst_index=[int(dim) for dim in index],
                       actual_value=_json_scalar(actual[index]),
                       expected_value=_json_scalar(expected[index]), reason="nonfinite output or reference")
+        report.update(undefined_numeric_metrics(report["reason"]))
         return report
+    report.update(numeric_metrics(actual, expected))
     if not actual.size:
         report.update(passed=True, max_abs=0.0)
         return report

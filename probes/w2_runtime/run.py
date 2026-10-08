@@ -280,17 +280,24 @@ def save_report(directory, report):
              "Fixed official tokenizer assets; encode/decode vs Transformers fast + slow and golden corpus.",
              "NFC normalization is official behavior; equivalence does not mean arbitrary raw-text byte preservation.",
              "No pretrained weights, full-model inference or text generation is executed.", "",
+             "<details><summary>Tokenizer 与输入准备逐项检查（展开详情）</summary>", "",
              "| Case | Checks | Passed |", "|---|---:|---|"]
     for row in report["tokenizer_cases"] + report["runtime_cases"]:
         lines.append(f"| {row['name']} | {row.get('checks', 1)} | {row['passed']} |")
+    lines.extend(["", "</details>", ""])
     if "error" in report:
         lines.extend(["", "Error: " + report["error"]])
     markdown = "\n".join(lines) + "\n"
+    intro, detail = markdown.split("<details>", 1)
+    detail, suffix = detail.split("</details>", 1)
+    caption, detail = detail.split("</summary>", 1)
+    caption = caption.removeprefix("<summary>")
     failures = []
     documents = {
         "report.md": markdown,
         "report.html": '<!doctype html><meta charset="utf-8"><title>W2 runtime gate</title><pre>'
-        + html.escape(markdown) + "</pre>",
+        + html.escape(intro) + '</pre><details><summary>' + html.escape(caption)
+        + '</summary><pre>' + html.escape(detail) + '</pre></details><pre>' + html.escape(suffix) + '</pre>',
     }
     for name, content in documents.items():
         if error := write(name, content):

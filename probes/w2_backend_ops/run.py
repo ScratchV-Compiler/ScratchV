@@ -27,6 +27,7 @@ import onnxruntime as ort
 
 from probes.w2_backend_ops.cases import build_cases
 from probes.w2_qwen3_small.diagnostics import tensor_diff
+from probes.numeric_summary import compact_metric_table, compact_metric_table_html, METRIC_EXPLANATION
 from scratchv.analysis.ir_verifier import verify_ir
 from scratchv.compiler import CompilerConfig, CompilerDriver
 from scratchv.frontend.onnx_parser import ONNXParser
@@ -68,7 +69,8 @@ def interpret(program, bindings, feed, level):
 
 def evidence():
     sources = [Path(__file__), ROOT / "probes/w2_backend_ops/cases.py",
-               ROOT / "probes/w2_qwen3_small/diagnostics.py", ROOT / "scratchv/compiler.py",
+               ROOT / "probes/w2_qwen3_small/diagnostics.py", ROOT / "probes/numeric_summary.py",
+               ROOT / "scratchv/verification/numeric_metrics.py", ROOT / "scratchv/compiler.py",
                ROOT / "scratchv/frontend/onnx_parser.py", ROOT / "scratchv/ir/types.py",
                ROOT / "scratchv/ir/builder.py", ROOT / "scratchv/pass_manager.py",
                ROOT / "scratchv/pass_interface.py", ROOT / "scratchv/verification/ir_interpreter.py",
@@ -177,7 +179,8 @@ def _report_markdown(report):
         for item in case["executions"]:
             lines.append(f"| {case['name']} | {item['optimization']} | {'PASS' if item['passed'] else 'FAIL'} | "
                          f"{item.get('qemu_vs_ort', {}).get('max_abs')} | {item['qemu_process_wall_seconds']} |")
-    lines.extend(["", "Timing includes QEMU startup, guest execution, UART transfer and exit; not guest cycles.",
+    lines.extend(["", "Level 的 none/all 表示关闭/开启全部 ScratchV IR 优化；C 交叉编译均使用 -O2。"
+                  "QEMU process seconds 为进程墙钟秒数，包含启动、目标程序计算、输出传输和退出，不是纯计算耗时。",
                   "", "Full diagnostics, commands, environment and source hashes:", "", "```json", payload.rstrip(), "```", ""])
     return "\n".join(lines)
 
@@ -209,9 +212,20 @@ def write_reports(out, report):
 
     def views():
         markdown = _report_markdown(report)
-        write("report.md", markdown)
+        summary = f"W2 基础后端算子检查：{'PASS' if report['passed'] else 'FAIL'}（展开详情）"
+        comparisons = [("基础算子 C→RISC-V/QEMU 对 ORT", [
+            next((execution.get("qemu_vs_ort", {}) for execution in case.get("executions", [])
+                  if execution.get("optimization") == level), {})
+            for case in report.get("cases", []) for level in LEVELS])]
+        description = ("基础后端检查 MatMul、逐元素、Softmax、RMSNorm、RoPE、SwiGLU、GQA 七类算子或组合；"
+                       "16 个用例分别关闭/开启 IR 优化，计划 32 次 QEMU 执行。不是完整 Transformer 模型。")
+        write("report.md", f"<details>\n<summary>{summary}</summary>\n\n{description}\n\n"
+              + compact_metric_table(comparisons) + "\n\n" + METRIC_EXPLANATION
+              + f"\n\n{markdown}\n</details>\n\n")
         write("report.html", "<!doctype html><meta charset='utf-8'><title>W2 backend operators</title>"
-              "<h1>W2 backend operators</h1><pre>" + escape(markdown) + "</pre>")
+              "<details><summary>" + escape(summary) + "</summary><p>" + escape(description) + "</p>"
+              + compact_metric_table_html(comparisons) + "<p>" + escape(METRIC_EXPLANATION) + "</p><pre>" + escape(markdown)
+              + "</pre></details>")
 
     views()
     if failures:

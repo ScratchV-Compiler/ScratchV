@@ -29,6 +29,42 @@ def test_strict_comparison_rejects_threshold_shape_dtype_and_nonfinite():
     json.dumps(nonfinite, allow_nan=False)
 
 
+def test_subgraph_metrics_keep_existing_error_field_and_absolute_gate():
+    actual = np.array([1, 2], np.float32)
+    expected = np.array([1, 1], np.float32)
+    row = run.tensor_diff(actual, expected)
+    assert not row["passed"] and row["max_abs_error"] == 1
+    assert "max_abs" not in row  # Saved report schema remains compatible.
+    assert row["relative_l2"] == pytest.approx(1 / np.sqrt(2))
+    assert row["cosine_similarity"] == pytest.approx(3 / np.sqrt(10))
+    from probes.w3_summary import summary_views
+    report = {"gate": "w3_qwen3_subgraphs", "sequence_length": 256, "cases": [
+        {"comparisons": {"ordinary_ort_vs_torch": row,
+                         **{f"ordinary_ir_{level}_vs_ort": row for level in run.LEVELS}}}]}
+    markdown, page = summary_views(report)
+    assert format(row["max_abs_error"], ".16e") in markdown
+    assert format(row["relative_l2"], ".16e") in markdown
+    assert format(row["cosine_similarity"], ".17g") in page
+    assert "指标不完整" not in markdown
+
+
+@pytest.mark.parametrize("invalid", ["shape", "dtype", "nonfinite"])
+def test_invalid_subgraph_comparisons_have_undefined_metric_reasons(invalid):
+    expected = np.array([1, 2], np.float32)
+    actual = expected.copy()
+    if invalid == "shape":
+        actual = actual.reshape(1, 2)
+    elif invalid == "dtype":
+        actual = actual.astype(np.float64)
+    else:
+        actual[0] = np.nan
+    row = run.tensor_diff(actual, expected)
+    assert not row["passed"]
+    for name in ("relative_l2", "cosine_similarity"):
+        assert row[name] is None and row[name + "_reason"]
+    json.dumps(row, allow_nan=False)
+
+
 def test_source_authentication_rejects_tampering_before_tensor_access(tmp_path):
     checkpoint = tmp_path / "model.safetensors"
     checkpoint.write_bytes(b"explicit authentication unit fixture, not a model")

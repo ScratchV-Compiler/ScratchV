@@ -24,6 +24,8 @@ from probes.w3_qwen3_full.cases import CASE_NAMES, input_cases
 
 MAX_JSON_BYTES = 8 * 1024**2
 HASH = re.compile(r"[0-9a-f]{64}\Z")
+OBSERVATIONAL_FIELDS = frozenset(("relative_l2", "cosine_similarity",
+                                  "relative_l2_reason", "cosine_similarity_reason"))
 SCOPE = ("Offline consistency and numerical recheck of saved seven-case arrays. "
          "No model execution, independent-person reproduction, current-source execution, "
          "Linux execution, Nightly run, or team acceptance is established. "
@@ -78,6 +80,37 @@ def source_difference(recorded, current):
             "missing_from_current": sorted(recorded.keys() - current.keys()),
             "scope": "Source mismatch is reported, not silently treated as current-source execution. "
                      "This audit recomputes stored-array comparisons only."}
+
+
+def comparison_matches_saved(recomputed, saved):
+    """Permit only the absent four-field observation group in legacy rows.
+
+    Old reports predate these descriptive metrics. Existing fields and any
+    recorded metrics must still match the arrays; a partial group is invalid.
+    This does not relax profiles, source evidence, thresholds or PASS checks.
+    """
+    if isinstance(recomputed, dict):
+        if not isinstance(saved, dict):
+            return False
+        wanted = set(recomputed)
+        observed = OBSERVATIONAL_FIELDS & saved.keys()
+        if OBSERVATIONAL_FIELDS <= wanted:
+            if not observed:
+                wanted -= OBSERVATIONAL_FIELDS
+            elif observed != OBSERVATIONAL_FIELDS:
+                return False
+            else:
+                # JSON booleans must not impersonate numeric 0/1 observations.
+                if any(type(saved[key]) is not type(recomputed[key])
+                       for key in OBSERVATIONAL_FIELDS):
+                    return False
+        if set(saved) != wanted:
+            return False
+        return all(comparison_matches_saved(recomputed[key], saved[key]) for key in wanted)
+    if isinstance(recomputed, list):
+        return (isinstance(saved, list) and len(recomputed) == len(saved)
+                and all(comparison_matches_saved(a, b) for a, b in zip(recomputed, saved)))
+    return recomputed == saved
 
 
 def verify(directory, *, model_dir=None, expected_report_sha256=None, progress=None):
@@ -149,7 +182,8 @@ def verify(directory, *, model_dir=None, expected_report_sha256=None, progress=N
                 profiles.append(evidence["ir"]["fp32_profile"])
         comparison = full.compare_case(folder, valid)
         require(comparison["passed"], f"Recomputed logits fail threshold: {name}")
-        require(comparison == row.get("comparison"), f"Stored comparison differs from arrays: {name}")
+        require(comparison_matches_saved(comparison, row.get("comparison")),
+                f"Stored comparison differs from arrays: {name}")
         verified.append({"name": name, "passed": True, "valid_length": valid,
                          "input_sha256": row["input_sha256"], "comparison": comparison})
         if progress:
@@ -158,7 +192,7 @@ def verify(directory, *, model_dir=None, expected_report_sha256=None, progress=N
             "Inconsistent numerical profiles")
     invariants = full.invariants(directory, set(CASE_NAMES))
     require(len(invariants) == 4 and all(row["passed"] for row in invariants), "Recomputed invariants fail")
-    require(invariants == top.get("invariants"), "Stored invariants differ from arrays")
+    require(comparison_matches_saved(invariants, top.get("invariants")), "Stored invariants differ from arrays")
     require(sha256_file(top_path) == digest, "Producer report changed during audit")
     return {"gate": "audit:w3-full-saved-evidence", "schema_version": 1, "status": "PASS", "passed": True,
             "scope": SCOPE, "model_executed": False, "independent_reproduction": False,
@@ -168,6 +202,10 @@ def verify(directory, *, model_dir=None, expected_report_sha256=None, progress=N
             "producer_git": top.get("git"), "auditor": current, "source_comparison": differences,
             "fp32_mode": top["fp32_mode"], "fp32_profile": profiles[0], "cases": verified,
             "invariants": invariants, "coverage_complete": True,
+            "comparison_compatibility": {
+                "allowed_legacy_missing_fields": sorted(OBSERVATIONAL_FIELDS),
+                "scope": "Only a wholly absent observation group is accepted for legacy tensor rows. "
+                         "All observations in this audit are recomputed from saved arrays, not a new model run."},
             "checkpoint_threshold_scope": "Checkpoints are finite FP32 diagnostics; the strict numerical gate "
                                           "applies to every ordinary/diagnostic output logit, including padding."}
 

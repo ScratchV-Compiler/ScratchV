@@ -38,6 +38,7 @@ from scratchv.analysis.ir_verifier import verify_ir
 from scratchv.frontend.onnx_parser import ONNXParser
 from scratchv.pass_manager import create_optimization_pass_manager
 from scratchv.verification.ir_interpreter import IRInterpreter
+from scratchv.verification.numeric_metrics import numeric_metrics, undefined_numeric_metrics
 
 ATOL = 1e-4
 LEVELS = ("none", "basic", "all")
@@ -65,10 +66,13 @@ def tensor_diff(actual, expected, atol=ATOL):
            "max_abs_error": None, "firstdiff": None, "passed": False}
     if not row["shape_matches"]:
         row["firstdiff"] = {"reason": "shape mismatch"}
+        row.update(undefined_numeric_metrics("shape mismatch"))
         return row
     if actual.dtype != np.float32 or expected.dtype != np.float32:
         row["firstdiff"] = {"reason": "FP32 dtype mismatch"}
+        row.update(undefined_numeric_metrics("FP32 dtype mismatch"))
         return row
+    row.update(numeric_metrics(actual, expected))
     with np.errstate(invalid="ignore", over="ignore"):
         error = np.abs(actual.astype(np.float64) - expected.astype(np.float64))
     bad = ~np.isfinite(actual) | ~np.isfinite(expected) | (error >= atol)

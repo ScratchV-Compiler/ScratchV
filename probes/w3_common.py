@@ -203,14 +203,17 @@ def write_reports(out, report):
         title = str(report.get("gate", "W3 preparation"))
         status = str(report.get("status", "PASS" if report.get("passed") else "FAIL"))
         markdown = f"# {title}\n\nResult: **{status}**\n\n"
-        markdown += "See the structured evidence below for scope, source identity, cases, errors and measurements.\n\n"
-        fence = chr(96) * 3
-        markdown += fence + "json\n" + payload + fence + "\n"
+        from probes.w3_summary import evidence_index_views, summary_views
+        summary_md, summary_html = summary_views(report)
+        index_md, index_html = evidence_index_views(report)
+        markdown += summary_md + index_md
         html = ('<!doctype html><meta charset="utf-8"><title>' + escape(title) + '</title>'
                 '<style>body{max-width:1100px;margin:30px auto;padding:0 20px;font:16px system-ui}'
-                'pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f7;padding:20px}</style>'
+                'table{width:100%;border-collapse:collapse;margin:16px 0}'
+                'th,td{border:1px solid #ccc;padding:8px 12px;text-align:left;overflow-wrap:anywhere}'
+                'th{background:#f3f5f7}summary{cursor:pointer}details{margin-top:20px}</style>'
                 '<h1>' + escape(title) + '</h1><p>Result: <strong>' + escape(status) +
-                '</strong></p><pre>' + escape(payload) + '</pre>')
+                '</strong></p>' + summary_html + index_html)
         atomic_text(out / "report.md", markdown)
         atomic_text(out / "report.html", html)
         atomic_text(out / "report.json", payload)

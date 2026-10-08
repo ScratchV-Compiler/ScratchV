@@ -169,7 +169,7 @@ def test_report_errors_cannot_leave_success(tmp_path, monkeypatch, failure, prim
     assert not (tmp_path / ".report.json.tmp").exists()
     for name in ("report.md", "report.html"):
         if name != failure:
-            assert "FAIL" in (tmp_path / name).read_text()
+            assert "FAIL" in (tmp_path / name).read_text(encoding="utf-8")
 
 
 def test_main_preserves_existing_evidence(tmp_path):

@@ -237,6 +237,75 @@ def test_reported_error_must_match_actual_arrays(evidence):
         audit.verify(root)
 
 
+def remove_observations(value):
+    if isinstance(value, dict):
+        for key in audit.OBSERVATIONAL_FIELDS:
+            value.pop(key, None)
+        for child in value.values():
+            remove_observations(child)
+    elif isinstance(value, list):
+        for child in value:
+            remove_observations(child)
+
+
+def test_legacy_observation_absence_recomputes_metrics_without_rewriting_evidence(evidence, monkeypatch):
+    root, top = evidence
+    remove_observations(top)
+    write_json(root / "report.json", top)
+    original = (root / "report.json").read_bytes()
+    monkeypatch.setattr(full, "run_worker", lambda *a, **k: pytest.fail("Audit executed a model"))
+    result = audit.verify(root, expected_report_sha256=sha256_file(root / "report.json"))
+    assert result["passed"] and result["trusted_report_hash_checked"]
+    row = result["cases"][0]["comparison"]["logits"][0]
+    assert row["relative_l2"] == 0 and row["cosine_similarity"] is None
+    assert "zero norm" in row["cosine_similarity_reason"]
+    assert "relative_l2" in result["invariants"][0]
+    assert set(result["comparison_compatibility"]["allowed_legacy_missing_fields"]) == audit.OBSERVATIONAL_FIELDS
+    assert result["model_executed"] is False and result["independent_reproduction"] is False
+    assert result["w3_exit_accepted"] is False
+    assert (root / "report.json").read_bytes() == original
+
+
+@pytest.mark.parametrize("target", ["logits", "padding", "checkpoint", "invariant"])
+@pytest.mark.parametrize("mutation", ["value", "reason", "partial", "boolean"])
+def test_recorded_observations_must_match_at_every_nested_location(evidence, target, mutation):
+    root, top = evidence
+    comparison = top["cases"][3]["comparison"]
+    rows = {"logits": comparison["logits"][0],
+            "padding": comparison["logits"][0]["padding_queries"],
+            "checkpoint": comparison["checkpoints"][0], "invariant": top["invariants"][0]}
+    row = rows[target]
+    if mutation == "value":
+        row["relative_l2"] = 0.125
+    elif mutation == "reason":
+        row["cosine_similarity_reason"] = "invented"
+    elif mutation == "partial":
+        del row["relative_l2"]
+    else:
+        row["relative_l2"] = False
+    write_json(root / "report.json", top)
+    with pytest.raises(ValueError, match="Stored (comparison|invariants) differ"):
+        audit.verify(root)
+
+
+@pytest.mark.parametrize("mutation", ["max_abs", "missing_atol", "extra_key", "wrong_order"])
+def test_legacy_compatibility_does_not_relax_original_comparison_fields(evidence, mutation):
+    root, top = evidence
+    remove_observations(top)
+    comparison = top["cases"][0]["comparison"]
+    if mutation == "max_abs":
+        comparison["logits"][0]["max_abs"] = 1e-6
+    elif mutation == "missing_atol":
+        del comparison["logits"][0]["atol"]
+    elif mutation == "extra_key":
+        comparison["logits"][0]["relative_l2_typo"] = 0
+    else:
+        comparison["logits"].reverse()
+    write_json(root / "report.json", top)
+    with pytest.raises(ValueError, match="Stored comparison differs"):
+        audit.verify(root)
+
+
 def test_invariants_recomputed_even_when_both_backends_agree(evidence):
     root, top = evidence
     def modify(report, folder):

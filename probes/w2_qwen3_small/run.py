@@ -30,6 +30,9 @@ if str(ROOT) not in sys.path:
 from probes.w2_qwen3_small.diagnostics import (  # noqa: E402
     build_diagnostic_model, compare_outputs, tensor_diff, unpack_trace,
 )
+from probes.numeric_summary import (  # noqa: E402
+    METRIC_EXPLANATION, compact_metric_table, compact_metric_table_html,
+)
 
 ATOL = 1e-5
 SEQ = 256
@@ -165,7 +168,9 @@ def provenance() -> dict:
         for path in [*sorted(Path(__file__).parent.glob("*.py")),
                      ROOT / "scratchv/frontend/onnx_parser.py",
                      ROOT / "scratchv/verification/ir_interpreter.py",
-                     ROOT / "scratchv/verification/ir_numpy_ops.py"]}
+                     ROOT / "scratchv/verification/ir_numpy_ops.py",
+                     ROOT / "scratchv/verification/numeric_metrics.py",
+                     ROOT / "probes/numeric_summary.py"]}
     return result
 
 
@@ -311,90 +316,122 @@ def run_probe(out: Path, report: dict, model_seed: int = 0) -> None:
     report.pop("current_case", None)
 
 
-def _report_markdown(report: dict) -> str:
-    lines = ["# Real two-layer Qwen3 numerical probe", "",
-             f"Result: **{'PASS' if report['passed'] else 'FAIL'}**", "",
-             "Official transformers 4.51.3 Qwen3, seeded random weights, FP32, L=256, no KV cache.",
-             "All checkpoint positions must pass max absolute error < 1e-5 (rtol=0).",
-             "Padding queries are also checked and are reported separately in JSON.",
-             "Diagnostic outputs observe the same forward; ordinary logits-only IR is checked separately.",
-             "This probe does not validate pretrained language quality or RISC-V execution.", ""]
+def _table_views(headers, rows):
+    """Render the same small, escaped table in both report formats."""
+    def markdown_cell(value):
+        return escape(str(value)).replace("|", "&#124;").replace("\n", "<br>")
+
+    markdown = ["| " + " | ".join(map(markdown_cell, headers)) + " |",
+                "|" + "---|" * len(headers)]
+    markdown += ["| " + " | ".join(map(markdown_cell, row)) + " |" for row in rows]
+    header = "".join(f"<th>{escape(str(value))}</th>" for value in headers)
+    body = "".join("<tr>" + "".join(f"<td>{escape(str(value))}</td>" for value in row)
+                   + "</tr>" for row in rows)
+    return "\n".join(markdown), f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _details_views(title, markdown, html, *, opened=False):
+    attribute = " open" if opened else ""
+    heading = f"<details{attribute}><summary>{escape(title)}</summary>"
+    return f"{heading}\n\n{markdown}\n\n</details>", f"{heading}{html}</details>"
+
+
+def _page_html(title, content):
+    css = ("body{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:32px auto;padding:0 20px;color:#182536}"
+           "details{margin:16px 0;padding:12px;border:1px solid #dce3eb;overflow:auto}"
+           "summary{cursor:pointer;font-weight:650}table{border-collapse:collapse;width:100%;font-size:14px}"
+           "th,td{text-align:left;padding:8px;border:1px solid #dce3eb}"
+           "pre{white-space:pre-wrap;overflow-wrap:anywhere}.failure{color:#a42020;font-weight:bold}")
+    return ("<!doctype html><html lang='zh-CN'><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>{escape(title)}</title><style>{css}</style><body>{content}</body></html>")
+
+
+def _host_report_views(report):
+    cases = report.get("cases", [])
+    comparisons = []
+    for name, label in (("pytorch_vs_ort", "ORT / PyTorch（Transformer 导出）"),
+                        ("ir_vs_ort", "IR 原生 NumPy / ORT")):
+        rows = [case.get("ordinary_logits", {}).get(name, {}) for case in cases]
+        # Missing cases or old metric fields must not look like full coverage.
+        rows += [{}] * max(0, 7 - len(cases))
+        comparisons.append((label, rows))
+    description = ("官方 Qwen3 结构的两层缩小模型，固定随机权重，FP32、L=256、无 KV cache。"
+                   "同一模型、同一权重和输入分别执行 PyTorch、ONNX Runtime（ORT）与 ScratchV IR 解释器。")
+    scope = ("核心表仅汇总普通图的最终 logits，覆盖全部位置（含 padding）。"
+             "比较名称按“被测 / 参考”排列；七个输入场景包括两份满长输入、1/17/255 token 边界、因果与补齐隔离检查。"
+             "验收仍要求所有检查点及普通/诊断图一致性通过严格 MaxAbs < 1e-5（rtol=0）。")
+    limitation = "本报告验证数值计算，不运行 C/RISC-V，也不评估随机权重模型的语言能力（PPL、zero-shot 未启用）。"
+    status = "PASS" if report.get("passed") else "FAIL"
+    title = "两层 Qwen3：Transformer 导出与 IR 精度"
+    markdown = [f"# {title}", "", f"Result: **{status}**", "", description, "", scope, "",
+                compact_metric_table(comparisons), "", METRIC_EXPLANATION, "", limitation]
+    html = [f"<h1>{escape(title)}</h1><p><strong>Result: {status}</strong></p>",
+            f"<p>{escape(description)}</p><p>{escape(scope)}</p>", compact_metric_table_html(comparisons),
+            f"<p>{escape(METRIC_EXPLANATION)}</p><p>{escape(limitation)}</p>"]
+    failures = []
     if report.get("error"):
-        lines += [f"Failed stage: `{report['stage']}`", "", "```text", report["error"], "```", ""]
-    lines += ["| Case | Valid tokens | PyTorch / ORT max error | IR / ORT max error | First divergence | Result |",
-              "|---|---:|---:|---:|---|---|"]
-    for case in report.get("cases", []):
-        pairs = [case.get(name, {}) for name in ("pytorch_vs_ort", "ir_vs_ort")]
-        maxima = [max((row["max_abs"] for row in pair.get("checkpoints", [])
-                       if row.get("max_abs") is not None), default=None) for pair in pairs]
-        values = [f"{value:.3e}" if value is not None else "n/a" for value in maxima]
-        first = next((pair.get("first_divergence") for pair in pairs if pair.get("first_divergence")), "none")
-        lines.append(f"| {case['name']} | {case['valid_length']} | {values[0]} | {values[1]} | "
-                     f"{first} | {'PASS' if case['passed'] else 'FAIL'} |")
-    for case in report.get("cases", []):
-        lines += ["", f"<details><summary>{case['name']}: checkpoint comparisons</summary>", "",
-                  "| Comparison | Checkpoint | Max absolute error | Result |", "|---|---|---:|---|"]
+        failures.append(f"阶段 {report.get('stage', 'unknown')}: {report['error']}")
+    for case in cases:
+        if case.get("passed") is not True:
+            first = next((case.get(pair, {}).get("first_divergence") for pair in
+                          ("pytorch_vs_ort", "ir_vs_ort") if case.get(pair, {}).get("first_divergence")), None)
+            failures.append(f"{case.get('name', 'unknown')}: FAIL；"
+                            + (f"首次超限检查点 {first}" if first else "有检查失败或尚未完成，请展开明细"))
+    for check in report.get("invariants", []):
+        if check.get("passed") is not True:
+            failures.append(f"{check.get('name')} / {check.get('backend')}: 隔离检查 FAIL")
+    if not report.get("passed") and not failures:
+        failures.append(f"阶段 {report.get('stage', 'unknown')}: 尚未完成全部验收")
+    if failures:
+        markdown += ["", "**失败／未完成项**", "", *[f"- {escape(item)}" for item in failures]]
+        html.append("<div class='failure'><p>失败／未完成项</p><ul>"
+                    + "".join(f"<li>{escape(item)}</li>" for item in failures) + "</ul></div>")
+
+    def append_detail(title, headers, rows, note="", *, opened=False):
+        md, body = _table_views(headers, rows)
+        if note:
+            md += "\n\n" + note
+            body += f"<p>{escape(note)}</p>"
+        md, body = _details_views(title, md, body, opened=opened)
+        markdown.extend(["", md])
+        html.append(body)
+
+    case_rows = []
+    for case in cases:
+        ordinary = case.get("ordinary_logits", {})
+        case_rows.append([case.get("name"), case.get("valid_length"),
+                          ordinary.get("pytorch_vs_ort", {}).get("max_abs", "未统计"),
+                          ordinary.get("ir_vs_ort", {}).get("max_abs", "未统计"),
+                          "PASS" if case.get("passed") else "FAIL"])
+    append_detail("输入场景明细", ["场景", "有效 token", "ORT / PyTorch MaxAbs", "IR / ORT MaxAbs", "全部检查"], case_rows)
+    checkpoint_rows = []
+    for case in cases:
         for pair in ("pytorch_vs_ort", "ir_vs_ort"):
             for row in case.get(pair, {}).get("checkpoints", []):
-                lines.append(f"| {pair} | {row['name']} | {row.get('max_abs')} | "
-                             f"{'PASS' if row['passed'] else 'FAIL'} |")
-        lines += ["", "</details>"]
-    lines += ["", "| Invariant | Backend | Max absolute error | Result |", "|---|---|---:|---|"]
-    for check in report.get("invariants", []):
-        lines.append(f"| {check['name']} | {check['backend']} | {check.get('max_abs')} | "
-                     f"{'PASS' if check['passed'] else 'FAIL'} |")
-    return "\n".join(lines) + "\n"
+                checkpoint_rows.append([case.get("name"), pair, row.get("name"), row.get("max_abs"),
+                                        "PASS" if row.get("passed") else row.get("reason") or "FAIL"])
+        for name, row in case.get("ordinary_logits", {}).items():
+            if "diagnostic_vs_ordinary" in name:
+                checkpoint_rows.append([case.get("name"), name, "logits", row.get("max_abs"),
+                                        "PASS" if row.get("passed") else row.get("reason") or "FAIL"])
+    append_detail("检查点与普通/诊断图一致性", ["场景", "比较", "检查点", "MaxAbs", "结果"], checkpoint_rows,
+                  "normal 为只输出最终 logits 的普通图；diagnostic 额外输出中间检查点以定位误差。两种图都参与验收。")
+    append_detail("因果与补齐隔离检查", ["检查", "执行路径", "MaxAbs", "结果"],
+                  [[row.get("name"), row.get("backend"), row.get("max_abs"),
+                    "PASS" if row.get("passed") else "FAIL"] for row in report.get("invariants", [])])
+    footer = "完整诊断、位置明细、命令、环境与源码指纹保存在 report.json；原始数组随 CI artifact 提供。"
+    markdown.extend(["", footer])
+    html.append(f"<p>{escape(footer)}</p>")
+    return "\n".join(markdown) + "\n", _page_html(title, "".join(html))
+
+
+def _report_markdown(report: dict) -> str:
+    return _host_report_views(report)[0]
 
 
 def _report_html(report: dict) -> str:
-    """A portable, dependency-free view of the same numeric evidence."""
-    def cell(value):
-        return escape(str(value))
-
-    def table(rows, columns):
-        header = "".join(f"<th>{cell(column)}</th>" for column in columns)
-        body = "".join("<tr>" + "".join(f"<td>{cell(value)}</td>" for value in row) + "</tr>"
-                       for row in rows)
-        return f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
-
-    status = "PASS" if report["passed"] else "FAIL"
-    sections = [f"<h1>Real two-layer Qwen3 probe</h1><p class='{status.lower()}'>{status}</p>",
-                "<p>FP32 · L=256 · 29 checkpoints · max absolute error &lt; 1e-5</p>",
-                "<p>Official Qwen3 with random weights. All positions, including padding queries, are checked. "
-                "Ordinary logits and diagnostic graphs must both pass. This is not a RISC-V or pretrained quality test.</p>"]
-    if report.get("error"):
-        sections.append(f"<pre>{cell(report['stage'])}: {cell(report['error'])}</pre>")
-    for case in report.get("cases", []):
-        case_status = "PASS" if case["passed"] else "FAIL"
-        details = []
-        for pair in ("pytorch_vs_ort", "ir_vs_ort"):
-            comparison = case.get(pair, {})
-            details.append(f"<h3>{cell(pair)}</h3><p>First divergence: "
-                           f"{cell(comparison.get('first_divergence') or 'none')}</p>")
-            rows = [[row["name"], row.get("max_abs"), row.get("worst_index"),
-                     row.get("actual_value"), row.get("expected_value"),
-                     "PASS" if row["passed"] else row.get("reason")]
-                    for row in comparison.get("checkpoints", [])]
-            details.append(table(rows, ["Checkpoint", "Max abs", "Worst index", "Actual", "Reference", "Result"]))
-        auxiliary = {"capture_preserves_logits": case.get("capture_preserves_logits"),
-                     "ordinary_logits": case.get("ordinary_logits"),
-                     "attention_checks": case.get("attention_checks")}
-        details.append(f"<h3>Other checks</h3><pre>{cell(json.dumps(auxiliary, indent=2))}</pre>")
-        opened = " open" if not case["passed"] else ""
-        sections.append(f"<details{opened}><summary>{cell(case['name'])} · "
-                        f"{case['valid_length']} valid tokens · {case_status}</summary>{''.join(details)}</details>")
-    rows = [[check["name"], check["backend"], check.get("max_abs"),
-             "PASS" if check["passed"] else "FAIL"] for check in report.get("invariants", [])]
-    sections.append("<h2>Metamorphic checks</h2>" + table(rows, ["Invariant", "Backend", "Max abs", "Result"]))
-    sections.append("<p>Full environment, schemas, hashes and valid/padding breakdowns are in report.json.</p>")
-    css = ("body{font:16px/1.5 system-ui,sans-serif;max-width:1200px;margin:40px auto;padding:0 24px;color:#182536;background:#f7f9fc}"
-           "h1{font-size:30px}h3{font-size:18px}details{background:white;margin:16px 0;padding:16px;border:1px solid #dce3eb;border-radius:8px;overflow:auto}"
-           "summary{cursor:pointer;font-weight:650}table{border-collapse:collapse;width:100%;font-size:13px;background:white}"
-           "th,td{text-align:left;padding:8px;border-bottom:1px solid #dce3eb}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}"
-           ".pass{color:#126538;font-weight:bold}.fail{color:#a42020;font-weight:bold}")
-    document = ("<!doctype html><html lang='en'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                f"<title>Qwen3 small probe · {status}</title><style>{css}</style><body>{''.join(sections)}</body></html>")
-    return document
+    return _host_report_views(report)[1]
 
 
 def write_reports(out: Path, report: dict) -> None:

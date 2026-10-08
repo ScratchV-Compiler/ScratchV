@@ -58,6 +58,10 @@ export SCRATCHV_FP32_REFERENCE_CPU=auto
 
 统一 `report.json`、`report.md` 和 `report.html` 包含每组输入、每个 worker、完整比较和四项不变量。`cases[].comparison.logits` 是最终精度验收数据，`checkpoints` 及 `first_divergence` 定位最早超过诊断阈值的检查点。
 
+Summary 将普通图与诊断图的最终 logits 分开，明确实际 `native/reference` 模式，并报告最大绝对误差、余弦相似度和相对 L2 误差；逐用例索引默认折叠，完整检查点和机器证据仅保存在 `report.json`，不重复嵌入摘要。后两项由实际输出和参考数组分块计算，使用 FP64 累积，不改变原有通过门槛。不能把参考兼容模式的通过结果归给默认 NumPy 模式。旧报告不补写或重新命名为本轮运行；离线重算保存数组也不代表重新执行了模型。
+
+PPL（真实文本预测的困惑度）和 zero-shot（无示例任务评分）本轮未评测。这里的随机 token 输入用于数值对齐，不能作为语言质量语料；加入这类评测前需要固定真实文本、Tokenizer、L=256 的分窗及计分方式。
+
 每组目录内有 `inputs.npz`、ORT/IR 日志，以及两个后端各自的完整 logits、诊断 logits、检查点 NPZ、schema、报告和阶段进度。报告包含固定模型、输入、输出及源码哈希；统一入口重新校验原始数组与报告一致性。
 
 `cases[].workers[].stages_seconds` 可查看模型解析、普通执行、诊断执行和写盘时间；统一 `elapsed_seconds` 包括所有 worker 及文件核对。`process_peak_rss_bytes` 为该 worker 的全生命周期峰值，`resource_monitor` 是父进程采样观测。两者测量口径不同。
