@@ -507,6 +507,9 @@ scratchv bad.dsl -o output.s 2> error.txt
 
 ## 16. 测试计划
 
+本节复现命令统一使用 Linux / Bash，在仓库根目录和 Python 3.12 虚拟环境中执行；
+依赖安装见 [CI 与 Benchmark](09-DSL错误提示美化器-CI与Benchmark.md#专项测试)。
+
 ### 16.1 快速测试
 
 开发过程中每个小步骤运行：
@@ -524,12 +527,6 @@ python -m pytest \
   tests/test_dsl_errors.py \
   tests/test_dsl_validator.py \
   tests/test_dsl_diagnostics_cli.py -q
-```
-
-Windows PowerShell 可把路径放在同一行执行。
-
-```powershell
-python -m pytest tests/test_parser.py tests/test_dsl_extended.py tests/test_dsl_errors.py tests/test_dsl_validator.py tests/test_dsl_diagnostics_cli.py -q
 ```
 
 ### 16.3 项目验证

@@ -1,148 +1,92 @@
-Qwen3 ONNX 算子补齐与单测报告
-日期：2026-10-01
+Qwen3 ONNX 算子补齐与单测：Linux 复现说明
+更新：2026-10-06
 
-工作目录：仓库根目录；本文使用仓库相对路径。
-主干基线：20b105e80ba3dbe13cb01a3d4ca18c32b6c31ed6
-历史测量状态：原始算子探测和 benchmark 在实现尚未提交时执行；归档报告保留测量时的 HEAD、dirty 和源码指纹。
-本文用于随算子实现及测试 PR 归档，不以历史 dirty 标记描述当前提交或远程仓库状态。
-本报告更新上一阶段“真实 Qwen3 尚缺八类前端算子”的临时结论。
+正式交付与他人复现环境：Ubuntu 24.04 x86_64 / Bash / Python 3.12。
+所有命令在仓库根目录执行。通用环境约定见 docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md。
+个人本机测量的原始版本保留在固定提交：
+https://github.com/ScratchV-Compiler/ScratchV/blob/2d07ccc42936dcfde19d552bca02a324cd33821c/docs/llm-deploy-v1.0/W1/算子补齐与单测报告.txt
+原始平台、计数、计时和数值不改名为 Linux 数据；新结果必须由下面的 Linux 命令重新生成。
 
-一、完成范围
+一、实现范围
 
-完成 ONNX 前端 → 共享 IR → NumPy 解释器路径所需的两组算子：
-1. PR #89 探测图八类：Gather、Sqrt、ReduceMean、Transpose、Concat、Slice、Unsqueeze、Expand。
-2. 真实 Qwen3 导出图额外八类：Abs、Cast、Constant、Cos、Identity、Pow、Reciprocal、Sin。
-第一组复用已有 IR 算子与内核，补齐前端和边界测试；第二组新增六个 IR opcode，Constant 绑定为全局常量，Identity 复用输入值。
+ONNX 前端 → 共享 IR → NumPy 解释器覆盖两组算子：
+1. PR #89 探测图：Gather、Sqrt、ReduceMean、Transpose、Concat、Slice、Unsqueeze、Expand。
+2. 真实 Qwen3 导出额外需要：Abs、Cast、Constant、Cos、Identity、Pow、Reciprocal、Sin。
+第一组复用已有 IR 与内核，补前端/边界；第二组新增 ABS、CAST、COS、SIN、POW、RECIPROCAL，Constant 使用绑定，Identity 复用输入值。
 
-二、本轮代码改动
+语义修复包括零维标量与向量区别、INT64 精度、静态 shape/axis 参数链、外部权重和 Constant、FP32 常量舍入、临时值命名冲突、静态求值规模限制、Cast 截断/溢出、Pow 广播与整数精度，以及 Slice 的反向边界和 INT64 哨兵。前端不将中间值伪装为 initializer。
 
-scratchv/frontend/onnx_parser.py
-- 补齐第二组前端映射；支持 Constant 的 tensor、value_int/value_ints、value_float/value_floats。
-- 保持零维标量、单元素向量与 INT64 值的区别，支持外部权重及 Constant 外部数据。
-- 求值 Constant → Cast/Abs/Reshape 等静态 shape/axis 链，适配真实 Qwen3 导出形式。
-- 不将中间结果冒充 initializer；限制静态参数求值规模，避免超大 Expand 与尺寸乘积溢出。
-- Add/Mul 统一发出 IR，修复 Python 标量折叠造成的 FP32 舍入与整数宽度错误。
-- 预留全图 v_N 名字，修复 ONNX 原始名字和临时结果名碰撞。
-- 明确拒绝当前 IR 不支持的数据类型。
+二、验收用例
 
-scratchv/ir/types.py、scratchv/ir/builder.py
-- 新增 ABS、CAST、COS、SIN、POW、RECIPROCAL 及 builder 方法。
-- Cast 的结果 dtype 表示目标类型；Pow 允许底数与指数类型不同，结果保持底数类型。
+tests/test_onnx_shape_ops.py：八类形状/索引算子，ORT 对照、边界和非法参数。
+tests/test_onnx_qwen_numeric_ops.py：数值算子、常量、静态参数链及 RMSNorm 组合。
+tests/test_ir_qwen_numeric_ops.py：IR 类型、广播、整数精度与错误定位。
+tests/test_onnx_constant_regressions.py：FP32 舍入、整数宽度、名字碰撞、求值规模。
+tests/test_onnx_operator_benchmark.py：基准自身的身份、正确性及失败传播。
+实际 passed/skipped/failed 以本次 Linux 输出为准，不沿用历史计数。
 
-scratchv/analysis/ir_verifier.py
-- 增加新算子签名、浮点算子类型约束和 Pow 输出类型校验。
+三、Linux 环境与资产准备
 
-scratchv/verification/ir_numpy_ops.py
-- 增加新算子的实际 NumPy 求值和数值错误诊断。
-- Cast 整数缩窄保留低位；浮点转整数按截断后范围检查，避免 INT64 边界错误。
-- Pow 支持广播、混合类型以及有界的精确整数计算。
-- Slice 使用 ONNX 的正反向钳制规则，修复过小负 start 的反向切片，并处理空维和 INT64 哨兵。
+以下为 Bash，已存在环境时可复用，但必须核对依赖版本。benchmark 使用单独环境，以保持历史前后对照依赖；它不替代完整模型门禁的固定导出环境。
 
-三、测试
+set -euo pipefail
+sudo apt-get update
+sudo apt-get install --no-install-recommends python3.12-venv git-lfs
+python3.12 -m venv .venv-operators
+source .venv-operators/bin/activate
+python -m pip install "numpy==2.5.3" "onnx==1.23.0" "onnxruntime==1.29.0" "pytest==9.1.1"
+python -m pip install --no-deps -e .
+python -m pip check
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
 
-本轮新增四个测试文件，共 282 个用例：
-- tests/test_onnx_shape_ops.py：116 个，第一组八类算子与 ORT 对照、边界和非法参数。
-- tests/test_onnx_qwen_numeric_ops.py：78 个，第二组算子、外部常量、实际静态参数链及 RMSNorm 组合。
-- tests/test_ir_qwen_numeric_ops.py：74 个，IR builder、类型签名、广播、整数精度、数值边界与错误定位。
-- tests/test_onnx_constant_regressions.py：14 个，FP32 舍入、整数宽度、名字碰撞和静态求值规模限制。
-更新 tests/test_ir_verifier.py 的穷举签名表，覆盖六个新增 opcode。
-延续上一阶段的 tests/test_onnx_transformer_execution.py 和 initializer 测试修复。
-
-算子及原有相关回归共 715 项，加上 22 项 benchmark 自检；提交前合并重跑结果为 737 passed，无失败。
-该次合并运行有 7 条 NumPy 配置提示 warnings，未影响测试通过。
-其中 715 项算子及原有相关回归的分组记录如下：
-- IR、解释器、校验器、优化器、PassManager 相关：439 passed。
-- 前端、ONNX 算子、Transformer 组合、诊断和相关 benchmark：262 passed。
-- Constant 专项回归：14 passed（另与已计入的 85 项用例联合运行，结果 99 passed）。
-这是相关回归集合，未声称运行整个项目测试全集。
-单测测量环境：Python 3.12.13，NumPy 2.5.3、ONNX 1.23.0、ORT 1.29.0，Python -X utf8 -B。
-
-四、模型验证
-
-1. PR #89 原始 LFS 模型未修改：
-   probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx
-   SHA-256：17a8f191ee65a9d97143131016058e8a3c10a7d5c06e8152bf16dd8941cd19e1
-   本轮重新运行 seed=1：ORT vs 独立 NumPy 参考最大绝对误差 1.09718e-6；IR vs ORT 为 7.1525574e-7。
-   均通过最大绝对误差 <1e-5；IR 执行 159 步。
-   另有 seed=0/1/42 的组合回归通过。
-   原始探测 JSON 保留在本机，未随本 PR 归档；此处保留模型指纹和数值结论。
-
-2. 本地真实 Qwen3-0.6B 导出模型：
-   models/qwen3-0.6b-onnx/model.onnx（额外交付模型，不包含在本次算子 PR 中）
-   7847 个 ONNX 节点、23 类算子；未识别算子为 0。
-   完整载入外部权重，得到 2148 个全局定义、5910 条 IR 指令。
-   verify_ir 通过，问题数为 0。
-   原始结构审计 JSON 保留在本机，未随本 PR 归档。
-   此项是完整图解析及结构/类型校验，不是全模型 IR 推理的数值对照。
-模型探测使用独立导出依赖环境（NumPy 2.2.6、ONNX 1.18.0、ORT 1.22.1）。
-
-五、支持边界与下一步
-
-本次范围是部署方案所需的静态图及 FP32 路径，同时覆盖 IR 已有的 FLOAT64、INT32、INT64 类型。
-没有实现 ONNX 的全部 dtype/opset 扩展；动态 shape/axis 参数及 Reshape allowzero=1 仍明确拒绝。
-解释器沿用严格数值策略：非法定义域、非有限结果以及新增 Abs/整数 Pow 的溢出会报错。
-整数 Pow 对大整数采用精确计算，ORT CPU 在超 2**53 的整数幂上可能存在浮点精度差异；实际 Qwen 使用 FP32 底数和 INT64 指数 2。
-
-下一步应运行真实 Qwen3 结构的小模型，包含 Q/K RMSNorm、完整 RoPE、GQA、SwiGLU，逐层对照 PyTorch/ORT/IR。
-之后再验证优化流水线、完整 0.6B 推理的数值/内存，以及 RISC-V 后端和 QEMU。
-本轮没有补 RISC-V 降低和执行支持，不能据此前端/IR 结果判断 QEMU 已可运行。
-
-六、修改前后 benchmark 对比
-
-归档文件（同目录）：
-- 算子补齐与单测-benchmark.json：移除本机路径后的测量数据，保留全部样本、误差及指纹。
-- 算子补齐与单测-benchmark.md：GitHub 可直接阅读的结果报告。
-- 算子补齐与单测-benchmark.html：独立 HTML 报告，下载后用浏览器打开，可筛选并展开错误详情。
-
-共 24 个固定用例，修改前 2/24 PASS，修改后 24/24 PASS：
-- 16 个独立算子用例：0/16 → 16/16。
-- 2 个已有支持的对照用例：2/2 → 2/2。
-- 2 个错误回归用例：0/2 → 2/2。
-- 4 个组合链路用例：0/4 → 4/4，包含 PR #89 的原始两层 Transformer。
-因此，“原先不支持、现通过”是 20 个用例，不是新增 20 种算子。
-
-使用同一批模型、输入、ORT 参考及初始化器，并校验指纹；基线通过解释器已有 initializers 参数接受原始 ONNX 数组，属于基准适配，不改基线实现，也不重塑权重以掩盖旧错误。
-ABBA 顺序为修改前、修改后、修改后、修改前；每版本 2 轮，每轮预热 1 次、正式计时 5 次，合计每版本 10 个正式样本。
-IR.run 完整计时包括校验、执行规划、绑定复制、NumPy 计算及返回复制；ONNX 解析单独计时，ORT 参考计算不计入。
-只在前后均 PASS 时显示执行耗时比；本报告证明支持和正确性改善，不宣称性能优化或 QEMU 性能。
-新增 tests/test_onnx_operator_benchmark.py 的 22 项自检与原 715 项回归已合并运行，共 737 passed。
-CI 的测试 checkout 获取完整历史，以便历史基线集成测试实际运行。
-
-七、复跑准备与命令（在仓库根目录 PowerShell 执行）
-
-建议 Python 3.12，并使用独立虚拟环境。依赖安装：
-python -m pip install -e ".[all]" pytest
-其中项目 all 依赖包含 onnxruntime；基准和测试直接依赖 NumPy、ONNX、onnxruntime、pytest。
-本次单测/benchmark 版本为 NumPy 2.5.3、ONNX 1.23.0、onnxruntime 1.29.0；解释器路径不是复跑前提。
-
-确保 Git 历史中存在固定基线提交，浅克隆需补充该历史；origin 应指向包含该提交的项目仓库或 fork：
+git rev-parse HEAD
+git status --short
 git fetch origin 20b105e80ba3dbe13cb01a3d4ca18c32b6c31ed6
-
-安装 Git LFS 后，下载已由 PR #89 提交的模型实体，不能把 LFS 指针作为 ONNX 运行：
-git lfs install
+git lfs install --local
 git lfs pull --include="probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx"
 
-以下 24 用例基准不需要完整 Qwen3-0.6B 权重；完整模型结构审计需要另外准备本文第四节所述模型。
-生成新的基准报告及临时 fixtures，不覆盖 docs 中的历史归档：
-python -X utf8 -B -m benchmarks.bench_onnx_operators --baseline-ref 20b105e80ba3dbe13cb01a3d4ca18c32b6c31ed6 --output-dir benchmark_reports/onnx_operators --warmup 1 --repeats 5
+基线为固定提交 20b105e80ba3dbe13cb01a3d4ca18c32b6c31ed6，不能用不同分支 HEAD 代替。浅克隆必须补齐历史。原模型 SHA256 应为 17a8f191ee65a9d97143131016058e8a3c10a7d5c06e8152bf16dd8941cd19e1，不可把 LFS pointer 当 ONNX。
 
-复跑相关测试：
+四、生成修改前后 benchmark
 
-$operatorTests = @(
-  'tests/test_ir.py', 'tests/test_ir_qwen_numeric_ops.py',
-  'tests/test_ir_interpreter.py', 'tests/test_ir_interpreter_ops.py',
-  'tests/test_ir_interpreter_control_flow.py', 'tests/test_ir_verifier.py',
-  'tests/test_ir_verifier_integration.py', 'tests/test_optimizer.py',
-  'tests/test_optimizer_advanced.py', 'tests/test_pass_manager.py',
-  'tests/test_pass_registry.py', 'tests/test_parser.py',
-  'tests/test_onnx_initializers.py', 'tests/test_onnx_shape_ops.py',
-  'tests/test_onnx_qwen_numeric_ops.py', 'tests/test_onnx_transformer_execution.py',
-  'tests/test_ir_interpreter_benchmark.py', 'tests/test_ir_verifier_benchmark.py',
-  'tests/test_ir_diagnostics.py', 'tests/test_onnx_constant_regressions.py',
-  'tests/test_onnx_operator_benchmark.py'
+python -X utf8 -B -m benchmarks.bench_onnx_operators \
+  --baseline-ref 20b105e80ba3dbe13cb01a3d4ca18c32b6c31ed6 \
+  --output-dir benchmark_reports/onnx_operators-linux-01 \
+  --warmup 1 --repeats 5
+
+每轮选择新的输出目录。CLI 生成自己的 fixtures、参考和 JSON/Markdown/HTML 报告，不读取 docs 目录中的历史索引作为测量。源码、模型、输入、环境身份与错误详情由新报告保存。
+
+24 个固定用例包含 16 独立算子、2 已支持的对照、2 错误回归和 4 组合链路，含原 PR #89 两层 Transformer。ABBA 顺序比较修改前/后，每版本两轮；前后都通过的用例才计算耗时比。不支持、失败或缺测不能解释为零耗时或无限加速。
+
+IR.run 计时包含验证、执行规划、绑定复制、NumPy 计算与返回复制；ONNX 解析单独计时，ORT 参考不计入。此基准验证支持与正确性变化，不证明 QEMU 性能改善。重新生成的 Linux 样本不可与不同平台的历史耗时直接算加速比。
+
+五、运行相关回归与合成图
+
+operator_tests=(
+  tests/test_ir.py tests/test_ir_qwen_numeric_ops.py
+  tests/test_ir_interpreter.py tests/test_ir_interpreter_ops.py
+  tests/test_ir_interpreter_control_flow.py tests/test_ir_verifier.py
+  tests/test_ir_verifier_integration.py tests/test_optimizer.py
+  tests/test_optimizer_advanced.py tests/test_pass_manager.py
+  tests/test_pass_registry.py tests/test_parser.py
+  tests/test_onnx_initializers.py tests/test_onnx_shape_ops.py
+  tests/test_onnx_qwen_numeric_ops.py tests/test_onnx_transformer_execution.py
+  tests/test_ir_interpreter_benchmark.py tests/test_ir_verifier_benchmark.py
+  tests/test_ir_diagnostics.py tests/test_onnx_constant_regressions.py
+  tests/test_onnx_operator_benchmark.py
 )
-python -X utf8 -B -m pytest @operatorTests -q --basetemp=output/pytest-operator-completion
+mkdir -p output
+python -X utf8 -B -m pytest "${operator_tests[@]}" -q \
+  --junit-xml=output/operator-tests-linux-01.xml
+python -X utf8 -B probes/w1_tiny_transformer/run.py \
+  --model probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx \
+  --output-dir output/operator-completion-linux-01 --seed 1
 
-python -X utf8 -B probes/w1_tiny_transformer/run.py --model probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx --output-dir output/operator-completion-probe --seed 1
+六、范围与后续门禁
 
-上述探测命令默认使用已下载的 ONNX，不要求重新导出；切换导出依赖环境时请遵循模型探测的已记录版本。
+这是静态图和 FP32 所需前端/IR 能力，同时覆盖现有 FLOAT64、INT32、INT64；不宣称全部 ONNX dtype/opset 或动态 shape/axis。Reshape allowzero=1 等不支持语义明确拒绝；非法定义域、非有限值及部分整数溢出明确报错。当前固定 Qwen 图使用 FP32 底数与整数指数 2；通用 Pow 范围需要分别验证。
+
+完整 28 层解析、真实两层 Qwen3 数值与 RV64/QEMU 分别从 W1/README.md、W2/README.md 和 probes/w2_qwen3_small/README.md 进入；基础算子 benchmark 通过不能代替这些门禁。
+
+同目录 benchmark.md 为 Linux 复跑入口，benchmark.html 为可打开的指引，benchmark.json 为明确标识的历史索引，不包含新测量。原始完整测量保留在固定提交历史中。
