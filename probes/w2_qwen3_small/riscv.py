@@ -26,7 +26,10 @@ import onnx
 import onnxruntime as ort
 
 from probes.w2_qwen3_small.diagnostics import compare_outputs, tensor_diff, unpack_trace
-from probes.w2_qwen3_small.run import ATOL, arrays_sha256, input_cases
+from probes.w2_qwen3_small.run import (
+    ATOL, _details_views, _page_html, _table_views, arrays_sha256, input_cases,
+)
+from probes.numeric_summary import METRIC_EXPLANATION, compact_metric_table, compact_metric_table_html
 from scratchv.analysis.ir_verifier import verify_ir
 from scratchv.compiler import CompilerConfig, CompilerDriver
 from scratchv.frontend.onnx_parser import ONNXParser
@@ -98,6 +101,7 @@ def execution_evidence():
                ROOT / "scratchv/ir/builder.py", ROOT / "scratchv/pass_manager.py",
                ROOT / "scratchv/pass_interface.py", ROOT / "scratchv/verification/ir_interpreter.py",
                ROOT / "scratchv/verification/ir_numpy_ops.py",
+               ROOT / "scratchv/verification/numeric_metrics.py", ROOT / "probes/numeric_summary.py",
                *sorted((ROOT / "scratchv/analysis").glob("*.py")),
                *sorted((ROOT / "scratchv/optimizer").glob("*.py")),
                ROOT / "scratchv/backend/tensor_c_codegen.py", ROOT / "scratchv/runtime/riscv_tensor.py"]
@@ -316,98 +320,121 @@ def run_probe(model_dir, out, report, *, cc=None, qemu=None, timeout=180):
 def _report_views(report):
     timing = report["timing"]
     counts = timing["status_counts"]
-    lines = ["# Two-layer Qwen3: ScratchV IR → C tensor kernels → RV64GC → QEMU", "",
-             f"Result: **{'PASS' if report['passed'] else 'FAIL'}**; stage: {report['stage']}", "",
-             "## 仿真耗时", "",
-             f"- 探测流程总耗时：**{format_seconds(timing['pipeline_seconds'])} 秒**（不含报告渲染）。",
-             f"- 已记录 QEMU 进程耗时合计：**{format_seconds(timing['qemu_process_wall_seconds_total'])} 秒**。",
-             f"- 成功交叉编译记录合计：**{format_seconds(timing['cross_compile_seconds_total'])} 秒**；"
-             f"已记录 {timing['cross_compile_completed_count']}/{timing['cross_compile_planned_count']} 次构建，"
-             "不含 ScratchV 解析/IR 优化/代码生成或失败构建的耗时。",
-             f"- 计划 {timing['planned_count']} 次，已尝试 {timing['attempted_count']} 次；"
-             f"通过 {counts['success']}，数值失败 {counts['numeric_failed']}，"
-             f"运行失败 {counts['runtime_error']}，超时 {counts['timeout']}，"
-             f"未启动 {counts['not_started']}，未尝试 {timing['not_attempted_count']}。",
-             f"- 记录范围：{'部分结果，尚未完成全部执行/数值核验' if timing['incomplete'] else '全部执行/数值核验已有记录'}；"
-             "失败样本与通过样本分别统计，未测得的时长不按零计。", "",
-             "QEMU 进程墙钟时长包含启动、guest 计算、输出打包/UART 和退出；超时还包括进程清理。"
-             "不包含主机输入准备或输出解码。diagnostic 包含检查点开销，须与 normal 分开。"
-             "这些数据仅用于监控，不代表纯前向时长或目标硬件性能，也不作为性能通过阈值。", "",
-             "| 图/优化级别 | 已尝试/计划 | 通过/失败 | 未尝试 | 通过平均/最大(s) | 失败平均/最大(s) | 已测合计(s) |",
-             "|---|---:|---:|---:|---:|---:|---:|"]
-    group_rows = []
+    cases = report.get("cases", [])
+    comparisons = []
+    for field, levels, label in (
+        ("optimized_ir", ("none", "basic", "all"), "IR 原生 NumPy（优化回归）/ ORT"),
+        ("qemu", ("none", "all"), "生成 C → RV64/QEMU / ORT"),
+    ):
+        rows = []
+        for case in cases + [{}] * max(0, QEMU_CASE_COUNT - len(cases)):
+            for level in levels:
+                rows.append(next((row for row in case.get(field, [])
+                                  if row.get("graph") == "normal" and row.get("optimization") == level), {}))
+        comparisons.append((label, rows))
+    title = "两层 Qwen3：编译到 RISC-V 的数值精度"
+    status = "PASS" if report.get("passed") else "FAIL"
+    description = ("真实 Qwen3 结构的两层缩小模型，固定随机权重，FP32、L=256、无 KV cache。"
+                   "同一 ONNX 模型、权重和输入分别经 ORT、原生 NumPy IR，以及 ScratchV IR → C 张量代码 → "
+                   "C 交叉编译器 → RV64GC → QEMU 执行。C 行测的是 RISC-V 上的实际输出，不是单独的主机 C 测试。")
+    scope = ("核心表只汇总普通图最终 logits 的最坏指标（全部位置含 padding），比较按“被测 / 参考”排列。"
+             "七个输入场景覆盖两份满长输入、1/17/255 token 边界、因果与补齐隔离。"
+             "普通/诊断图、29 个检查点及隔离检查仍须全部通过严格 MaxAbs < 1e-5（rtol=0）。")
+    timing_line = (f"仿真耗时：探测流程 {format_seconds(timing['pipeline_seconds'])} 秒；"
+                   f"已记录 QEMU 进程累计 {format_seconds(timing['qemu_process_wall_seconds_total'])} 秒"
+                   "（含启动和传输，不代表纯前向或目标硬件性能）。")
+    coverage = (f"执行覆盖：{timing['attempted_count']}/{timing['planned_count']} 次已尝试，"
+                f"{counts['success']} 次通过；"
+                + ("部分结果，尚未完成全部执行。" if timing['incomplete'] else "全部执行完成。"))
+    markdown = [f"# {title}", "", f"Result: **{status}**; stage: {report.get('stage')}", "",
+                description, "", scope, "", compact_metric_table(comparisons), "", METRIC_EXPLANATION,
+                "", coverage, "", timing_line]
+    html = [f"<h1>{escape(title)}</h1><p><strong>Result: {status}</strong>; stage: {escape(str(report.get('stage')))}</p>",
+            f"<p>{escape(description)}</p><p>{escape(scope)}</p>", compact_metric_table_html(comparisons),
+            f"<p>{escape(METRIC_EXPLANATION)}</p><p>{escape(coverage)}</p><p>{escape(timing_line)}</p>"]
+    failures = []
+    if report.get("error"):
+        failures.append(f"阶段 {report.get('stage')}: {report['error']}")
+    for case in cases:
+        if case.get("passed") is not True:
+            failures.append(f"{case.get('name')}: FAIL；有检查失败或未完成")
+        for row in case.get("qemu", []):
+            if row.get("passed") is not True:
+                reason = row.get("error") or row.get("reason") or "尚未完成数值核验"
+                first = row.get("checkpoints", {}).get("first_divergence")
+                failures.append(f"{case.get('name')} / {row.get('graph')}/{row.get('optimization')}: "
+                                f"{row.get('status')}; {reason}" + (f"；首次超限检查点 {first}" if first else ""))
+        for row in case.get("optimized_ir", []):
+            if row.get("passed") is not True:
+                failures.append(f"{case.get('name')} IR {row.get('graph')}/{row.get('optimization')}: "
+                                f"{row.get('reason') or 'FAIL'}")
+    for row in report.get("invariants", []):
+        if row.get("passed") is not True:
+            failures.append(f"{row.get('name')} / {row.get('graph')}/{row.get('optimization')}: 隔离检查 FAIL")
+    if not report.get("passed") and not failures:
+        failures.append("尚未完成全部验收，请检查 report.json。")
+    if failures:
+        markdown += ["", "**失败／未完成项**", "", *[f"- {escape(item)}" for item in failures]]
+        html.append("<div class='failure'><p>失败／未完成项</p><ul>"
+                    + "".join(f"<li>{escape(item)}</li>" for item in failures) + "</ul></div>")
+
+    def append_detail(title, headers, rows, note):
+        md, body = _table_views(headers, rows)
+        md, body = _details_views(title, md + "\n\n" + note, body + f"<p>{escape(note)}</p>")
+        markdown.extend(["", md])
+        html.append(body)
+
+    graph_note = ("图指模型计算步骤及其连接关系：normal 只输出最终 logits；diagnostic 增加中间检查点以定位误差，含额外打包与传输开销。"
+                  "none/basic/all 指 ScratchV IR 优化：none 不优化；basic 提前计算常量并删除不影响输出的计算；"
+                  "all 再加入局部指令简化、乘加融合和循环内重复计算外提。它们不是 C 编译优化等级，本探测的 C 编译固定使用 -O2。")
+    time_note = (graph_note + " QEMU 墙钟时间包含启动、目标程序计算、输出打包/串口传输和退出；超时还含清理，"
+                 "不含主机输入准备或输出解码。未测得的时长不按零计；平均/最大值仅统计有测量值的样本。"
+                 "七种输入不是重复采样，不能据此推导稳定加速比，也不设置性能通过阈值。"
+                 f"成功交叉编译记录累计 {format_seconds(timing['cross_compile_seconds_total'])} 秒"
+                 f"（{timing['cross_compile_completed_count']}/{timing['cross_compile_planned_count']} 次），"
+                 "不含 ScratchV 解析、IR 优化、代码生成及失败构建；流程时间不含报告渲染。")
+    groups = []
     for group in timing["groups"]:
         successful, failed = group["successful"], group["failed"]
-        failed_count = group["attempted_count"] - group["status_counts"]["success"]
-        cells = [f"{group['graph']}/{group['optimization']}",
-                 f"{group['attempted_count']}/{group['planned_count']}",
-                 f"{group['status_counts']['success']}/{failed_count}", str(group['not_attempted_count']),
-                 f"{format_seconds(successful['mean_seconds'])}/{format_seconds(successful['max_seconds'])}",
-                 f"{format_seconds(failed['mean_seconds'])}/{format_seconds(failed['max_seconds'])}",
-                 format_seconds(group['all_measured']['total_seconds'])]
-        group_rows.append(cells)
-        lines.append("| " + " | ".join(cells) + " |")
-    lines += ["", "平均/最大值只统计有实测时长的样本；失败数包含尚未启动但已尝试的条目。"
-              "七种输入不是重复采样，不据此宣称稳定加速比。", "",
-             "FP32, L=256, random weights, 29 checkpoints, strict max absolute error < 1e-5.",
-             "The C cross-compiler is Zig/LLVM; this does not validate the legacy scalar assembly selector.",
-             "IR optimization levels: none/basic/all. QEMU: none/all, normal and diagnostic graphs.", ""]
-    if report.get("error"):
-        lines += [f"Error: {report['error']}", ""]
-    lines += ["| Case | Graph | IR optimization | QEMU进程(s) | 超时设定(s) | Max abs | First divergent checkpoint | Status |",
-              "|---|---|---|---:|---:|---:|---|---|"]
-    execution_rows = []
-    for case in report.get("cases", []):
+        groups.append([f"{group['graph']}/{group['optimization']}",
+                       f"{group['attempted_count']}/{group['planned_count']}",
+                       f"{group['status_counts']['success']}/{group['attempted_count'] - group['status_counts']['success']}",
+                       group['not_attempted_count'],
+                       f"{format_seconds(successful['mean_seconds'])}/{format_seconds(successful['max_seconds'])}",
+                       f"{format_seconds(failed['mean_seconds'])}/{format_seconds(failed['max_seconds'])}",
+                       format_seconds(group['all_measured']['total_seconds'])])
+    append_detail("图与优化级别：仿真耗时明细",
+                  ["图/优化级别", "已尝试/计划", "通过/失败", "未尝试", "通过平均/最大(s)", "失败平均/最大(s)", "已测合计(s)"],
+                  groups, time_note)
+    executions = []
+    for case in cases:
         for row in case.get("qemu", []):
-            cells = [case['name'], row['graph'], row['optimization'],
-                     format_seconds(row.get('qemu_process_wall_seconds')),
-                     format_seconds(row.get('timeout_seconds')), str(row.get('max_abs')),
-                     row.get('checkpoints', {}).get('first_divergence') or 'none', row['status']]
-            execution_rows.append(cells)
-            lines.append("| " + " | ".join(cells) + " |")
-    markdown = "\n".join(lines) + "\n"
-    details = []
-    for case in report.get("cases", []):
-        details.append(f"<details><summary>{escape(case['name'])}: "
-                       f"{'PASS' if case['passed'] else 'FAIL'}</summary><pre>"
-                       f"{escape(json.dumps(case, indent=2))}</pre></details>")
-
-    def html_table(headers, rows):
-        header = "".join(f"<th>{escape(value)}</th>" for value in headers)
-        body = "".join("<tr>" + "".join(f"<td>{escape(value)}</td>" for value in row) + "</tr>"
-                       for row in rows)
-        return f"<div class='table-wrap'><table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table></div>"
-
-    overview = ("<h2>仿真耗时</h2>"
-                f"<p>探测流程总耗时：<strong>{format_seconds(timing['pipeline_seconds'])} 秒</strong>；"
-                f"已记录 QEMU 进程合计：<strong>{format_seconds(timing['qemu_process_wall_seconds_total'])} 秒</strong>；"
-                f"成功交叉编译记录合计：{format_seconds(timing['cross_compile_seconds_total'])} 秒"
-                f"（{timing['cross_compile_completed_count']}/{timing['cross_compile_planned_count']} 次）。</p>"
-                f"<p>计划 {timing['planned_count']} 次，已尝试 {timing['attempted_count']} 次；"
-                f"通过 {counts['success']}，数值失败 {counts['numeric_failed']}，"
-                f"运行失败 {counts['runtime_error']}，超时 {counts['timeout']}，"
-                f"未启动 {counts['not_started']}，未尝试 {timing['not_attempted_count']}。"
-                f"<strong>{'部分结果' if timing['incomplete'] else '完整执行记录'}</strong>。</p>"
-                "<p>QEMU 时长包含进程启动、guest 计算、输出打包/UART 和退出，超时包含进程清理；"
-                "不含主机输入准备或输出解码。diagnostic 含检查点开销，与 normal 分开统计。"
-                "流程总耗时不含报告渲染；交叉编译仅统计成功记录，不含 ScratchV 解析/IR 优化/代码生成。"
-                "未测得不按零计，失败与通过样本分别计算平均/最大值。七种输入不是重复采样，"
-                "仅用于监控，不代表纯前向时长、稳定加速比或目标硬件性能，无性能通过阈值。</p>")
-    overview += html_table(["图/优化", "已尝试/计划", "通过/失败", "未尝试", "通过平均/最大(s)",
-                            "失败平均/最大(s)", "已测合计(s)"], group_rows)
-    overview += "<h2>逐次执行</h2>" + html_table(
-        ["Case", "Graph", "IR优化", "QEMU进程(s)", "超时设定(s)", "Max abs", "首次偏差", "Status"],
-        execution_rows)
-    if report.get("error"):
-        overview += f"<p>Error: {escape(report['error'])}</p>"
-    html = (
-        "<!doctype html><html lang='zh-CN'><meta charset='utf-8'><title>Qwen3 RV64 probe</title>"
-        "<style>body{font:16px/1.5 system-ui;max-width:1100px;margin:32px auto}pre{white-space:pre-wrap}"
-        ".table-wrap{overflow:auto}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px}"
-        "details{padding:12px;border:1px solid #ddd;margin:10px 0}</style>"
-        f"<h1>Qwen3 RV64 QEMU: {'PASS' if report['passed'] else 'FAIL'}</h1>"
-        + overview + "".join(details) + "</html>")
-    return {"report.md": markdown, "report.html": html}
+            executions.append([case.get('name'), row.get('graph'), row.get('optimization'),
+                               format_seconds(row.get('qemu_process_wall_seconds')),
+                               format_seconds(row.get('timeout_seconds')), row.get('max_abs', '未统计'),
+                               row.get('checkpoints', {}).get('first_divergence') or 'none', row.get('status')])
+    append_detail("逐场景 QEMU 执行明细",
+                  ["场景", "图", "IR 优化", "QEMU 进程(s)", "超时设定(s)", "本图输出 MaxAbs", "首次超限检查点", "结果"],
+                  executions, graph_note + " 此明细中的 diagnostic MaxAbs 包含全部打包检查点；首页核心表只使用 normal logits。"
+                  "超时设定是限制，QEMU 进程(s) 才是实测墙钟时间。")
+    checks = []
+    for case in cases:
+        for row in case.get('optimized_ir', []):
+            checks.append([case.get('name'), f"IR {row.get('graph')}/{row.get('optimization')}",
+                           row.get('max_abs'), 'PASS' if row.get('passed') else row.get('reason') or 'FAIL'])
+        for row in case.get('normal_vs_trace', []):
+            checks.append([case.get('name'), f"normal/diagnostic logits {row.get('optimization')}",
+                           row.get('max_abs'), 'PASS' if row.get('passed') else row.get('reason') or 'FAIL'])
+    for row in report.get('invariants', []):
+        checks.append([row.get('name'), f"{row.get('graph')}/{row.get('optimization')}",
+                       row.get('max_abs'), 'PASS' if row.get('passed') else row.get('reason') or 'FAIL'])
+    append_detail("优化 IR、普通/诊断图一致性与隔离检查", ["场景/检查", "路径", "MaxAbs", "结果"], checks,
+                  "所有这些检查继续参与验收，完整逐检查点误差保存在 report.json。")
+    footer = ("完整数值明细、命令、环境、源码指纹、C/ELF 与原始数组随 CI artifact 提供；结构化报告为 report.json。"
+              "这条路径不验证旧的标量汇编选择器，也不声称完整预训练模型已在 QEMU 运行。")
+    markdown.extend(["", footer])
+    html.append(f"<p>{escape(footer)}</p>")
+    return {"report.md": "\n".join(markdown) + "\n", "report.html": _page_html(title, "".join(html))}
 
 
 def write_reports(out, report):

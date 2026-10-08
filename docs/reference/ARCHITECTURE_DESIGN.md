@@ -542,8 +542,8 @@ grep -rn "riscv64\|riscv32\|+mattr" scratchv/ --include=*.py
 # 内核层与主线是否真的没有调用关系（§6 内核调用钩子）
 grep -rn "backend.kernels" scratchv/ tests/ tools/ --include=*.py
 
-# LLVM 成本模型可切集合（附录 B.2）
-llc --cost-kind=<throughput|latency|code-size|size-latency>
+# LLVM 成本模型（附录 B.2）；也可选 latency、code-size、size-latency
+llc --cost-kind=throughput
 
 # 附录 B.3 的两条实测
 ./scratchv_env/bin/python -m scratchv my_examples/hello.dsl --backend llvm -o /tmp/o.ll
@@ -558,8 +558,9 @@ llc -march=riscv32 -mattr=+m /tmp/o.ll -o /tmp/o.s
 grep -n "backend == " scratchv/compiler.py
 
 # 平台侧实测口径（附录 B.4）
+# 运行前把下方带引号的 <player.s> 和 <problem> 替换为实际参数。
 cd /root/riscv-ai-compiler-platform
 set -a && . /root/.riscv_platform_env && set +a
 PLATFORM_ENABLE_SANDBOX=0 ./.venv/bin/python \
-    /root/workspace/riscv_matmul/measure.py <player.s> <problem>
+    /root/workspace/riscv_matmul/measure.py '<player.s>' '<problem>'
 ```

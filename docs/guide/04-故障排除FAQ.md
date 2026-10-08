@@ -282,7 +282,7 @@ git status
 
 # 手动编辑冲突文件，删除 <<<<<<<, =======, >>>>>>> 标记
 # 然后
-git add <冲突文件>
+git add path/to/resolved-file
 git commit
 ```
 

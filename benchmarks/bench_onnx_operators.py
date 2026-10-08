@@ -43,6 +43,11 @@ BINDING_POLICY = (
 
 
 def git(*arguments, binary=False):
+    # A source handoff may sit inside another checkout. Never let Git discover
+    # that unrelated parent and manufacture a baseline for the extracted copy.
+    if not (ROOT / ".git").exists():
+        raise RuntimeError("Historical baseline comparison requires a Git checkout at "
+                           f"{ROOT}; an extracted source archive has no Git history")
     result = subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True,
                             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}, check=True)
     return result.stdout if binary else result.stdout.decode("utf-8").strip()
