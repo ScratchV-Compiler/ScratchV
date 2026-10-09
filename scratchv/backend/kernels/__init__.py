@@ -6,5 +6,5 @@
     python -m scratchv.backend.kernels --list
     python -m scratchv.backend.kernels --problem add-fp32 -o add_fp32.s
 
-文档见同目录 ARCHITECTURE.md / DEVELOPMENT.md / USAGE.md / OPTIMIZATION.md。
+文档见同目录 KERNEL_ARCHITECTURE.md / DEVELOPMENT.md / USAGE.md / OPTIMIZATION.md。
 """
