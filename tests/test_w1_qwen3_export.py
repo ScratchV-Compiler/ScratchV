@@ -5,6 +5,7 @@ import json
 import stat
 import zipfile
 from argparse import Namespace
+from pathlib import Path
 
 import numpy as np
 import onnx
@@ -216,6 +217,117 @@ def test_dependency_mismatch_fails_before_model_load(monkeypatch):
     monkeypatch.setattr(probe.importlib.metadata, "version", lambda name: "0.0.0")
     with pytest.raises(RuntimeError, match="version mismatches|mismatches"):
         probe.environment()
+
+
+@pytest.mark.parametrize("name", ["report.md", "report.json"])
+@pytest.mark.parametrize("failure", ["write", "close", "publish"])
+@pytest.mark.parametrize("numeric_passed", [False, True])
+def test_report_io_failure_cannot_leave_pass(artifact, tmp_path, monkeypatch,
+                                           name, failure, numeric_passed):
+    directory, manifest = artifact
+    monkeypatch.setattr(probe, "MANIFEST", manifest)
+    monkeypatch.setattr(probe, "environment", lambda export=False: {"unit_test": True})
+    if not numeric_passed:
+        def fail_ort(*args, **kwargs):
+            raise RuntimeError("original ORT failure")
+        monkeypatch.setattr(probe, "execute_ort", fail_ort)
+    output = tmp_path / "report-fault"
+    output.mkdir()
+    # Reusing this CLI's output directory must not retain an older success.
+    (output / "report.json").write_text('{"passed": true}', encoding="utf-8")
+    original_write, original_replace = Path.write_text, Path.replace
+
+    def broken_write(path, content, *args, **kwargs):
+        if path == output / f".{name}.tmp" and failure in ("write", "close"):
+            if failure == "close":
+                original_write(path, content, *args, **kwargs)
+            raise OSError(f"injected {failure} failure")
+        return original_write(path, content, *args, **kwargs)
+
+    def broken_replace(path, target):
+        if Path(target) == output / name and failure == "publish":
+            raise OSError("injected publish failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "write_text", broken_write)
+    monkeypatch.setattr(Path, "replace", broken_replace)
+    assert probe.main(["--model-dir", str(directory), "--output-dir", str(output)]) == 1
+    if name == "report.json":
+        assert not (output / "report.json").exists()
+        text = (output / "report.md").read_text(encoding="utf-8")
+        assert "Result: FAIL" in text
+        if not numeric_passed:
+            assert "original ORT failure" in text
+    else:
+        report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+        assert report["passed"] is False and report["report_write_errors"]
+        if numeric_passed:
+            assert report["failed_stage"] == "report-write"
+        else:
+            assert report["failed_stage"] == "ort"
+            assert report["error"] == "RuntimeError: original ORT failure"
+    assert not list(output.glob(".report.*.tmp"))
+
+
+def test_report_json_is_published_after_required_view(artifact, tmp_path, monkeypatch):
+    directory, manifest = artifact
+    monkeypatch.setattr(probe, "MANIFEST", manifest)
+    monkeypatch.setattr(probe, "environment", lambda export=False: {"unit_test": True})
+    output = tmp_path / "report-order"
+    original_replace = Path.replace
+    names = []
+
+    def record(path, target):
+        names.append(Path(target).name)
+        if Path(target).name == "report.json":
+            assert (output / "report.md").is_file()
+            assert not (output / "report.json").exists()
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", record)
+    assert probe.main(["--model-dir", str(directory), "--output-dir", str(output)]) == 0
+    assert names == ["report.md", "report.json"]
+
+
+def test_transient_json_publish_error_retries_only_as_fail(artifact, tmp_path, monkeypatch):
+    directory, manifest = artifact
+    monkeypatch.setattr(probe, "MANIFEST", manifest)
+    monkeypatch.setattr(probe, "environment", lambda export=False: {"unit_test": True})
+    output = tmp_path / "report-retry"
+    original_replace = Path.replace
+    attempts = []
+
+    def fail_once(path, target):
+        if Path(target).name == "report.json":
+            attempts.append(json.loads(path.read_text(encoding="utf-8"))["passed"])
+            if len(attempts) == 1:
+                raise OSError("transient publish failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_once)
+    assert probe.main(["--model-dir", str(directory), "--output-dir", str(output)]) == 1
+    assert attempts == [True, False]
+    assert json.loads((output / "report.json").read_text(encoding="utf-8"))["passed"] is False
+    assert "Result: FAIL" in (output / "report.md").read_text(encoding="utf-8")
+
+
+def test_interruption_does_not_leave_previous_success(artifact, tmp_path, monkeypatch):
+    directory, manifest = artifact
+    monkeypatch.setattr(probe, "MANIFEST", manifest)
+    monkeypatch.setattr(probe, "environment", lambda export=False: {"unit_test": True})
+    output = tmp_path / "report-interrupted"
+    output.mkdir()
+    (output / "report.json").write_text('{"passed": true}', encoding="utf-8")
+    (output / "report.md").write_text("Result: PASS", encoding="utf-8")
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(probe, "execute_ort", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        probe.main(["--model-dir", str(directory), "--output-dir", str(output)])
+    assert not (output / "report.json").exists()
+    assert not (output / "report.md").exists()
 
 
 def test_source_fingerprints_report_missing_sources_honestly(tmp_path, monkeypatch):

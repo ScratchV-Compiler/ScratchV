@@ -1,7 +1,7 @@
 """Execute generated tensor C against ORT, plus static/numeric rejection cases.
 
-Host compilation uses clang/gcc, or SCRATCHV_ZIG (a zig executable). Repository
-local output/tools/zig-python/ziglang/zig.exe is also recognized on Windows.
+Host compilation uses clang/gcc, or SCRATCHV_ZIG (a zig executable). Optional
+repository-local tools are resolved for the actual host platform.
 Validation tests do not require a C toolchain; execution tests skip explicitly
 when no compiler is available rather than reporting unexecuted cases as passes.
 """
@@ -35,7 +35,7 @@ def builder(*params):
 @pytest.fixture(scope="module")
 def compiler():
     zig = os.environ.get("SCRATCHV_ZIG")
-    local = ROOT / "output/tools/zig-python/ziglang/zig.exe"
+    local = ROOT / "output/tools/zig-python/ziglang" / ("zig.exe" if os.name == "nt" else "zig")
     if zig or local.is_file():
         return [zig or str(local), "cc"]
     for name in ("clang", "gcc", "cc"):
@@ -330,3 +330,45 @@ def test_same_generator_is_reusable_and_never_mutates_ir():
     first, second = generator.generate(), generator.generate()
     assert first == second
     assert b.program.dump() == before
+
+
+@pytest.mark.parametrize("dtype,numpy_dtype", [(D.FLOAT32, np.float32), (D.INT32, np.int32),
+                                              (D.INT64, np.int64)])
+def test_scalar_initializer_cannot_override_ir_literal(dtype, numpy_dtype):
+    from scratchv.verification.ir_interpreter import IRExecutionError, IRInterpreter
+
+    scale = Value("scale", dtype, is_constant=True, const_value=1)
+    b = builder()
+    b.program.global_values.append(scale)
+    b.ret(scale)
+    bindings = {"scale": np.array(2, dtype=numpy_dtype)}
+    with pytest.raises(IRExecutionError, match="initializer disagrees with scalar constant"):
+        IRInterpreter(b.program).run({}, initializers=bindings)
+    with pytest.raises(TensorCCodegenError, match="scale disagrees with scalar constant"):
+        TensorCCodegen(b.program, bindings).generate()
+
+
+def test_scalar_constant_binding_cannot_be_a_vector():
+    scale = Value("scale", D.FLOAT32, is_constant=True, const_value=1.0, shape=(1,))
+    b = builder()
+    b.program.global_values.append(scale)
+    b.ret(scale)
+    with pytest.raises(TensorCCodegenError, match="scale disagrees with scalar constant"):
+        TensorCCodegen(b.program, {"scale": np.array([1], np.float32)}).generate()
+
+
+def test_matching_scalar_initializer_preserves_compiled_result(tmp_path, compiler):
+    from scratchv.verification.ir_interpreter import IRInterpreter
+
+    x = Value("x", shape=(2,))
+    scale = Value("scale", D.FLOAT32, is_constant=True, const_value=1.25)
+    b = builder(x)
+    b.program.global_values.append(scale)
+    b.ret(b.mul(x, scale))
+    bindings = {"scale": np.array(1.25, np.float32)}
+    feed = {"x": np.array([2, -3], np.float32)}
+    expected = IRInterpreter(b.program).run(feed, initializers=bindings).return_value
+    with compiled(tmp_path, TensorCCodegen(b.program, bindings).generate(), compiler) as execute:
+        status, actual = execute(feed)
+    assert status == 0
+    np.testing.assert_array_equal(actual, expected)

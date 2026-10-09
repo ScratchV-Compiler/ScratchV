@@ -1,7 +1,9 @@
 # 接口基线 v1.1：待团队冻结确认
 
+正式交付、CI 和他人复现使用 Ubuntu 24.04 x86_64 / Bash / Python 3.12，环境与工具准备见 [Linux 复现约定](../LINUX_REPRODUCTION.md)。命令中的 `python` 指已激活的 `.venv-linux/bin/python`。
+
 > 上游：[开发计划.md](../开发计划.md) §2.2、§4.3 W1。
-> 状态（2026-10-02）：**按当前实现核对的候选基线，团队确认未完成**。
+> 状态（2026-10-03）：**按当前实现核对的候选基线，团队确认未完成**。PR #91 已合并；W2 运行时扩展与 W1 报告修复分开交付，D1–D8 不因此自动通过。
 > `docs:interfaces` 只检查文档结构；“有版本号”不等于冻结会议已通过。正式决议见 §7。
 
 ## 0. 四类接口与路线
@@ -13,7 +15,7 @@
 | 三 | 后端 | `CompilerDriver(backend="tensor-c")` → 显式张量循环 C → Zig/LLVM → RV64GC ELF |
 | 四 | 运行时 | 指针数组模型 ABI；QEMU virt 裸机原始输入装载与 UART 输出协议 |
 
-上述新路径已经本地及 `5ea22ec` 的 Linux 数值验证；本次收尾与仿真计时改动一起集成到 PR #91；新增改动须以对应新提交的检查为准，不能继承该提交的 CI PASS。原 `riscv` 标量选择器及旧 `llvm` 路径不由本探测证明；旧选择器的 MatMul 占位/张量与 FP32 覆盖缺口仍保留。不能将“仓库有 LLVM 后端”或 CNN standalone 可运行等同于 Qwen FP32 已支持。
+上述新路径已有本地及历史提交的 Linux 数值验证，收尾与仿真计时已随 PR #91 合并。合并后的本地修复与 W2 扩展须以本轮报告及未来对应提交的检查为准，不能继承旧 CI PASS。原 `riscv` 标量选择器及旧 `llvm` 路径不由本探测证明；旧选择器的 MatMul 占位/张量与 FP32 覆盖缺口仍保留。不能将“仓库有 LLVM 后端”或 CNN standalone 可运行等同于 Qwen FP32 已支持。
 
 ## 1. 冻结与变更规则
 
@@ -105,13 +107,21 @@ int scratchv_run(const void *const inputs[], void *output);
 
 `scratchv/runtime/riscv_tensor.py` 提供 `discover_toolchain`、`build_riscv_tensor`、`run_riscv_tensor`。工具可从环境变量或仓库 `output/tools/` 发现；缺工具显式失败，不隐式下载安装。
 
-当前 QEMU 使用 virt/TCG、512 MiB RAM、无 BIOS/OS，自带启动汇编和链接脚本。输入通过 raw loader 写入保留区域（地址 `0x9c000000`，容量 64 MiB），输出通过 UART 二进制帧返回。帧包含标识、状态、长度、校验和和结束标记；解析拒绝截断/损坏/异常状态，超时失败并清理本次子进程。该传输是现有探测协议，不应误写为通用 Linux FFI 或 mmap。
+本节小模型 QEMU 使用 virt/TCG、512 MiB RAM、无 BIOS/OS，自带启动汇编和链接脚本。输入通过 raw loader 写入保留区域（地址 `0x9c000000`，容量 64 MiB），输出通过 UART 二进制帧返回。帧包含标识、状态、长度、校验和和结束标记；解析拒绝截断/损坏/异常状态，超时失败并清理本次子进程。该传输是现有探测协议，不应误写为通用 Linux FFI 或 mmap。
 
-### 5.3 后续运行时边界
+### 5.3 W2 Host 运行时辅助接口
 
-Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收。当前小模型权重静态嵌入；完整 0.6B 外部分片合计 2,384,201,728 bytes（约 2.22 GiB），不应直接套用 512 MiB guest 配置。W4 需设计代码与权重分离，明确名称/偏移/dtype/shape 描述、装载策略、容量和地址重叠检查、生命周期及分块输出；选择 Linux mmap 时须另建 Linux guest/user-mode 路线，裸机不具备该系统调用。完整 logits 对照仍是原数值门槛，后续生成专用“最后有效位置 logits”接口需独立验收，不能悄悄替换原输出。
+`scratchv/runtime/qwen3_tokenizer.py` 的 `Qwen3Tokenizer.from_directory` 读取已校验的官方本地配置，提供编码/解码和特殊 token 信息，不下载权重、不依赖 Torch/Transformers、不渲染聊天模板。基础词表、含 added tokens 的实际 ID 集合与模型 logits 宽度是不同契约；Qwen3-0.6B 分别为 151643、151669 和 151936。未知或空余模型 ID 解码时显式报错。普通文本编码不自动加入 BOS/EOS；NFC 规范化遵循官方 tokenizer JSON。
 
-固定长度的 host 生成循环须选择最后一个有效 token 的 logits，不能选择右侧 padding 的最后物理位置。ID 范围、mask、空输入、EOS 和有效长度达到 256 的行为需要显式测试；超长输入不静默截断。上述生成策略是后续实现要求，不代表当前探测已经提供生成 API。
+`scratchv/runtime/llm_inputs.py` 提供 `prepare_inputs`、`build_attention_mask`、`last_valid_logits`、`greedy_next_token` 和 `generation_stop_reason`。输入维持 batch=1、L=256、INT64 IDs、FP32 加性 mask；空/超长输入失败，prompt 中出现 pad ID 不影响有效长度。greedy 选择最后有效位置、平局取最小 ID，拒绝错误形状/dtype和非有限输出。停止判断区分生成 EOS、上下文容量和生成预算，prompt 中的 EOS 不自行停止。
+
+这些接口是 W2 辅助能力，未改变模型 ABI 或交付生成循环。验收以 [运行时探测](../../../probes/w2_runtime/README.md) 的固定语料与官方 fast/slow 对照为准；不替代 D1–D8 团队确认。
+
+### 5.4 后续运行时边界
+
+本节的二参数 ABI、512 MiB guest 和 UART 张量协议限定于小模型探测。W4 另提供代码/权重分离、名称/偏移/dtype/shape 绑定、完整地址规划及五参数外置 ABI；通过分段 raw loader 装载和完成帧后的 QMP 转储执行完整前向，详见 [W4 运行接口](../W4/runtime-contract.md)。两种入口并存，不能把 W4 的 workspace/weights 参数按旧签名传递，也不能套用旧固定地址。完整数值、跨平台和团队确认按 [W4 验收](../W4/validation.md) 单独记录；实现存在不代表团队已冻结接口。裸机不提供 Linux mmap，若选择 Linux guest/user-mode 须另建路线。生成循环仍属 W5；生成专用“最后有效位置 logits”接口需独立验收，不能悄悄替换完整 logits 数值门槛。
+
+固定长度的 host 生成循环须复用已验收的最后有效位置、mask、ID 范围、空输入、EOS 和长度边界辅助函数，不能选择右侧 padding 的最后物理位置或静默截断。后续仍需将这些能力与完整模型前向组合验证；当前探测未提供端到端生成 API。
 
 ## 6. 能力与剩余缺口
 
@@ -122,7 +132,9 @@ Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收�
 | tensor-c / RV64 运行器 | 本地及 `5ea22ec` 的[Linux 部署任务](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/36984369623)通过，含 28 次两层 QEMU 执行；该提交主 CI 也通过 | E3/E4/E5：第二人独立复现、后续修改的受影响门禁；不外推完整模型 |
 | 完整模型 IR 数值与容量 | 未由小模型验收 | E2/E4/E5：逐步扩大配置及预训练权重验证 |
 | 完整 ONNX 门禁 | 历史导出、本地 verify，以及 `545e696` 的[Linux download/ORT 重型任务](https://github.com/yuki-328/ScratchV/actions/runs/36983119833/job/110761955767)均通过；三项验证源码至 `5ea22ec` 未变 | E1/E5：第二人复现及受影响门禁；不冒称重新导出或 `5ea22ec` 重跑重型任务 |
-| Tokenizer / 生成 / 大权重加载 | 当前探测不覆盖 | E4：W2 基础运行时、W4 权重装载、W5 生成集成及专项验收 |
+| Tokenizer / mask / greedy | W2 基础模块与独立门禁已交付，结果按当前提交检查 | E4/E5：第二人复现，后续集成验收 |
+| 完整权重加载 | W4 提供独立外置 ABI、布局及加载路径，小模型 ABI 保持兼容 | E1/E3/E4/E5：完整前向、接口确认和独立复现 |
+| 生成循环 | 已有输入、greedy 和停止辅助函数，尚需 W5 集成 | E4：token 循环、持久会话、端到端专项验收 |
 
 ## 7. 团队待决议与确认
 
@@ -133,7 +145,7 @@ Tokenizer、采样、生成循环和完整模型权重装载仍待实现/验收�
 - [ ] D3：接受 ONNX INT64 IDs；如另需 INT32 接口，显式设计转换与范围校验。
 - [ ] D4：接受 tensor-c + Zig/LLVM FP32 实现；不宣称原标量选择器已修复。
 - [ ] D5：接受基础算子图作为正确性基线，融合节点作为后续优化。
-- [ ] D6：确认小模型静态嵌入边界，另行设计完整权重加载和内存计划。
+- [ ] D6：确认小模型静态嵌入边界，评审 W4 外置权重加载、完整内存计划及与小模型接口的区别。
 - [ ] D7：确认接口版本、变更审批及消费方测试责任。
 - [ ] D8：确认未使用算子的数值错误是否可被优化消除，以及对应 effect/安全判定和验收范围。
 

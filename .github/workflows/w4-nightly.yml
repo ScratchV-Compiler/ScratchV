@@ -1,0 +1,88 @@
+name: W4 nightly
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: One complete case; repository W4_NIGHTLY_ENABLED must also be true
+        type: choice
+        default: full_seed_0
+        options:
+          - full_seed_0
+          - full_seed_42
+          - one_token
+          - short_17
+          - short_255
+          - changed_future
+          - changed_padding
+  workflow_call:
+    inputs:
+      case:
+        description: One CASE_NAMES member; repository opt-in is required
+        type: string
+        required: false
+        default: full_seed_0
+  schedule:
+    # 04:43 Asia/Shanghai. No expensive job runs without repository opt-in.
+    - cron: '43 20 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w4-nightly-${{ github.ref }}-${{ inputs.case || 'full_seed_0' }}
+  cancel-in-progress: false
+
+jobs:
+  full-numeric:
+    # Even manual dispatch requires the repository variable. The separate
+    # w4-full-numeric manual entry remains available for an individual run.
+    if: ${{ vars.W4_NIGHTLY_ENABLED == 'true' && github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/w4-full-numeric.yml
+    with:
+      case: ${{ inputs.case || 'full_seed_0' }}
+
+  nightly-status:
+    if: ${{ always() }}
+    needs: full-numeric
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      NIGHTLY_ENABLED: ${{ vars.W4_NIGHTLY_ENABLED }}
+      FULL_NUMERIC_RESULT: ${{ needs.full-numeric.result }}
+      SELECTED_CASE: ${{ inputs.case || 'full_seed_0' }}
+    steps:
+      - name: Require enabled nightly execution and preserve its scope
+        run: |
+          set -euo pipefail
+          mkdir -p output/w4-nightly
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          enabled = os.environ.get("NIGHTLY_ENABLED", "").casefold() == "true"
+          result = os.environ["FULL_NUMERIC_RESULT"]
+          passed = enabled and result == "success"
+          disabled = not enabled and result == "skipped"
+          row = {"schema_version": 1, "enabled": enabled, "passed": passed,
+                 "status": "PASS" if passed else "DISABLED" if disabled else "FAIL",
+                 "commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+                 "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "case": os.environ["SELECTED_CASE"],
+                 "full_workflow_result": result, "seven_case_coverage": False,
+                 "team_accepted": False, "independent_reproduction": False,
+                 "scope": "One complete RV64 case, unit regressions and raw-array audit on the same commit; not W3 seven-case revalidation or W4 team signoff"}
+          Path("output/w4-nightly/status.json").write_text(json.dumps(row, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+              stream.write(f"## W4 nightly {row['status']}\n\nCommit: `{row['commit']}`; case: `{row['case']}`.\n\n"
+                           f"Repository opt-in: {enabled}; full workflow: {result}.\n\n{row['scope']}.\n\n"
+                           "DISABLED is not a numeric PASS. No team acceptance or independent reproduction is implied.\n")
+          if not (passed or disabled):
+              raise SystemExit("Enabled nightly requires successful full execution; missing, cancelled and skipped gates fail")
+          PY
+      - name: Upload nightly status even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w4-nightly-status-${{ inputs.case || 'full_seed_0' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
+          path: output/w4-nightly/status.json

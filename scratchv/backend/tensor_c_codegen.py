@@ -8,6 +8,14 @@ reuse. Consequently generated functions are not reentrant. Compile as C11 with
 ``-fno-fast-math -ffp-contract=off -fno-strict-aliasing`` and link a conforming
 libm plus memcpy/memset. No tensor storage is placed on the stack.
 
+``constant_storage="external"`` instead emits ``scratchv_run_external(inputs,
+weights, workspace, workspace_bytes, output)``. Its caller supplies read-only
+weight buffers in artifact order and an 8-byte-aligned workspace. There is no
+mutable static storage. Input/output/weight buffer sizes are a caller contract:
+the C ABI has no descriptors to discover allocation lengths. The loader must
+validate them against TensorSpec before calling the function. Pointers, numeric
+values, workspace capacity and writable-buffer overlap are checked in C.
+
 Supported element types are FP32, INT32 and INT64. Control flow, dynamic shapes,
 empty reductions and nonfinite arithmetic are rejected explicitly. This backend
 does not silently lower tensor operations to scalar integer instructions.
@@ -15,7 +23,7 @@ does not silently lower tensor operations to scalar integer instructions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Mapping
 
@@ -32,6 +40,7 @@ class TensorCCodegenError(ValueError):
 _TYPES = {DataType.FLOAT32: ("float", np.dtype("float32")),
           DataType.INT32: ("int32_t", np.dtype("int32")),
           DataType.INT64: ("int64_t", np.dtype("int64"))}
+_UINT64_MAX = (1 << 64) - 1
 
 
 @dataclass(frozen=True)
@@ -62,6 +71,11 @@ class TensorCArtifact:
     constant_bytes: int
     function_name: str = "scratchv_run"
     compile_flags: tuple[str, ...] = ("-fno-fast-math", "-ffp-contract=off", "-fno-strict-aliasing")
+    constant_storage: str = "inline"
+    external_weights: tuple[TensorSpec, ...] = ()
+    external_initializers: tuple[np.ndarray, ...] = field(default=(), repr=False, compare=False)
+    kernel_calls: bool = False
+    matmul_policy: str = "sequential"
 
 
 def _shape(shape):
@@ -152,19 +166,50 @@ static float sv_sigmoid(float x) {
 }
 '''
 
+_EXTERNAL_PRELUDE = r'''
+/* External storage targets 64-bit hosts/guests; lengths are caller-validated. */
+_Static_assert(sizeof(size_t) == 8 && sizeof(uintptr_t) == 8,
+               "external tensor ABI requires a 64-bit target");
+static int sv_buffer(const void *pointer, uint64_t bytes, size_t alignment) {
+    uintptr_t address = (uintptr_t)pointer;
+    return pointer && address % alignment == 0 && bytes <= UINTPTR_MAX - address;
+}
+static int sv_overlap(const void *a, uint64_t na, const void *b, uint64_t nb) {
+    uintptr_t pa = (uintptr_t)a, pb = (uintptr_t)b;
+    return na && nb && (pa <= pb ? pb - pa < na : pa - pb < nb);
+}
+static uint32_t sv_float_bits(float x) {
+    union { float f; uint32_t u; } value; value.f = x; return value.u;
+}
+'''
+
 
 class TensorCCodegen:
     """Generate one straight-line function with strict tensor/dtype validation."""
 
     def __init__(self, program: Program, initializers: Mapping[str, np.ndarray] | None = None,
                  *, max_workspace_bytes=256 * 1024 * 1024,
-                 max_constant_bytes=256 * 1024 * 1024):
+                 max_constant_bytes=256 * 1024 * 1024, constant_storage="inline",
+                 kernel_calls=False, matmul_policy="sequential"):
         self.program = program
         self.initializers = {} if initializers is None else dict(initializers)
         self.max_workspace_bytes = max_workspace_bytes
         self.max_constant_bytes = max_constant_bytes
+        self.constant_storage = constant_storage
+        self.kernel_calls = kernel_calls
+        self.matmul_policy = matmul_policy
 
     def generate(self) -> TensorCArtifact:
+        if self.constant_storage not in ("inline", "external"):
+            raise TensorCCodegenError("constant_storage must be 'inline' or 'external'")
+        if not isinstance(self.kernel_calls, bool):
+            raise TensorCCodegenError("kernel_calls must be boolean")
+        if self.kernel_calls and self.constant_storage != "external":
+            raise TensorCCodegenError("kernel_calls requires external constant storage")
+        if self.matmul_policy not in ("sequential", "blocked_fma"):
+            raise TensorCCodegenError("matmul_policy must be 'sequential' or 'blocked_fma'")
+        if self.matmul_policy != "sequential" and self.constant_storage != "external":
+            raise TensorCCodegenError("Experimental MatMul policies require external constant storage")
         if len(self.program.functions) != 1:
             raise TensorCCodegenError("Exactly one function is required")
         func = self.program.functions[0]
@@ -180,9 +225,13 @@ class TensorCCodegen:
         if any(value.is_constant for value in func.params):
             raise TensorCCodegenError("Function parameters cannot be constants")
         for bound in (self.max_workspace_bytes, self.max_constant_bytes):
-            if isinstance(bound, bool) or not isinstance(bound, int) or bound < 0:
-                raise TensorCCodegenError("Memory limits must be nonnegative integers")
+            if (isinstance(bound, bool) or not isinstance(bound, int)
+                    or not 0 <= bound <= _UINT64_MAX):
+                raise TensorCCodegenError("Memory limits must be nonnegative 64-bit integers")
         self.specs, self.names, self.constants, self.body = {}, {}, [], []
+        self.external_weights, self.external_initializers = [], []
+        self.external_scalar_checks = []
+        self.kernels = []
         self.constant_bytes = 0
         self._counter = 0
         defined = set()
@@ -252,14 +301,18 @@ class TensorCCodegen:
                 offset, block_size = free.pop(choice)
                 if block_size > needed:
                     free.append((offset + needed, block_size - needed))
-            if high > self.max_workspace_bytes:
+            if high > self.max_workspace_bytes or high > _UINT64_MAX:
                 raise TensorCCodegenError(f"Static workspace exceeds {self.max_workspace_bytes} bytes")
             allocations[value.name] = (offset, needed)
             self.body.append(f"/* {index}: {instruction.opcode.value} */")
+            arena = "sv_workspace" if self.constant_storage == "external" else "sv_arena.bytes"
             self.body.append(f"{_TYPES[spec.dtype][0]} *{self.names[value.name]} = "
-                             f"({_TYPES[spec.dtype][0]} *)(sv_arena.bytes + {offset}ULL);")
-            self._emit(instruction, spec, details)
-            self._finite_check(spec)
+                             f"({_TYPES[spec.dtype][0]} *)({arena} + {offset}ULL);")
+            if self.kernel_calls:
+                self._emit_kernel(instruction, spec, details, index)
+            else:
+                self._emit(instruction, spec, details)
+                self._finite_check(spec)
             for name in list(allocations):
                 if last.get(name, index) <= index:
                     free.append(allocations.pop(name))
@@ -279,10 +332,42 @@ class TensorCCodegen:
             self._constant(returned, np.asarray(returned.const_value,
                            dtype=self.specs[returned.name].numpy_dtype))
         output = self.specs[returned.name]
+        if returned.dtype != output.dtype:
+            raise TensorCCodegenError(f"RETURN {returned.name}: dtype disagrees with defined value")
+        # Empty shape on a builder-created intermediate still means "infer".
+        # Parameters/globals and an explicit function signature are boundaries:
+        # their empty shape is a scalar, never a wildcard for a tensor buffer.
+        bound_names = {value.name for value in [*self.program.global_values, *func.params]}
+        inferred_return = isinstance(returned.shape, (tuple, list)) and len(returned.shape) == 0
+        if ((not inferred_return or returned.name in bound_names)
+                and _shape(returned.shape) != output.shape):
+            raise TensorCCodegenError(f"RETURN {returned.name}: shape disagrees with defined value")
+        if func.returns:
+            if len(func.returns) != 1:
+                raise TensorCCodegenError("Function return signature must declare one tensor")
+            declared = func.returns[0]
+            if declared.dtype != output.dtype or _shape(declared.shape) != output.shape:
+                raise TensorCCodegenError("Function return signature dtype/shape disagrees with RETURN")
         ctype = _TYPES[output.dtype][0]
         self.body += ["if (!output) return 1;",
                       f"for (size_t i=0; i<{output.size}ULL; ++i) (({ctype} *)output)[i] = {self.names[output.name]}[i];",
                       "return 0;"]
+        if self.constant_storage == "external":
+            source = (_PRELUDE + _EXTERNAL_PRELUDE + "".join(self.kernels)
+                      + "#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
+                      + "int scratchv_run_external(const void *const inputs[], "
+                      "const void *const weights[], void *workspace, size_t workspace_bytes, "
+                      "void *output) {\n  "
+                      + "\n  ".join(self._external_prologue(inputs, output, high) + self.body)
+                      + "\n}\n")
+            return TensorCArtifact(
+                source, inputs, output, high, self.constant_bytes,
+                function_name="scratchv_run_external", constant_storage="external",
+                external_weights=tuple(self.external_weights),
+                external_initializers=tuple(self.external_initializers),
+                kernel_calls=self.kernel_calls,
+                matmul_policy=self.matmul_policy,
+            )
         source = (_PRELUDE + "\n" + "\n".join(self.constants)
                   + f"\nstatic union {{ uint64_t align; unsigned char bytes[{max(high, 8)}]; }} sv_arena;\n"
                   + "#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
@@ -295,6 +380,8 @@ class TensorCCodegen:
             raise TensorCCodegenError(f"Unsupported dtype {value.dtype}; use FP32/INT32/INT64")
         shape = _shape(value.shape if shape is None else shape)
         spec = TensorSpec(value.name, value.dtype, shape)
+        if spec.nbytes > _UINT64_MAX:
+            raise TensorCCodegenError("Tensor byte count exceeds 64-bit address space")
         self.specs[value.name] = spec
         self.names[value.name] = f"sv_v{self._counter}"
         self._counter += 1
@@ -304,18 +391,106 @@ class TensorCCodegen:
         spec = self.specs[value.name]
         if not isinstance(data, np.ndarray) or data.shape != spec.shape or data.dtype != spec.numpy_dtype:
             raise TensorCCodegenError(f"Initializer {value.name} dtype/shape disagrees with IR")
+        if value.is_constant:
+            # A scalar literal is part of the IR's meaning (and may have been
+            # used by optimizations). A caller binding cannot override it.
+            try:
+                expected = np.asarray(value.const_value, dtype=spec.numpy_dtype)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise TensorCCodegenError(f"Invalid scalar constant {value.name}") from exc
+            if data.shape != () or expected.shape != () or not np.array_equal(data, expected):
+                raise TensorCCodegenError(f"Initializer {value.name} disagrees with scalar constant")
+            if (self.constant_storage == "external" and spec.dtype == DataType.FLOAT32
+                    and data.view(np.uint32).item() != expected.view(np.uint32).item()):
+                raise TensorCCodegenError(f"Initializer {value.name} disagrees with scalar constant bits")
         self.constant_bytes += spec.nbytes
-        if self.constant_bytes > self.max_constant_bytes:
+        if self.constant_bytes > self.max_constant_bytes or self.constant_bytes > _UINT64_MAX:
             raise TensorCCodegenError("Constant tensor storage exceeds configured limit")
+        if self.constant_storage == "external":
+            # nditer bounds temporary memory even for a noncontiguous mmap/view.
+            if spec.dtype == DataType.FLOAT32:
+                for chunk in np.nditer(data, flags=["external_loop", "buffered", "zerosize_ok"],
+                                       op_flags=["readonly"], order="C", buffersize=262144):
+                    if not np.isfinite(chunk).all():
+                        raise TensorCCodegenError("Nonfinite initializer/constant")
+            self.external_weights.append(spec)
+            self.external_initializers.append(data)
+            if value.is_constant:
+                name = self.names[value.name]
+                if spec.dtype == DataType.FLOAT32:
+                    expected_bits = int(data.view(np.uint32).item())
+                    check = f"sv_float_bits({name}[0]) != {expected_bits}U"
+                else:
+                    check = f"{name}[0] != {_literal(value.const_value, spec.dtype)}"
+                self.external_scalar_checks.append(f"if ({check}) return 2;")
+            return
         values = [_literal(v.item(), spec.dtype) for v in data.ravel()]
         lines = [", ".join(values[i:i + 8]) for i in range(0, len(values), 8)]
         self.constants.append(f"static const {_TYPES[spec.dtype][0]} {self.names[value.name]}"
                               f"[{max(spec.size, 1)}] = {{\n" + ",\n".join(lines or ["0"]) + "\n};")
 
+    def _external_prologue(self, inputs, output, workspace_bytes):
+        """Validate all external addresses before dereferencing tensor data."""
+        lines = [
+            f"if (workspace_bytes < {workspace_bytes}ULL) return 1;",
+            f"if ({workspace_bytes}ULL && !sv_buffer(workspace, {workspace_bytes}ULL, 8)) return 1;",
+            f"if (!sv_buffer(output, {output.nbytes}ULL, {output.numpy_dtype.itemsize})) return 1;",
+            f"if (sv_overlap(workspace, {workspace_bytes}ULL, output, {output.nbytes}ULL)) return 1;",
+            "unsigned char *sv_workspace = (unsigned char *)workspace;",
+        ]
+        for table, specs in (("inputs", inputs), ("weights", self.external_weights)):
+            if specs:
+                lines.append(f"if (!sv_buffer({table}, {len(specs)}ULL * sizeof(void *), "
+                             "_Alignof(void *))) return 1;")
+                lines.append(f"if (sv_overlap(workspace, {workspace_bytes}ULL, {table}, "
+                             f"{len(specs)}ULL * sizeof(void *)) || sv_overlap(output, "
+                             f"{output.nbytes}ULL, {table}, {len(specs)}ULL * sizeof(void *))) return 1;")
+            for index, spec in enumerate(specs):
+                pointer = f"{table}[{index}]"
+                lines.append(f"if (!sv_buffer({pointer}, {spec.nbytes}ULL, "
+                             f"{spec.numpy_dtype.itemsize})) return 1;")
+                lines.append(f"if (sv_overlap(workspace, {workspace_bytes}ULL, {pointer}, "
+                             f"{spec.nbytes}ULL) || sv_overlap(output, {output.nbytes}ULL, "
+                             f"{pointer}, {spec.nbytes}ULL)) return 1;")
+                if table == "weights":
+                    ctype, name = _TYPES[spec.dtype][0], self.names[spec.name]
+                    lines.append(f"const {ctype} *{name} = (const {ctype} *){pointer};")
+                    if spec.dtype == DataType.FLOAT32:
+                        lines.append(f"for (size_t i=0; i<{spec.size}ULL; ++i) "
+                                     f"if (!sv_finite({name}[i])) return 2;")
+        return lines + self.external_scalar_checks
+
     def _finite_check(self, spec):
         if spec.dtype == DataType.FLOAT32:
             self.body.append(f"for (size_t i=0; i<{spec.size}ULL; ++i) "
                              f"if (!sv_finite({self.names[spec.name]}[i])) return 2;")
+
+    def _emit_kernel(self, instruction, output, details, index):
+        """Bound each C optimizer unit without changing the arithmetic body.
+
+        Move the original operation and its immediate finite check verbatim.
+        Shape-specialized loops retain their reduction order and FP flags.
+        Explicit noinline prevents LLVM from rebuilding the giant graph body.
+        """
+        start = len(self.body)
+        self._emit(instruction, output, details)
+        self._finite_check(output)
+        statements = self.body[start:]
+        del self.body[start:]
+        names = [self.names[output.name]]
+        parameters = [f"{_TYPES[output.dtype][0]} *{names[0]}"]
+        unique = {}
+        for value in instruction.operands:
+            unique.setdefault(value.name, value)
+        for value in unique.values():
+            names.append(self.names[value.name])
+            parameters.append(f"const {_TYPES[value.dtype][0]} *{names[-1]}")
+        self.kernels.append(
+            f"\nstatic __attribute__((noinline)) int sv_kernel_{index}({', '.join(parameters)}) {{\n  "
+            + "\n  ".join(statements) + "\n  return 0;\n}\n"
+        )
+        self.body.append(f"int sv_status_{index} = sv_kernel_{index}({', '.join(names)});")
+        self.body.append(f"if (sv_status_{index}) return sv_status_{index};")
 
     def _infer(self, instruction):
         op, attrs = instruction.opcode, instruction.attrs
@@ -542,6 +717,37 @@ class TensorCCodegen:
             m, k, n = a[-2], a[-1], b[-1]
             left = _broadcast_offset(batch, a[:-2], "batch")
             right = _broadcast_offset(batch, b[:-2], "batch")
+            if self.matmul_policy == "blocked_fma":
+                # Explicit experiment: four adjacent output columns reuse each
+                # left value. K-block products use fused FP32 multiply-add in K
+                # order, then each block is added to an FP32 running sum. This
+                # deliberately differs from sequential separate mul/add rounding.
+                # __builtin_fmaf keeps the explicit operation even with
+                # -fno-builtin and -ffp-contract=off used by the RV64 runtime.
+                lines = [
+                    f"for (size_t batch=0; batch<{math.prod(batch)}ULL; ++batch) "
+                    f"for (size_t m=0; m<{m}ULL; ++m) "
+                    f"for (size_t column=0; column<{n}ULL; column+=4) {{",
+                    "float sum0=0.0f, sum1=0.0f, sum2=0.0f, sum3=0.0f;",
+                    f"for (size_t block=0; block<{k}ULL; block+=128) {{",
+                    "float acc0=0.0f, acc1=0.0f, acc2=0.0f, acc3=0.0f;",
+                    f"size_t end=block+128 < {k}ULL ? block+128 : {k}ULL;",
+                    "for (size_t k=block; k<end; ++k) {",
+                    f"float left_value={names[0]}[({left})*{m*k}ULL+m*{k}ULL+k];",
+                    f"const float *right_values={names[1]}+({right})*{k*n}ULL+k*{n}ULL+column;",
+                    "acc0=__builtin_fmaf(left_value,right_values[0],acc0);",
+                ]
+                lines += [f"if (column+{lane}<{n}ULL) acc{lane}="
+                          f"__builtin_fmaf(left_value,right_values[{lane}],acc{lane});"
+                          for lane in range(1, 4)]
+                lines += ["}", "sum0+=acc0; sum1+=acc1; sum2+=acc2; sum3+=acc3;", "}",
+                          f"{dst}[batch*{m*n}ULL+m*{n}ULL+column]=sum0;"]
+                lines += [f"if (column+{lane}<{n}ULL) "
+                          f"{dst}[batch*{m*n}ULL+m*{n}ULL+column+{lane}]=sum{lane};"
+                          for lane in range(1, 4)]
+                lines.append("}")
+                self.body.append(" ".join(lines))
+                return
             self.body.append(f"for (size_t batch=0; batch<{math.prod(batch)}ULL; ++batch) "
                 f"for (size_t m=0; m<{m}ULL; ++m) for (size_t n=0; n<{n}ULL; ++n) {{ "
                 "float acc=0.0f; "

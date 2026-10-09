@@ -9,6 +9,8 @@ build/
 models/
 venv/
 .venv/
+.venv-linux/
+.venv-*/
 .claude/
 .omo/
 scratchv.egg-info/

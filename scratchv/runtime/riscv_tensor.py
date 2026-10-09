@@ -17,6 +17,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import threading
 import time
 from typing import Any, Mapping, Sequence
 
@@ -157,35 +158,120 @@ def _stop_process_tree(process: subprocess.Popen, job=None) -> None:
 
 
 def _run_process(command, *, cwd, timeout, env=None) -> subprocess.CompletedProcess:
+    """Run one owned tree with bounded process waits, including setup failures."""
     options = {"creationflags": _creation_flags()}
     if os.name == "nt":
         options["creationflags"] |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         options["start_new_session"] = True
-    with subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, **options) as process:
+    process, job, primary_error, previous_term = None, None, None, None
+    try:
+        # The W2 supervisor first sends SIGTERM to the probe. This invocation
+        # owns a different session, so killing the probe group alone would
+        # orphan its compiler/QEMU. Install before spawning, so setup failures
+        # and interruptions also unwind through the same cleanup boundary.
+        if os.name != "nt" and threading.current_thread() is threading.main_thread():
+            previous_term = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, _terminate_invocation)
+        # Do not use Popen's context manager: its implicit __exit__.wait() has
+        # no deadline, even if Job setup failed before communicate() began.
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, **options)
         job = _windows_job(process)
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            _stop_process_tree(process, job)
-            try:
-                stdout, stderr = process.communicate(timeout=10)
-            except subprocess.TimeoutExpired as drain:
-                # A failed OS-level tree termination must not turn a bounded
-                # compiler timeout into an unbounded pipe read.
-                process.kill()
-                if process.stdout:
-                    process.stdout.close()
-                if process.stderr:
-                    process.stderr.close()
-                process.wait(timeout=5)
-                stdout, stderr = drain.output or b"", drain.stderr or b""
-            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from exc
-        finally:
-            if job is not None:
-                job[0].CloseHandle(job[1])
+        stdout, stderr = process.communicate(timeout=timeout)
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        cleanup_errors = []
+        drain_failed = False
+
+        def cleanup(label, action):
+            try:
+                action()
+            except BaseException as exc:
+                cleanup_errors.append(f"{label}: {type(exc).__name__}: {exc}")
+
+        def close_pipe(stream):
+            if not drain_failed or os.name != "nt":
+                stream.close()
+                return
+            # Windows communicate() owns reader threads. If a descendant kept
+            # a pipe open after a failed tree kill, BufferedReader.close() can
+            # block acquiring its reader's lock. Do not turn bounded recovery
+            # into an unbounded wait on that lock. The daemon keeps the stream
+            # alive and eventually closes it when the reader releases the lock.
+            failures = []
+            def close():
+                try:
+                    stream.close()
+                except BaseException as exc:
+                    failures.append(exc)
+            closer = threading.Thread(target=close, daemon=True)
+            closer.start()
+            closer.join(timeout=0.25)
+            if closer.is_alive():
+                raise TimeoutError("Pipe close is pending on a Windows reader thread")
+            if failures:
+                raise failures[0]
+
+        if process is not None:
+            if primary_error is not None:
+                cleanup("process-tree termination", lambda: _stop_process_tree(process, job))
+                try:
+                    stdout, stderr = process.communicate(timeout=10)
+                    if isinstance(primary_error, subprocess.TimeoutExpired):
+                        primary_error.output, primary_error.stderr = stdout, stderr
+                except BaseException as exc:
+                    drain_failed = True
+                    cleanup_errors.append(f"pipe drain: {type(exc).__name__}: {exc}")
+                    if (isinstance(primary_error, subprocess.TimeoutExpired)
+                            and isinstance(exc, subprocess.TimeoutExpired)):
+                        if exc.output is not None:
+                            primary_error.output = exc.output
+                        if exc.stderr is not None:
+                            primary_error.stderr = exc.stderr
+                    cleanup("process.kill fallback", process.kill)
+                    cleanup("process.wait fallback", lambda: process.wait(timeout=5))
+        # Kill-on-close is a second chance to release inherited pipe handles
+        # before attempting their close, even if explicit tree termination failed.
+        if job is not None:
+            def close_job():
+                if job[0].CloseHandle(job[1]) == 0:
+                    raise OSError("CloseHandle failed")
+            cleanup("close Windows Job", close_job)
+        if process is not None:
+            for name in ("stdout", "stderr"):
+                stream = getattr(process, name, None)
+                if stream is not None:
+                    cleanup(f"close {name}", lambda stream=stream: close_pipe(stream))
+        if previous_term is not None:
+            cleanup("restore SIGTERM", lambda: signal.signal(signal.SIGTERM, previous_term))
+        if cleanup_errors:
+            detail = "; ".join(cleanup_errors)
+            if primary_error is None:
+                raise RuntimeError("Process cleanup failed: " + detail)
+            if hasattr(primary_error, "add_note"):
+                primary_error.add_note("Process cleanup: " + detail)
+
+
+def _terminate_invocation(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+def _save_process_logs(directory: Path, prefix: str, stdout, stderr):
+    """Attempt both logs without allowing a secondary I/O error to hide execution."""
+    errors = []
+    for stream, content in (("stdout", stdout), ("stderr", stderr)):
+        path = directory / f"{prefix}.{stream}"
+        try:
+            path.write_bytes(content or b"")
+        except OSError as exc:
+            errors.append((path.name, exc))
+    detail = "; ".join(f"{name}: {error}" for name, error in errors)
+    suffix = f"; failed to preserve {prefix} logs: {detail}" if errors else ""
+    return suffix, errors[0][1] if errors else None
 
 
 def toolchain_versions(toolchain: RiscVToolchain) -> dict[str, str]:
@@ -516,15 +602,15 @@ def build_riscv_tensor(
     try:
         process = _run_process(command, cwd=build_dir, timeout=timeout, env=environment)
     except subprocess.TimeoutExpired as exc:
-        (build_dir / "compiler.stdout").write_bytes(exc.stdout or b"")
-        (build_dir / "compiler.stderr").write_bytes(exc.stderr or b"")
-        raise TimeoutError(f"RISC-V compilation exceeded {timeout} seconds") from exc
+        log_message, _ = _save_process_logs(build_dir, "compiler", exc.stdout, exc.stderr)
+        raise TimeoutError(f"RISC-V compilation exceeded {timeout} seconds{log_message}") from exc
     elapsed = time.perf_counter() - started
-    (build_dir / "compiler.stdout").write_bytes(process.stdout)
-    (build_dir / "compiler.stderr").write_bytes(process.stderr)
+    log_message, log_error = _save_process_logs(build_dir, "compiler", process.stdout, process.stderr)
     if process.returncode:
         message = process.stderr.decode("utf-8", errors="replace")[-12000:]
-        raise RuntimeError(f"RISC-V tensor compilation failed ({process.returncode}):\n{message}")
+        raise RuntimeError(f"RISC-V tensor compilation failed ({process.returncode}):\n{message}{log_message}")
+    if log_error is not None:
+        raise RuntimeError(log_message.lstrip("; ")) from log_error
     validate_riscv_elf(elf)
     return RiscVTensorExecutable(elf, tuple(artifact.inputs), artifact.output, toolchain,
                                 tuple(command), elapsed, int(artifact.workspace_bytes),
@@ -562,17 +648,12 @@ def run_riscv_tensor(
     except subprocess.TimeoutExpired as exc:
         elapsed = time.perf_counter() - started
         message = f"RISC-V QEMU execution exceeded {timeout} seconds"
-        try:
-            stdout_path.write_bytes(exc.stdout or b"")
-            stderr_path.write_bytes(exc.stderr or b"")
-        except OSError as log_error:
-            message += f"; failed to preserve QEMU logs: {log_error}"
-        raise RiscVTensorTimeoutError(message, elapsed_s=elapsed,
+        log_message, _ = _save_process_logs(run_dir, "qemu", exc.stdout, exc.stderr)
+        raise RiscVTensorTimeoutError(message + log_message, elapsed_s=elapsed,
                                      command=command, timeout_s=timeout) from exc
     elapsed = time.perf_counter() - started
+    log_message, log_error = _save_process_logs(run_dir, "qemu", process.stdout, process.stderr)
     try:
-        stdout_path.write_bytes(process.stdout)
-        stderr_path.write_bytes(process.stderr)
         if process.returncode:
             diagnostic = process.stderr.decode("utf-8", errors="replace")[-4000:]
             if uart_path.exists():
@@ -584,5 +665,8 @@ def run_riscv_tensor(
             raise RuntimeError("QEMU exited without producing UART tensor output")
         result = decode_tensor_frame(uart_path.read_bytes(), executable.output)
     except Exception as exc:
-        raise RiscVTensorExecutionError(str(exc), elapsed_s=elapsed, command=command) from exc
+        raise RiscVTensorExecutionError(str(exc) + log_message, elapsed_s=elapsed, command=command) from exc
+    if log_error is not None:
+        raise RiscVTensorExecutionError(log_message.lstrip("; "), elapsed_s=elapsed,
+                                       command=command) from log_error
     return RiscVTensorRun(result, elapsed, tuple(command), uart_path, stdout_path, stderr_path)

@@ -61,6 +61,11 @@ pytest tests/ -v            # run all tests
 - User-facing docs go in `docs/`.
 - Inline code comments are for *why* not *what*.
 - The README is the single source of truth for project-wide docs.
+- Qwen3 deployment (W1 and later) is delivered and independently reproduced on
+  Linux. Use Ubuntu 24.04, Bash, Python 3.12 and Linux tool paths in public guides,
+  PR instructions and CI. See [the Linux reproduction contract](docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md).
+  Personal development environments are not acceptance evidence; preserve the
+  actual platform and commit identity of historical measurements.
 
 ## Code of Conduct
 

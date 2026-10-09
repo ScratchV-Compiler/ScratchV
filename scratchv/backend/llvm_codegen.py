@@ -533,6 +533,8 @@ class LLVMCodegen:
         self._p(f"  {dst} = fadd {ty} 0.0, 0.0  ; conv placeholder")
 
     def _emit_gemm(self, instr: Instruction) -> None:
+        if any(instr.attrs.get(name, 1) != 1 for name in ("alpha", "beta")):
+            raise ValueError("Legacy LLVM GEMM does not support nondefault alpha/beta scaling")
         dst = self._dest(instr)
         a = self._op(instr, 0)
         b = self._op(instr, 1)

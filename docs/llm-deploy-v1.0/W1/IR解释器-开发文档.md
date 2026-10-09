@@ -1,5 +1,7 @@
 # ScratchV IR 解释器开发文档
 
+正式交付、CI 和他人复现使用 Ubuntu 24.04 x86_64 / Bash / Python 3.12，环境与工具准备见 [Linux 复现约定](../LINUX_REPRODUCTION.md)。命令中的 `python` 指已激活的 `.venv-linux/bin/python`。
+
 > 版本：v0.1，开发说明；本轮实现已落地  
 > 日期：2026-09-30  
 > 依据：[IR 解释器设计文档（第二版·精简版）](IR解释器-设计文档.md)

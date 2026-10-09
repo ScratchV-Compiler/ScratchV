@@ -293,7 +293,7 @@ cost**，否则「结果对但慢一倍」会被判通过。
 
 ```
 scratchv/backend/kernels/
-  ARCHITECTURE.md  USAGE.md  DEVELOPMENT.md  OPTIMIZATION.md
+  KERNEL_ARCHITECTURE.md  USAGE.md  DEVELOPMENT.md  OPTIMIZATION.md
   __init__.py        包声明（必须有，否则 python -m 起不来）
   target.py          TargetDesc + TARGETS（rv32im / rv32imf）
   dtypes.py          DtypePolicy + POLICIES + mac_instrs + zero_acc

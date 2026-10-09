@@ -94,6 +94,16 @@ jobs:
           $PY -m pip install -e ".[all]"
           $PY -m pip install "pytest>=7,<10"
 
+      - name: Install pinned CPU dependencies for Qwen and W3 tests
+        run: |
+          set -euo pipefail
+          # The full test suite collects W3 subgraph and workflow tests.
+          # Install their actual dependencies instead of skipping those tests.
+          $PY -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
+          $PY -m pip install -r requirements/qwen3-small-probe.txt "PyYAML==6.0.3"
+          $PY -m pip check
+          $PY -c "import torch, yaml, safetensors; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
+
       - name: Run Topic 04 PassManager regressions
         id: topic04_pass_manager
         env:
@@ -171,6 +181,9 @@ jobs:
         env:
           PYTHONHASHSEED: "0"
           SCRATCHV_REQUIRE_RISCV_EXECUTION: "1"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
         run: |
           mkdir -p benchmark_reports
           $PY -m pytest tests/ -v --tb=short \

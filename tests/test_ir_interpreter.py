@@ -111,7 +111,7 @@ def test_empty_invalid_and_void_returns():
 
 
 def test_error_position_and_cause():
-    x = Value("x")
+    x = Value("x", shape=(2,))
     b = builder(x)
     b.ret(b.reshape(x, (3,)))
     with pytest.raises(IRExecutionError) as found:
@@ -131,7 +131,7 @@ def test_missing_value_not_zero_and_shape_on_result():
     b.ret(Value("missing"))
     with pytest.raises(IRExecutionError, match="InvalidProgram"):
         IRInterpreter(b.program).run({})
-    x = Value("x")
+    x = Value("x", shape=(2,))
     b = builder(x)
     result = b.neg(x)
     result.shape = (3,)
