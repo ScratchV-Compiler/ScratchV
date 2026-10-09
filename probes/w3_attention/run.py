@@ -14,7 +14,8 @@ if str(ROOT) not in sys.path:
 
 import numpy as np
 from probes.w3_attention.cases import build_cases
-from probes.w3_common import new_output_dir, source_evidence, write_reports, sha256_file, process_peak_rss_bytes
+from probes.w3_common import (new_output_dir, source_evidence, write_reports, sha256_file,
+                             process_peak_rss_bytes, recheck_sources)
 from probes.w2_backend_ops.run import reference_case, interpret
 from probes.w2_qwen3_small.diagnostics import tensor_diff
 from scratchv.compiler import CompilerConfig, CompilerDriver
@@ -132,8 +133,12 @@ def main(argv=None):
     try:
         report.update(source_evidence())
         run_probe(out, report, cc=args.cc, qemu=args.qemu, timeout=args.timeout)
+        if report["passed"]:
+            report["stage"] = "source_recheck"
+            recheck_sources(report)
+            report["stage"] = "complete"
     except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {exc}"
+        report.update(passed=False, error=f"{type(exc).__name__}: {exc}")
     report.update(status="PASS" if report["passed"] else "FAIL",
                   elapsed_seconds=time.perf_counter()-started, process_peak_rss_bytes=process_peak_rss_bytes())
     write_reports(out, report)

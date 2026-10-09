@@ -31,7 +31,8 @@ import onnxruntime as ort
 import torch
 
 from probes.w2_qwen3_small.diagnostics import build_diagnostic_model, unpack_trace
-from probes.w3_common import new_output_dir, process_peak_rss_bytes, source_evidence, write_reports
+from probes.w3_common import (new_output_dir, process_peak_rss_bytes, source_evidence,
+                             write_reports, recheck_sources)
 from probes.w3_qwen3_subgraphs.assets import DIMENSIONS, Weights, sha256, verify_source
 from probes.w3_qwen3_subgraphs.cases import iter_cases
 from scratchv.analysis.ir_verifier import verify_ir
@@ -287,6 +288,10 @@ def main(argv=None):
     started = time.perf_counter()
     try:
         run_probe(args.source_dir, out, report, args.seq_len)
+        if report.get("numerical_passed") or report["passed"]:
+            report["stage"] = "source_recheck"
+            recheck_sources(report)
+            report["stage"] = "complete"
     except Exception as exc:
         report.update(passed=False, status="FAIL", error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc())
     report["seconds"] = time.perf_counter() - started

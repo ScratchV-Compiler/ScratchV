@@ -19,6 +19,7 @@ on:
       - tests/test_licm_safety.py
       - tests/test_optimizer_numeric_semantics.py
       - tests/test_w3_full_gate.py
+      - tests/test_w3_atomic_text.py
       - tests/test_weight_bundle.py
       - tests/test_tensor_c_external.py
       - tests/test_tensor_boundary_contracts.py
@@ -101,6 +102,7 @@ jobs:
           python -B -X utf8 -m pytest \
             tests/test_w1_qwen3_export.py tests/test_llm_inputs.py \
             tests/test_w2_runtime_metadata.py tests/test_w3_full_gate.py \
+            tests/test_w3_atomic_text.py \
             tests/test_licm_safety.py tests/test_optimizer_numeric_semantics.py \
             tests/test_tensor_boundary_contracts.py tests/test_tensor_return_contract.py \
             tests/test_weight_bundle.py tests/test_tensor_c_external.py \
