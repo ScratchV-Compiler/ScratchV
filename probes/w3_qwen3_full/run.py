@@ -181,7 +181,8 @@ def invariants(out, successful):
 
 
 def run_worker(args, folder, backend, input_path, row=None):
-    command = [str(Path(args.python).resolve()), "-B", "-X", "utf8",
+    # Keep the selected venv symlink: resolving it runs the base interpreter.
+    command = [str(Path(args.python).absolute()), "-B", "-X", "utf8",
                "probes/w3_qwen3_full/worker.py", "--backend", backend,
                "--model-dir", str(args.model_dir.resolve()), "--input-file", str(input_path),
                "--output-dir", str(folder/backend), "--optimization-level", "none",

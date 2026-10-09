@@ -287,7 +287,8 @@ def wait_child(process,timeout,row):
         raise
 
 def build_commands(args, out):
-    python = [str(Path(args.python).resolve()),"-B","-X","utf8"]
+    # Keep the selected venv symlink: resolving it runs the base interpreter.
+    python = [str(Path(args.python).absolute()),"-B","-X","utf8"]
     tools = []
     if args.cc:
         tools += ["--cc",args.cc]

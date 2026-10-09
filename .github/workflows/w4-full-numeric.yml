@@ -1,0 +1,453 @@
+name: W4 full RV64 numeric
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/w4-full-numeric.yml
+      - .github/workflows/w4-nightly.yml
+      - scratchv/**
+      - export_qwen3_onnx.py
+      - probes/w1_qwen3_export/**
+      - probes/w2_runtime/**
+      - probes/w3_common.py
+      - probes/w3_qwen3_full/**
+      - probes/w3_layer_diff/**
+      - probes/w4_qwen3_full/**
+      - tests/test_w1_qwen3_export.py
+      - tests/test_llm_inputs.py
+      - tests/test_w2_runtime_metadata.py
+      - tests/test_licm_safety.py
+      - tests/test_optimizer_numeric_semantics.py
+      - tests/test_w3_full_gate.py
+      - tests/test_weight_bundle.py
+      - tests/test_tensor_c_external.py
+      - tests/test_tensor_boundary_contracts.py
+      - tests/test_tensor_return_contract.py
+      - tests/test_w4*.py
+      - tests/test_riscv_external*.py
+      - tests/test_riscv_process_cleanup.py
+      - tests/test_riscv_weight_transport.py
+      - requirements/qwen3-small-probe.txt
+  workflow_dispatch:
+    inputs:
+      case:
+        description: One complete 28-layer forward; every output element uses strict max_abs < 1e-3
+        type: choice
+        default: full_seed_0
+        options:
+          - full_seed_0
+          - full_seed_42
+          - one_token
+          - short_17
+          - short_255
+          - changed_future
+          - changed_padding
+  workflow_call:
+    inputs:
+      case:
+        description: One CASE_NAMES member; each call executes one complete forward
+        type: string
+        required: false
+        default: full_seed_0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w4-full-numeric-${{ github.ref }}-${{ inputs.case || 'unit' }}
+  cancel-in-progress: false
+
+env:
+  OMP_NUM_THREADS: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  unit:
+    name: External ABI and small real QEMU regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install fixed regression dependencies and tools
+        run: |
+          set -euo pipefail
+          mkdir -p output/w4-unit
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y qemu-system-misc
+          python -m pip install numpy==2.2.6 onnx==1.18.0 onnxruntime==1.22.1 protobuf==5.29.5 pytest==9.1.1 PyYAML==6.0.3 ziglang==0.14.1
+          python -m pip install --no-deps -e .
+          python -m pip check
+          python -m pip freeze > output/w4-unit/dependencies.txt
+          zig_dir=$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent)')
+          printf '%s\n' "$zig_dir" >> "$GITHUB_PATH"
+          printf 'SCRATCHV_CC=%s/zig\nSCRATCHV_ZIG=%s/zig\nSCRATCHV_QEMU=qemu-system-riscv64\n' "$zig_dir" "$zig_dir" >> "$GITHUB_ENV"
+          {
+            python --version
+            python -m ziglang version
+            qemu-system-riscv64 --version
+            uname -a
+          } > output/w4-unit/tools.txt
+      - name: Run ABI, streaming bundle, runner and actual QEMU tests
+        run: |
+          set -euo pipefail
+          python -B -X utf8 -m pytest \
+            tests/test_w1_qwen3_export.py tests/test_llm_inputs.py \
+            tests/test_w2_runtime_metadata.py tests/test_w3_full_gate.py \
+            tests/test_licm_safety.py tests/test_optimizer_numeric_semantics.py \
+            tests/test_tensor_boundary_contracts.py tests/test_tensor_return_contract.py \
+            tests/test_weight_bundle.py tests/test_tensor_c_external.py \
+            tests/test_w4_contract.py tests/test_riscv_external_contract.py \
+            tests/test_riscv_external.py tests/test_w4_full_probe.py \
+            tests/test_w4_full_probe_contract.py tests/test_w4_diagnostic.py \
+            tests/test_w4_audit.py tests/test_w4_audit_contract.py \
+            tests/test_w4_large_address.py tests/test_w4_host_diagnostic.py \
+            tests/test_w4_fma_conformance.py tests/test_w4_fma_cross_backend.py \
+            tests/test_riscv_process_cleanup.py \
+            tests/test_riscv_weight_transport.py \
+            tests/test_w4_workflows.py \
+            -q -p no:cacheprovider --basetemp output/w4-unit/pytest \
+            --junitxml output/w4-unit/tests.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("output/w4-unit/tests.xml").getroot()
+          required = ("test_external_rv64_matmul_and_reuse", "test_weight_pointer_above_32bit_limit",
+                      "test_real_rv64_fma_exact_conformance",
+                      "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2]",
+                      "test_real_qemu_contiguous_loader_segments_and_success_cleanup[chunk31-3]",
+                      "test_post_execution_transport_corruption_fails_and_retains_copies",
+                      "test_success_copy_cleanup_failure_is_not_a_pass",
+                      "test_actual_shared_library_executes_kernel_calls_and_unloads[sequential]",
+                      "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]")
+          for name in required:
+              real = [node for node in root.iter("testcase") if node.get("name") == name]
+              if len(real) != 1 or any(real[0].find(tag) is not None for tag in ("skipped", "error", "failure")):
+                  raise SystemExit(f"Real QEMU/Host C regression must execute and pass: {name}")
+          PY
+      - name: Upload regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w4-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.case || 'pr' }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            output/w4-unit/dependencies.txt
+            output/w4-unit/tools.txt
+            output/w4-unit/tests.xml
+            output/w4-unit/pytest/**/run.json
+            output/w4-unit/pytest/**/*.stderr
+            output/w4-unit/pytest/**/*.stdout
+
+  full-numeric:
+    name: One complete Qwen3 RV64 forward
+    needs: unit
+    # PRs get the inexpensive unit/small-QEMU job only. No schedule is enabled here.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      SELECTED_CASE: ${{ inputs.case || 'full_seed_0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Validate case and record available Linux resources
+        run: |
+          set -euo pipefail
+          mkdir -p output/w4-ci
+          {
+            printf 'commit=%s\nrun_id=%s\nattempt=%s\ncase=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$SELECTED_CASE"
+            cat /etc/os-release
+            uname -a
+            lscpu
+            free -b
+            df -B1 .
+          } | tee output/w4-ci/runner-resources.txt
+          python - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          allowed = {"full_seed_0", "full_seed_42", "one_token", "short_17", "short_255", "changed_future", "changed_padding"}
+          mem = {line.split(":")[0]: int(line.split()[1]) * 1024
+                 for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith(("MemTotal:", "MemAvailable:"))}
+          evidence = {"case": os.environ["SELECTED_CASE"], "memory": mem,
+                      "disk_free_bytes": shutil.disk_usage(".").free,
+                      "minimum_available_memory_bytes": 8 * 1024**3,
+                      "minimum_disk_free_bytes": 15 * 1024**3}
+          evidence["passed"] = (evidence["case"] in allowed
+                                and mem.get("MemAvailable", 0) >= evidence["minimum_available_memory_bytes"]
+                                and evidence["disk_free_bytes"] >= evidence["minimum_disk_free_bytes"])
+          Path("output/w4-ci/resource-preflight.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          if not evidence["passed"]:
+              raise SystemExit("Unsupported case or insufficient available RAM/disk; see resource-preflight.json")
+          output = f"output/w4-ci/{evidence['case']}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              stream.write(f"W4_OUTPUT_DIR={output}\n")
+          PY
+      - name: Install W3-pinned CPU environment and Zig 0.14.1
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y qemu-system-misc time
+          python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements/qwen3-small-probe.txt PyYAML==6.0.3 ziglang==0.14.1
+          python -m pip install -e .
+          python -m pip check
+          python -m pip freeze > output/w4-ci/dependencies.txt
+          zig_dir=$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent)')
+          printf '%s\n' "$zig_dir" >> "$GITHUB_PATH"
+          {
+            python --version
+            python -m ziglang version
+            qemu-system-riscv64 --version
+          } >> output/w4-ci/runner-resources.txt
+      - name: Acquire the fixed original ONNX assets
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from probes.w1_qwen3_export.run import acquire_model
+          result = acquire_model(Path("output/assets/onnx"))
+          Path("output/w4-ci/acquisition.json").write_text(json.dumps(result, indent=2) + "\n")
+          PY
+      - name: Recheck free memory and disk after dependencies and assets
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, shutil
+          from pathlib import Path
+          mem = {line.split(":")[0]: int(line.split()[1]) * 1024
+                 for line in Path("/proc/meminfo").read_text().splitlines() if line.startswith(("MemTotal:", "MemAvailable:"))}
+          evidence = {"stage": "after_dependencies_and_assets", "memory": mem,
+                      "disk_free_bytes": shutil.disk_usage(".").free,
+                      "minimum_available_memory_bytes": 8 * 1024**3,
+                      "minimum_disk_free_bytes": 8 * 1024**3,
+                      "estimated_remaining_payload_bytes": 2 * 2384319432 + 2 * 256 * 151936 * 4,
+                      "estimate_scope": "One fixed-model bundle, one temporary segmented transport copy, and two logits arrays; excludes build/cache/log/upload overhead. Runtime manifest remains authoritative."}
+          evidence["passed"] = (mem.get("MemAvailable", 0) >= evidence["minimum_available_memory_bytes"]
+                                and evidence["disk_free_bytes"] >= evidence["minimum_disk_free_bytes"])
+          Path("output/w4-ci/resource-preflight-after-assets.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          if not evidence["passed"]:
+              raise SystemExit("Insufficient available RAM/disk after installation and acquisition; see resource-preflight-after-assets.json")
+          PY
+      - name: Build external weights and compare one full RV64 forward
+        timeout-minutes: 200
+        run: |
+          set -euo pipefail
+          set +e
+          timeout --signal=INT --kill-after=30s 195m \
+            /usr/bin/time -v -o output/w4-ci/process-time.txt \
+            python -B -X utf8 -m probes.w4_qwen3_full.run \
+              --model-dir output/assets/onnx --output-dir "$W4_OUTPUT_DIR" \
+              --case "$SELECTED_CASE" --cc zig --qemu qemu-system-riscv64 \
+              --matmul-policy blocked_fma \
+              --timeout 10800 2>&1 | tee output/w4-ci/runner.log
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > output/w4-ci/runner-exit-code.txt
+          exit "$status"
+      - name: Require the complete forward and exact numerical gate
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, math, os, re
+          from pathlib import Path
+          report = json.loads((Path(os.environ["W4_OUTPUT_DIR"]) / "report.json").read_text())
+          commit = os.environ["GITHUB_SHA"]
+          if (not re.fullmatch(r"[0-9a-f]{40}", commit)
+                  or report.get("git", {}).get("head") != commit
+                  or report.get("git", {}).get("dirty") is not False):
+              raise SystemExit("Report must come from the clean checkout of this exact CI commit")
+          sources = report.get("source_sha256", {})
+          if (not isinstance(sources, dict) or not sources
+                  or "probes/w4_qwen3_full/run.py" not in sources
+                  or "scratchv/runtime/riscv_external.py" not in sources):
+              raise SystemExit("Missing executable source identity")
+          root = Path.cwd().resolve()
+          for name, digest in sources.items():
+              source = (root / name).resolve()
+              if (not source.is_relative_to(root) or not source.is_file()
+                      or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                      or hashlib.sha256(source.read_bytes()).hexdigest() != digest):
+                  raise SystemExit(f"Source hash differs from this checkout: {name}")
+          snapshot = report.get("source_snapshot", {})
+          archive = Path(os.environ["W4_OUTPUT_DIR"]) / "source-snapshot.zip"
+          if (snapshot.get("file") != archive.name or not archive.is_file()
+                  or hashlib.sha256(archive.read_bytes()).hexdigest() != snapshot.get("sha256")):
+              raise SystemExit("Source snapshot is missing or differs from its report")
+          required = {"build:riscv-full", "smoke:qemu-full", "numeric:qemu-full-qwen3"}
+          if (report.get("passed") is not True or report.get("status") != "PASS"
+                  or report.get("matmul_policy") != "blocked_fma"
+                  or report.get("full_qemu_forward_executed") is not True
+                  or any(report.get("gates", {}).get(key) is not True for key in required)):
+              raise SystemExit("Full RV64 build/smoke/numeric gates did not all pass")
+          fma = report.get("fma_conformance", {})
+          comparison = fma.get("comparison", {})
+          rows = comparison.get("rows", [])
+          actual_qemu_hash = report.get("execution_tool_binary_sha256", {}).get("qemu")
+          checked_qemu_hash = fma.get("tool_binary_sha256", {}).get("qemu")
+          if (fma.get("passed") is not True or fma.get("status") != "PASS"
+                  or not isinstance(actual_qemu_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", actual_qemu_hash)
+                  or checked_qemu_hash != actual_qemu_hash
+                  or comparison.get("passed") is not True
+                  or comparison.get("criterion") != "exact binary32 bits and FCSR"
+                  or type(comparison.get("failed_rows")) is not int or comparison["failed_rows"] != 0
+                  or len(rows) != 12 or any(row.get("passed") is not True
+                      or row.get("bits_match") is not True or row.get("csr_match") is not True for row in rows)):
+              raise SystemExit("Actual QEMU FMA bit/CSR conformance must pass before full-model acceptance")
+          cases = report.get("cases", [])
+          if (len(cases) != 1 or cases[0].get("name") != os.environ["SELECTED_CASE"]
+                  or report.get("coverage") != os.environ["SELECTED_CASE"]
+                  or type(report.get("cases_passed")) is not int or report["cases_passed"] != 1
+                  or report.get("seven_case_coverage") is not False
+                  or cases[0].get("passed") is not True):
+              raise SystemExit("Report coverage differs from requested single case")
+          qemu = cases[0].get("qemu", {})
+          if (qemu.get("passed") is not True or qemu.get("status") != "PASS"
+                  or qemu.get("guest_completed") is not True
+                  or type(qemu.get("exit_code")) is not int or qemu["exit_code"] != 0
+                  or qemu.get("cleanup_errors") or qemu.get("error")):
+              raise SystemExit("Actual QEMU completion, exit and cleanup must all pass")
+          numeric = cases[0].get("numeric", {})
+          error = numeric.get("max_abs")
+          if (numeric.get("passed") is not True or numeric.get("atol") != 1e-3
+                  or numeric.get("rtol") != 0.0 or numeric.get("elements_compared") != 256 * 151936
+                  or isinstance(error, bool) or not isinstance(error, (int, float))
+                  or not math.isfinite(error) or not 0 <= error < 1e-3):
+              raise SystemExit("Every full logits element must satisfy strict max_abs < 1e-3")
+          PY
+      - name: Recompute retained numeric evidence without rerunning QEMU
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          python -B -X utf8 -m probes.w4_qwen3_full.audit \
+            --report-dir "$W4_OUTPUT_DIR" --output-dir "${W4_OUTPUT_DIR}-audit"
+      - name: Record scope, retention and final resources
+        if: always()
+        run: |
+          mkdir -p output/w4-ci
+          {
+            free -b
+            df -B1 .
+          } > output/w4-ci/final-resources.txt
+          cat > output/w4-ci/evidence-retention.json <<'JSON'
+          {
+            "reports_retention_days": 30,
+            "raw_numeric_retention_days": 3,
+            "scope": "One requested complete 28-layer forward, not the seven-case suite, team signoff, nightly activation, or a generation loop.",
+            "weights_retained": false,
+            "transport_binary_retained_in_ci_artifact": false,
+            "transport_scope": "512 MiB loader segments are temporary execution copies of the unchanged standard bundle. Small transport manifests and run reports are retained; transport .bin files are excluded from uploads. Successful runtime cleanup removes only that run's verified segments after QEMU exits; failed runs can retain segments locally.",
+            "weights_reproduction": "Reacquire pinned original assets and rebuild using the recorded source and toolchain. Manifest hashes alone do not authenticate model provenance.",
+            "raw_numeric_scope": "ORT logits, QEMU output and inputs allow independent numerical rechecking before expiry; incomplete failures may lack some files.",
+            "resource_scope": "Resource preflight and GNU time are recorded; GNU time maximum RSS is not a simultaneously sampled sum of the entire process tree.",
+            "failure_scope": "Always-upload steps are best effort. Runner loss, job-level cancellation or hard timeout may prevent final report or artifact upload."
+          }
+          JSON
+          {
+            printf '## W4 complete RV64 forward\n\n'
+            printf 'Case: `%s`; commit: `%s`.\n\n' "$SELECTED_CASE" "$GITHUB_SHA"
+            printf 'Read report.json, exact FMA conformance and all build/smoke/numeric gates. An artifact or completed build alone is not PASS.\n\n'
+            printf 'No seven-case, team acceptance or remote nightly claim is implied.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload reports and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w4-full-reports-${{ inputs.case || 'full_seed_0' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            output/w4-ci/**/*.json
+            output/w4-ci/**/*.md
+            output/w4-ci/**/*.html
+            output/w4-ci/**/*.txt
+            output/w4-ci/**/*.log
+            output/w4-ci/**/*.stderr
+            output/w4-ci/**/*.stdout
+            output/w4-ci/**/*.c
+            output/w4-ci/**/*.s
+            output/w4-ci/**/*.S
+            output/w4-ci/**/*.ld
+            output/w4-ci/**/source-snapshot.zip
+      - name: Upload raw numerical evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w4-full-raw-${{ inputs.case || 'full_seed_0' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 3
+          compression-level: 1
+          path: |
+            output/w4-ci/**/report.json
+            output/w4-ci/**/inputs.npz
+            output/w4-ci/**/ort.npy
+            output/w4-ci/**/qemu/inputs.bin
+            output/w4-ci/**/qemu/output.bin
+            output/w4-ci/**/qemu/uart.bin
+            output/w4-ci/**/qemu/run.json
+            output/w4-ci/**/weights/manifest.json
+            output/w4-ci/**/weight-transport/transport.json
+            output/w4-ci/**/source-snapshot.zip
+            output/w4-ci/**/observations.npy
+            output/w4-ci/**/input.npy
+            output/w4-ci/evidence-retention.json
+
+  ci-status:
+    name: Summarize W4 gates, including failed or skipped dependencies
+    if: ${{ always() }}
+    needs: [unit, full-numeric]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      UNIT_RESULT: ${{ needs.unit.result }}
+      FULL_NUMERIC_RESULT: ${{ needs.full-numeric.result }}
+      SELECTED_CASE: ${{ inputs.case || 'full_seed_0' }}
+    steps:
+      - name: Record W4 CI result without promoting skipped gates
+        run: |
+          set -euo pipefail
+          mkdir -p output/w4-status
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          pr = os.environ["GITHUB_EVENT_NAME"] == "pull_request"
+          unit, full = os.environ["UNIT_RESULT"], os.environ["FULL_NUMERIC_RESULT"]
+          passed = unit == "success" and (full == "skipped" if pr else full == "success")
+          row = {"schema_version": 1, "passed": passed, "status": "PASS" if passed else "FAIL",
+                 "scope": "PR unit and small-graph regressions only" if pr else "One complete RV64 case plus retained-array audit",
+                 "commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+                 "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "case": None if pr else os.environ["SELECTED_CASE"],
+                 "job_results": {"unit": unit, "full-numeric": full},
+                 "full_numeric_accepted": not pr and passed, "team_accepted": False,
+                 "independent_reproduction": False, "seven_case_coverage": False}
+          Path("output/w4-status/status.json").write_text(json.dumps(row, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+              stream.write(f"## W4 CI {row['status']}\n\nCommit: `{row['commit']}`. {row['scope']}.\n\n"
+                           f"Unit: {unit}; full numeric and audit: {full}.\n\n"
+                           "This does not approve team acceptance or independent reproduction.\n")
+          if not passed:
+              raise SystemExit("Required W4 jobs failed, were cancelled, or did not run")
+          PY
+      - name: Upload W4 CI status even on gate failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w4-status-${{ inputs.case || 'pr' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
+          path: output/w4-status/status.json

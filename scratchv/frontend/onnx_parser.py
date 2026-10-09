@@ -45,6 +45,9 @@ class ONNXParser:
         the tensor shape and dtype. The caller must keep those files unchanged
         while this parser's initializer arrays are in use. Mapping is not an
         integrity check; model/weight hashes must be validated separately.
+        Runtime inputs require explicit static shapes after ONNX inference;
+        symbolic dimensions or unknown rank are rejected, not treated as zero.
+        Inputs also listed as initializers use the initializer's fixed shape.
         """
         if not isinstance(mmap_external_data, bool):
             raise ONNXParseError("mmap_external_data must be boolean")
@@ -82,6 +85,28 @@ class ONNXParser:
         except onnx.shape_inference.InferenceError as exc:
             raise ONNXParseError(f"ONNX shape inference failed: {exc}") from exc
         graph = model.graph
+        # Protobuf returns dim_value=0 when a dimension is symbolic or absent.
+        # Check presence before reading it: an explicit zero-sized tensor is
+        # static, while a missing shape field is unknown rank, not a scalar.
+        input_shapes = {}
+        initializer_names = {init.name for init in graph.initializer}
+        for inp in graph.input:
+            if inp.name in initializer_names:
+                # Legacy exports list fixed weights as graph inputs as well.
+                # This parser binds those as initializers, not parameters;
+                # their tensor data defines the shape even if input metadata
+                # remains symbolic after ONNX shape inference.
+                continue
+            tensor = inp.type.tensor_type
+            if not tensor.HasField("shape") or any(
+                not dim.HasField("dim_value") or dim.dim_value < 0
+                for dim in tensor.shape.dim
+            ):
+                raise ONNXParseError(
+                    f"Input {inp.name!r} requires a static nonnegative shape; "
+                    "dynamic dimensions and unknown rank are unsupported"
+                )
+            input_shapes[inp.name] = tuple(dim.dim_value for dim in tensor.shape.dim)
         self._tensor_info = {
             value.name: value.type.tensor_type
             for value in [*graph.input, *graph.value_info, *graph.output]
@@ -119,9 +144,7 @@ class ONNXParser:
             if inp.type.tensor_type.elem_type:
                 dtype = self._dtype(inp.type.tensor_type.elem_type)
             val = self.builder.make_value(name=inp.name, dtype=dtype)
-            # Infer shape from ONNX type
-            shape_dims = list(inp.type.tensor_type.shape.dim)
-            val.shape = tuple(d.dim_value for d in shape_dims)
+            val.shape = input_shapes[inp.name]
             func.params.append(val)
             self._value_map[inp.name] = val
 
