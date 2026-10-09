@@ -28,6 +28,8 @@ class InstructionSelector:
         self._max_temp_counter = 0
         self._loop_stack: list[dict] = []
         self._reserved_vreg_names = self._collect_ir_value_names()
+        self._bound_value_names: set[str] = set()
+        self._globals = {value.name: value for value in program.global_values}
 
     def _collect_ir_value_names(self) -> set[str]:
         """Reserve every user-visible IR name before creating temporaries."""
@@ -58,6 +60,18 @@ class InstructionSelector:
         return f".L{prefix}_{self._label_counter}"
 
     def _select_function(self, func: Function) -> None:
+        # Named definitions take precedence over constant metadata on a
+        # reference, matching the interpreter and LLVM backend. In particular,
+        # a parameter's constant flag is only a hint, not its runtime value.
+        # LOAD_CONST also defines a register: using that definition avoids
+        # emitting illegal immediates in ADD/STORE register operand positions.
+        self._bound_value_names = {value.name for value in func.params}
+        self._bound_value_names.update(
+            instr.dest.name
+            for block in func.blocks
+            for instr in (*block.phi_nodes, *block.instructions)
+            if instr.dest is not None
+        )
         # Function prologue label
         self._emit_label(func.name)
         self._stack_offset = 0
@@ -138,6 +152,11 @@ class InstructionSelector:
     def _op(self, instr: Instruction, idx: int):
         """Get an operand from an IR instruction as a machine operand."""
         op = instr.operands[idx]
+        if op.name in self._bound_value_names:
+            return MachineOperand.vreg(op.name)
+        # Global scalar literals are defined by Program.global_values, not by
+        # potentially incomplete or stale metadata on a separate reference.
+        op = self._globals.get(op.name, op)
         if op.is_constant and op.const_value is not None:
             return MachineOperand.immediate(int(op.const_value))
         return MachineOperand.vreg(op.name)
@@ -463,6 +482,8 @@ class InstructionSelector:
 
     def _select_gemm(self, instr: Instruction) -> None:
         """GEMM inline: real RISC-V MUL+ADD MAC."""
+        if any(instr.attrs.get(name, 1) != 1 for name in ("alpha", "beta")):
+            raise ValueError("Legacy RISC-V GEMM does not support nondefault alpha/beta scaling")
         dst = self._dst(instr)
         a_reg = self._op(instr, 0)
         w_reg = self._op(instr, 1)

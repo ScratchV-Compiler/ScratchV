@@ -35,6 +35,7 @@ class ONNXParser:
         self._constant_cache = {}
         self._base_dir = ""
         self._mmap_external_data = False
+        self._opsets: dict[str, int] = {}
 
     def parse(self, model_path: str, *, mmap_external_data: bool = False) -> Program:
         """Parse ONNX, optionally mapping external weights as read-only arrays.
@@ -70,6 +71,7 @@ class ONNXParser:
         # Inspect/infer the graph before materializing external weights. This
         # avoids serializing a >2 GiB protobuf just to infer tensor shapes.
         model = onnx.load(model_path, load_external_data=False)
+        self._opsets = {item.domain: item.version for item in model.opset_import}
         domains = sorted({node.domain for node in model.graph.node
                           if node.domain not in ("", "ai.onnx")})
         if domains:
@@ -424,11 +426,22 @@ class ONNXParser:
 
     def _handle_gelu(self, node, inputs: list[Value],
                      outputs: list[str]) -> None:
+        # ONNX defaults to the exact erf formulation, while this IR's GELU
+        # deliberately implements the tanh approximation. Never substitute it
+        # for the default just because both operations share a name.
+        attrs = self._attributes(node)
+        if set(attrs) - {"approximate"} or attrs.get("approximate", b"none") != b"tanh":
+            raise ONNXParseError("Gelu supports only approximate='tanh'; exact Gelu is unsupported")
         result = self.builder.gelu(inputs[0])
         self._define_outputs(outputs, result)
 
     def _handle_softmax(self, node, inputs: list[Value],
                         outputs: list[str]) -> None:
+        # Before opset 13 Softmax flattens dimensions from axis onward and
+        # defaults to axis=1; the IR normalizes a single axis. Supporting the
+        # modern default for a legacy graph silently produces wrong values.
+        if self._opsets.get(node.domain, 0) < 13:
+            raise ONNXParseError("Softmax requires ONNX opset >= 13; legacy flatten semantics are unsupported")
         axis = -1
         for attr in node.attribute:
             if attr.name == "axis":
@@ -478,15 +491,17 @@ class ONNXParser:
 
     def _handle_gemm(self, node, inputs: list[Value],
                      outputs: list[str]) -> None:
-        a, w, b = inputs[0], inputs[1], inputs[2]
-        trans_a = False
-        trans_b = False
-        for attr in node.attribute:
-            if attr.name == "transA":
-                trans_a = attr.i != 0
-            elif attr.name == "transB":
-                trans_b = attr.i != 0
-        result = self.builder.gemm(a, w, b, trans_a, trans_b)
+        attrs = self._attributes(node)
+        if set(attrs) - {"alpha", "beta", "transA", "transB"}:
+            raise ONNXParseError("Unsupported Gemm attributes")
+        if len(inputs) not in (2, 3):
+            raise ONNXParseError("Gemm requires two matrices and an optional bias")
+        a, w = inputs[:2]
+        b = inputs[2] if len(inputs) == 3 else self.builder.make_const(0, a.dtype)
+        result = self.builder.gemm(
+            a, w, b, bool(attrs.get("transA", 0)), bool(attrs.get("transB", 0)),
+            alpha=attrs.get("alpha", 1.0), beta=attrs.get("beta", 1.0),
+        )
         self._define_outputs(outputs, result)
 
     def _handle_sigmoid(self, node, inputs: list[Value],
