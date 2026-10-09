@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from probes.w3_common import sha256_file
-from probes.w3_qwen3_full.cases import CASE_NAMES
+from probes.w3_qwen3_full.cases import CASE_NAMES, input_cases
 from probes.w3_qwen3_full.worker import load_inputs
 from probes.w4_qwen3_full.run import compare_logits, write_reports
 from scratchv.backend.tensor_c_codegen import TensorSpec
@@ -46,6 +46,7 @@ def audit(directory):
         raise ValueError("Invalid source coverage")
     if [case.get("name") for case in report.get("cases", [])] != wanted:
         raise ValueError("Case records do not match declared coverage")
+    fixed_inputs = {name: (length, feed) for name, length, feed in input_cases()}
     results = []
     for case in report["cases"]:
         out = directory / case["name"]
@@ -56,7 +57,13 @@ def audit(directory):
             if sha256_file(out / filename) != expected:
                 raise ValueError(f"Retained artifact hash mismatch: {case['name']}/{filename}")
         feed, length = load_inputs(out / "inputs.npz")
-        if length != case["valid_length"] or pack_inputs(SPECS, feed) != (out / "qemu/inputs.bin").read_bytes():
+        fixed_length, fixed_feed = fixed_inputs[case["name"]]
+        if (type(case["valid_length"]) is not int or length != fixed_length
+                or case["valid_length"] != fixed_length
+                or set(feed) != set(fixed_feed)
+                or any(not np.array_equal(feed[name], value) for name, value in fixed_feed.items())):
+            raise ValueError("Retained input does not match the fixed input case")
+        if pack_inputs(SPECS, feed) != (out / "qemu/inputs.bin").read_bytes():
             raise ValueError("Retained raw loader input differs from reference feed")
         qemu = json.loads((out / "qemu/run.json").read_text(encoding="utf-8"))
         if (json.dumps(qemu, sort_keys=True) != json.dumps(case["qemu"], sort_keys=True)

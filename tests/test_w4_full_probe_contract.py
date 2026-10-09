@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from probes import w3_common as common
 from probes.w4_qwen3_full import run
 from scratchv.runtime.weight_bundle import plan_guest_memory, write_weight_bundle
 
@@ -152,6 +153,7 @@ def _mock_preflight_and_reuse(tmp_path, monkeypatch, previous_sources=None):
         {"sha256": "d" * 64}, {}, (), None, (),
         run.RiscVToolchain((str(compiler),), str(qemu)), {})
     monkeypatch.setattr(run, "source_evidence", lambda: {"source_sha256": dict(sources)})
+    monkeypatch.setattr(common, "source_evidence", lambda: {"source_sha256": dict(sources)})
     monkeypatch.setattr(run, "save_source_snapshot", lambda *_: {})
     monkeypatch.setattr(run, "toolchain_versions", lambda *_: {})
     monkeypatch.setattr(run.assets, "verify_files", lambda *_: copy.deepcopy(identity))
@@ -277,3 +279,75 @@ def test_reuse_rejects_explicit_compiler_before_conformance_or_full_forward(tmp_
     assert called == []
     assert "--cc" in saved["error"]
     assert saved["full_qemu_forward_executed"] is False
+
+
+@pytest.mark.parametrize("build_only", [False, True])
+@pytest.mark.parametrize("damage", ["unchanged", "changed", "missing", "read_error"])
+def test_final_source_recheck_controls_success_and_build_only(tmp_path, monkeypatch, build_only, damage):
+    """Synthetic forward isolates publication; it is not full-model evidence."""
+    import numpy as np
+
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    before = common.source_evidence()["source_sha256"]
+    after = dict(before)
+    changed_name = "scratchv/backend/tensor_c_codegen.py"
+    if damage == "changed":
+        after[changed_name] = "f" * 64
+    elif damage == "missing":
+        del after[changed_name]
+    checks = []
+
+    def final_sources():
+        checks.append(True)
+        if damage == "read_error":
+            raise OSError("injected final source read failure")
+        return {"source_sha256": dict(after)}
+
+    monkeypatch.setattr(common, "source_evidence", final_sources)
+    if build_only:
+        arguments += ["--build-only"]
+    else:
+        # Avoid model execution: this checks that successful earlier stages do
+        # not bypass the final source contract or publish a false PASS on error.
+        monkeypatch.setattr(run, "input_cases", lambda: [("full_seed_0", 256, {})])
+        monkeypatch.setattr(run, "ort_reference", lambda _model, _feed, path:
+                            np.save(path, np.zeros(1, np.float32), allow_pickle=False))
+        monkeypatch.setattr(run, "run_external", lambda *_args, **_kwargs:
+                            (np.zeros(1, np.float32), {"passed": True, "status": "PASS"}))
+        monkeypatch.setattr(run, "compare_logits", lambda *_:
+                            {"passed": True, "max_abs": 0.0})
+    exit_code = run.main(arguments)
+    saved = json.loads((output / "report.json").read_text())
+    assert checks == [True]
+    if damage == "unchanged":
+        assert exit_code == 0
+        assert saved["source_recheck"] == {"passed": True, "changed": {}}
+        assert saved["status"] == ("BUILD_ONLY" if build_only else "PASS")
+        assert saved["passed"] is (not build_only)
+    else:
+        assert exit_code == 1 and saved["status"] == "FAIL" and saved["passed"] is False
+        assert saved["stage"] == "source_postcheck"
+        assert saved["gates"]["numeric:qemu-full-qwen3"] is False
+        if damage == "read_error":
+            assert "injected final source read failure" in saved["error"]
+        else:
+            assert saved["source_recheck"]["passed"] is False
+            assert saved["source_recheck"]["changed"] == {changed_name: {
+                "before_sha256": before[changed_name], "after_sha256": after.get(changed_name)}}
+
+
+def test_original_failure_does_not_attempt_final_source_recheck(tmp_path, monkeypatch):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    checks = []
+
+    def final_sources():
+        checks.append(True)
+        raise OSError("this secondary source failure must not replace the original")
+
+    monkeypatch.setattr(common, "source_evidence", final_sources)
+    monkeypatch.setattr(run, "input_cases", lambda: [])
+    assert run.main(arguments) == 1
+    saved = json.loads((output / "report.json").read_text())
+    assert checks == []
+    assert "Selected cases" in saved["error"]
+    assert "source_recheck" not in saved

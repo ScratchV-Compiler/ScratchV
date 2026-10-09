@@ -9,9 +9,13 @@ from pathlib import Path
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 
+from probes.w3_common import sha256_file
+from probes.w3_qwen3_full.cases import input_cases
 from probes.w4_qwen3_full import audit
+from scratchv.runtime.riscv_tensor import pack_inputs
 from tests.test_w4_audit import evidence
 
 
@@ -47,3 +51,26 @@ def test_audit_direct_script_cli_works_without_pythonpath():
                             cwd=root, env=env, capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
     assert "--report-dir" in result.stdout and "--output-dir" in result.stdout
+
+
+def test_retained_audit_binds_case_name_to_fixed_input(evidence):
+    """Matching hashes cannot turn a different seed into named case coverage."""
+    case = evidence / "full_seed_0"
+    paths = (evidence / "report.json", case / "qemu/run.json",
+             case / "inputs.npz", case / "qemu/inputs.bin")
+    originals = [path.read_bytes() for path in paths]
+    report, qemu = (json.loads(data) for data in originals[:2])
+    _, length, feed = input_cases()[1]  # seed 42 has the same shapes and valid length
+    try:
+        np.savez(paths[2], **feed)
+        paths[3].write_bytes(pack_inputs(audit.SPECS, feed))
+        qemu["input_sha256"] = sha256_file(paths[3])
+        report["cases"][0].update(input_sha256=sha256_file(paths[2]),
+                                  valid_length=length, qemu=qemu)
+        paths[0].write_text(json.dumps(report))
+        paths[1].write_text(json.dumps(qemu))
+        with pytest.raises(ValueError, match="fixed.*input|input.*case"):
+            audit.audit(evidence)
+    finally:
+        for path, original in zip(paths, originals):
+            path.write_bytes(original)

@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 
 from probes.w1_qwen3_export import run as assets
 from probes.w2_qwen3_parse.validation import audit_graph_structure
-from probes.w3_common import atomic_text, source_evidence, sha256_file
+from probes.w3_common import atomic_text, recheck_sources, source_evidence, sha256_file
 from probes.w3_qwen3_full.cases import input_cases, CASE_NAMES
 from probes.w4_qwen3_full.fma_conformance import run_probe as run_fma_probe
 from scratchv.backend.tensor_c_codegen import TensorCCodegen, TensorSpec, _shape
@@ -269,6 +269,7 @@ def main(argv=None):
         report["execution_tool_binary_sha256"] = {
             "cc": sha256_file(exe.toolchain.cc[0]), "qemu": sha256_file(exe.toolchain.qemu)}
         if args.build_only:
+            stage("source_postcheck", lambda: recheck_sources(report))
             report.update(status="BUILD_ONLY", stage="build_complete")
         else:
             report["fma_conformance"] = stage("fma_conformance", lambda: run_fma_probe(
@@ -304,6 +305,7 @@ def main(argv=None):
                 del actual, expected
                 if not row["passed"]:
                     raise ValueError(f"{name}: full QEMU error {row['numeric']['max_abs']} exceeds strict {ATOL}")
+            stage("source_postcheck", lambda: recheck_sources(report))
             report["gates"]["numeric:qemu-full-qwen3"] = all(row["passed"] for row in report["cases"])
             report.update(passed=True, status="PASS", stage="complete", coverage=args.case,
                           cases_passed=len(report["cases"]), seven_case_coverage=args.case == "all")
