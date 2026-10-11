@@ -16,6 +16,11 @@ if str(ROOT) not in sys.path:
 from probes.numeric_summary import compact_metric_table
 from probes.w3_summary import evidence_index_views, numerical_summary
 
+# The medium report currently exceeds 12 MiB because it retains checkpoints.
+# Bound input allocation separately from the much smaller Actions page budget.
+MAX_REPORT_BYTES = 64 * 1024 * 1024
+MAX_SUMMARY_BYTES = 64 * 1024
+
 GATES = (
     ("medium", "w3-medium-host", "6-layer random Qwen3 / host IR"),
     ("subgraphs", "w3_qwen3_subgraphs", "Pretrained layer-0 subgraphs / host IR"),
@@ -34,10 +39,14 @@ def cell(value, limit=180):
 
 def load_report(path, gate):
     try:
-        report = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as stream:
+            payload = stream.read(MAX_REPORT_BYTES + 1)
+        if len(payload) > MAX_REPORT_BYTES:
+            return None, "INVALID REPORT (size limit)"
+        report = json.loads(payload.decode("utf-8"))
     except FileNotFoundError:
         return None, "MISSING REPORT"
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None, "INVALID REPORT"
     if not isinstance(report, dict) or report.get("gate") != gate:
         return None, "INVALID REPORT (gate identity)"
@@ -98,17 +107,19 @@ def details(report, title):
 def render(kind, directory, outcome):
     title = "W3 preparation" if kind == "preparation" else "W3 complete IR numeric"
     artifact = "w3-preparation-reports" if kind == "preparation" else "w3-full-numeric-reports"
+    evidence = (f"Artifacts: **{artifact}** (`report.json`, `report.md`, `report.html`). "
+                "Raw arrays are separate where retained. This summary does not replace independent reproduction or team acceptance.\n")
     lines = [f"## {title}\n\n"]
     if outcome in ("skipped", "", "cancelled"):
         label = "CANCELLED" if outcome == "cancelled" else "NOT RUN"
         lines.append(f"**{label}** — probe step did not complete; no numerical acceptance claimed.\n\n")
         lines.append("Existing files, if any, are not used as results for this step.\n")
-        return "".join(lines)
+        return "".join(lines) + evidence
     identity = "preparation:w3" if kind == "preparation" else "numeric:ir-full-qwen3"
     report, problem = load_report(directory / "report.json", identity)
     if report is None:
         lines.append(f"**{problem}** — step outcome: **{cell(outcome)}**. No acceptance claimed; inspect step logs.\n")
-        return "".join(lines)
+        return "".join(lines) + evidence
     conclusion = status(report)
     if outcome != "success" and conclusion == "PASS":
         conclusion = "FAIL (step did not succeed)"
@@ -152,11 +163,20 @@ def render(kind, directory, outcome):
         if report.get("error"):
             lines.append("Issue: " + cell(report["error"], 300) + "\n\n")
         lines.extend(folded)
-    except (TypeError, KeyError, ValueError, AttributeError):
+    except (TypeError, KeyError, ValueError, AttributeError, RecursionError):
         # Unexpected report schemas must not make an apparently passing page.
-        return f"## {title}\n\n**INVALID REPORT** — could not render numerical evidence; step: {cell(outcome)}. No acceptance claimed.\n"
-    lines.append(f"Artifacts: **{artifact}** (`report.json`, `report.md`, `report.html`). Raw arrays are separate where retained. This summary does not replace independent reproduction or team acceptance.\n")
-    return "".join(lines)
+        return f"## {title}\n\n**INVALID REPORT** — could not render numerical evidence; step: {cell(outcome)}. No acceptance claimed.\n\n" + evidence
+    lines.append(evidence)
+    rendered = "".join(lines)
+    if len(rendered.encode("utf-8")) > MAX_SUMMARY_BYTES:
+        # Do not slice Markdown or HTML: a metric's free-form reason can be
+        # enormous even when report structure and all numeric values are valid.
+        # Retain the authoritative, already bounded status (including parent
+        # validation failures) and replace the entire detail body atomically.
+        return ("".join(lines[:2]) +
+                "Numerical details exceed the 64 KiB Actions summary budget and are omitted here. "
+                "The recorded gate result above is unchanged; inspect the complete artifact for metrics and scope.\n\n" + evidence)
+    return rendered
 
 
 def main(argv=None):
