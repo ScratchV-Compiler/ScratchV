@@ -19,6 +19,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 PATH = ROOT / ".github/workflows/w4-full-numeric.yml"
 NIGHTLY_PATH = ROOT / ".github/workflows/w4-nightly.yml"
+LLM_PATH = ROOT / ".github/workflows/llm-deploy.yml"
 
 
 def workflow(path=PATH):
@@ -59,6 +60,63 @@ def test_expensive_forward_is_not_automatic_on_pr_or_enabled_as_a_schedule():
     assert _guard(full["if"], "workflow_dispatch")
     assert _guard(full["if"], "schedule")  # Future caller may be scheduled; this file is not.
     assert "if" not in data["jobs"]["unit"]
+
+
+def test_registered_llm_entry_calls_same_commit_w4_without_changing_w3_or_pr_defaults():
+    data = workflow(LLM_PATH)
+    inputs = data["on"]["workflow_dispatch"]["inputs"]
+    assert inputs["run_w4_validation"]["type"] == "boolean"
+    assert inputs["run_w4_validation"]["default"] == "false"
+    assert inputs["w4_case"]["type"] == "choice"
+    case = workflow()["on"]["workflow_dispatch"]["inputs"]["case"]
+    assert inputs["w4_case"]["default"] == case["default"] == "full_seed_0"
+    assert inputs["w4_case"]["options"] == case["options"]
+    w4 = data["jobs"]["w4-validation"]
+    assert w4["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.run_w4_validation }}"
+    assert w4["uses"] == "./.github/workflows/w4-full-numeric.yml"
+    assert w4["with"] == {"case": "${{ inputs.w4_case || 'full_seed_0' }}"}
+    assert "continue-on-error" not in w4
+    for event in ("pull_request", "schedule", "workflow_dispatch"):
+        for enabled in (False, True):
+            guard = w4["if"].removeprefix("${{").removesuffix("}}")
+            event_guard, flag = guard.split("&&")
+            allowed = _guard(event_guard, event) and enabled
+            assert flag.strip() == "inputs.run_w4_validation"
+            assert allowed is (event == "workflow_dispatch" and enabled)
+    assert inputs["run_w3_validation"]["default"] == "false"
+    w3 = data["jobs"]["w3-validation"]
+    assert w3["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.run_w3_validation }}"
+    assert w3["uses"] == "./.github/workflows/w3-nightly.yml"
+    assert data["jobs"]["w2-acceptance"]["needs"] == ["llm-deploy", "full-qwen3-frontend"]
+    assert data["permissions"] == {"contents": "read"}
+    for job in ("unit", "full-numeric"):
+        checkout = next(item for item in workflow()["jobs"][job]["steps"]
+                        if item.get("uses", "").startswith("actions/checkout@"))
+        assert checkout["with"]["ref"] == "${{ github.sha }}"
+
+
+@pytest.mark.parametrize("event", ["pull_request", "schedule", "workflow_dispatch"])
+@pytest.mark.parametrize("requested", ["", "false", "true"])
+@pytest.mark.parametrize("result", ["success", "failure", "cancelled", "skipped", ""])
+def test_llm_w4_scope_rejects_skipped_or_failed_explicit_execution(tmp_path, event, requested, result):
+    active = event == "workflow_dispatch" and requested == "true"
+    passed = active and result == "success"
+    not_run = not active and result == "skipped"
+    summary = tmp_path / "summary.md"
+    status = workflow(LLM_PATH)["jobs"]["w4-execution-summary"]
+    assert status["if"] == "always()" and status["needs"] == ["w4-validation"]
+    script = python_body("Require explicitly requested W4 execution", LLM_PATH)
+    completed = subprocess.run([sys.executable, "-c", script], cwd=tmp_path,
+        env=dict(os.environ, GITHUB_EVENT_NAME=event, W4_REQUESTED=requested,
+                 W4_RESULT=result, GITHUB_STEP_SUMMARY=str(summary)), capture_output=True, text=True)
+    assert (completed.returncode == 0) is (passed or not_run), completed.stderr
+    text = summary.read_text(encoding="utf-8")
+    label = "PASS" if passed else "NOT RUN" if not_run else "FAIL"
+    assert f"**{label}**" in text
+    assert "<details>" in text and "w4-full-reports-*" in text
+    assert "Nightly activation" in text and "same commit" in text
+    if not_run:
+        assert "not requested" in text and "not full QEMU acceptance" in text
 
 
 def test_single_case_default_and_deadlines_leave_room_to_upload_failures():

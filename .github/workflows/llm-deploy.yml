@@ -15,8 +15,8 @@ name: LLM Deploy v1.0
 #   numeric:ir-qwen3-small  frontend:parse-qwen3
 #   unit:frontend-ops  unit:backend-ops  unit:runtime  integration:runtime-model
 #
-# Explicit manual runs can also call the delivered W3 workflows from the same
-# commit. The default W1/W2 checks do not imply full-model IR acceptance.
+# Explicit manual runs can also call the delivered W3/W4 workflows from the same
+# commit. Default W1/W2 checks do not imply full-model IR or QEMU acceptance.
 
 on:
   pull_request:
@@ -63,6 +63,24 @@ on:
         type: boolean
         required: false
         default: false
+      run_w4_validation:
+        description: Also build and execute one complete W4 RV64 QEMU forward
+        type: boolean
+        required: false
+        default: false
+      w4_case:
+        description: Fixed input case for the explicitly enabled W4 validation
+        type: choice
+        required: false
+        default: full_seed_0
+        options:
+          - full_seed_0
+          - full_seed_42
+          - one_token
+          - short_17
+          - short_255
+          - changed_future
+          - changed_padding
 
 permissions:
   contents: read
@@ -81,6 +99,13 @@ jobs:
     name: "W3 / explicit full validation"
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_w3_validation }}
     uses: ./.github/workflows/w3-nightly.yml
+
+  w4-validation:
+    name: "W4 / explicit full QEMU validation"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_w4_validation }}
+    uses: ./.github/workflows/w4-full-numeric.yml
+    with:
+      case: ${{ inputs.w4_case || 'full_seed_0' }}
 
   llm-deploy:
     name: "LLM Deploy v1.0 / W1 + W2"
@@ -573,4 +598,42 @@ jobs:
               stream.write("<details><summary>Scope and evidence</summary>\n\nManual LLM Deploy runs can enable `run_w3_validation`. "
                            "Numerical reports are retained in `w3-preparation-reports` and `w3-full-numeric-reports` when generated. "
                            "Full-model QEMU is a separate W4 gate; independent reproduction and team sign-off remain separate.\n\n</details>\n")
+          PY
+
+  w4-execution-summary:
+    name: "W4 / execution scope"
+    needs: [w4-validation]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require explicitly requested W4 execution
+        env:
+          W4_RESULT: ${{ needs.w4-validation.result }}
+          W4_REQUESTED: ${{ inputs.run_w4_validation }}
+        run: |
+          python3 - <<'PY'
+          import os
+          result = os.environ.get("W4_RESULT", "")
+          requested = (os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+                       and os.environ.get("W4_REQUESTED", "").casefold() == "true")
+          passed = requested and result == "success"
+          not_run = not requested and result == "skipped"
+          label = "PASS" if passed else "NOT RUN" if not_run else "FAIL"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
+              stream.write("## W4 execution scope\n\n")
+              stream.write(f"**{label}** — one complete 28-layer RV64 QEMU forward and retained-array audit.\n\n")
+              if passed:
+                  stream.write("See the W4 complete Qwen3 RV64 forward summary in this run for measured error, ELF size and QEMU time.\n\n")
+              elif not_run:
+                  stream.write("W4 is opt-in and was not requested. W1/W2/W3 success is not full QEMU acceptance.\n\n")
+              else:
+                  stream.write("Requested validation did not complete successfully, or execution was unexpected; inspect the called W4 jobs. No full QEMU acceptance claimed.\n\n")
+              stream.write("<details><summary>Scope and evidence</summary>\n\n"
+                           "Manual LLM Deploy runs can enable `run_w4_validation` and choose `w4_case`. "
+                           "The reusable workflow uses the same commit and retains measured reports in `w4-full-reports-*` "
+                           "and raw arrays in `w4-full-raw-*`. This single case is not seven-case coverage, "
+                           "Nightly activation, independent reproduction or team sign-off.\n\n</details>\n")
+          if not (passed or not_run):
+              raise SystemExit("Explicit W4 validation must actually run and pass")
           PY

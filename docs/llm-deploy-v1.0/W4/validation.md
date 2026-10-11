@@ -47,6 +47,12 @@ W4 完整 QEMU 为严格 `max_abs < 1e-3`，均保持各自报告的输入范围
 完整 job 依次要求 build、实际工具 FMA、QEMU 完成、全 logits 数值和原始数组 audit，
 并检查报告与请求 case、提交和工具身份一致。失败、取消、跳过不能替代成功。
 
+未合并分支或 fork 尚未注册独立工作流时，可从已注册的 `LLM Deploy v1.0`
+（`llm-deploy.yml`）选择候选分支，手动设置 `run_w4_validation=true`，并选择
+`w4_case`（默认 `full_seed_0`）。此入口调用同一提交的 `w4-full-numeric.yml`；
+W3 的 `run_w3_validation` 可独立选择，两者默认均关闭，不改变普通 PR 或定时任务的范围。
+W4 调用未请求时显示 `NOT RUN`；明确请求后失败、取消或跳过会令 W4 汇总失败。
+
 Actions Summary 直接显示本次单测的通过/失败/错误/跳过数。完整任务实际执行时，
 另显示请求用例、MaxAbs、RMSE、全量比较及超限元素数、不含权重 ELF 大小和 QEMU
 墙钟；门禁、阶段耗时及错误摘要折叠展示。详细机器报告和原始数组仍从 Artifacts 下载。
