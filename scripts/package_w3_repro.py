@@ -35,6 +35,10 @@ REQUIRED = {"pyproject.toml", "LICENSE", "scripts/package_w3_repro.py",
 REPRODUCTION = {"platform": "linux", "shell": "bash",
                 "guide": "docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md",
                 "stage_guide": "docs/llm-deploy-v1.0/W3/README.md"}
+# The W3 gates used to be the separate .github/workflows/w3-*.yml files. They
+# are now jobs of the single LLM pipeline, so that file is what carries the CI
+# recipe this handoff has to preserve.
+WORKFLOW = ".github/workflows/llm-deploy.yml"
 
 
 def digest(data):
@@ -59,7 +63,7 @@ def included(name):
         return False
     return (name in ROOT_FILES or path.parts[0] in TREES
             or name.startswith("docs/llm-deploy-v1.0/")
-            or (name.startswith(".github/workflows/w3-") and path.suffix in (".yml", ".yaml")))
+            or (name == WORKFLOW and path.suffix in (".yml", ".yaml")))
 
 
 def git(root, *args):

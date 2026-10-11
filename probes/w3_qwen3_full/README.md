@@ -78,9 +78,9 @@ CPU SIMD 能力、IR 的 `cpu_strategy` 与实际 BLAS 内核须分别看待；�
 
 ## CI 与阶段结论
 
-[完整模型手动 CI](../../.github/workflows/w3-full-numeric.yml) 已随 PR #96 发布。2026-10-05，作者在提交 `1c49e8acbcd9174491b2d0c2a5a0072178ae5f9a` 的[第四轮 Linux 手动编排](https://github.com/yuki-328/ScratchV/actions/runs/37299235103)中通过 preparation、完整七组 full 和汇总；v4/avx2-fma3、OpenBLAS Haswell 环境下普通/诊断 logits、30 检查点与四不变量最大误差均为 0，完整 runner 用时 `1477.314971525 s`（约 24.6 分钟）。reports 已下载并核对，完整 raw 已下载验真、离线 audit 通过。前三轮失败及旧 v2/v3 记录保留在 [Linux 实测记录](../../docs/llm-deploy-v1.0/W3/Linux-CI与Nightly.md)。实际完整数值失败仍使 job 失败；没有自动忽略 padding、调大阈值、启用低精度或回退到小模型。
+[完整模型手动 CI](../../.github/workflows/llm-deploy.yml) 的 `w3-full-numeric` job 已随 PR #96 发布。2026-10-05，作者在提交 `1c49e8acbcd9174491b2d0c2a5a0072178ae5f9a` 的[第四轮 Linux 手动编排](https://github.com/yuki-328/ScratchV/actions/runs/37299235103)中通过 preparation、完整七组 full 和汇总；v4/avx2-fma3、OpenBLAS Haswell 环境下普通/诊断 logits、30 检查点与四不变量最大误差均为 0，完整 runner 用时 `1477.314971525 s`（约 24.6 分钟）。reports 已下载并核对，完整 raw 已下载验真、离线 audit 通过。前三轮失败及旧 v2/v3 记录保留在 [Linux 实测记录](../../docs/llm-deploy-v1.0/W3/Linux-CI与Nightly.md)。实际完整数值失败仍使 job 失败；没有自动忽略 padding、调大阈值、启用低精度或回退到小模型。
 
-该流程同时支持 `workflow_call`，供显式启用的 [Nightly 编排](../../.github/workflows/w3-nightly.yml) 复用；两套自动检查均成功才能通过汇总。Linux 运行、定时启用和资源限制说明见 [Linux CI 与 Nightly](../../docs/llm-deploy-v1.0/W3/Linux-CI与Nightly.md)。收到完整保存目录后，可按 [离线证据复核](EVIDENCE.md) 重新检查数组；这不执行模型，也不替代独立复现。
+该 job 与 `w3-preparation`、`w3-acceptance` 同属 [llm-deploy.yml](../../.github/workflows/llm-deploy.yml)，由显式启用（`run_w3_validation=true`）或定时 `W3_NIGHTLY_ENABLED` 触发；两套自动检查均成功才能通过汇总。Linux 运行、定时启用和资源限制说明见 [Linux CI 与 Nightly](../../docs/llm-deploy-v1.0/W3/Linux-CI与Nightly.md)。收到完整保存目录后，可按 [离线证据复核](EVIDENCE.md) 重新检查数组；这不执行模型，也不替代独立复现。
 
 CI 将报告、哈希和 schema 放入 `w3-full-numeric-reports`（保留 30 天），完整原始输入、logits 和检查点另放入 `w3-full-numeric-raw`（保留 3 天，也包含报告）。需要独立复核原始数值时，应在过期前下载 raw 产物；其解压目录中保留 `w3-full/` 前缀，所以 `--evidence-dir` 应为 `下载目录/w3-full`。下载命令、报告 SHA256 获取与完整 audit 示例见 [产物与失败定位](../../docs/llm-deploy-v1.0/W3/Linux-CI与Nightly.md#产物与失败定位)。仅有摘要和哈希不足以重新比较数组。失败或中断运行的产物可能不完整，须先核对报告状态与覆盖范围。
 

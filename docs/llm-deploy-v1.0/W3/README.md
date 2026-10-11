@@ -74,7 +74,7 @@ IRInterpreter.run 新增可选 collect_memory_stats=True，返回结果增加 me
 
 ## CI 与后续阶段
 
-新增 [.github/workflows/w3-preparation.yml](../../../.github/workflows/w3-preparation.yml) 保留手动准备验收入口，并允许 [Nightly 编排](../../../.github/workflows/w3-nightly.yml) 复用。它安装固定依赖，下载并校验固定 checkpoint 和 ONNX 资产，运行回归与五项入口。本轮通过已注册的 `llm-deploy.yml` 显式开启 `run_w3_validation=true`，从同一提交调用 W3 编排；preparation 已实际通过，完整模型状态另行记录。Nightly 定时任务需要仓库变量显式启用，手动调用不构成 schedule 运行记录。PR 的通用 CI 通过也不能替代 W3 专项门槛。
+W3 门禁现已是 [.github/workflows/llm-deploy.yml](../../../.github/workflows/llm-deploy.yml) 的 `w3-preparation`、`w3-full-numeric` 和 `w3-acceptance` 三个 job，不再单独成文。`w3-preparation` 安装固定依赖，下载并校验固定 checkpoint 和 ONNX 资产，运行回归与五项入口。本仓库通过该文件的 `run_w3_validation=true` 显式开启，从同一提交运行 W3 编排；preparation 已实际通过，完整模型状态另行记录。Nightly 定时任务需要仓库变量 `W3_NIGHTLY_ENABLED` 显式启用，手动调用不构成 schedule 运行记录。PR 的通用 CI 通过也不能替代 W3 专项门槛。
 
 完整模型 preflight 仅验证资产与静态大小，峰值是 metadata-only 进程，不能替代完整 IR 的容量实测。完整 logits 必须包括 padding 位置；PyTorch/ORT 的导出诊断与正式 IR/ORT 门槛分别记录，不能用局部子图或有效位置通过覆盖。
 

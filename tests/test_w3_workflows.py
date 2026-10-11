@@ -1,6 +1,12 @@
 """Exercise actual W3 workflow scripts and the opt-in/acceptance contracts.
 
 This is local configuration validation, not evidence of a GitHub/Linux run.
+
+The W3 gates used to live in three separate workflow files that llm-deploy.yml
+called through ``workflow_call``. They are now jobs of llm-deploy.yml itself,
+so every assertion below anchors on a job id instead of a file name. The
+contracts themselves are unchanged: the gates stay opt-in, they stay hardened
+against masked failures, and a partial or failed gate can never pass.
 """
 
 import ast
@@ -15,6 +21,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
+PIPELINE = "llm-deploy.yml"
+W3_JOBS = ("w3-preparation", "w3-full-numeric")
 
 
 def workflow(name):
@@ -22,9 +30,12 @@ def workflow(name):
     return yaml.load((WORKFLOWS / name).read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
 
-def step(name, label):
-    jobs = workflow(name)["jobs"]
-    return next(item for job in jobs.values() for item in job.get("steps", [])
+def job(name, job_id):
+    return workflow(name)["jobs"][job_id]
+
+
+def step(name, job_id, label):
+    return next(item for item in job(name, job_id).get("steps", [])
                 if item.get("name") == label)
 
 
@@ -71,24 +82,37 @@ def evaluate_guard(expression, event, enabled, w3_validation=False):
     return bool(visit(ast.parse(value, mode="eval").body))
 
 
-@pytest.mark.parametrize("name", ["w3-preparation.yml", "w3-full-numeric.yml"])
-def test_workflows_keep_manual_and_same_commit_reusable_entries(name):
-    data = workflow(name)
-    assert set(data["on"]) == {"workflow_dispatch", "workflow_call"}
+def test_one_registered_pipeline_owns_the_whole_llm_line():
+    data = workflow(PIPELINE)
+    assert data["name"] == "LLM Deploy v1.0"
+    # One file, one schedule, one manual entry point. The folded files used to
+    # schedule the same 23:19 UTC nightly run twice.
+    assert set(data["on"]) == {"pull_request", "schedule", "workflow_dispatch"}
+    assert data["on"]["schedule"] == [{"cron": "23 19 * * *"}]
     assert data["permissions"] == {"contents": "read"}
+    for folded in ("w3-preparation.yml", "w3-full-numeric.yml", "w3-nightly.yml",
+                   "linux-reproduction-docs.yml"):
+        assert not (WORKFLOWS / folded).exists(), f"{folded} should be folded into {PIPELINE}"
+    # The old indirection job is gone; the W3 gates are real jobs now.
+    assert "w3-validation" not in data["jobs"]
+    assert set(W3_JOBS) <= set(data["jobs"])
+
+
+@pytest.mark.parametrize("job_id", W3_JOBS)
+def test_w3_gates_are_hardened_and_publish_evidence(job_id):
+    data = job(PIPELINE, job_id)
+    assert data["runs-on"] == "ubuntu-24.04"
     assert data["concurrency"]["cancel-in-progress"] == "false"
-    for job in data["jobs"].values():
-        assert job["runs-on"] == "ubuntu-24.04"
-        assert "continue-on-error" not in job
-        for item in job["steps"]:
-            assert "continue-on-error" not in item
-        reports = [item for item in job["steps"] if item.get("uses", "").startswith("actions/upload-artifact")]
-        assert all(item["if"] == "always()" for item in reports)
-        assert any("w3-runner-resources.txt" in item["with"]["path"] for item in reports)
+    assert "continue-on-error" not in data
+    for item in data["steps"]:
+        assert "continue-on-error" not in item
+    reports = [item for item in data["steps"] if item.get("uses", "").startswith("actions/upload-artifact")]
+    assert all(item["if"] == "always()" for item in reports)
+    assert any("w3-runner-resources.txt" in item["with"]["path"] for item in reports)
 
 
 def test_preparation_fetches_history_required_by_real_onnx_benchmark_regression():
-    steps = workflow("w3-preparation.yml")["jobs"]["preparation"]["steps"]
+    steps = job(PIPELINE, "w3-preparation")["steps"]
     checkout = next(item for item in steps if item.get("uses", "").startswith("actions/checkout@"))
     # test_onnx_operator_benchmark exports an actual historical revision via
     # git archive. The default depth=1 checkout would omit that baseline.
@@ -97,51 +121,42 @@ def test_preparation_fetches_history_required_by_real_onnx_benchmark_regression(
     assert "tests/test_onnx*.py" in regression["run"]
 
 
-@pytest.mark.parametrize("event,enabled,expected", [
-    ("schedule", "", False), ("schedule", "false", False),
-    ("schedule", "1", False), ("schedule", "true", True),
-    ("schedule", "TRUE", True), ("workflow_dispatch", "", True),
-    ("workflow_dispatch", "false", True),
+@pytest.mark.parametrize("event,enabled,w3_validation,expected", [
+    # Pull requests never reach the W3 gates, whatever the opt-in says.
+    ("pull_request", "true", True, False),
+    ("pull_request", "", False, False),
+    # The nightly schedule needs the repository opt-in variable.
+    ("schedule", "", False, False), ("schedule", "false", False, False),
+    ("schedule", "1", False, False), ("schedule", "true", False, True),
+    ("schedule", "TRUE", False, True),
+    # A manual dispatch needs the explicit flag, not the nightly variable.
+    ("workflow_dispatch", "", False, False),
+    ("workflow_dispatch", "true", False, False),
+    ("workflow_dispatch", "", True, True),
+    ("workflow_dispatch", "false", True, True),
 ])
-def test_nightly_expensive_jobs_require_opt_in_or_explicit_dispatch(event, enabled, expected):
-    data = workflow("w3-nightly.yml")
-    assert set(data["on"]) == {"schedule", "workflow_dispatch", "workflow_call"}
-    assert data["on"]["schedule"] == [{"cron": "23 19 * * *"}]
-    for job in data["jobs"].values():
-        assert evaluate_guard(job["if"], event, enabled) is expected
-    assert data["jobs"]["preparation"]["uses"] == "./.github/workflows/w3-preparation.yml"
-    assert data["jobs"]["full-numeric"]["uses"] == "./.github/workflows/w3-full-numeric.yml"
-    assert data["jobs"]["full-numeric"]["with"] == {"case": "all"}
-    assert set(data["jobs"]["acceptance"]["needs"]) == {"preparation", "full-numeric"}
-    # Different caller/callee concurrency groups avoid self-blocking reuse.
-    groups = {workflow(name)["concurrency"]["group"] for name in (
-        "w3-nightly.yml", "w3-preparation.yml", "w3-full-numeric.yml")}
-    assert len(groups) == 3
+def test_expensive_w3_jobs_require_opt_in_or_explicit_dispatch(event, enabled, w3_validation, expected):
+    for job_id in W3_JOBS:
+        assert evaluate_guard(job(PIPELINE, job_id)["if"], event, enabled, w3_validation) is expected
+    acceptance = job(PIPELINE, "w3-acceptance")
+    assert evaluate_guard(acceptance["if"], event, enabled, w3_validation) is expected
+    assert set(acceptance["needs"]) == set(W3_JOBS)
+    # Distinct named groups so the three jobs never block each other on one ref.
+    groups = {job(PIPELINE, job_id)["concurrency"]["group"] for job_id in W3_JOBS}
+    assert len(groups) == len(W3_JOBS)
 
 
-@pytest.mark.parametrize("event", ["pull_request", "schedule", "workflow_dispatch"])
-@pytest.mark.parametrize("selected", [False, True])
-def test_existing_manual_entry_runs_w3_only_when_explicitly_requested(event, selected):
-    data = workflow("llm-deploy.yml")
-    option = data["on"]["workflow_dispatch"]["inputs"]["run_w3_validation"]
-    assert option["type"] == "boolean" and option["default"] == "false"
-    job = data["jobs"]["w3-validation"]
-    assert job["uses"] == "./.github/workflows/w3-nightly.yml"
-    assert evaluate_guard(job["if"], event, "", selected) is (
-        event == "workflow_dispatch" and selected)
-    # The called workflow inherits the caller event. A manual call must run
-    # both complete gates even while the scheduled nightly opt-in is disabled.
-    if event == "workflow_dispatch" and selected:
-        assert all(evaluate_guard(item["if"], event, "")
-                   for item in workflow("w3-nightly.yml")["jobs"].values())
+def test_manual_dispatch_runs_both_gates_even_with_the_nightly_opt_in_disabled():
+    for job_id in (*W3_JOBS, "w3-acceptance"):
+        assert evaluate_guard(job(PIPELINE, job_id)["if"], "workflow_dispatch", "", True) is True
 
 
 @pytest.mark.parametrize("selected,expected", [
     ("", 0), ("all", 0), ("short_17", 0), ("full_seed_0", 1),
     ("--help", 1), ("all; exit 0", 1),
 ])
-def test_reusable_case_input_is_validated_before_install(bash, tmp_path, selected, expected):
-    check = step("w3-full-numeric.yml", "Validate requested coverage")["run"]
+def test_case_input_is_validated_before_install(bash, tmp_path, selected, expected):
+    check = step(PIPELINE, "w3-full-numeric", "Validate requested coverage")["run"]
     result = run_script(bash, check, tmp_path, SELECTED_CASE=selected)
     assert result.returncode == expected, result.stderr
 
@@ -149,7 +164,7 @@ def test_reusable_case_input_is_validated_before_install(bash, tmp_path, selecte
 @pytest.mark.parametrize("selected", ["", "all", "short_17"])
 @pytest.mark.parametrize("runner_status", [0, 1, 2])
 def test_actual_full_command_preserves_arguments_and_failure(bash, tmp_path, selected, runner_status):
-    command = step("w3-full-numeric.yml", "Compare complete IR and ORT outputs")["run"]
+    command = step(PIPELINE, "w3-full-numeric", "Compare complete IR and ORT outputs")["run"]
     # Only replace the executable; execute the actual workflow shell body.
     wrapper = 'python() { printf "%s\\n" "$@" > "$ARG_LOG"; return "$MOCK_RETURN"; }\n'
     capture = tmp_path / "arguments.txt"
@@ -169,8 +184,8 @@ def test_actual_full_command_preserves_arguments_and_failure(bash, tmp_path, sel
     ("success", "failure", False), ("success", "skipped", False),
     ("cancelled", "success", False), ("skipped", "skipped", False),
 ])
-def test_nightly_summary_cannot_turn_missing_or_failed_gate_green(bash, tmp_path, preparation, full, passed):
-    command = step("w3-nightly.yml", "Require both complete gates")["run"]
+def test_acceptance_summary_cannot_turn_missing_or_failed_gate_green(bash, tmp_path, preparation, full, passed):
+    command = step(PIPELINE, "w3-acceptance", "Require both complete gates")["run"]
     summary = tmp_path / "summary.md"
     result = run_script(bash, command, tmp_path, PREPARATION_RESULT=preparation,
                         FULL_NUMERIC_RESULT=full, GITHUB_SHA="a" * 40,
@@ -180,11 +195,12 @@ def test_nightly_summary_cannot_turn_missing_or_failed_gate_green(bash, tmp_path
 
 
 def test_full_coverage_defaults_and_raw_evidence_retention():
-    data = workflow("w3-full-numeric.yml")
-    for trigger in ("workflow_dispatch", "workflow_call"):
-        assert data["on"][trigger]["inputs"]["case"]["default"] == "all"
-    assert data["jobs"]["full-numeric"]["env"]["SELECTED_CASE"] == "${{ inputs.case || 'all' }}"
-    uploads = [item["with"] for item in data["jobs"]["full-numeric"]["steps"]
+    data = workflow(PIPELINE)
+    case = data["on"]["workflow_dispatch"]["inputs"]["w3_case"]
+    assert case["default"] == "all"
+    assert set(case["options"]) == {"all", "short_17"}
+    assert data["jobs"]["w3-full-numeric"]["env"]["SELECTED_CASE"] == "${{ inputs.w3_case || 'all' }}"
+    uploads = [item["with"] for item in data["jobs"]["w3-full-numeric"]["steps"]
                if item.get("uses", "").startswith("actions/upload-artifact")]
     raw = next(item for item in uploads if item["name"] == "w3-full-numeric-raw")
     assert raw["retention-days"] == "3"
@@ -192,13 +208,13 @@ def test_full_coverage_defaults_and_raw_evidence_retention():
         assert required in raw["path"]
 
 
-@pytest.mark.parametrize("name,probe_name,summary_name,kind", [
-    ("w3-preparation.yml", "Five preparation checks (not full-model acceptance)", "Summarize W3 preparation evidence", "preparation"),
-    ("w3-full-numeric.yml", "Compare complete IR and ORT outputs", "Summarize W3 full numerical evidence", "full"),
+@pytest.mark.parametrize("job_id,probe_name,summary_name,kind", [
+    ("w3-preparation", "Five preparation checks (not full-model acceptance)", "Summarize W3 preparation evidence", "preparation"),
+    ("w3-full-numeric", "Compare complete IR and ORT outputs", "Summarize W3 full numerical evidence", "full"),
 ])
-def test_actual_numeric_summary_steps_run_after_failure_and_keep_original_exit_codes(bash, tmp_path, name, probe_name, summary_name, kind):
-    probe = step(name, probe_name)
-    summary = step(name, summary_name)
+def test_actual_numeric_summary_steps_run_after_failure_and_keep_original_exit_codes(bash, tmp_path, job_id, probe_name, summary_name, kind):
+    probe = step(PIPELINE, job_id, probe_name)
+    summary = step(PIPELINE, job_id, summary_name)
     assert probe["id"] == "probe"
     assert summary["if"] == "always()"
     assert summary["env"] == {"PROBE_OUTCOME": "${{ steps.probe.outcome }}"}
@@ -214,10 +230,10 @@ def test_actual_numeric_summary_steps_run_after_failure_and_keep_original_exit_c
 @pytest.mark.parametrize("result,label", [("skipped", "NOT RUN"), ("success", "PASS"), ("failure", "FAIL"),
                                          ("cancelled", "CANCELLED"), ("", "UNCONFIRMED")])
 def test_llm_page_reports_w3_skip_without_running_or_accepting_w3(bash, tmp_path, result, label):
-    job = workflow("llm-deploy.yml")["jobs"]["w3-execution-summary"]
-    assert job["if"] == "always()" and job["needs"] == ["w3-validation"]
-    assert not any("uses" in item for item in job["steps"])
-    command = job["steps"][0]["run"]
+    summary_job = job(PIPELINE, "w3-execution-summary")
+    assert summary_job["if"] == "always()" and summary_job["needs"] == ["w3-acceptance"]
+    assert not any("uses" in item for item in summary_job["steps"])
+    command = summary_job["steps"][0]["run"]
     # Run the actual dependency-free Python body on hosts without python3 alias.
     body = command.split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
     import sys
@@ -232,11 +248,10 @@ def test_llm_page_reports_w3_skip_without_running_or_accepting_w3(bash, tmp_path
     assert len(text) < 1600
 
 
-@pytest.mark.parametrize("name", ["w3-preparation.yml", "w3-full-numeric.yml", "w3-nightly.yml"])
-def test_all_actual_bash_blocks_parse(bash, tmp_path, name):
-    for job in workflow(name)["jobs"].values():
-        for item in job.get("steps", []):
-            if "run" in item:
-                result = subprocess.run([bash, "-n"], input=item["run"],
-                                        text=True, capture_output=True, cwd=tmp_path)
-                assert result.returncode == 0, f"{name}: {item.get('name')}: {result.stderr}"
+@pytest.mark.parametrize("job_id", W3_JOBS)
+def test_all_actual_bash_blocks_parse(bash, tmp_path, job_id):
+    for item in job(PIPELINE, job_id).get("steps", []):
+        if "run" in item:
+            result = subprocess.run([bash, "-n"], input=item["run"],
+                                    text=True, capture_output=True, cwd=tmp_path)
+            assert result.returncode == 0, f"{job_id}: {item.get('name')}: {result.stderr}"

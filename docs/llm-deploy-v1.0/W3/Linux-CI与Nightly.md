@@ -114,13 +114,15 @@ preparation 主报告 SHA256 为 `ceeeb239ac7b88c22372d0e76f5506841e1b634a81b5b1
 
 ## 入口与验收范围
 
-| 工作流 | 手动入口 | 可复用入口 | 通过条件 |
-|---|---|---|---|
-| [w3-preparation.yml](../../../.github/workflows/w3-preparation.yml) | `workflow_dispatch` | `workflow_call`，无参数 | 相关回归和五项 preparation 全部成功，证据收集完整 |
-| [w3-full-numeric.yml](../../../.github/workflows/w3-full-numeric.yml) | `case=all` 为默认；`short_17` 仅诊断 | `case` 字符串，默认 `all` | 完整七组真实 28 层 IR/ORT 数值门槛及不变量全部通过 |
-| [w3-nightly.yml](../../../.github/workflows/w3-nightly.yml) | 显式运行完整编排，不必先启用定时 | `workflow_call`；调用上述两套同提交工作流 | 两套调用都为 `success`；失败、取消或跳过均不能通过汇总 |
+三套 W3 门禁已是 [.github/workflows/llm-deploy.yml](../../../.github/workflows/llm-deploy.yml) 中的三个 job，与 W1/W2 同属一个工作流文件。
 
-Nightly 使用仓库内相对路径调用，因此被调用工作流与调用者来自同一提交；没有从其他分支临时取最新版脚本。[GitHub reusable workflow 说明](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)
+| Job（均在 `llm-deploy.yml`） | 手动入口 | 参数 | 通过条件 |
+|---|---|---|---|
+| `w3-preparation` | 手动 `run_w3_validation=true`，或定时且 `W3_NIGHTLY_ENABLED=='true'` | 无 | 相关回归和五项 preparation 全部成功，证据收集完整 |
+| `w3-full-numeric` | 同上 | `w3_case`，默认 `all`；`short_17` 仅诊断 | 完整七组真实 28 层 IR/ORT 数值门槛及不变量全部通过 |
+| `w3-acceptance` | 同上 | 无 | 上游两个 job 都为 `success`；失败、取消或跳过均不能通过汇总 |
+
+三个 job 同属一个文件并以 `needs` 显式串联，因此必然来自同一提交；没有从其他分支临时取最新版脚本。
 
 完整比较固定 `--fp32-mode reference`，当前已提交 profile 是 `numpy-fp32-reference-v4`；默认运行全部七组输入。`SCRATCHV_FP32_REFERENCE_CPU` 允许 `auto`（默认）、`avx2-fma3`、`avx512`，决定 IR 参考算术策略，不控制 ORT dispatch。报告保存解析后的 `cpu_strategy`；当前工作流未显式覆盖该变量，因此按 runner 能力自动选择。数值门槛仍为全部普通/诊断 logits 的严格 `max_abs < 1e-4`，含 padding query，`rtol=0`。选择 `short_17` 即使数值正确也返回 `PARTIAL/2`，工作流保持失败状态，不能用单例绿色代替完整验收。`native` 模式和 W4 完整 RISC-V/QEMU 前向不在这套完整 IR 门槛的通过范围内。首跑记录仍属于当时的 v2 契约，不能用当前说明覆盖其原 profile；第二轮 v3/avx512 完整数值通过仅属于该轮提交与环境。
 
@@ -137,7 +139,7 @@ gh workflow run llm-deploy.yml --repo YOUR_ACCOUNT/ScratchV --ref YOUR_W3_BRANCH
 
 1. 选定个人 fork 或有写权限的运行仓库及包含完整 W3 改动的提交；代码现已在 PR 中，不需要重新创建一笔 W3 PR。复核目标分支的实际 SHA，先保持 `W3_NIGHTLY_ENABLED` 未设置；这一步不会启动定时重计算。
 2. 确认仓库已启用 Actions，并允许本工作流使用的 actions/reusable workflows。手动入口文件必须已经存在于默认分支，才能正常通过 `workflow_dispatch` 发起；之后可以选择含 W3 修改的目标分支。仅上传到一个没有默认分支入口的功能分支，不应预期必然出现 Run workflow 按钮。[GitHub 手动运行说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
-3. 在 Actions 页面运行 `W3 nightly` 的手动入口，可一次执行两套流程；或分别运行 `W3 preparation` 和 `W3 full IR numeric`，后者选择 `all`。记录 run URL、commit SHA 和 attempt，确认两套结果来自同一代码版本。
+3. 在 Actions 页面运行 `LLM Deploy v1.0` 的手动入口并勾选 `run_w3_validation`，一次即可执行两套 W3 门禁；只需单例诊断时把 `w3_case` 选为 `short_17`（该值即使数值正确也不会通过验收）。记录 run URL、commit SHA 和 attempt，确认两套结果来自同一代码版本。
 4. 检查资源日志、依赖安装、资产获取与哈希、回归、QEMU、数值比较和产物上传。需要整个流程完成，不能只看某一步为绿。
 5. 在原始产物过期前下载留存，按下文核对。出现 Linux 数值差异时保留失败数组和环境信息，用已有 layer-diff/localize 入口定位；不得通过缩减 case、忽略 padding 或放宽阈值取得通过。
 
@@ -145,8 +147,8 @@ gh workflow run llm-deploy.yml --repo YOUR_ACCOUNT/ScratchV --ref YOUR_W3_BRANCH
 
 ```bash
 set -euo pipefail
-gh workflow run w3-nightly.yml --repo YOUR_ACCOUNT/ScratchV --ref YOUR_W3_BRANCH
-gh run list --repo YOUR_ACCOUNT/ScratchV --workflow w3-nightly.yml
+gh workflow run llm-deploy.yml --repo YOUR_ACCOUNT/ScratchV --ref YOUR_W3_BRANCH -f run_w3_validation=true
+gh run list --repo YOUR_ACCOUNT/ScratchV --workflow llm-deploy.yml
 gh run view RUN_ID --repo YOUR_ACCOUNT/ScratchV
 gh run download RUN_ID --repo YOUR_ACCOUNT/ScratchV --dir downloaded-w3-run
 ```
@@ -226,9 +228,9 @@ W3_NIGHTLY_ENABLED=true
 ```bash
 set -euo pipefail
 "$SCRATCHV_PYTHON" -B -X utf8 -m pytest tests/test_w3_workflows.py -q -p no:cacheprovider
-actionlint -shellcheck= -pyflakes= .github/workflows/w3-preparation.yml .github/workflows/w3-full-numeric.yml .github/workflows/w3-nightly.yml
+actionlint -shellcheck= -pyflakes= .github/workflows/llm-deploy.yml
 ```
 
 测试读取实际 YAML，校验默认全覆盖、手动/复用入口、opt-in 条件、独立并发组、失败汇总和产物范围；通过 Bash 执行实际参数组装及汇总片段，确保 `FAIL/1`、`PARTIAL/2` 不被吞掉，并对所有 shell 块做语法检查。Linux 复现环境必须安装 Bash 并实际执行这些检查；跳过 shell 检查不能作为该部分通过。
 
-本轮使用 actionlint 1.7.12 对上述三个文件静态检查通过；工具放在本地忽略的 output 下，未安装系统服务。actionlint 不执行下载、Python 环境安装、QEMU 或数值模型；实际 Linux 执行与产物核对另见本文首节。
+本轮使用 actionlint 1.7.12 对上述文件静态检查通过；工具放在本地忽略的 output 下，未安装系统服务。actionlint 不执行下载、Python 环境安装、QEMU 或数值模型；实际 Linux 执行与产物核对另见本文首节。
