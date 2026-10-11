@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PATH = ROOT / ".github/workflows/w4-full-numeric.yml"
 NIGHTLY_PATH = ROOT / ".github/workflows/w4-nightly.yml"
 LLM_PATH = ROOT / ".github/workflows/llm-deploy.yml"
+CI_PATH = ROOT / ".github/workflows/ci.yml"
 
 
 def workflow(path=PATH):
@@ -50,16 +51,46 @@ def _guard(expression, event):
 
 def test_expensive_forward_is_not_automatic_on_pr_or_enabled_as_a_schedule():
     data = workflow()
-    assert set(data["on"]) == {"pull_request", "workflow_dispatch", "workflow_call"}
-    assert data["on"]["pull_request"]["paths"]
+    assert set(data["on"]) == {"workflow_call"}
+    run_full = data["on"]["workflow_call"]["inputs"]["run_full"]
+    assert run_full["type"] == "boolean" and run_full["default"] == "false"
     assert data["permissions"] == {"contents": "read"}
     assert data["concurrency"]["cancel-in-progress"] == "false"
     full = data["jobs"]["full-numeric"]
     assert full["needs"] == "unit"
-    assert not _guard(full["if"], "pull_request")
-    assert _guard(full["if"], "workflow_dispatch")
-    assert _guard(full["if"], "schedule")  # Future caller may be scheduled; this file is not.
+    assert full["if"] == "${{ inputs.run_full }}"
     assert "if" not in data["jobs"]["unit"]
+
+
+def test_single_ci_entry_calls_w4_unit_only_on_pull_requests():
+    data = workflow(CI_PATH)
+    assert "pull_request" in data["on"]
+    calls = [job for job in data["jobs"].values()
+             if job.get("uses") == "./.github/workflows/w4-full-numeric.yml"]
+    assert len(calls) == 1
+    caller = calls[0]
+    assert caller["with"]["run_full"] == "false"
+    assert caller["needs"] == "scope"
+    event_guard, scope_guard = caller["if"].removeprefix("${{").removesuffix("}}").split("&&")
+    for event in ("pull_request", "push", "schedule", "workflow_dispatch"):
+        for selected in ("true", "false"):
+            allowed = _guard(event_guard, event) and _guard(
+                scope_guard.replace("needs.scope.outputs.w4", "github.event_name"), selected)
+            assert allowed is (event == "pull_request" and selected == "true")
+    assert "continue-on-error" not in caller
+
+
+def test_same_ref_unit_and_full_calls_do_not_share_a_concurrency_group():
+    concurrency = workflow()["concurrency"]
+    group = concurrency["group"]
+    assert "${{ inputs.run_full && 'full' || 'unit' }}" in group
+    assert concurrency["cancel-in-progress"] == "false"
+    fixed = group.replace("${{ github.ref }}", "refs/heads/candidate").replace(
+        "${{ inputs.case || 'full_seed_0' }}", "full_seed_0")
+    unit = fixed.replace("${{ inputs.run_full && 'full' || 'unit' }}", "unit")
+    full = fixed.replace("${{ inputs.run_full && 'full' || 'unit' }}", "full")
+    assert unit != full and "${{" not in unit + full
+    assert group != workflow(NIGHTLY_PATH)["concurrency"]["group"]
 
 
 def test_registered_llm_entry_calls_same_commit_w4_without_changing_w3_or_pr_defaults():
@@ -68,13 +99,14 @@ def test_registered_llm_entry_calls_same_commit_w4_without_changing_w3_or_pr_def
     assert inputs["run_w4_validation"]["type"] == "boolean"
     assert inputs["run_w4_validation"]["default"] == "false"
     assert inputs["w4_case"]["type"] == "choice"
-    case = workflow()["on"]["workflow_dispatch"]["inputs"]["case"]
+    case = workflow()["on"]["workflow_call"]["inputs"]["case"]
     assert inputs["w4_case"]["default"] == case["default"] == "full_seed_0"
-    assert inputs["w4_case"]["options"] == case["options"]
+    assert inputs["w4_case"]["options"] == ["full_seed_0", "full_seed_42", "one_token",
+                                          "short_17", "short_255", "changed_future", "changed_padding"]
     w4 = data["jobs"]["w4-validation"]
     assert w4["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.run_w4_validation }}"
     assert w4["uses"] == "./.github/workflows/w4-full-numeric.yml"
-    assert w4["with"] == {"case": "${{ inputs.w4_case || 'full_seed_0' }}"}
+    assert w4["with"] == {"run_full": "true", "case": "${{ inputs.w4_case || 'full_seed_0' }}"}
     assert "continue-on-error" not in w4
     for event in ("pull_request", "schedule", "workflow_dispatch"):
         for enabled in (False, True):
@@ -121,9 +153,8 @@ def test_llm_w4_scope_rejects_skipped_or_failed_explicit_execution(tmp_path, eve
 
 def test_single_case_default_and_deadlines_leave_room_to_upload_failures():
     data = workflow()
-    for trigger in ("workflow_dispatch", "workflow_call"):
-        assert data["on"][trigger]["inputs"]["case"]["default"] == "full_seed_0"
-    assert "all" not in data["on"]["workflow_dispatch"]["inputs"]["case"]["options"]
+    assert data["on"]["workflow_call"]["inputs"]["case"]["default"] == "full_seed_0"
+    assert "all" not in workflow(LLM_PATH)["on"]["workflow_dispatch"]["inputs"]["w4_case"]["options"]
     job = data["jobs"]["full-numeric"]
     command = step("Build external weights and compare one full RV64 forward")
     job_minutes = int(job["timeout-minutes"])
@@ -468,9 +499,15 @@ def test_w1_w3_handoff_is_bounded_and_uses_the_same_commit():
     assert "probes.w3_qwen3_full.run" not in unit
     assert "requirements/qwen3-small-probe.txt" in step("Install W3-pinned CPU environment and Zig 0.14.1")["run"]
     assert "probes.w1_qwen3_export.run import acquire_model" in step("Acquire the fixed original ONNX assets")["run"]
-    paths = data["on"]["pull_request"]["paths"]
+    # The top-level CI handles every PR to main, including shared source and
+    # workflow changes. This reusable workflow has no independent PR trigger.
+    trigger = workflow(CI_PATH)["on"]["pull_request"]
+    assert trigger["branches"] == ["main"]
+    assert "paths" not in trigger and "paths-ignore" not in trigger
+    paths = json.loads((ROOT / "scripts/ci_scopes.json").read_text())["w4"]
     assert "scratchv/**" in paths and "probes/w3_qwen3_full/**" in paths
     assert ".github/workflows/w4-nightly.yml" in paths
+    assert "scripts/summarize_w4_ci.py" in paths and "tests/test_w4*.py" in paths
     for name in ("unit", "full-numeric"):
         checkout = next(s for s in data["jobs"][name]["steps"] if s.get("uses", "").startswith("actions/checkout@"))
         assert checkout["with"]["ref"] == "${{ github.sha }}"
@@ -490,7 +527,7 @@ def test_nightly_all_entries_require_explicit_repository_opt_in(event, enabled, 
     allowed = allowed and _guard(event_guard, event)
     assert allowed is (expected and event != "pull_request")
     assert full["uses"] == "./.github/workflows/w4-full-numeric.yml"
-    assert full["with"] == {"case": "${{ inputs.case || 'full_seed_0' }}"}
+    assert full["with"] == {"run_full": "true", "case": "${{ inputs.case || 'full_seed_0' }}"}
     assert event in data["on"] or event == "pull_request"  # A reusable caller retains its event.
     for trigger in ("workflow_call", "workflow_dispatch"):
         assert data["on"][trigger]["inputs"]["case"]["default"] == "full_seed_0"
@@ -503,12 +540,15 @@ def test_nightly_all_entries_require_explicit_repository_opt_in(event, enabled, 
     assert all("continue-on-error" not in job for job in data["jobs"].values())
 
 
-@pytest.mark.parametrize("event", ["pull_request", "workflow_dispatch", "schedule"])
+@pytest.mark.parametrize("event", ["pull_request", "push", "workflow_dispatch", "schedule"])
+@pytest.mark.parametrize("requested", ["false", "true"])
 @pytest.mark.parametrize("unit", ["success", "failure", "cancelled", "skipped"])
 @pytest.mark.parametrize("full", ["success", "failure", "cancelled", "skipped"])
-def test_ci_summary_actual_bash_failure_matrix(bash, tmp_path, event, unit, full):
-    expected = unit == "success" and full == ("skipped" if event == "pull_request" else "success")
+def test_ci_summary_actual_bash_failure_matrix(bash, tmp_path, event, requested, unit, full):
+    enabled = requested == "true"
+    expected = unit == "success" and full == ("success" if enabled else "skipped")
     env = dict(os.environ, GITHUB_EVENT_NAME=event, UNIT_RESULT=unit, FULL_NUMERIC_RESULT=full,
+               FULL_REQUESTED=requested,
                SELECTED_CASE="full_seed_0", GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1",
                GITHUB_STEP_SUMMARY=(tmp_path / "summary.md").as_posix())
     script = step("Record W4 CI result without promoting skipped gates")["run"].replace("python3 -", '"' + sys.executable.replace("\\", "/") + '" -')
@@ -517,7 +557,9 @@ def test_ci_summary_actual_bash_failure_matrix(bash, tmp_path, event, unit, full
     assert (result.returncode == 0) is expected, result.stderr
     row = json.loads((tmp_path / "output/w4-status/status.json").read_text())
     assert row["passed"] is expected
-    assert row["full_numeric_accepted"] is (expected and event != "pull_request")
+    assert row["full_numeric_requested"] is enabled
+    assert row["full_numeric_accepted"] is (expected and enabled)
+    assert row["case"] == ("full_seed_0" if enabled else None)
     assert row["team_accepted"] is False and row["independent_reproduction"] is False
     assert row["commit"] == "a" * 40 and row["seven_case_coverage"] is False
 

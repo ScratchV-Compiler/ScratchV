@@ -1,5 +1,7 @@
 # W3 Linux CI 与 Nightly
 
+普通 PR 的通用测试、部署与文档检查归入统一 **CI** 运行页，详见 [Actions 入口说明](../../CI.md)。本页完整 W3 手动验证和 Nightly 的选择方式保持不变，原始数组及数值门槛不变。
+
 对外复现统一使用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)，并在同一个 Bash 会话、仓库根目录执行以下命令；`SCRATCHV_PYTHON`、`SCRATCHV_CC`、`SCRATCHV_QEMU` 由该指南设置。
 
 配置已随 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96) 提交。2026-10-05，作者在提交 `1c49e8acbcd9174491b2d0c2a5a0072178ae5f9a` 的[第四轮 Linux 手动编排](https://github.com/yuki-328/ScratchV/actions/runs/37299235103)中完成同提交 preparation、完整七组 full-numeric 和汇总，均为 success。preparation 下载已复核；完整 reports/raw 均已下载验真，七组原始数组离线 audit 通过。前三轮失败与历史数值 profile 原样保留。下面区分实际运行记录与通用命令模板；没有设置 Nightly 远端开关，手动调用不等于 schedule，也不替代他人独立复现。团队确认内容见 [独立复现与验收清单](独立复现与验收清单.md)。

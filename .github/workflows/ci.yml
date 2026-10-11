@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Only newer PR revisions cancel older PR runs. Pushes retain their own run.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -13,6 +18,47 @@ permissions:
   contents: read
 
 jobs:
+  scope:
+    name: Select validation scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      llm: ${{ steps.scope.outputs.llm }}
+      docs: ${{ steps.scope.outputs.docs }}
+      w4: ${{ steps.scope.outputs.w4 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Preserve deployment and documentation path scopes
+        id: scope
+        run: python3 scripts/ci_scope.py
+
+  llm:
+    name: Deployment acceptance
+    needs: scope
+    if: github.event_name == 'pull_request' && needs.scope.outputs.llm == 'true'
+    uses: ./.github/workflows/llm-deploy.yml
+
+  docs:
+    name: Documentation checks
+    needs: scope
+    if: github.event_name == 'pull_request' && needs.scope.outputs.docs == 'true'
+    uses: ./.github/workflows/linux-reproduction-docs.yml
+
+  topic06:
+    name: Topic 06 benchmark
+    uses: ./.github/workflows/topic06-benchmark.yml
+
+  w4:
+    name: W4 small QEMU checks
+    needs: scope
+    if: github.event_name == 'pull_request' && needs.scope.outputs.w4 == 'true'
+    uses: ./.github/workflows/w4-full-numeric.yml
+    with:
+      run_full: false
+
   # ═════════════════════════════════════════════════════════════════════════
   # 课题功能测试：所有14个模块的单元测试 + 集成测试
   # ═════════════════════════════════════════════════════════════════════════
@@ -92,7 +138,7 @@ jobs:
           echo "Using python: $($PY -c 'import sys; print(sys.executable, sys.version)')"
           $PY -m pip install --upgrade pip setuptools wheel
           $PY -m pip install -e ".[all]"
-          $PY -m pip install "pytest>=7,<10"
+          $PY -m pip install "pytest>=7,<10" "PyYAML==6.0.3"
 
       - name: Install pinned CPU dependencies for Qwen and W3 tests
         run: |
@@ -653,6 +699,10 @@ jobs:
       - name: Write job summary
         if: always()
         run: |
+          echo "## Compiler benchmarks" >> "$GITHUB_STEP_SUMMARY"
+          echo "Detailed measurements and diagnostics are retained below and in the benchmark artifact." >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>Compiler benchmark details</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           if [ -f benchmark_reports/ir_interpreter.md ]; then
             cat benchmark_reports/ir_interpreter.md >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -705,6 +755,7 @@ jobs:
           if [ -f benchmark_reports/ir_verifier.md ]; then
             cat benchmark_reports/ir_verifier.md >> "$GITHUB_STEP_SUMMARY"
           fi
+          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
 
   # ═════════════════════════════════════════════════════════════════════════
   # GitHub Pages 部署 (仅 main 分支)
@@ -723,3 +774,18 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+  acceptance:
+    name: CI acceptance
+    if: always()
+    needs: [scope, test, benchmark, topic06, docs, llm, w4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Summarize and require every selected check
+        env:
+          CI_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python3 scripts/summarize_ci.py >> "$GITHUB_STEP_SUMMARY"

@@ -42,14 +42,16 @@ W4 完整 QEMU 为严格 `max_abs < 1e-3`，均保持各自报告的输入范围
 
 ## Workflow
 
-`w4-full-numeric.yml` 的 unit job 运行合同、小图真实目标及跨阶段低成本回归。完整 job
-依赖 unit 成功，仅手动或被调用时执行单个固定 case；普通 PR 不执行完整模型。
+普通 PR 的 W4 检查归入统一 `CI` 运行，不再单独触发一笔 W4 Actions。
+`w4-full-numeric.yml` 仅提供 `workflow_call`，其 unit job 保留合同、小图真实目标及
+跨阶段低成本回归。完整 job 依赖 unit 成功，且调用者必须明确传入 `run_full=true`
+才执行单个固定 case；该参数默认关闭，调用者的 push、PR 或定时事件本身不会启用完整模型。
 完整 job 依次要求 build、实际工具 FMA、QEMU 完成、全 logits 数值和原始数组 audit，
 并检查报告与请求 case、提交和工具身份一致。失败、取消、跳过不能替代成功。
 
-未合并分支或 fork 尚未注册独立工作流时，可从已注册的 `LLM Deploy v1.0`
+需要运行完整模型时，从 `LLM Deploy v1.0`
 （`llm-deploy.yml`）选择候选分支，手动设置 `run_w4_validation=true`，并选择
-`w4_case`（默认 `full_seed_0`）。此入口调用同一提交的 `w4-full-numeric.yml`；
+`w4_case`（默认 `full_seed_0`）。此入口以 `run_full=true` 调用同一提交的 `w4-full-numeric.yml`；
 W3 的 `run_w3_validation` 可独立选择，两者默认均关闭，不改变普通 PR 或定时任务的范围。
 W4 调用未请求时显示 `NOT RUN`；明确请求后失败、取消或跳过会令 W4 汇总失败。
 
@@ -61,7 +63,7 @@ Actions Summary 直接显示本次单测的通过/失败/错误/跳过数。完�
 
 `w4-nightly.yml` 通过仓库内 `uses` 调用同一提交的完整 workflow，默认仅运行
 `full_seed_0`。**所有 Nightly 入口均需仓库变量 `W4_NIGHTLY_ENABLED=true`**，否则不执行
-昂贵任务；直接手动运行 `w4-full-numeric.yml` 不受此变量限制。定时配置存在或本地测试
+昂贵任务；上述 `LLM Deploy v1.0` 手动入口不受此变量限制。定时配置存在或本地测试
 通过，不等于已经启用定时执行或取得远端成功记录。汇总成功也不代表团队已验收。
 
 W4 不自动重跑昂贵的 W3 完整七例。发布评审应另外核对同一候选源码的 W3 证据；变更

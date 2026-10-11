@@ -36,10 +36,11 @@ concurrency:
 jobs:
   full-numeric:
     # Even manual dispatch requires the repository variable. The separate
-    # w4-full-numeric manual entry remains available for an individual run.
+    # LLM Deploy manual entry remains available for an individual run.
     if: ${{ vars.W4_NIGHTLY_ENABLED == 'true' && github.event_name != 'pull_request' }}
     uses: ./.github/workflows/w4-full-numeric.yml
     with:
+      run_full: true
       case: ${{ inputs.case || 'full_seed_0' }}
 
   nightly-status:

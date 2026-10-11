@@ -2,9 +2,9 @@ name: LLM Deploy v1.0
 
 # CI for the Qwen3-0.6B-on-RISC-V project (docs/llm-deploy-v1.0/).
 #
-# Separate from ci.yml on purpose: that one tests the ScratchV compiler, this
-# one tests the deployment project. A failure here should not read as "the
-# compiler is broken".
+# PR validation is called by ci.yml so compiler and deployment evidence share
+# one Actions run. Separate jobs retain their dependencies and failure identity.
+# Manual and scheduled entry points remain available for explicit full runs.
 #
 # PRs execute small numeric gates and a separate complete frontend audit.
 # Both are mandatory for the W2 acceptance result. Full-model ORT remains
@@ -19,40 +19,7 @@ name: LLM Deploy v1.0
 # commit. Default W1/W2 checks do not imply full-model IR or QEMU acceptance.
 
 on:
-  pull_request:
-    paths:
-      - 'docs/llm-deploy-v1.0/**'
-      - 'probes/**'
-      - 'scripts/check_llm_deploy_docs.py'
-      - 'scripts/check_linux_repro_docs.py'
-      - 'tests/test_linux_repro_docs.py'
-      - 'scripts/check_w1_repro_env.py'
-      - 'scripts/run_w2_acceptance.py'
-      - 'scripts/check_w2_ci_results.py'
-      - 'scripts/summarize_w3_ci.py'
-      - 'export_qwen3_onnx.py'
-      - 'scratchv/**'
-      - 'requirements/**'
-      - 'pyproject.toml'
-      - 'tests/test_qwen3_small*.py'
-      - 'tests/test_qwen3_full*.py'
-      - 'tests/test_tensor*.py'
-      - 'tests/test_riscv_tensor*.py'
-      - 'tests/test_optimizer*.py'
-      - 'tests/qwen_artifacts.py'
-      - 'tests/test_qwen_artifact_selection.py'
-      - 'tests/test_w1_qwen3*.py'
-      - 'tests/test_w1_repro_env.py'
-      - 'tests/test_qwen3_frontend_patterns.py'
-      - 'tests/test_qwen3_tokenizer.py'
-      - 'tests/test_llm_inputs.py'
-      - 'tests/test_w2_*.py'
-      - 'tests/test_numeric_metrics.py'
-      - 'tests/test_numeric_summary.py'
-      - 'tests/test_w3_actions_summary.py'
-      - 'tests/test_w3_workflows.py'
-      - '.github/workflows/llm-deploy.yml'
-      - '.github/workflows/w3-*.yml'
+  workflow_call:
   schedule:
     # Nightly, off the hour: 19:23 UTC = 03:23 北京时间.
     - cron: '23 19 * * *'
@@ -105,6 +72,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_w4_validation }}
     uses: ./.github/workflows/w4-full-numeric.yml
     with:
+      run_full: true
       case: ${{ inputs.w4_case || 'full_seed_0' }}
 
   llm-deploy:

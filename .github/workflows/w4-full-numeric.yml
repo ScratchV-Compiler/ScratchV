@@ -1,53 +1,15 @@
 name: W4 full RV64 numeric
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/w4-full-numeric.yml
-      - .github/workflows/w4-nightly.yml
-      - scratchv/**
-      - export_qwen3_onnx.py
-      - probes/w1_qwen3_export/**
-      - probes/w2_runtime/**
-      - probes/w3_common.py
-      - probes/w3_qwen3_full/**
-      - probes/w3_layer_diff/**
-      - probes/w4_qwen3_full/**
-      - scripts/summarize_w4_ci.py
-      - tests/test_w1_qwen3_export.py
-      - tests/test_llm_inputs.py
-      - tests/test_w2_runtime_metadata.py
-      - tests/test_licm_safety.py
-      - tests/test_optimizer_numeric_semantics.py
-      - tests/test_w3_full_gate.py
-      - tests/test_w3_atomic_text.py
-      - tests/test_weight_bundle.py
-      - tests/test_tensor_c_external.py
-      - tests/test_tensor_boundary_contracts.py
-      - tests/test_tensor_return_contract.py
-      - tests/test_w4*.py
-      - tests/test_riscv_external*.py
-      - tests/test_riscv_process_cleanup.py
-      - tests/test_riscv_weight_transport.py
-      - requirements/qwen3-small-probe.txt
-  workflow_dispatch:
-    inputs:
-      case:
-        description: One complete 28-layer forward; every output element uses strict max_abs < 1e-3
-        type: choice
-        default: full_seed_0
-        options:
-          - full_seed_0
-          - full_seed_42
-          - one_token
-          - short_17
-          - short_255
-          - changed_future
-          - changed_padding
   workflow_call:
     inputs:
+      run_full:
+        description: Explicitly execute one complete QEMU forward; false runs only unit and small QEMU regressions
+        type: boolean
+        required: false
+        default: false
       case:
-        description: One CASE_NAMES member; each call executes one complete forward
+        description: One CASE_NAMES member; used only when run_full is true
         type: string
         required: false
         default: full_seed_0
@@ -56,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: w4-full-numeric-${{ github.ref }}-${{ inputs.case || 'unit' }}
+  group: w4-full-numeric-${{ github.ref }}-${{ inputs.run_full && 'full' || 'unit' }}-${{ inputs.case || 'full_seed_0' }}
   cancel-in-progress: false
 
 env:
@@ -161,8 +123,8 @@ jobs:
   full-numeric:
     name: One complete Qwen3 RV64 forward
     needs: unit
-    # PRs get the inexpensive unit/small-QEMU job only. No schedule is enabled here.
-    if: ${{ github.event_name != 'pull_request' }}
+    # Caller event alone never enables the expensive full-model forward.
+    if: ${{ inputs.run_full }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
@@ -435,6 +397,7 @@ jobs:
     env:
       UNIT_RESULT: ${{ needs.unit.result }}
       FULL_NUMERIC_RESULT: ${{ needs.full-numeric.result }}
+      FULL_REQUESTED: ${{ inputs.run_full }}
       SELECTED_CASE: ${{ inputs.case || 'full_seed_0' }}
     steps:
       - name: Record W4 CI result without promoting skipped gates
@@ -444,15 +407,16 @@ jobs:
           python3 - <<'PY'
           import json, os
           from pathlib import Path
-          pr = os.environ["GITHUB_EVENT_NAME"] == "pull_request"
+          requested = os.environ.get("FULL_REQUESTED", "").casefold() == "true"
           unit, full = os.environ["UNIT_RESULT"], os.environ["FULL_NUMERIC_RESULT"]
-          passed = unit == "success" and (full == "skipped" if pr else full == "success")
+          passed = unit == "success" and full == ("success" if requested else "skipped")
           row = {"schema_version": 1, "passed": passed, "status": "PASS" if passed else "FAIL",
-                 "scope": "PR unit and small-graph regressions only" if pr else "One complete RV64 case plus retained-array audit",
+                 "scope": "One complete RV64 case plus retained-array audit" if requested else "Unit and small-graph regressions only",
                  "commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
-                 "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "case": None if pr else os.environ["SELECTED_CASE"],
+                 "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "case": os.environ["SELECTED_CASE"] if requested else None,
+                 "full_numeric_requested": requested,
                  "job_results": {"unit": unit, "full-numeric": full},
-                 "full_numeric_accepted": not pr and passed, "team_accepted": False,
+                 "full_numeric_accepted": requested and passed, "team_accepted": False,
                  "independent_reproduction": False, "seven_case_coverage": False}
           Path("output/w4-status/status.json").write_text(json.dumps(row, indent=2) + "\n")
           labels = {"success": "PASS", "failure": "FAIL", "cancelled": "CANCELLED", "skipped": "NOT RUN (未运行)"}
