@@ -8,6 +8,7 @@
     "scripts/check_w1_repro_env.py",
     "scripts/run_w2_acceptance.py",
     "scripts/check_w2_ci_results.py",
+    "scripts/summarize_w2_ci.py",
     "export_qwen3_onnx.py",
     "scratchv/**",
     "requirements/**",
