@@ -133,7 +133,7 @@ def test_real_linux_exit_rss_race_is_repeatable_without_false_failures(tmp_path,
         marker = tmp_path / f"exit-{attempt}"
         ready_file = tmp_path / f"ready-{attempt}"
         code = ("import os,time;from pathlib import Path;"
-                f"ready=Path({str(ready_file)!r});ready.write_text(str(os.getpid()));"
+                + publish_pid_code(ready_file) +
                 f"marker=Path({str(marker)!r});"
                 "\nwhile not marker.exists():time.sleep(0.001)\n")
         process = resources.spawn_owned([sys.executable, "-B", "-c", code],
@@ -172,14 +172,43 @@ def ready(path, process):
     return int(path.read_text(encoding="utf-8"))
 
 
+def publish_pid_code(path):
+    # exists() signals readiness only after the complete PID has been closed.
+    return (f"marker=Path({str(path)!r}); temporary=marker.with_suffix('.tmp'); "
+            "temporary.write_text(str(os.getpid()),encoding='utf-8'); "
+            "temporary.replace(marker); ")
+
+
+def test_ready_pid_is_not_visible_during_empty_or_partial_write(tmp_path, monkeypatch):
+    marker = tmp_path / "ready.pid"
+    observations = []
+
+    def interrupted_write(path, text, *, encoding):
+        # Deterministically stop at the states which a concurrent reader can
+        # observe; publishing directly to marker would fail on the first check.
+        with path.open("w", encoding=encoding) as stream:
+            observations.append(path.read_text(encoding=encoding))
+            assert not marker.exists()
+            for piece in (text[:1], text[1:]):
+                stream.write(piece)
+                stream.flush()
+                observations.append(path.read_text(encoding=encoding))
+                assert not marker.exists()
+        assert not marker.exists()
+        return len(text)
+
+    monkeypatch.setattr(Path, "write_text", interrupted_write)
+    exec("import os;from pathlib import Path;" + publish_pid_code(marker), {})
+    assert observations == ["", str(os.getpid())[:1], str(os.getpid())]
+    assert ready(marker, _SampleProcess()) == os.getpid()
+    assert not marker.with_suffix(".tmp").exists()
+
+
 def allocation_code(path, megabytes=120, sleep=30):
-    # Readers use exists() as readiness: atomically publish a completed PID.
     return ("import os,time; from pathlib import Path; "
             f"data=bytearray({megabytes}*1024*1024); "
             "data[::4096]=b'x'*len(data[::4096]); "
-            f"marker=Path({str(path)!r}); temporary=marker.with_suffix('.tmp'); "
-            "temporary.write_text(str(os.getpid()),encoding='utf-8'); "
-            f"temporary.replace(marker); time.sleep({sleep})")
+            + publish_pid_code(path) + f"time.sleep({sleep})")
 
 
 def owned_exit_checker(process, pid):
