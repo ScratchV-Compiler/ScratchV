@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -45,6 +46,35 @@ def test_model_artifacts_keep_export_provenance(model_evidence):
     assert evidence["report_sha256"] == hashlib.sha256((model_dir / "report.json").read_bytes()).hexdigest()
     assert evidence["weights_sha256"] == source["weights_sha256"]
     assert evidence["provenance"] == source["provenance"]
+
+
+def test_current_environment_and_reference_sources_are_independent_of_export(
+        model_evidence, tmp_path, monkeypatch):
+    model_dir, source = model_evidence
+    source["environment"] = {"python": "historical-python", "packages": {"numpy": "historical-numpy"}}
+    (model_dir / "report.json").write_text(json.dumps(source), encoding="utf-8")
+    monkeypatch.setattr(probe.platform, "python_version", lambda: "current-python")
+    monkeypatch.setattr(probe.np, "__version__", "current-numpy")
+    monkeypatch.setattr(probe.onnx, "__version__", "current-onnx")
+    monkeypatch.setattr(probe.ort, "__version__", "current-ort")
+
+    def stop_before_compilation(**kwargs):
+        raise FileNotFoundError("fixture stops before toolchain execution")
+
+    monkeypatch.setattr(probe, "discover_toolchain", stop_before_compilation)
+    output = tmp_path / "qemu-report"
+    assert probe.main(["--model-dir", str(model_dir), "--output-dir", str(output)]) == 1
+    report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    assert report["stage"] == "toolchain"
+    assert report["environment"]["python"] == "current-python"
+    assert report["environment"]["executable"] == probe.sys.executable
+    assert report["environment"]["packages"] == {
+        "numpy": "current-numpy", "onnx": "current-onnx", "onnxruntime": "current-ort"}
+    assert report["export_evidence"]["environment"] == source["environment"]
+    for path in ("scratchv/frontend/onnx_parser.py", "scratchv/verification/ir_interpreter.py",
+                 "scratchv/verification/ir_numpy_ops.py", "scratchv/pass_manager.py",
+                 "scratchv/analysis/ir_verifier.py"):
+        assert report["source_sha256"][path] == hashlib.sha256((probe.ROOT / path).read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("fault", ["missing_report", "failed", "unfinished", "normal", "diagnostic",
@@ -230,3 +260,93 @@ def test_timeout_requires_positive_finite_duration(tmp_path, timeout):
         probe.main(["--model-dir", str(tmp_path), "--output-dir", str(tmp_path / "report"),
                     "--timeout", timeout])
     assert not (tmp_path / "report").exists()
+
+
+@pytest.mark.parametrize("filename", ["report.md", "report.html", "report.json"])
+@pytest.mark.parametrize("write_before_error", [False, True])
+@pytest.mark.parametrize("primary_error", [False, True])
+def test_report_io_failure_never_publishes_pass_and_preserves_execution_error(
+        tmp_path, monkeypatch, capsys, filename, write_before_error, primary_error):
+    original_write = Path.write_text
+    attempted = []
+
+    def write(path, content, *args, **kwargs):
+        attempted.append(path.name)
+        if path.name == f".{filename}.tmp":
+            if write_before_error:
+                original_write(path, content, *args, **kwargs)
+            raise OSError("fixture report destination failure")
+        return original_write(path, content, *args, **kwargs)
+
+    captured = {}
+
+    def injected_probe(model_dir, out, report, **kwargs):
+        captured["report"] = report
+        report["stage"] = "numeric"
+        if primary_error:
+            raise RuntimeError("primary numeric failure")
+        report.update(passed=True, stage="complete")
+
+    monkeypatch.setattr(Path, "write_text", write)
+    monkeypatch.setattr(probe, "run_probe", injected_probe)
+    output = tmp_path / "report"
+    assert probe.main(["--model-dir", str(tmp_path), "--output-dir", str(output)]) == 1
+    report = captured["report"]
+    assert report["passed"] is False
+    assert report["stage"] == ("numeric" if primary_error else "report-write")
+    assert ("primary numeric failure" if primary_error else "evidence") in report["error"]
+    assert any(filename in item for item in report["report_write_errors"])
+    final_json = output / "report.json"
+    if filename == "report.json":
+        assert not final_json.exists()
+    else:
+        saved = json.loads(final_json.read_text(encoding="utf-8"))
+        assert saved["passed"] is False and saved["error"] == report["error"]
+    for view in ("report.md", "report.html"):
+        assert f".{view}.tmp" in attempted
+        if view != filename:
+            content = (output / view).read_text(encoding="utf-8")
+            assert "FAIL" in content and "fixture report destination failure" in content
+            if primary_error:
+                assert "primary numeric failure" in content
+    assert not list(output.glob(".*.tmp"))
+    assert "fixture report destination failure" in capsys.readouterr().err
+
+
+def test_report_json_replace_failure_keeps_gate_failed(tmp_path, monkeypatch):
+    original_replace = Path.replace
+
+    def replace(path, target):
+        if Path(target).name == "report.json":
+            raise PermissionError("JSON publication is locked")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(probe, "run_probe", lambda model_dir, out, report, **kwargs:
+                        report.update(passed=True, stage="complete"))
+    output = tmp_path / "report"
+    assert probe.main(["--model-dir", str(tmp_path), "--output-dir", str(output)]) == 1
+    assert not (output / "report.json").exists()
+    assert not list(output.glob(".*.tmp"))
+    assert "FAIL" in (output / "report.md").read_text(encoding="utf-8")
+
+
+def test_report_json_is_atomically_published_after_both_views(tmp_path, monkeypatch):
+    original_replace = Path.replace
+    published = []
+
+    def replace(path, target):
+        if Path(target).name == "report.json":
+            assert published == ["report.md", "report.html"]
+            assert not Path(target).exists()
+        published.append(Path(target).name)
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr(probe, "run_probe", lambda model_dir, out, report, **kwargs:
+                        report.update(passed=True, stage="complete"))
+    output = tmp_path / "report"
+    assert probe.main(["--model-dir", str(tmp_path), "--output-dir", str(output)]) == 0
+    assert published == ["report.md", "report.html", "report.json"]
+    assert json.loads((output / "report.json").read_text(encoding="utf-8"))["passed"] is True
+    assert not list(output.glob(".*.tmp"))

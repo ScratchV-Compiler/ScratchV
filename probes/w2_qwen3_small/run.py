@@ -30,7 +30,6 @@ if str(ROOT) not in sys.path:
 from probes.w2_qwen3_small.diagnostics import (  # noqa: E402
     build_diagnostic_model, compare_outputs, tensor_diff, unpack_trace,
 )
-
 from probes.numeric_summary import (  # noqa: E402
     METRIC_EXPLANATION, compact_metric_table, compact_metric_table_html,
 )
@@ -148,15 +147,22 @@ def attention_checks(reference, feed, config) -> list[dict]:
 
 
 def provenance() -> dict:
-    result = {}
-    try:
-        result["git_commit"] = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
-        result["git_dirty"] = bool(subprocess.check_output(
-            ["git", "status", "--porcelain"], cwd=ROOT, text=True,
-            stderr=subprocess.DEVNULL).strip())
-    except (OSError, subprocess.CalledProcessError):
-        result["git_commit"] = None
+    result = {"git_commit": None, "git_dirty": None}
+    if not (ROOT / ".git").exists():
+        # A source archive can be nested beneath another checkout. Do not let
+        # Git's upward search attribute this source tree to that parent.
+        result["git_reason"] = "Source directory has no .git metadata"
+    else:
+        try:
+            result["git_commit"] = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True,
+                stderr=subprocess.DEVNULL, timeout=10).strip()
+            result["git_dirty"] = bool(subprocess.check_output(
+                ["git", "status", "--porcelain"], cwd=ROOT, text=True,
+                stderr=subprocess.DEVNULL, timeout=10).strip())
+        except (OSError, subprocess.SubprocessError) as exc:
+            result.update(git_commit=None, git_dirty=None,
+                          git_reason=f"Checkout metadata unavailable: {type(exc).__name__}: {exc}")
     result["source_sha256"] = {
         str(path.relative_to(ROOT)).replace("\\", "/"): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in [*sorted(Path(__file__).parent.glob("*.py")),
@@ -429,13 +435,53 @@ def _report_html(report: dict) -> str:
 
 
 def write_reports(out: Path, report: dict) -> None:
-    (out / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    (out / "report.md").write_text(_report_markdown(report), encoding="utf-8")
-    write_html(out, report)
+    """Publish complete JSON last; losing required evidence fails the gate."""
+    failures = []
 
+    def write(name, content):
+        temporary = out / f".{name}.tmp"
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            temporary.replace(out / name)
+            return True
+        except OSError as exc:
+            failures.append(f"{name}: {type(exc).__name__}: {exc}")
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                failures.append(f"{temporary.name}: cleanup failed: {cleanup_error}")
+            return False
 
-def write_html(out: Path, report: dict) -> None:
-    (out / "report.html").write_text(_report_html(report), encoding="utf-8")
+    def fail():
+        # Reporting must not replace the original export/numeric error.
+        if report["passed"]:
+            report.update(passed=False, stage="report-write",
+                          error="Incomplete two-layer IR gate evidence")
+        report["report_write_errors"] = list(failures)
+
+    def recover_views():
+        summary = ("# Real two-layer Qwen3 numerical probe\n\nResult: **FAIL**\n\n"
+                   f"Stage: {report['stage']}\n\nError: {report.get('error', 'Gate failed')}\n\n"
+                   + "Report write errors:\n" + "\n".join(f"- {item}" for item in failures) + "\n")
+        write("report.md", summary)
+        write("report.html", '<!doctype html><meta charset="utf-8"><pre>'
+              + escape(summary) + "</pre>")
+        report["report_write_errors"] = list(failures)
+
+    write("report.md", _report_markdown(report))
+    write("report.html", _report_html(report))
+    if failures:
+        fail()
+        recover_views()
+    if not write("report.json", json.dumps(report, indent=2, allow_nan=False) + "\n"):
+        fail()
+        recover_views()
+        # Retry only as FAIL. A permanent write/publish failure exposes no
+        # final JSON, including when a failed close left complete temp bytes.
+        write("report.json", json.dumps(report, indent=2, allow_nan=False) + "\n")
+        report["report_write_errors"] = list(failures)
+    if failures:
+        print("[gate] FAIL; report write errors: " + "; ".join(failures), file=sys.stderr)
 
 
 def main(argv=None) -> int:

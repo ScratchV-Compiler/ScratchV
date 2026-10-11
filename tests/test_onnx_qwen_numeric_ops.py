@@ -4,6 +4,7 @@ import numpy as np
 import onnx
 import pytest
 from onnx import TensorProto as T, helper, numpy_helper
+from onnx.reference import ReferenceEvaluator
 
 from scratchv.analysis.ir_verifier import verify_ir
 from scratchv.frontend.onnx_parser import ONNXParser, ONNXParseError
@@ -27,12 +28,14 @@ def save(tmp_path, nodes, feed, output_dtype, output_shape, initializers=None):
     return path
 
 
-def compare(path, feed, *, exact=False):
+def compare(path, feed, *, exact=False, reference_evaluator=False):
     parser = ONNXParser()
     program = parser.parse(str(path))
     assert verify_ir(program) == (True, [])
     actual = IRInterpreter(program).run(feed, initializers=parser.initializers).return_value
-    reference = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]).run(None, feed)[0]
+    session = (ReferenceEvaluator(str(path)) if reference_evaluator else
+               ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]))
+    reference = session.run(None, feed)[0]
     assert actual.shape == reference.shape
     assert actual.dtype == reference.dtype
     if exact or actual.dtype.kind in "iu":
@@ -82,7 +85,10 @@ def test_abs_preserves_numeric_type(tmp_path, dtype):
 def test_float_unary_ops(tmp_path, dtype, op, values):
     feed = {"x": np.array(values, dtype=dtype)}
     path = save(tmp_path, [helper.make_node(op, ["x"], ["y"])], feed, DTYPES[dtype], [5])
-    compare(path, feed)
+    # ONNX permits DOUBLE Cos, but pinned ORT 1.22.1 has no CPU kernel for it.
+    # Keep the real parser/interpreter test using ONNX's reference evaluator;
+    # do not skip the case or catch arbitrary numerical comparison failures.
+    compare(path, feed, reference_evaluator=(op == "Cos" and dtype == "float64"))
 
 
 @pytest.mark.parametrize("base_dtype,exponent_dtype", [
