@@ -213,6 +213,18 @@ def operator_table(reports):
     return lines
 
 
+def precision_legend():
+    """One line per name, saying what actually produced the numbers."""
+    return [
+        "- **ORT**：ONNX Runtime 在 CPU 上跑同一个 ONNX 模型。\n",
+        "- **IR**：前端解析出的 IR，由 IR 解释器在 host 上跑。\n",
+        "- **QEMU**：同一张图编成 RV64 的 ELF，在 QEMU 里跑。\n",
+        "- **NumPy**：用 NumPy 手写公式算出的期望值（只有 w2-backend-ops 有）。\n",
+        "- **最终 logits**：模型最后一层的输出，报告里名为 `logits` 的那个。\n",
+        "\n",
+    ]
+
+
 def precision_comparisons(reports):
     comparisons = []
 
@@ -316,7 +328,7 @@ def render(directory):
                 "请检查各 W2 job 的日志与产物。\n")
 
     lines = ["## W2 测试项\n\n", "### 算子支持\n\n", *operators,
-             "\n### 精度\n\n", precision, "\n\n", METRIC_EXPLANATION, "\n\n",
+             "\n### 精度\n\n", *precision_legend(), precision, "\n\n", METRIC_EXPLANATION, "\n\n",
              "### 耗时\n\n", *timing]
     rendered = "".join(lines)
     if len(rendered.encode("utf-8")) > MAX_SUMMARY_BYTES:

@@ -119,6 +119,16 @@ def test_backend_layer_is_not_marked_without_a_passing_qemu_run(tmp_path):
     assert row_of(render(tmp_path), "| 汇编层")[2] == "无（本次未执行）"
 
 
+def test_precision_legend_explains_every_name_before_the_table(tmp_path):
+    save(tmp_path, reports())
+    text = render(tmp_path)
+    section = text.split("### 精度", 1)[1]
+    for name in ("ORT", "IR", "QEMU", "NumPy", "最终 logits"):
+        assert f"**{name}**" in section, name
+    # A reader cannot use the table without the legend above it.
+    assert section.index("**ORT**") < section.index("| 比较 |")
+
+
 def test_structural_chains_stay_visible_without_numeric_metrics(tmp_path):
     save(tmp_path, reports())
     text = render(tmp_path)
