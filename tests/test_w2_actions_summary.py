@@ -55,15 +55,15 @@ def test_ran_probe_keeps_available_report(tmp_path, name, directories, outcome):
 @pytest.mark.parametrize("outcome", ["skipped", ""])
 def test_unrun_probe_never_reuses_stale_report(tmp_path, name, directories, outcome):
     summary = execute(tmp_path, name, directories, outcome, True)
-    assert summary.count("Not run / 未运行") == len(directories)
+    assert summary.count("未运行") == len(directories)
     assert "SENTINEL" not in summary
-    assert "No " in summary and "acceptance result" in summary
+    assert "无" in summary and "数值验收结论" in summary
 
 
 @pytest.mark.parametrize("name,directories", SUMMARIES)
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancelled"])
 def test_absent_report_does_not_invent_acceptance(tmp_path, name, directories, outcome):
     summary = execute(tmp_path, name, directories, outcome, False)
-    assert summary.count("Report unavailable / 未生成报告") == len(directories)
-    assert "No " in summary and "acceptance result" in summary
+    assert summary.count("未生成报告") == len(directories)
+    assert "无" in summary and "数值验收结论" in summary
     assert "SENTINEL" not in summary

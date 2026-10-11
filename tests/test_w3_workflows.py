@@ -191,7 +191,7 @@ def test_acceptance_summary_cannot_turn_missing_or_failed_gate_green(bash, tmp_p
                         FULL_NUMERIC_RESULT=full, GITHUB_SHA="a" * 40,
                         GITHUB_STEP_SUMMARY=summary.as_posix())
     assert (result.returncode == 0) is passed
-    assert "does not approve the W3 team milestone" in summary.read_text()
+    assert "不批准 W3 团队里程碑" in summary.read_text()
 
 
 def test_full_coverage_defaults_and_raw_evidence_retention():
@@ -244,7 +244,7 @@ def test_llm_page_reports_w3_skip_without_running_or_accepting_w3(bash, tmp_path
     assert process.returncode == 0, process.stderr
     text = destination.read_text(encoding="utf-8")
     assert f"**{label}**" in text and "<details>" in text
-    assert ("W1/W2 success is not W3 acceptance" in text) is (result == "skipped")
+    assert ("W1/W2 通过不等于 W3 验收" in text) is (result == "skipped")
     assert len(text) < 1600
 
 

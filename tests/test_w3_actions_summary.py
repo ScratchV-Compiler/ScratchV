@@ -44,7 +44,7 @@ def test_full_key_metrics_are_visible_and_checkpoint_details_are_folded(tmp_path
     assert "2/2 cases" in visible and "reference" in visible
     assert format(3e-6, ".16e") in visible and format(6e-6, ".16e") in visible
     assert format(0.7, ".16e") not in visible
-    assert "No full-model QEMU result" in visible
+    assert "本 job 无完整模型 QEMU 结果" in visible
     assert "w3-full-numeric-reports" in text and "<details>" in text
     assert json.loads((tmp_path / "report.json").read_text()) == before
 
@@ -83,7 +83,7 @@ def test_partial_coverage_shows_unexecuted_case_and_missing_metrics(tmp_path):
     save(tmp_path, report)
     text = render("full", tmp_path, "failure")
     assert "**PARTIAL (not acceptance)**" in text
-    assert "1/2 cases recorded" in text and "NOT RUN" in text and "two" in text
+    assert "1/2 cases 已记录" in text and "NOT RUN" in text and "two" in text
     assert "未记录 1/2" in text and "**PASS**" not in text
 
 
@@ -103,11 +103,11 @@ def test_preparation_lists_all_checks_and_never_claims_full_model_execution(tmp_
     save(tmp_path / "medium", {"gate": "w3-medium-host", "status": "PASS", "passed": True})
     text = render("preparation", tmp_path, "failure")
     visible = text.split("<details>", 1)[0]
-    assert "NOT RUN by this job" in visible
-    assert "FAIL (parent validation)" in visible and "1 cases / 2 target executions recorded" in visible
+    assert "在本 job 中不运行" in visible
+    assert "FAIL (parent validation)" in visible and "1 cases / 2 target executions 已记录" in visible
     for _, _, scope in GATES:
         assert scope in visible
-    assert visible.count("NOT RUN") == 5
+    assert visible.count("NOT RUN") == 4
     assert "w3-preparation-reports" in text
 
 
@@ -155,7 +155,7 @@ def test_large_metric_reasons_keep_status_and_whole_artifact_fallback(tmp_path, 
     text = render("full", tmp_path, outcome)
     assert f"**{label}**" in text
     assert len(text.encode("utf-8")) <= summarize_w3_ci.MAX_SUMMARY_BYTES
-    assert "summary budget" in text and "w3-full-numeric-reports" in text
+    assert "概要预算" in text and "w3-full-numeric-reports" in text
     assert "report.json" in text and "relative_l2_reason" not in text
     assert text.count("<details>") == text.count("</details>") == 0
 
@@ -168,7 +168,7 @@ def test_summary_budget_measures_utf8_bytes_not_character_count(tmp_path):
     comparison["relative_l2_reason"] = "数" * 15000
     save(tmp_path, report)
     text = render("full", tmp_path, "success")
-    assert "summary budget" in text and "**PASS**" in text
+    assert "概要预算" in text and "**PASS**" in text
     assert len(text.encode("utf-8")) <= summarize_w3_ci.MAX_SUMMARY_BYTES
 
 
@@ -176,7 +176,7 @@ def test_deep_json_yields_invalid_report_instead_of_losing_summary(tmp_path):
     payload = '{"gate":"numeric:ir-full-qwen3","cases":' + '[' * 2000 + '0' + ']' * 2000 + '}'
     (tmp_path / "report.json").write_text(payload, encoding="utf-8")
     text = render("full", tmp_path, "failure")
-    assert "INVALID REPORT" in text and "No acceptance claimed" in text
+    assert "INVALID REPORT" in text and "未声称验收通过" in text
     assert "w3-full-numeric-reports" in text
 
 
@@ -184,5 +184,5 @@ def test_input_read_has_a_size_bound(tmp_path, monkeypatch):
     save(tmp_path, full_report())
     monkeypatch.setattr(summarize_w3_ci, "MAX_REPORT_BYTES", 100)
     text = render("full", tmp_path, "success")
-    assert "INVALID REPORT (size limit)" in text and "No acceptance claimed" in text
+    assert "INVALID REPORT (size limit)" in text and "未声称验收通过" in text
     assert "**PASS**" not in text and "w3-full-numeric-reports" in text

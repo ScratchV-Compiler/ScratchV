@@ -311,7 +311,7 @@ jobs:
           RUNTIME_MODEL_OUTCOME: ${{ steps.runtime_model.outcome }}
         run: |
           {
-            echo "## W2 frontend, backend and host runtime"
+            echo "## W2 前端、后端与宿主运行时"
             echo "unit:frontend-ops: $FRONTEND_OUTCOME"
             echo "unit:backend-ops: $BACKEND_OUTCOME"
             echo "unit:runtime: $RUNTIME_OUTCOME"
@@ -319,17 +319,17 @@ jobs:
             emit_report() {
               report="$1"; outcome="$2"
               if [ "$outcome" = "skipped" ] || [ -z "$outcome" ]; then
-                echo "Not run / 未运行: $report. No numerical acceptance result."
+                echo "未运行: $report。无数值验收结论。"
               elif [ -f "$report" ]; then
                 cat "$report"
               else
-                echo "Report unavailable / 未生成报告: $report (step: $outcome). No numerical acceptance result; inspect logs."
+                echo "未生成报告: $report (步骤: $outcome)。无数值验收结论，请查看日志。"
               fi
             }
             emit_report output/w2-backend-ops/report.md "$BACKEND_OUTCOME"
             emit_report output/w2-runtime/report.md "$RUNTIME_OUTCOME"
             emit_report output/w2-runtime-model/report.md "$RUNTIME_MODEL_OUTCOME"
-            echo "These gates do not execute full-model IR/QEMU or text generation."
+            echo "这些门槛不执行完整模型 IR/QEMU，也不执行文本生成。"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload W2 unit evidence
@@ -363,13 +363,13 @@ jobs:
         run: |
           {
             echo "## numeric:qemu-qwen3-small"
-            echo "Outcome: $PROBE_OUTCOME"
+            echo "步骤结果: $PROBE_OUTCOME"
             if [ "$PROBE_OUTCOME" = "skipped" ] || [ -z "$PROBE_OUTCOME" ]; then
-              echo "Not run / 未运行. No QEMU numerical acceptance result."
+              echo "未运行。无 QEMU 数值验收结论。"
             elif [ -f output/qwen3-riscv/report.md ]; then
               cat output/qwen3-riscv/report.md
             else
-              echo "Report unavailable / 未生成报告. No QEMU numerical acceptance result; inspect logs."
+              echo "未生成报告。无 QEMU 数值验收结论，请查看日志。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -382,15 +382,15 @@ jobs:
         run: |
           {
             echo "## numeric:ir-qwen3-small"
-            echo "Probe: $PROBE_OUTCOME; regression tests: $TEST_OUTCOME"
-            echo "Explicit artifact integration (requires 3 passed / 0 skipped): $ARTIFACT_TEST_OUTCOME"
+            echo "探针: $PROBE_OUTCOME；回归测试: $TEST_OUTCOME"
+            echo "显式 artifact 集成（要求 3 passed / 0 skipped）: $ARTIFACT_TEST_OUTCOME"
             echo ""
             if [ "$PROBE_OUTCOME" = "skipped" ] || [ -z "$PROBE_OUTCOME" ]; then
-              echo "Not run / 未运行. No IR numerical acceptance result."
+              echo "未运行。无 IR 数值验收结论。"
             elif [ -f output/qwen3-small/report.md ]; then
               cat output/qwen3-small/report.md
             else
-              echo "Report unavailable / 未生成报告. No IR numerical acceptance result; inspect logs."
+              echo "未生成报告。无 IR 数值验收结论，请查看日志。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -429,18 +429,18 @@ jobs:
           QWEN_RISCV_OUTCOME: ${{ steps.qwen3_riscv.outcome }}
         run: |
           {
-            echo "## W1 / small Qwen3 execution status"
+            echo "## W1 / Qwen3 小模型执行状态"
             echo ""
-            echo "| Gate | Actual step outcome |"
+            echo "| 门槛 | 实际步骤结果 |"
             echo "|---|---|"
-            echo "| Document structure | $DOCS_OUTCOME |"
+            echo "| 文档结构 | $DOCS_OUTCOME |"
             echo "| QEMU MatMul | $MATMUL_OUTCOME |"
-            echo "| Synthetic Transformer IR | $TRANSFORMER_OUTCOME |"
-            echo "| Real Qwen3 structure IR | $QWEN_IR_OUTCOME |"
-            echo "| Real Qwen3 structure QEMU | $QWEN_RISCV_OUTCOME |"
+            echo "| 合成 Transformer IR | $TRANSFORMER_OUTCOME |"
+            echo "| 真实 Qwen3 结构 IR | $QWEN_IR_OUTCOME |"
+            echo "| 真实 Qwen3 结构 QEMU | $QWEN_RISCV_OUTCOME |"
             echo ""
-            echo "Full-model ORT validation runs in the separate manual/nightly job."
-            echo "Document checks do not certify team interface approval or second-person reproduction."
+            echo "完整模型 ORT 验证在独立的手动/夜间 job 中运行。"
+            echo "文档检查不构成团队接口批准或他人复现的证明。"
           } >> "$GITHUB_STEP_SUMMARY"
 
   full-qwen3-onnx:
@@ -477,14 +477,14 @@ jobs:
           PROBE_OUTCOME: ${{ steps.full_model.outcome }}
         run: |
           {
-            echo "## probe:qwen3-onnx (complete FP32 release, ORT CPU)"
-            echo "Outcome: $PROBE_OUTCOME"
+            echo "## probe:qwen3-onnx（完整 FP32 发布产物，ORT CPU）"
+            echo "步骤结果: $PROBE_OUTCOME"
             if [ -f output/qwen3-full-probe/report.md ]; then
               cat output/qwen3-full-probe/report.md
             else
-              echo "No report produced; inspect the failed step."
+              echo "未生成报告；请检查失败的步骤。"
             fi
-            echo "This validates the complete ONNX artifact, not ScratchV full-model execution."
+            echo "这验证完整 ONNX 产物，不代表 ScratchV 的完整模型执行。"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload full-model validation evidence
         if: always()
@@ -528,11 +528,11 @@ jobs:
         run: |
           {
             echo "## frontend:parse-qwen3"
-            echo "Outcome: $PROBE_OUTCOME"
+            echo "步骤结果: $PROBE_OUTCOME"
             if [ -f output/qwen3-parse/report.md ]; then
               cat output/qwen3-parse/report.md
             fi
-            echo "Complete graph and binding audit only; no full IR or QEMU numerical claim."
+            echo "仅完整图与绑定审计；不声称完整 IR 或 QEMU 数值结果。"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload complete Qwen3 frontend evidence
         if: always()
@@ -812,12 +812,12 @@ jobs:
         run: |
           set -euo pipefail
           {
-            printf '## W3 automated gates\n\n'
-            printf 'Commit: `%s`\n\n' "$GITHUB_SHA"
-            printf '| Gate | Result |\n| --- | --- |\n'
-            printf '| Preparation | %s |\n' "$PREPARATION_RESULT"
-            printf '| Complete seven-case Qwen3 IR numeric | %s |\n\n' "$FULL_NUMERIC_RESULT"
-            printf 'Only two successful gates pass this run. This does not approve the W3 team milestone or replace independent reproduction.\n'
+            printf '## W3 自动门槛\n\n'
+            printf '提交: `%s`\n\n' "$GITHUB_SHA"
+            printf '| 门槛 | 结果 |\n| --- | --- |\n'
+            printf '| 准备 (preparation) | %s |\n' "$PREPARATION_RESULT"
+            printf '| 完整七用例 Qwen3 IR 数值 | %s |\n\n' "$FULL_NUMERIC_RESULT"
+            printf '只有两道门槛都为 success 本次运行才通过。这不批准 W3 团队里程碑，也不替代独立复现。\n'
           } >> "$GITHUB_STEP_SUMMARY"
           test "$PREPARATION_RESULT" = success
           test "$FULL_NUMERIC_RESULT" = success
@@ -839,15 +839,15 @@ jobs:
           labels = {"success": "PASS", "failure": "FAIL", "cancelled": "CANCELLED", "skipped": "NOT RUN"}
           label = labels.get(result, "UNCONFIRMED")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
-              stream.write("## W3 execution scope\n\n")
-              stream.write(f"**{label}** — W3 preparation and full 28-layer IR numeric.\n\n")
+              stream.write("## W3 执行范围\n\n")
+              stream.write(f"**{label}** — W3 准备与完整 28 层 IR 数值。\n\n")
               if result == "skipped":
-                  stream.write("W3 is opt-in and is not executed by default on pull requests. W1/W2 success is not W3 acceptance.\n\n")
+                  stream.write("W3 是可选门槛，PR 上默认不执行。W1/W2 通过不等于 W3 验收。\n\n")
               elif result == "success":
-                  stream.write("See the W3 preparation and W3 complete IR numeric summaries in this run for numerical data.\n\n")
+                  stream.write("数值数据见本次运行中的 W3 准备与 W3 完整 IR 数值概要。\n\n")
               else:
-                  stream.write("No W3 acceptance claimed; inspect the called jobs and any partial evidence.\n\n")
-              stream.write("<details><summary>Scope and evidence</summary>\n\nManual LLM Deploy runs can enable `run_w3_validation`. "
-                           "Numerical reports are retained in `w3-preparation-reports` and `w3-full-numeric-reports` when generated. "
-                           "Full-model QEMU is a separate W4 gate; independent reproduction and team sign-off remain separate.\n\n</details>\n")
+                  stream.write("未声称 W3 验收；请检查被调用的 job 以及可能的残缺证据。\n\n")
+              stream.write("<details><summary>范围与证据</summary>\n\n手动运行 LLM Deploy 可开启 `run_w3_validation`。"
+                           "数值报告在生成后保留于 `w3-preparation-reports` 与 `w3-full-numeric-reports`。"
+                           "完整模型 QEMU 是独立的 W4 门槛；独立复现与团队签署另行进行。\n\n</details>\n")
           PY

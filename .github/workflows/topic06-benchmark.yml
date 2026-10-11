@@ -45,7 +45,7 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> 完整 HTML、JSON、PNG 和单用例报告请下载本次运行的 \`topic06-benchmark-reports\` Artifact。" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Topic 06 report was not generated." >> "$GITHUB_STEP_SUMMARY"
+            echo "Topic 06 报告未生成。" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload Topic 06 reports

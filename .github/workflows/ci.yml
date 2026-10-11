@@ -127,11 +127,11 @@ jobs:
         run: |
           {
             echo "## Topic 04 PassManager"
-            echo "Result: $TOPIC04_OUTCOME"
+            echo "结果: $TOPIC04_OUTCOME"
             echo ""
-            echo "Coverage: pass registration, enable/disable switches, constant folding, functional pipelines, and optimizer regressions."
+            echo "覆盖范围: pass 注册、启用/停用开关、常量折叠、功能流水线与优化器回归。"
             echo ""
-            echo "JUnit XML and detailed test output are included in the test-reports artifact when tests run."
+            echo "测试运行时，JUnit XML 与详细测试输出包含在 test-reports artifact 中。"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run IR interpreter and LICM regressions
@@ -684,12 +684,12 @@ jobs:
             cat benchmark_reports/asm_beautifier_summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### LLVM vs ScratchV" >> $GITHUB_STEP_SUMMARY
+          echo "### LLVM 与 ScratchV 对比" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/llvm_vs_scratchv.md ]; then
             tail -20 benchmark_reports/llvm_vs_scratchv.md >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Topic 17 Register Allocation" >> $GITHUB_STEP_SUMMARY
+          echo "### Topic 17 寄存器分配" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/regalloc_bench.md ]; then
             cat benchmark_reports/regalloc_bench.md >> $GITHUB_STEP_SUMMARY
           fi

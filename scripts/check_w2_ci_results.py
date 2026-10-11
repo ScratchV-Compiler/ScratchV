@@ -11,7 +11,7 @@ REQUIRED_JOBS = ("llm-deploy", "full-qwen3-frontend")
 
 def validate_results(results):
     if not isinstance(results, dict):
-        raise ValueError("W2_JOB_RESULTS must contain a JSON object")
+        raise ValueError("W2_JOB_RESULTS 必须是 JSON 对象")
     failures = []
     for name in REQUIRED_JOBS:
         job = results.get(name)
@@ -19,18 +19,18 @@ def validate_results(results):
         if outcome != "success":
             failures.append(f"{name}: {outcome or 'missing result'}")
     if failures:
-        raise ValueError("Required W2 jobs did not succeed: " + "; ".join(failures))
+        raise ValueError("以下 W2 必过 job 未成功: " + "; ".join(failures))
 
 
 def main():
-    print("## W2 required acceptance\n")
+    print("## W2 必过验收\n")
     try:
         validate_results(json.loads(os.environ.get("W2_JOB_RESULTS", "{}")))
     except (ValueError, TypeError) as exc:
         print(f"FAIL: {exc}")
         return 1
-    print("PASS: small numerical/runtime gates and complete 28-layer frontend audit succeeded.")
-    print("\nThis does not certify second-person reproduction or full-model IR/QEMU inference.")
+    print("PASS: 小模型数值/运行时门槛与完整 28 层前端审计均成功。")
+    print("\n这不证明他人复现，也不证明完整模型 IR/QEMU 推理。")
     return 0
 
 
