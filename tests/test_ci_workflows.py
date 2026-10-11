@@ -63,6 +63,12 @@ def test_scopes_keep_required_frontend_coverage_and_no_dead_scope():
     assert bool(scopes['w4']) == (WORKFLOWS / 'w4-full-numeric.yml').exists()
 
 
+def test_the_test_job_writes_no_step_summary():
+    """The step outcome and the test-reports artifact already say all of it."""
+    steps = workflow('ci.yml')['jobs']['test']['steps']
+    assert not [step for step in steps if 'GITHUB_STEP_SUMMARY' in step.get('run', '')]
+
+
 def test_linux_reproduction_check_runs_without_a_path_filter():
     """A docs-only PR selects no scope, so this check cannot be scoped."""
     steps = workflow('ci.yml')['jobs']['test']['steps']

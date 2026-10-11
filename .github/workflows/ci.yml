@@ -131,7 +131,6 @@ jobs:
         run: $PY scripts/check_linux_repro_docs.py --check-bash
 
       - name: Run Topic 04 PassManager regressions
-        id: topic04_pass_manager
         env:
           PYTHONHASHSEED: "0"
         run: |
@@ -145,20 +144,6 @@ jobs:
             -v --tb=short \
             --junit-xml=benchmark_reports/topic04_pass_manager.xml \
             | tee benchmark_reports/topic04_pass_manager.txt
-
-      - name: Summarize Topic 04 PassManager results
-        if: always()
-        env:
-          TOPIC04_OUTCOME: ${{ steps.topic04_pass_manager.outcome }}
-        run: |
-          {
-            echo "## Topic 04 PassManager"
-            echo "Result: $TOPIC04_OUTCOME"
-            echo ""
-            echo "Coverage: pass registration, enable/disable switches, constant folding, functional pipelines, and optimizer regressions."
-            echo ""
-            echo "JUnit XML and detailed test output are included in the test-reports artifact when tests run."
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run IR interpreter and LICM regressions
         timeout-minutes: 5
