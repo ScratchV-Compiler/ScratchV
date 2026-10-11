@@ -22,8 +22,8 @@ MAX_REPORT_BYTES = 64 * 1024 * 1024
 MAX_SUMMARY_BYTES = 64 * 1024
 
 GATES = (
-    ("medium", "w3-medium-host", "6 层随机 Qwen3 / 宿主 IR"),
-    ("subgraphs", "w3_qwen3_subgraphs", "预训练 layer-0 子图 / 宿主 IR"),
+    ("medium", "w3-medium-host", "6 层随机 Qwen3 / host IR"),
+    ("subgraphs", "w3_qwen3_subgraphs", "预训练 layer-0 子图 / host IR"),
     ("attention", "unit:attention-backend", "小规模 Attention / RISC-V QEMU"),
     ("full-preflight", "preflight:w3-full-assets", "完整资产 / 仅静态检查"),
     ("layer-diff", "w3_layer_diff", "仅已保存的 medium 模型检查点"),
