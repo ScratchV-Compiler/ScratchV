@@ -23,7 +23,7 @@ def validate_results(results):
 
 
 def main():
-    print("## W2 验收\n")
+    print("## W2 测试项\n")
     try:
         validate_results(json.loads(os.environ.get("W2_JOB_RESULTS", "{}")))
     except (ValueError, TypeError) as exc:

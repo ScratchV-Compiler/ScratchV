@@ -105,11 +105,10 @@ def details(report, title):
 
 
 def render(kind, directory, outcome):
-    title = "W3 准备" if kind == "preparation" else "W3 完整 IR 数值"
     artifact = "w3-preparation-reports" if kind == "preparation" else "w3-full-numeric-reports"
     evidence = (f"产物: **{artifact}**（`report.json`、`report.md`、`report.html`）。"
                 "原始数组在保留时单独存放。本概要不能替代独立复现或团队验收。\n")
-    lines = [f"## {title}\n\n"]
+    lines = ["## W3 测试项\n\n"]
     if outcome in ("skipped", "", "cancelled"):
         label = "CANCELLED" if outcome == "cancelled" else "NOT RUN"
         lines.append(f"**{label}** — 探针步骤未完成，未声称数值验收通过。\n\n")
@@ -165,7 +164,7 @@ def render(kind, directory, outcome):
         lines.extend(folded)
     except (TypeError, KeyError, ValueError, AttributeError, RecursionError):
         # Unexpected report schemas must not make an apparently passing page.
-        return f"## {title}\n\n**INVALID REPORT** — 无法渲染数值证据；步骤: {cell(outcome)}。未声称验收通过。\n\n" + evidence
+        return f"## W3 测试项\n\n**INVALID REPORT** — 无法渲染数值证据；步骤: {cell(outcome)}。未声称验收通过。\n\n" + evidence
     lines.append(evidence)
     rendered = "".join(lines)
     if len(rendered.encode("utf-8")) > MAX_SUMMARY_BYTES:
