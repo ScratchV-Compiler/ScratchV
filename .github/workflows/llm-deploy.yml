@@ -38,6 +38,7 @@ on:
       - 'scripts/check_w1_repro_env.py'
       - 'scripts/run_w2_acceptance.py'
       - 'scripts/check_w2_ci_results.py'
+      - 'scripts/summarize_w2_ci.py'
       - 'scripts/summarize_w3_ci.py'
       - 'export_qwen3_onnx.py'
       - 'scratchv/**'
@@ -330,7 +331,7 @@ jobs:
             emit_report output/w2-runtime/report.md "$RUNTIME_OUTCOME"
             emit_report output/w2-runtime-model/report.md "$RUNTIME_MODEL_OUTCOME"
             echo "这些门槛不执行完整模型 IR/QEMU，也不执行文本生成。"
-          } >> "$GITHUB_STEP_SUMMARY"
+          }
 
       - name: Upload W2 unit evidence
         if: always()
@@ -371,7 +372,7 @@ jobs:
             else
               echo "未生成报告。无 QEMU 数值验收结论，请查看日志。"
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          }
 
       - name: Summarize Qwen3 small probe
         if: always()
@@ -392,7 +393,7 @@ jobs:
             else
               echo "未生成报告。无 IR 数值验收结论，请查看日志。"
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          }
 
       - name: Upload Qwen3 small probe artifacts
         if: always()
@@ -533,7 +534,7 @@ jobs:
               cat output/qwen3-parse/report.md
             fi
             echo "仅完整图与绑定审计；不声称完整 IR 或 QEMU 数值结果。"
-          } >> "$GITHUB_STEP_SUMMARY"
+          }
       - name: Upload complete Qwen3 frontend evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -551,10 +552,46 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # 每个 artifact 的存储根目录不同：多路径上传的以 output/ 为根，单目录
+      # 上传的以该目录自身为根，所以只能逐个下载到各自的 --report-dir 位置。
+      - name: Download W2 unit gate reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: w2-unit-gates-output
+          path: output
+      - name: Download RISC-V tensor reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: riscv-tensor-probe-output
+          path: output
+      - name: Download Qwen3 small reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: qwen3-small-probe-output
+          path: output/qwen3-small
+      - name: Download complete Qwen3 frontend report
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: qwen3-full-frontend-parse-output
+          path: output/qwen3-parse
+      - name: List downloaded W2 reports
+        if: always()
+        run: find output -name report.json -print 2>/dev/null | sort || true
+      - name: Summarize W2 operators, precision and timing
+        if: always()
+        run: python3 scripts/summarize_w2_ci.py --report-dir output
       - name: Require actual success from every W2 job
         env:
           W2_JOB_RESULTS: ${{ toJSON(needs) }}
-        run: python3 scripts/check_w2_ci_results.py >> "$GITHUB_STEP_SUMMARY"
+        run: python3 scripts/check_w2_ci_results.py
 
   # ── W3：opt-in 的完整数值门槛（原 w3-preparation / w3-full-numeric / w3-nightly） ──
   #

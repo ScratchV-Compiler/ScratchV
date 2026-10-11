@@ -1,4 +1,4 @@
-"""Execute the workflow summary shell against completed, skipped and absent evidence."""
+"""The per-job W2 report dumps go to the step log; only the acceptance job summarizes."""
 import os
 from pathlib import Path
 import shutil
@@ -40,7 +40,9 @@ def execute(tmp_path, name, directories, outcome, have_report):
     result = subprocess.run([bash, "-eu", "-c", shell_block(name)], cwd=tmp_path,
                             env=env, capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stderr
-    return summary.read_text(encoding="utf-8")
+    # The report body belongs in the log; the Actions page is written elsewhere.
+    assert not summary.exists()
+    return result.stdout
 
 
 @pytest.mark.parametrize("name,directories", SUMMARIES)
