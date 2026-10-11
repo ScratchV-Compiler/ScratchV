@@ -111,7 +111,7 @@ def render(kind, directory, outcome):
     lines = ["## W3 测试项\n\n"]
     if outcome in ("skipped", "", "cancelled"):
         label = "CANCELLED" if outcome == "cancelled" else "NOT RUN"
-        lines.append(f"**{label}** — 探针步骤未完成，未声称数值验收通过。\n\n")
+        lines.append(f"**{label}** — probe step did not complete；未声称数值验收通过。\n\n")
         lines.append("既有文件即使存在，也不作为本步骤的结果。\n")
         return "".join(lines) + evidence
     identity = "preparation:w3" if kind == "preparation" else "numeric:ir-full-qwen3"
@@ -127,7 +127,7 @@ def render(kind, directory, outcome):
     try:
         if kind == "preparation":
             lines.append("仅为准备；完整 28 层 IR 数值与完整模型 QEMU **在本 job 中不运行**。\n\n")
-            lines.append("| 检查 / 范围 | 结果 | 记录覆盖 | 流水线耗时 |\n| --- | --- | --- | --- |\n")
+            lines.append("| 检查 / 范围 | 结果 | Recorded coverage | 流水线耗时 |\n| --- | --- | --- | --- |\n")
             for name, identity, scope in GATES:
                 rows = [row for row in report.get("gates", []) if row.get("name") == name]
                 row = rows[0] if len(rows) == 1 else None
@@ -173,7 +173,7 @@ def render(kind, directory, outcome):
         # Retain the authoritative, already bounded status (including parent
         # validation failures) and replace the entire detail body atomically.
         return ("".join(lines[:2]) +
-                "数值详情超出 Actions 页面 64 KiB 的概要预算，此处省略。"
+                "数值详情超出 Actions 页面 64 KiB 的 summary budget，此处省略。"
                 "上方记录的门槛结果不变；完整指标与范围请查看产物。\n\n" + evidence)
     return rendered
 

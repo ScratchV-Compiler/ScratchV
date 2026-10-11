@@ -155,7 +155,7 @@ def test_large_metric_reasons_keep_status_and_whole_artifact_fallback(tmp_path, 
     text = render("full", tmp_path, outcome)
     assert f"**{label}**" in text
     assert len(text.encode("utf-8")) <= summarize_w3_ci.MAX_SUMMARY_BYTES
-    assert "概要预算" in text and "w3-full-numeric-reports" in text
+    assert "summary budget" in text and "w3-full-numeric-reports" in text
     assert "report.json" in text and "relative_l2_reason" not in text
     assert text.count("<details>") == text.count("</details>") == 0
 
@@ -168,7 +168,7 @@ def test_summary_budget_measures_utf8_bytes_not_character_count(tmp_path):
     comparison["relative_l2_reason"] = "数" * 15000
     save(tmp_path, report)
     text = render("full", tmp_path, "success")
-    assert "概要预算" in text and "**PASS**" in text
+    assert "summary budget" in text and "**PASS**" in text
     assert len(text.encode("utf-8")) <= summarize_w3_ci.MAX_SUMMARY_BYTES
 
 
