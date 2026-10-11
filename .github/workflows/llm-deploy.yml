@@ -85,9 +85,6 @@ jobs:
         id: docs
         run: python3 scripts/check_llm_deploy_docs.py --week W1
 
-      - name: "docs:linux-reproduction"
-        run: python3 scripts/check_linux_repro_docs.py --check-bash
-
       # ── probe:qemu-matmul ─────────────────────────────────────────────
       - name: "probe:qemu-matmul"
         id: matmul

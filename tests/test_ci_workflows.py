@@ -27,14 +27,12 @@ def test_only_ci_and_privileged_ai_review_automatically_handle_prs():
 
 def test_reusable_jobs_share_the_callers_run_and_same_commit():
     jobs = workflow('ci.yml')['jobs']
-    for name, filename in [('llm', 'llm-deploy.yml'), ('docs', 'linux-reproduction-docs.yml'),
-                           ('topic06', 'topic06-benchmark.yml')]:
+    for name, filename in [('llm', 'llm-deploy.yml'), ('topic06', 'topic06-benchmark.yml')]:
         assert jobs[name]['uses'] == './.github/workflows/' + filename
         assert 'workflow_call' in workflow(filename)['on']
         assert not ({'pull_request', 'push'} & set(workflow(filename)['on']))
-    for name in ('llm', 'docs'):
-        assert jobs[name]['needs'] == 'scope'
-        assert jobs[name]['if'] == f"github.event_name == 'pull_request' && needs.scope.outputs.{name} == 'true'"
+    assert jobs['llm']['needs'] == 'scope'
+    assert jobs['llm']['if'] == "github.event_name == 'pull_request' && needs.scope.outputs.llm == 'true'"
     assert workflow('llm-deploy.yml')['jobs']['full-qwen3-onnx']['if'] == "github.event_name != 'pull_request'"
     assert 'workflow_dispatch' in workflow('llm-deploy.yml')['on']
 
@@ -43,24 +41,35 @@ def test_scope_and_acceptance_are_fail_closed_and_keep_all_required_dependencies
     data = workflow('ci.yml')
     jobs = data['jobs']
     assert jobs['scope']['outputs'] == {name: '${{ steps.scope.outputs.' + name + ' }}'
-                                       for name in ('llm', 'docs', 'w4')}
+                                       for name in ('llm', 'w4')}
     checkout = jobs['scope']['steps'][0]
     assert checkout['with']['fetch-depth'] == '0'
     assert checkout['with']['persist-credentials'] == 'false'
     gate = jobs['acceptance']
     assert gate['if'] == 'always()'
-    assert set(gate['needs']) == {'scope', 'test', 'benchmark', 'topic06', 'docs', 'llm'} | ({'w4'} if 'w4' in jobs else set())
+    assert set(gate['needs']) == {'scope', 'test', 'benchmark', 'topic06', 'llm'} | ({'w4'} if 'w4' in jobs else set())
     assert gate['steps'][-1]['env']['CI_JOB_RESULTS'] == '${{ toJSON(needs) }}'
     assert gate['steps'][-1]['run'] == 'python3 scripts/summarize_ci.py >> "$GITHUB_STEP_SUMMARY"'
     assert data['concurrency']['cancel-in-progress'] == "${{ github.event_name == 'pull_request' }}"
     assert 'github.run_id' in data['concurrency']['group']
 
 
-def test_scopes_keep_required_frontend_and_docs_coverage():
+def test_scopes_keep_required_frontend_coverage_and_no_dead_scope():
     scopes = json.loads((ROOT / 'scripts/ci_scopes.json').read_text(encoding='utf-8'))
+    # Every configured scope must name a job in ci.yml, so a removed check
+    # cannot leave a selector behind that nothing consumes.
+    assert set(scopes) == {'llm', 'w4'}
     assert {'scratchv/**', 'probes/**', 'requirements/**'} <= set(scopes['llm'])
-    assert {'docs/**', 'README.md', 'CONTRIBUTING.md'} <= set(scopes['docs'])
     assert bool(scopes['w4']) == (WORKFLOWS / 'w4-full-numeric.yml').exists()
+
+
+def test_linux_reproduction_check_runs_without_a_path_filter():
+    """A docs-only PR selects no scope, so this check cannot be scoped."""
+    steps = workflow('ci.yml')['jobs']['test']['steps']
+    step = next(step for step in steps if step.get('name') == 'Check public instructions and Bash syntax')
+    assert step['run'] == '$PY scripts/check_linux_repro_docs.py --check-bash'
+    assert 'if' not in step
+    assert not (WORKFLOWS / 'linux-reproduction-docs.yml').exists()
 
 
 def test_long_compiler_and_topic_reports_are_folded_without_dropping_artifacts():

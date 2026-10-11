@@ -30,17 +30,5 @@
     "tests/test_numeric_summary.py",
     ".github/workflows/llm-deploy.yml"
   ],
-  "docs": [
-    "docs/**",
-    "probes/**/*.md",
-    "probes/**/*.txt",
-    "benchmarks/**/*.md",
-    "benchmarks/**/*.txt",
-    "README.md",
-    "CONTRIBUTING.md",
-    "scripts/check_linux_repro_docs.py",
-    "tests/test_linux_repro_docs.py",
-    ".github/workflows/linux-reproduction-docs.yml"
-  ],
   "w4": []
 }
