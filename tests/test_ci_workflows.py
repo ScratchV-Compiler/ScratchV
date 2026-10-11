@@ -69,6 +69,14 @@ def test_the_test_job_writes_no_step_summary():
     assert not [step for step in steps if 'GITHUB_STEP_SUMMARY' in step.get('run', '')]
 
 
+def test_the_w1_w2_job_writes_no_step_summary():
+    """Its gates report in the job log; only full-model validation adds a page."""
+    data = workflow('llm-deploy.yml')
+    writers = {name for name, job in data['jobs'].items()
+               for step in job.get('steps', []) if 'GITHUB_STEP_SUMMARY' in step.get('run', '')}
+    assert writers == {'full-qwen3-onnx'}
+
+
 def test_linux_reproduction_check_runs_without_a_path_filter():
     """A docs-only PR selects no scope, so this check cannot be scoped."""
     steps = workflow('ci.yml')['jobs']['test']['steps']

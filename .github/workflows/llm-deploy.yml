@@ -384,7 +384,7 @@ jobs:
             echo ""
             echo "Full-model ORT validation runs in the separate manual/nightly job."
             echo "Document checks do not certify team interface approval or second-person reproduction."
-          } >> "$GITHUB_STEP_SUMMARY"
+          }
 
   full-qwen3-onnx:
     name: "W1 / full Qwen3 ONNX release validation"
