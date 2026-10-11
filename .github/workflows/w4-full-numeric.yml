@@ -13,6 +13,7 @@ on:
       - probes/w3_qwen3_full/**
       - probes/w3_layer_diff/**
       - probes/w4_qwen3_full/**
+      - scripts/summarize_w4_ci.py
       - tests/test_w1_qwen3_export.py
       - tests/test_llm_inputs.py
       - tests/test_w2_runtime_metadata.py
@@ -97,6 +98,7 @@ jobs:
             uname -a
           } > output/w4-unit/tools.txt
       - name: Run ABI, streaming bundle, runner and actual QEMU tests
+        id: unit_tests
         run: |
           set -euo pipefail
           python -B -X utf8 -m pytest \
@@ -114,7 +116,7 @@ jobs:
             tests/test_w4_fma_conformance.py tests/test_w4_fma_cross_backend.py \
             tests/test_riscv_process_cleanup.py \
             tests/test_riscv_weight_transport.py \
-            tests/test_w4_workflows.py \
+            tests/test_w4_workflows.py tests/test_w4_ci_summary.py \
             -q -p no:cacheprovider --basetemp output/w4-unit/pytest \
             --junitxml output/w4-unit/tests.xml
           python - <<'PY'
@@ -133,6 +135,13 @@ jobs:
               if len(real) != 1 or any(real[0].find(tag) is not None for tag in ("skipped", "error", "failure")):
                   raise SystemExit(f"Real QEMU/Host C regression must execute and pass: {name}")
           PY
+      - name: Summarize unit and small QEMU evidence
+        if: always()
+        env:
+          UNIT_OUTCOME: ${{ steps.unit_tests.outcome }}
+        run: |
+          python -B -X utf8 scripts/summarize_w4_ci.py --kind unit \
+            --report-dir output/w4-unit --output output/w4-unit/summary.md
       - name: Upload regression evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -144,6 +153,7 @@ jobs:
             output/w4-unit/dependencies.txt
             output/w4-unit/tools.txt
             output/w4-unit/tests.xml
+            output/w4-unit/summary.md
             output/w4-unit/pytest/**/run.json
             output/w4-unit/pytest/**/*.stderr
             output/w4-unit/pytest/**/*.stdout
@@ -247,6 +257,7 @@ jobs:
               raise SystemExit("Insufficient available RAM/disk after installation and acquisition; see resource-preflight-after-assets.json")
           PY
       - name: Build external weights and compare one full RV64 forward
+        id: full_probe
         timeout-minutes: 200
         run: |
           set -euo pipefail
@@ -263,6 +274,7 @@ jobs:
           printf '%s\n' "$status" > output/w4-ci/runner-exit-code.txt
           exit "$status"
       - name: Require the complete forward and exact numerical gate
+        id: full_gate
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -333,11 +345,22 @@ jobs:
               raise SystemExit("Every full logits element must satisfy strict max_abs < 1e-3")
           PY
       - name: Recompute retained numeric evidence without rerunning QEMU
+        id: full_audit
         timeout-minutes: 5
         run: |
           set -euo pipefail
           python -B -X utf8 -m probes.w4_qwen3_full.audit \
             --report-dir "$W4_OUTPUT_DIR" --output-dir "${W4_OUTPUT_DIR}-audit"
+      - name: Summarize complete RV64 numerical evidence
+        if: always()
+        env:
+          PROBE_OUTCOME: ${{ steps.full_probe.outcome }}
+          GATE_OUTCOME: ${{ steps.full_gate.outcome }}
+          AUDIT_OUTCOME: ${{ steps.full_audit.outcome }}
+        run: |
+          python -B -X utf8 scripts/summarize_w4_ci.py --kind full \
+            --report-dir "${W4_OUTPUT_DIR:-output/w4-ci/not-started}" \
+            --output output/w4-ci/actions-summary.md
       - name: Record scope, retention and final resources
         if: always()
         run: |
@@ -360,12 +383,6 @@ jobs:
             "failure_scope": "Always-upload steps are best effort. Runner loss, job-level cancellation or hard timeout may prevent final report or artifact upload."
           }
           JSON
-          {
-            printf '## W4 complete RV64 forward\n\n'
-            printf 'Case: `%s`; commit: `%s`.\n\n' "$SELECTED_CASE" "$GITHUB_SHA"
-            printf 'Read report.json, exact FMA conformance and all build/smoke/numeric gates. An artifact or completed build alone is not PASS.\n\n'
-            printf 'No seven-case, team acceptance or remote nightly claim is implied.\n'
-          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload reports and failure diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -438,10 +455,16 @@ jobs:
                  "full_numeric_accepted": not pr and passed, "team_accepted": False,
                  "independent_reproduction": False, "seven_case_coverage": False}
           Path("output/w4-status/status.json").write_text(json.dumps(row, indent=2) + "\n")
+          labels = {"success": "PASS", "failure": "FAIL", "cancelled": "CANCELLED", "skipped": "NOT RUN (未运行)"}
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
               stream.write(f"## W4 CI {row['status']}\n\nCommit: `{row['commit']}`. {row['scope']}.\n\n"
-                           f"Unit: {unit}; full numeric and audit: {full}.\n\n"
-                           "This does not approve team acceptance or independent reproduction.\n")
+                           "| 检查 | 本次结果 |\n| --- | --- |\n"
+                           f"| 单测与真实小图 QEMU | {labels.get(unit, 'UNKNOWN')} |\n"
+                           f"| 完整 28 层 QEMU 与数组审计 | {labels.get(full, 'UNKNOWN')} |\n\n"
+                           "数值和耗时见已执行任务的验收摘要；未运行项目没有本次数值结果。\n\n"
+                           "<details><summary>验收范围</summary>\n\n"
+                           "PR 默认只执行单测与小图，完整前向通过手动工作流运行。"
+                           "This does not approve team acceptance or independent reproduction.\n\n</details>\n")
           if not passed:
               raise SystemExit("Required W4 jobs failed, were cancelled, or did not run")
           PY

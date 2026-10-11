@@ -47,6 +47,12 @@ W4 完整 QEMU 为严格 `max_abs < 1e-3`，均保持各自报告的输入范围
 完整 job 依次要求 build、实际工具 FMA、QEMU 完成、全 logits 数值和原始数组 audit，
 并检查报告与请求 case、提交和工具身份一致。失败、取消、跳过不能替代成功。
 
+Actions Summary 直接显示本次单测的通过/失败/错误/跳过数。完整任务实际执行时，
+另显示请求用例、MaxAbs、RMSE、全量比较及超限元素数、不含权重 ELF 大小和 QEMU
+墙钟；门禁、阶段耗时及错误摘要折叠展示。详细机器报告和原始数组仍从 Artifacts 下载。
+未执行的完整任务明确显示 `NOT RUN`，报告缺失显示 `MISSING`，不会引用历史运行的
+数值填补。本次摘要只读取产物，不改变数值计算、门槛或 Nightly 启用策略。
+
 `w4-nightly.yml` 通过仓库内 `uses` 调用同一提交的完整 workflow，默认仅运行
 `full_seed_0`。**所有 Nightly 入口均需仓库变量 `W4_NIGHTLY_ENABLED=true`**，否则不执行
 昂贵任务；直接手动运行 `w4-full-numeric.yml` 不受此变量限制。定时配置存在或本地测试
