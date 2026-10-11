@@ -1,8 +1,11 @@
 name: Topic 06 Compiler Benchmark
 
 on:
-  push:
-  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   topic06-benchmark:
@@ -41,8 +44,11 @@ jobs:
         if: always()
         run: |
           if [ -f benchmark_reports/topic06/report.md ]; then
+            echo "<details><summary>Topic 06 benchmark details</summary>" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
             cat benchmark_reports/topic06/report.md >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "</details>" >> "$GITHUB_STEP_SUMMARY"
             echo "> 完整 HTML、JSON、PNG 和单用例报告请下载本次运行的 \`topic06-benchmark-reports\` Artifact。" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Topic 06 report was not generated." >> "$GITHUB_STEP_SUMMARY"
