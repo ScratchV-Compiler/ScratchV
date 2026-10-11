@@ -24,7 +24,9 @@ if str(ROOT) not in sys.path:
 
 from probes.w2_runtime.run import MANIFEST, checkout_evidence, require_environment, sha256, verify_assets
 from probes.w2_qwen3_small.run import arrays_sha256, environment
+from probes.numeric_summary import compact_metric_table, compact_metric_table_html, METRIC_EXPLANATION
 from scratchv.runtime.llm_inputs import last_valid_logits, greedy_token, prepare_inputs
+from scratchv.verification.numeric_metrics import numeric_metrics
 
 SEQ, VOCAB, ATOL = 256, 151936, 1e-5
 LEVELS = ("none", "all")
@@ -79,7 +81,7 @@ def compare_logits(actual, expected, valid_length, *, vocab_size=VOCAB):
             maxima["valid_max_abs"] = max(maxima["valid_max_abs"], float(difference[:boundary].max()))
         if boundary < stop - start:
             maxima["padding_max_abs"] = max(maxima["padding_max_abs"], float(difference[boundary:].max()))
-    return {**maxima, "worst_index": worst, "elements": int(actual.size),
+    return {**maxima, **numeric_metrics(actual, expected), "worst_index": worst, "elements": int(actual.size),
             "passed": maxima["max_abs"] < ATOL, "atol": ATOL, "rtol": 0}
 
 
@@ -154,7 +156,8 @@ def check_onnx_contract(model):
 
 
 def source_evidence():
-    paths = [Path(__file__), ROOT / "probes/w2_runtime/run.py",
+    paths = [Path(__file__), ROOT / "probes/w2_runtime/run.py", ROOT / "probes/numeric_summary.py",
+             ROOT / "scratchv/verification/numeric_metrics.py",
              ROOT / "probes/w2_qwen3_small/model.py", ROOT / "probes/w2_qwen3_small/run.py",
              ROOT / "probes/w1_qwen3_export/manifest.json",
              ROOT / "scratchv/runtime/qwen3_tokenizer.py", ROOT / "scratchv/runtime/llm_inputs.py",
@@ -334,11 +337,33 @@ def save_reports(out, report):
     failures = []
 
     def views():
-        text = ("# W2 runtime/model integration\n\nResult: **" + ("PASS" if report["passed"] else "FAIL")
-                + "**\n\nOfficial two-layer Qwen3, random weights, full vocabulary; one forward and greedy token.\n"
-                + "Not pretrained inference or a generation loop. All positions use strict max_abs < 1e-5.\n\n```json\n"
-                + json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n```\n")
-        return {"report.md": text, "report.html": '<!doctype html><meta charset="utf-8"><pre>' + html.escape(text) + "</pre>"}
+        status = "PASS" if report["passed"] else "FAIL"
+        description = ("两层随机权重 Qwen3，FP32、L=256、完整词表；两个文本场景使用同一权重和输入分别运行 "
+                       "PyTorch、ORT、原生 NumPy IR，比较全部最终 logits（最大绝对误差 < 1e-5，rtol=0），"
+                       "并核对最后有效位置选择分数最高 token 的结果。不是预训练模型或多步生成。")
+        comparisons = []
+        for engine, label, reference in (("ort", "ORT 对 PyTorch", "vs_torch"),
+                                         ("ir-none", "IR 原生 NumPy（无优化）对 ORT", "vs_ort"),
+                                         ("ir-all", "IR 原生 NumPy（全部优化）对 ORT", "vs_ort")):
+            rows = [next((r.get(reference, {}) for r in case.get("executions", [])
+                          if r.get("engine") == engine), {}) for case in report.get("cases", [])]
+            rows += [{}] * max(0, len(CASES) - len(rows))
+            comparisons.append((label, rows))
+        note = "PPL / zero-shot：未评测；随机权重模型仅用于验证计算和接口，不评价语言能力。"
+        error = str(report.get("error", ""))
+        payload = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
+        text = (f"# W2 runtime/model integration\n\nResult: **{status}**\n\n{description}\n\n"
+                + compact_metric_table(comparisons) + f"\n\n{METRIC_EXPLANATION}\n\n{note}\n\n"
+                + (f"失败原因：{error}\n\n" if error else "")
+                + "<details><summary>文本、采样及完整诊断（展开详情）</summary>\n\n```json\n"
+                + payload + "\n```\n\n</details>\n\n")
+        page = ('<!doctype html><meta charset="utf-8"><h1>W2 runtime/model integration</h1>'
+                + f'<p>Result: <strong>{status}</strong></p><p>{html.escape(description)}</p>'
+                + compact_metric_table_html(comparisons) + f'<p>{html.escape(METRIC_EXPLANATION)}</p>'
+                + f'<p>{html.escape(note)}</p>' + (f'<p>失败原因：{html.escape(error)}</p>' if error else "")
+                + '<details><summary>文本、采样及完整诊断（展开详情）</summary><pre>'
+                + html.escape(payload) + '</pre></details>')
+        return {"report.md": text, "report.html": page}
 
     def failed():
         report["report_write_errors"] = failures
