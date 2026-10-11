@@ -105,8 +105,8 @@ def test_exercised_operators_are_marked_and_unmeasured_ones_are_not(tmp_path):
     backend = row_of(text, "| 汇编层")[2]
     assert "add" in backend and "matmul" in backend
     assert "softmax" not in backend
-    kernels = row_of(text, "| `scratchv/backend/kernels`")[2]
-    assert kernels == "无（W2 不执行）"
+    # W2 never executes the hand-written assembly kernels, so they get no row.
+    assert "scratchv/backend/kernels" not in text
 
 
 def test_backend_layer_is_not_marked_without_a_passing_qemu_run(tmp_path):

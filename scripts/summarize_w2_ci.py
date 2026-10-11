@@ -38,7 +38,6 @@ MAX_SUMMARY_BYTES = 64 * 1024
 
 FRONTEND_SOURCE = ROOT / "scratchv/frontend/onnx_parser.py"
 BACKEND_SOURCE = ROOT / "scratchv/backend/tensor_c_codegen.py"
-KERNEL_BODIES = ROOT / "scratchv/backend/kernels/bodies"
 
 # Probe directories under --report-dir, in the order the chain runs.
 DIRECTORIES = ("w2-backend-ops", "w2-runtime", "w2-runtime-model",
@@ -102,14 +101,6 @@ def backend_opcodes():
                      and child.value.id == "OpCode"}
             return sorted(attr.lower() for attr in found)
     return []
-
-
-def kernel_bodies():
-    """Hand-written RISC-V assembly kernels; W2 does not execute them."""
-    try:
-        return sorted(path.stem for path in KERNEL_BODIES.glob("*.py") if path.stem != "__init__")
-    except OSError:
-        return []
 
 
 def load_report(directory, name):
@@ -204,7 +195,6 @@ def operator_table(reports):
          measured(supported_frontend, exercised_frontend)),
         ("汇编层 (`tensor_c_codegen`)", listing(supported_backend),
          measured(supported_backend, exercised_backend)),
-        ("`scratchv/backend/kernels`（手写汇编 kernel）", listing(kernel_bodies()), "无（W2 不执行）"),
     ]
     lines = ["| 层 | 代码里支持的算子 | 本次实测过的 |\n", "| --- | --- | --- |\n"]
     lines.extend("| " + " | ".join(cell(value, 4000) for value in row) + " |\n" for row in rows)
