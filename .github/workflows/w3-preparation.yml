@@ -70,8 +70,14 @@ jobs:
           acquire_model(Path("output/assets/onnx"))
           PY
       - name: Five preparation checks (not full-model acceptance)
+        id: probe
         run: |
           python -B -X utf8 scripts/run_w3_preparation.py --source-dir output/assets/source --model-dir output/assets/onnx --output-dir output/w3-preparation --cc "$SCRATCHV_CC" --qemu qemu-system-riscv64
+      - name: Summarize W3 preparation evidence
+        if: always()
+        env:
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+        run: python -B -X utf8 scripts/summarize_w3_ci.py --kind preparation --report-dir output/w3-preparation
       - name: Retain bounded selected trace and failure evidence
         if: always()
         run: |

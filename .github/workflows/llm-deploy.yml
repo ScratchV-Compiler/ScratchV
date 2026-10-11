@@ -29,6 +29,7 @@ on:
       - 'scripts/check_w1_repro_env.py'
       - 'scripts/run_w2_acceptance.py'
       - 'scripts/check_w2_ci_results.py'
+      - 'scripts/summarize_w3_ci.py'
       - 'export_qwen3_onnx.py'
       - 'scratchv/**'
       - 'requirements/**'
@@ -46,7 +47,10 @@ on:
       - 'tests/test_qwen3_tokenizer.py'
       - 'tests/test_llm_inputs.py'
       - 'tests/test_w2_*.py'
+      - 'tests/test_w3_actions_summary.py'
+      - 'tests/test_w3_workflows.py'
       - '.github/workflows/llm-deploy.yml'
+      - '.github/workflows/w3-*.yml'
   schedule:
     # Nightly, off the hour: 19:23 UTC = 03:23 北京时间.
     - cron: '23 19 * * *'
@@ -521,3 +525,33 @@ jobs:
         env:
           W2_JOB_RESULTS: ${{ toJSON(needs) }}
         run: python3 scripts/check_w2_ci_results.py >> "$GITHUB_STEP_SUMMARY"
+
+  w3-execution-summary:
+    name: "W3 / execution scope"
+    needs: [w3-validation]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: State whether W3 actually ran
+        env:
+          W3_RESULT: ${{ needs.w3-validation.result }}
+        run: |
+          python3 - <<'PY'
+          import os
+          result = os.environ.get("W3_RESULT", "")
+          labels = {"success": "PASS", "failure": "FAIL", "cancelled": "CANCELLED", "skipped": "NOT RUN"}
+          label = labels.get(result, "UNCONFIRMED")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
+              stream.write("## W3 execution scope\n\n")
+              stream.write(f"**{label}** — W3 preparation and full 28-layer IR numeric.\n\n")
+              if result == "skipped":
+                  stream.write("W3 is opt-in and is not executed by default on pull requests. W1/W2 success is not W3 acceptance.\n\n")
+              elif result == "success":
+                  stream.write("See the W3 preparation and W3 complete IR numeric summaries in this run for numerical data.\n\n")
+              else:
+                  stream.write("No W3 acceptance claimed; inspect the called jobs and any partial evidence.\n\n")
+              stream.write("<details><summary>Scope and evidence</summary>\n\nManual LLM Deploy runs can enable `run_w3_validation`. "
+                           "Numerical reports are retained in `w3-preparation-reports` and `w3-full-numeric-reports` when generated. "
+                           "Full-model QEMU is a separate W4 gate; independent reproduction and team sign-off remain separate.\n\n</details>\n")
+          PY

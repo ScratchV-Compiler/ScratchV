@@ -192,6 +192,46 @@ def test_full_coverage_defaults_and_raw_evidence_retention():
         assert required in raw["path"]
 
 
+@pytest.mark.parametrize("name,probe_name,summary_name,kind", [
+    ("w3-preparation.yml", "Five preparation checks (not full-model acceptance)", "Summarize W3 preparation evidence", "preparation"),
+    ("w3-full-numeric.yml", "Compare complete IR and ORT outputs", "Summarize W3 full numerical evidence", "full"),
+])
+def test_actual_numeric_summary_steps_run_after_failure_and_keep_original_exit_codes(bash, tmp_path, name, probe_name, summary_name, kind):
+    probe = step(name, probe_name)
+    summary = step(name, summary_name)
+    assert probe["id"] == "probe"
+    assert summary["if"] == "always()"
+    assert summary["env"] == {"PROBE_OUTCOME": "${{ steps.probe.outcome }}"}
+    assert "continue-on-error" not in probe
+    wrapper = 'python() { printf "%s\\n" "$@" > "$ARG_LOG"; }\n'
+    capture = tmp_path / "arguments.txt"
+    result = run_script(bash, wrapper + summary["run"], tmp_path, ARG_LOG=capture.as_posix())
+    assert result.returncode == 0, result.stderr
+    args = capture.read_text().splitlines()
+    assert "scripts/summarize_w3_ci.py" in args and args[args.index("--kind") + 1] == kind
+
+
+@pytest.mark.parametrize("result,label", [("skipped", "NOT RUN"), ("success", "PASS"), ("failure", "FAIL"),
+                                         ("cancelled", "CANCELLED"), ("", "UNCONFIRMED")])
+def test_llm_page_reports_w3_skip_without_running_or_accepting_w3(bash, tmp_path, result, label):
+    job = workflow("llm-deploy.yml")["jobs"]["w3-execution-summary"]
+    assert job["if"] == "always()" and job["needs"] == ["w3-validation"]
+    assert not any("uses" in item for item in job["steps"])
+    command = job["steps"][0]["run"]
+    # Run the actual dependency-free Python body on hosts without python3 alias.
+    body = command.split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    import sys
+    destination = tmp_path / "summary.md"
+    env = dict(os.environ, W3_RESULT=result, GITHUB_STEP_SUMMARY=str(destination))
+    process = subprocess.run([sys.executable, "-X", "utf8", "-c", body], env=env,
+                             capture_output=True, text=True)
+    assert process.returncode == 0, process.stderr
+    text = destination.read_text(encoding="utf-8")
+    assert f"**{label}**" in text and "<details>" in text
+    assert ("W1/W2 success is not W3 acceptance" in text) is (result == "skipped")
+    assert len(text) < 1600
+
+
 @pytest.mark.parametrize("name", ["w3-preparation.yml", "w3-full-numeric.yml", "w3-nightly.yml"])
 def test_all_actual_bash_blocks_parse(bash, tmp_path, name):
     for job in workflow(name)["jobs"].values():

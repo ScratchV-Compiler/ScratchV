@@ -70,7 +70,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p output
-          python -B -X utf8 -m pytest tests/test_w3_full*.py tests/test_ir_interpreter*.py tests/test_onnx_initializers.py -q -p no:cacheprovider --basetemp output/pytest-w3-full --junitxml output/w3-full-tests.xml
+          python -B -X utf8 -m pytest tests/test_w3_full*.py tests/test_w3_actions_summary.py tests/test_w3_workflows.py tests/test_ir_interpreter*.py tests/test_onnx_initializers.py -q -p no:cacheprovider --basetemp output/pytest-w3-full --junitxml output/w3-full-tests.xml
       - name: Download fixed ONNX assets
         run: |
           python - <<'PY'
@@ -79,12 +79,18 @@ jobs:
           acquire_model(Path("output/assets/onnx"))
           PY
       - name: Compare complete IR and ORT outputs
+        id: probe
         run: |
           set -euo pipefail
           args=()
           SELECTED_CASE="${SELECTED_CASE:-all}"
           if [[ "$SELECTED_CASE" != "all" ]]; then args=(--case "$SELECTED_CASE"); fi
           python -B -X utf8 probes/w3_qwen3_full/run.py --model-dir output/assets/onnx --output-dir output/w3-full --worker-timeout 1800 --max-worker-memory-gib 8 --fp32-mode reference "${args[@]}"
+      - name: Summarize W3 full numerical evidence
+        if: always()
+        env:
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+        run: python -B -X utf8 scripts/summarize_w3_ci.py --kind full --report-dir output/w3-full
       - name: Record evidence retention scope
         if: always()
         run: |
