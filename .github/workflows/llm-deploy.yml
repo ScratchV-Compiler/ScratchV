@@ -47,6 +47,8 @@ on:
       - 'tests/test_qwen3_tokenizer.py'
       - 'tests/test_llm_inputs.py'
       - 'tests/test_w2_*.py'
+      - 'tests/test_numeric_metrics.py'
+      - 'tests/test_numeric_summary.py'
       - 'tests/test_w3_actions_summary.py'
       - 'tests/test_w3_workflows.py'
       - '.github/workflows/llm-deploy.yml'
@@ -146,7 +148,8 @@ jobs:
             tests/test_qwen3_full_audit.py tests/test_qwen3_full_parse.py \
             tests/test_llm_inputs.py tests/test_w2_backend_ops_gate.py \
             tests/test_w2_runtime_gate.py tests/test_w2_runtime_metadata.py \
-            tests/test_w2_runtime_reporting.py tests/test_w2_acceptance.py tests/test_w2_ci_results.py -q
+            tests/test_w2_runtime_reporting.py tests/test_w2_acceptance.py tests/test_w2_ci_results.py \
+            tests/test_numeric_metrics.py tests/test_numeric_summary.py tests/test_w2_actions_summary.py -q
 
       - name: Repeated Linux timeout cleanup regression
         timeout-minutes: 5
@@ -274,7 +277,7 @@ jobs:
           "$QWEN3_PY" -m pytest \
             tests/test_qwen3_small_probe.py \
             tests/test_qwen3_small_model.py \
-            tests/test_qwen3_small_gate.py -q \
+            tests/test_qwen3_small_gate.py tests/test_qwen3_small_reports.py -q \
             --junit-xml=output/qwen3-small/tests.xml
 
       - name: "numeric:qemu-qwen3-small"
@@ -302,9 +305,19 @@ jobs:
             echo "unit:backend-ops: $BACKEND_OUTCOME"
             echo "unit:runtime: $RUNTIME_OUTCOME"
             echo "integration:runtime-model: $RUNTIME_MODEL_OUTCOME"
-            for report in output/w2-backend-ops/report.md output/w2-runtime/report.md output/w2-runtime-model/report.md; do
-              if [ -f "$report" ]; then cat "$report"; fi
-            done
+            emit_report() {
+              report="$1"; outcome="$2"
+              if [ "$outcome" = "skipped" ] || [ -z "$outcome" ]; then
+                echo "Not run / 未运行: $report. No numerical acceptance result."
+              elif [ -f "$report" ]; then
+                cat "$report"
+              else
+                echo "Report unavailable / 未生成报告: $report (step: $outcome). No numerical acceptance result; inspect logs."
+              fi
+            }
+            emit_report output/w2-backend-ops/report.md "$BACKEND_OUTCOME"
+            emit_report output/w2-runtime/report.md "$RUNTIME_OUTCOME"
+            emit_report output/w2-runtime-model/report.md "$RUNTIME_MODEL_OUTCOME"
             echo "These gates do not execute full-model IR/QEMU or text generation."
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -340,8 +353,12 @@ jobs:
           {
             echo "## numeric:qemu-qwen3-small"
             echo "Outcome: $PROBE_OUTCOME"
-            if [ -f output/qwen3-riscv/report.md ]; then
+            if [ "$PROBE_OUTCOME" = "skipped" ] || [ -z "$PROBE_OUTCOME" ]; then
+              echo "Not run / 未运行. No QEMU numerical acceptance result."
+            elif [ -f output/qwen3-riscv/report.md ]; then
               cat output/qwen3-riscv/report.md
+            else
+              echo "Report unavailable / 未生成报告. No QEMU numerical acceptance result; inspect logs."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -357,10 +374,12 @@ jobs:
             echo "Probe: $PROBE_OUTCOME; regression tests: $TEST_OUTCOME"
             echo "Explicit artifact integration (requires 3 passed / 0 skipped): $ARTIFACT_TEST_OUTCOME"
             echo ""
-            if [ -f output/qwen3-small/report.md ]; then
+            if [ "$PROBE_OUTCOME" = "skipped" ] || [ -z "$PROBE_OUTCOME" ]; then
+              echo "Not run / 未运行. No IR numerical acceptance result."
+            elif [ -f output/qwen3-small/report.md ]; then
               cat output/qwen3-small/report.md
             else
-              echo "No report was produced; inspect the dependency/probe step logs."
+              echo "Report unavailable / 未生成报告. No IR numerical acceptance result; inspect logs."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
