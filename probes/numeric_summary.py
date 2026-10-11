@@ -79,9 +79,9 @@ def _table_rows(comparisons):
         if not rows:
             status = "未测（0 条比较）"
         elif passed == len(rows):
-            status = f"门槛通过（{passed}/{len(rows)}）"
+            status = f"通过（{passed}/{len(rows)}）"
         else:
-            status = f"门槛未通过（通过 {passed}/{len(rows)}，失败 {failed}，未确认 {unknown}）"
+            status = f"未通过（通过 {passed}/{len(rows)}，失败 {failed}，未确认 {unknown}）"
         if rows and any(item["missing"] or item["undefined"] for item in metrics):
             status += "；指标不完整"
         result.append([str(label), *(_metric_text(item, key) for item, key in zip(metrics, _METRICS)), status])
