@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from scripts.summarize_w3_ci import GATES, main, render
+from scripts import summarize_w3_ci
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -140,3 +141,48 @@ def test_cli_appends_to_github_summary_without_dependencies_or_mutation(tmp_path
                              cwd=tmp_path, env=os.environ.copy(), text=True, capture_output=True)
     assert process.returncode == 0, process.stderr
     assert "MISSING REPORT" in destination.read_text()
+
+
+@pytest.mark.parametrize("passed,outcome,label", [(True, "success", "PASS"),
+                                                (True, "failure", "FAIL (step did not succeed)"),
+                                                (False, "failure", "FAIL")])
+def test_large_metric_reasons_keep_status_and_whole_artifact_fallback(tmp_path, passed, outcome, label):
+    report = full_report(passed=passed, status="PASS" if passed else "FAIL")
+    comparison = report["cases"][0]["comparison"]["logits"][0]
+    comparison["relative_l2"] = None
+    comparison["relative_l2_reason"] = "reason:" + "x" * 1_100_000
+    save(tmp_path, report)
+    text = render("full", tmp_path, outcome)
+    assert f"**{label}**" in text
+    assert len(text.encode("utf-8")) <= summarize_w3_ci.MAX_SUMMARY_BYTES
+    assert "summary budget" in text and "w3-full-numeric-reports" in text
+    assert "report.json" in text and "relative_l2_reason" not in text
+    assert text.count("<details>") == text.count("</details>") == 0
+
+
+def test_summary_budget_measures_utf8_bytes_not_character_count(tmp_path):
+    report = full_report()
+    comparison = report["cases"][0]["comparison"]["logits"][0]
+    comparison["relative_l2"] = None
+    # Two rendered occurrences are under 64K characters but over 64 KiB.
+    comparison["relative_l2_reason"] = "数" * 15000
+    save(tmp_path, report)
+    text = render("full", tmp_path, "success")
+    assert "summary budget" in text and "**PASS**" in text
+    assert len(text.encode("utf-8")) <= summarize_w3_ci.MAX_SUMMARY_BYTES
+
+
+def test_deep_json_yields_invalid_report_instead_of_losing_summary(tmp_path):
+    payload = '{"gate":"numeric:ir-full-qwen3","cases":' + '[' * 2000 + '0' + ']' * 2000 + '}'
+    (tmp_path / "report.json").write_text(payload, encoding="utf-8")
+    text = render("full", tmp_path, "failure")
+    assert "INVALID REPORT" in text and "No acceptance claimed" in text
+    assert "w3-full-numeric-reports" in text
+
+
+def test_input_read_has_a_size_bound(tmp_path, monkeypatch):
+    save(tmp_path, full_report())
+    monkeypatch.setattr(summarize_w3_ci, "MAX_REPORT_BYTES", 100)
+    text = render("full", tmp_path, "success")
+    assert "INVALID REPORT (size limit)" in text and "No acceptance claimed" in text
+    assert "**PASS**" not in text and "w3-full-numeric-reports" in text
