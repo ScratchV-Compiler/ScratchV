@@ -19,11 +19,11 @@ def validate_results(results):
         if outcome != "success":
             failures.append(f"{name}: {outcome or 'missing result'}")
     if failures:
-        raise ValueError("以下 W2 必过 job 未成功: " + "; ".join(failures))
+        raise ValueError("以下 W2 验收 job 未成功: " + "; ".join(failures))
 
 
 def main():
-    print("## W2 必过验收\n")
+    print("## W2 验收\n")
     try:
         validate_results(json.loads(os.environ.get("W2_JOB_RESULTS", "{}")))
     except (ValueError, TypeError) as exc:

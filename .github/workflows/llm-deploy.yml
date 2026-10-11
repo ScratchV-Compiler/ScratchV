@@ -311,7 +311,7 @@ jobs:
           RUNTIME_MODEL_OUTCOME: ${{ steps.runtime_model.outcome }}
         run: |
           {
-            echo "## W2 前端、后端与宿主运行时"
+            echo "## W2 单元门槛"
             echo "unit:frontend-ops: $FRONTEND_OUTCOME"
             echo "unit:backend-ops: $BACKEND_OUTCOME"
             echo "unit:runtime: $RUNTIME_OUTCOME"
@@ -812,7 +812,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            printf '## W3 自动门槛\n\n'
+            printf '## W3 验收\n\n'
             printf '提交: `%s`\n\n' "$GITHUB_SHA"
             printf '| 门槛 | 结果 |\n| --- | --- |\n'
             printf '| 准备 (preparation) | %s |\n' "$PREPARATION_RESULT"
