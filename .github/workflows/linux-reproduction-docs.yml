@@ -1,18 +1,7 @@
 name: Linux reproduction docs
 
 on:
-  pull_request:
-    paths:
-      - 'docs/**'
-      - 'probes/**/*.md'
-      - 'probes/**/*.txt'
-      - 'benchmarks/**/*.md'
-      - 'benchmarks/**/*.txt'
-      - 'README.md'
-      - 'CONTRIBUTING.md'
-      - 'scripts/check_linux_repro_docs.py'
-      - 'tests/test_linux_repro_docs.py'
-      - '.github/workflows/linux-reproduction-docs.yml'
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -36,3 +25,13 @@ jobs:
           set -euo pipefail
           python -m pip install pytest==9.1.1
           python -m pytest tests/test_linux_repro_docs.py -q
+      - name: Summarize Linux documentation checks
+        if: always()
+        env:
+          DOCS_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Linux reproduction documentation"
+            echo "Result: $DOCS_STATUS. Public instructions, Bash syntax and rejection tests."
+            echo "No model execution or second-person reproduction is claimed."
+          } >> "$GITHUB_STEP_SUMMARY"

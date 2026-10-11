@@ -1,5 +1,7 @@
 # W2 Linux 独立复现与验收
 
+普通 PR 的 W2 验收现在归入统一 **CI** 运行页，关键数据仍由部署 job 写入同页 Summary；详见 [Actions 入口说明](../../CI.md)。下文历史运行链接保留原身份。
+
 正式交付、CI 和第二人复现统一使用 **Ubuntu 24.04 x86_64 / Bash / Python 3.12**。完整环境准备见 [Linux 复现约定](../LINUX_REPRODUCTION.md)。Linux 为宿主环境；QEMU 内的 RV64GC/LP64D 程序仍使用当前裸机 ABI。
 
 W2 的范围是完整前端解析、小模型 IR 数值、基础后端和 Host 单步接口。完整 28 层模型的 IR 数值前向属于 W3；完整模型 QEMU 与生成循环属于后续阶段。W1 的人工接口决议继续见 [W1 记录](../W1/README.md) 和 [Issue #92](https://github.com/ScratchV-Compiler/ScratchV/issues/92)。
