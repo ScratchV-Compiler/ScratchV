@@ -327,6 +327,7 @@ def test_corrupt_hash_cannot_reach_scratchv_parser(tmp_path, monkeypatch):
 ])
 def test_real_decoder_pipeline_and_failure_context(tmp_path, monkeypatch, fault, evidence_locked):
     """Exercise the stage wiring with real files, parser and audits, cheaply."""
+    from collections import Counter
     import onnx
     from scratchv.analysis import ir_verifier
     from probes.w2_qwen3_parse import audit, validation
@@ -420,3 +421,12 @@ def test_real_decoder_pipeline_and_failure_context(tmp_path, monkeypatch, fault,
         assert report["audit"]["return"]["shape"] == [1, 3, 9]
         for name, evidence in report["evidence"].items():
             assert evidence["sha256"] == gate.artifacts.sha256(out / name)
+    if fault in ("parse", "verifier"):
+        assert "frontend_parse" not in report
+    else:
+        # A later binding/evidence failure does not erase successful parsing.
+        # Count actual ONNX types, not the deliberately synthetic graph summary.
+        assert report["frontend_parse"] == {
+            "passed": True,
+            "operators": dict(Counter(node.op_type for node in model.graph.node)),
+        }

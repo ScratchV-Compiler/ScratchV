@@ -7,6 +7,7 @@ pretrained 0.6B model or a generation loop. The complete vocabulary is retained.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import copy
 from datetime import datetime, timezone
 import gc
@@ -171,7 +172,8 @@ def source_evidence():
 
 
 def run_probe(directory, out, report):
-    report.update(stage="environment", environment=environment(), tokenizer_environment=require_environment())
+    report.update(stage="environment", planned_cases=len(CASES), levels=list(LEVELS),
+                  environment=environment(), tokenizer_environment=require_environment())
     import onnx
     import onnxruntime as ort
     import torch
@@ -258,6 +260,7 @@ def run_probe(directory, out, report):
     check_onnx_contract(exported)
     report["onnx"] = {"sha256": sha256(out / "model.onnx"), "bytes": (out / "model.onnx").stat().st_size,
                       "nodes": len(exported.graph.node), "opset": 18,
+                      "operators": dict(sorted(Counter(node.op_type for node in exported.graph.node).items())),
                       "exporter": "torch.onnx.export(dynamo=True, optimize=False, fallback=False)",
                       "inputs": {"input_ids": "INT64[1,256]", "attention_mask": "FP32[1,1,256,256]"},
                       "output": "FP32[1,256,151936]", "output_bytes": SEQ * VOCAB * 4}
@@ -292,6 +295,7 @@ def run_probe(directory, out, report):
     parser = ONNXParser()
     program = parser.parse(str(out / "model.onnx"))
     require_valid(program)
+    report["frontend_parse"] = {"passed": True, "operators": dict(report["onnx"]["operators"])}
     report["parse_seconds"] = time.perf_counter() - started
     report["ir_optimization_seconds"] = {}
     for level in LEVELS:

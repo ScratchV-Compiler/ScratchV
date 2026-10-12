@@ -199,6 +199,7 @@ def run_probe(out: Path, report: dict, model_seed: int = 0) -> None:
         name: tensor.detach().cpu().numpy() for name, tensor in wrapper.model.state_dict().items()})
     (out / "config.json").write_text(wrapper.model.config.to_json_string(use_diff=False), encoding="utf-8")
     cases = input_cases()
+    report["planned_cases"] = len(cases)
 
     def reference(feed):
         args = [torch.from_numpy(feed[name]) for name in ("input_ids", "attention_mask")]
@@ -240,12 +241,18 @@ def run_probe(out: Path, report: dict, model_seed: int = 0) -> None:
                                              providers=["CPUExecutionProvider"])
     report["stage"] = "parse"
     parsers, programs = {}, {}
+    parsed_operators, parsed_graphs = Counter(), []
     for kind, filename in [("normal", "model.onnx"), ("diagnostic", "diagnostics.onnx")]:
         parsers[kind] = ONNXParser()
         programs[kind] = parsers[kind].parse(str(out / filename))
         valid, errors = verify_ir(programs[kind])
         if not valid:
             raise ValueError(f"{kind} IR verification failed: {errors}")
+        graph = ordinary if kind == "normal" else diagnostic
+        parsed_operators.update(node.op_type for node in graph.graph.node)
+        parsed_graphs.append(kind)
+        report["frontend_parse"] = {"passed": True, "operators": dict(sorted(parsed_operators.items())),
+                                    "graphs": list(parsed_graphs)}
     report["stage"] = "numeric"
     report["cases"] = []
     cached_logits = {}
