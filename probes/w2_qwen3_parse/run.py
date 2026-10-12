@@ -140,6 +140,10 @@ def run_validation(model_dir, out, report, *, mode="verify", manifest=None, prog
                              "issues": [str(issue) for issue in issues]}
     if not verified:
         raise ValueError("ScratchV IR verifier rejected the complete model; see ir_verifier.issues")
+    report["frontend_parse"] = {
+        "passed": True,
+        "operators": dict(sorted(Counter(node.op_type for node in model.graph.node).items())),
+    }
     try:
         audit = stage("ir-and-bindings", lambda: audit_parsed_model(model, parser, program, model_dir))
     except Exception:

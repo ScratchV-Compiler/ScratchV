@@ -51,6 +51,21 @@ def test_failures_are_not_hidden_by_passing_rows():
     assert "未记录 1/3" in result
 
 
+@pytest.mark.parametrize("render", [compact_metric_table, compact_metric_table_html])
+def test_missing_comparisons_keep_the_count_and_failure_reason(render):
+    result = render([("partial", [record(), {"missing_reason": "编译失败"}])])
+    assert "未完成（通过 1/2，未得到结果 1：编译失败 ×1）" in result
+    assert "已记录 1/2" in result
+    assert "未记录 1/2" in result
+    assert "通过（1/1）" not in result
+
+
+def test_numerical_failures_remain_distinct_from_missing_comparisons():
+    failed = dict(record(), passed=False)
+    result = compact_metric_table([("mixed", [record(), failed, {"missing_reason": "编译失败"}])])
+    assert "通过 1/3，数值比较失败 1，未得到结果 1" in result
+
+
 def test_undefined_values_show_reason_and_coverage_not_zero():
     undefined = dict(passed=True, max_abs=0.0, relative_l2=None, cosine_similarity=None,
                      relative_l2_reason="zero reference norm", cosine_similarity_reason="zero norm")

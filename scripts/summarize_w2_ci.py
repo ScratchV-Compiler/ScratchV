@@ -154,12 +154,28 @@ def _onnx_operators(report, name):
     return set(_mapping(inner.get("operators")))
 
 
+def parsed_operators(record):
+    """New reports record successful parsing separately from later execution."""
+    evidence = _mapping(record.get("frontend_parse"))
+    if evidence.get("passed") is True:
+        return {str(op).lower() for op in _mapping(evidence.get("operators"))}
+    return set()
+
+
 def exercised_operators(reports):
     """``(frontend_op_types, backend_opcodes)`` actually exercised in this run."""
     onnx_seen = set()
-    for name in (QWEN3_SMALL, QWEN3_PARSE):
-        if reports.get(name) is not None:
-            onnx_seen |= _onnx_operators(reports[name], name)
+    for name in (QWEN3_SMALL, QWEN3_PARSE, RUNTIME_MODEL):
+        report = _mapping(reports.get(name))
+        if "frontend_parse" in report:
+            onnx_seen |= parsed_operators(report)
+        # Compatibility with reports written before the explicit parse record.
+        # An exported graph's operator list alone does not prove parsing passed.
+        elif name == QWEN3_SMALL and report.get("stage") in ("numeric", "complete"):
+            onnx_seen |= _onnx_operators(report, name)
+        elif (name == QWEN3_PARSE and isinstance(report.get("ir"), dict)
+              and _mapping(report.get("ir_verifier")).get("passed") is True):
+            onnx_seen |= _onnx_operators(report, name)
 
     opcodes = set()
     # The two-layer model is the only graph the RISC-V QEMU probe compiles, so
@@ -171,7 +187,13 @@ def exercised_operators(reports):
             opcodes |= {opcode_name(op) for op in _onnx_operators(reports[QWEN3_SMALL], QWEN3_SMALL)}
     # The operator probe records only its families; a passing execution proves them.
     for case in _cases(reports.get(BACKEND_OPS)):
-        family = str(case.get("name", "")).split("_", 1)[0]
+        family = case.get("family") or str(case.get("name", "")).split("_", 1)[0]
+        if "frontend_parse" in case:
+            onnx_seen |= parsed_operators(case)
+        elif isinstance(case.get("ort_vs_numpy"), dict) or case.get("model_sha256"):
+            # Legacy fixed probe graphs: these fields are written only after
+            # reference_case returned from parse + IR verification.
+            onnx_seen |= {op.replace("_", "") for op in FAMILY_OPS.get(family, ())}
         if any(row.get("passed") is True for row in _rows(case, "executions")):
             opcodes |= set(FAMILY_OPS.get(family, ()))
     return {str(op).lower() for op in onnx_seen}, opcodes & set(backend_opcodes())
@@ -188,7 +210,7 @@ def operator_table(reports):
         if not names:
             return "无"
         hit = [name for name in names if name.lower() in exercised]
-        return listing(hit) if hit else "无（本次未执行）"
+        return listing(hit) if hit else "无（没有通过记录）"
 
     rows = [
         ("IR 层 (`ONNXParser._handle_*`)", listing(supported_frontend),
@@ -215,40 +237,85 @@ def precision_legend():
     ]
 
 
+def missing_comparison(record=None):
+    record = _mapping(record)
+    stage = record.get("stage") or record.get("error_stage")
+    reason = {"reference": "参考结果未完成", "ir": "IR 计算未完成",
+              "compile": "编译失败" if record.get("error") else "编译未完成",
+              "qemu": "QEMU 运行未完成"}.get(stage, "未执行或未记录比较结果")
+    return {"missing_reason": reason}
+
+
+def comparison(record, key):
+    result = record.get(key)
+    return result if isinstance(result, dict) and result else missing_comparison(record)
+
+
+def fill_missing(rows, planned):
+    # Reports are external input. Bound the count as well as the file size.
+    if type(planned) is not int or not 0 <= planned <= 4096:
+        raise ValueError("Invalid planned comparison count")
+    return rows + [missing_comparison() for _ in range(max(0, planned - len(rows)))]
+
+
+def planned_cases(report, legacy_count):
+    return fill_missing(_cases(report), report.get("planned_cases", legacy_count))
+
+
+def planned_executions(report):
+    executions = []
+    levels = report.get("levels", ("none", "all"))
+    for case in _cases(report):
+        rows = _rows(case, "executions")
+        executions.extend(rows)
+        present = {row.get("optimization") for row in rows}
+        executions.extend({"optimization": level, "stage": case.get("stage"),
+                           "error": case.get("error")}
+                          for level in levels if level not in present)
+    return fill_missing(executions, report.get("planned_executions", len(executions)))
+
+
 def precision_comparisons(reports):
     comparisons = []
 
     def add(label, records):
-        comparisons.append((label, [row for row in records if isinstance(row, dict)]))
+        comparisons.append((label, [row if isinstance(row, dict)
+                                    else missing_comparison() for row in records]))
 
     backend = reports.get(BACKEND_OPS)
     if backend is not None:
-        executions = [row for case in _cases(backend) for row in _rows(case, "executions")]
+        executions = planned_executions(backend)
         for key, label in (("ir_vs_ort", "IR vs ORT"), ("ir_vs_numpy", "IR vs NumPy"),
                            ("qemu_vs_ort", "QEMU vs ORT"), ("qemu_vs_numpy", "QEMU vs NumPy")):
-            add(f"w2-backend-ops / {label}", [row.get(key) for row in executions])
+            add(f"w2-backend-ops / {label}", [comparison(row, key) for row in executions])
 
     if reports.get(QWEN3_SMALL) is not None:
-        # The host IR comparison wraps one tensor_diff per checkpoint; report
-        # the final output, which is what the probe's own gate compares.
-        records = []
-        for case in _cases(reports[QWEN3_SMALL]):
-            checkpoints = _rows(_mapping(case.get("ir_vs_ort")), "checkpoints")
-            final = [row for row in checkpoints if row.get("name") == "logits"]
-            if final:
-                records.extend(final)
-            elif isinstance(case.get("ordinary_logits"), dict):
-                records.append(case["ordinary_logits"].get("ir_vs_ort"))
-        add("qwen3-small host IR / IR vs ORT（最终 logits）", records)
+        # Do not substitute the diagnostic graph when ordinary execution fails.
+        records = [comparison(_mapping(case.get("ordinary_logits")), "ir_vs_ort")
+                   for case in planned_cases(reports[QWEN3_SMALL], 7)]
+        add("两层模型：IR 解释器与 ORT（最终输出）", records)
 
     if reports.get(QWEN3_RISCV) is not None:
-        add("qwen3-small RV64 QEMU / QEMU vs ORT",
-            [row for case in _cases(reports[QWEN3_RISCV]) for row in _rows(case, "qemu")])
+        report = reports[QWEN3_RISCV]
+        # Keep both normal and diagnostic results, as requested. Only account
+        # for missing executions; do not change the scope of this comparison.
+        rows = [row for case in _cases(report) for row in _rows(case, "qemu")]
+        planned = _mapping(report.get("timing")).get("planned_count", len(rows))
+        add("qwen3-small RV64 QEMU / QEMU vs ORT", fill_missing(rows, planned))
 
     if reports.get(RUNTIME_MODEL) is not None:
-        executions = [row for case in _cases(reports[RUNTIME_MODEL]) for row in _rows(case, "executions")]
-        add("w2-runtime-model / vs torch", [row.get("vs_torch") for row in executions])
-        add("w2-runtime-model / vs ORT", [row.get("vs_ort") for row in executions])
+        report = reports[RUNTIME_MODEL]
+        engines = ["ort", *(f"ir-{level}" for level in report.get("levels", ("none", "all")))]
+        executions = []
+        for case in planned_cases(report, 2):
+            rows = _rows(case, "executions")
+            executions.extend(rows)
+            present = {row.get("engine") for row in rows}
+            executions.extend({"engine": engine} for engine in engines if engine not in present)
+        add("w2-runtime-model / vs torch", [comparison(row, "vs_torch") for row in executions])
+        # ORT is the reference here; there is deliberately no ORT-vs-itself test.
+        add("w2-runtime-model / vs ORT", [comparison(row, "vs_ort") for row in executions
+                                         if row.get("engine") != "ort"])
 
     # These two chains publish structural evidence only; say so instead of omitting them.
     add("w2-runtime（文本层，无数值比较）", [])
@@ -318,7 +385,9 @@ def render(directory):
                 "请检查各 W2 job 的日志与产物。\n")
 
     lines = ["## W2 测试项\n\n", "### 算子支持\n\n", *operators,
-             "\n### 精度\n\n", *precision_legend(), precision, "\n\n", METRIC_EXPLANATION, "\n\n",
+             "\n### 精度\n\n", *precision_legend(), precision,
+             "\n\nIR 最终输出一行使用只输出最终结果的模型，不用额外输出中间值的版本代替。\n\n",
+             METRIC_EXPLANATION, "\n\n",
              "### 耗时\n\n", *timing]
     rendered = "".join(lines)
     if len(rendered.encode("utf-8")) > MAX_SUMMARY_BYTES:

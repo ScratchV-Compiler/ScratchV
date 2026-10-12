@@ -193,6 +193,23 @@ def test_main_fails_with_original_stage_when_dependencies_are_unavailable(tmp_pa
     assert "probes/w2_runtime_model/run.py" in report["source_sha256"]
 
 
+def test_run_probe_records_planned_cases_before_tokenizer_failure(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    monkeypatch.setattr(run, "environment", lambda: {})
+    monkeypatch.setattr(run, "require_environment", lambda: {})
+
+    def missing_assets(*args):
+        raise ValueError("injected tokenizer asset failure")
+    monkeypatch.setattr(run, "verify_assets", missing_assets)
+    report = {"passed": False}
+    with pytest.raises(ValueError, match="injected tokenizer asset failure"):
+        run.run_probe(tmp_path, tmp_path, report)
+    assert report["planned_cases"] == len(run.CASES) == 2
+    assert report["levels"] == list(run.LEVELS) == ["none", "all"]
+    assert "cases" not in report and "frontend_parse" not in report
+
+
 def test_no_git_source_archive_does_not_block_probe_dispatch(tmp_path, monkeypatch):
     from probes.w2_runtime import run as runtime
     # ROOT has no .git entry. Even if this directory lives under another Git
