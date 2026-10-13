@@ -16,7 +16,7 @@ from scratchv.backend.tensor_c_codegen import TensorCCodegen
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import Value
 from scratchv.runtime.riscv_external import build_external, run_external
-from scratchv.runtime.riscv_tensor import discover_toolchain
+from scratchv.runtime.riscv_tensor import RiscVToolchain, discover_toolchain
 from scratchv.runtime.weight_bundle import write_weight_bundle
 from scratchv.runtime import riscv_external as runtime
 
@@ -31,6 +31,41 @@ def artifact():
     weights = np.arange(16, dtype=np.float32).reshape(4, 4) / 16
     return TensorCCodegen(builder.program, initializers={"w": weights},
                          constant_storage="external").generate(), weights
+
+
+@pytest.mark.parametrize("project_cache,standard_cache,selected", [
+    (None, None, None),
+    (None, "standard cache", "standard cache"),
+    ("project cache", None, "project cache"),
+    ("project cache", "standard cache", "project cache"),
+], ids=["default", "standard", "project", "project-overrides-standard"])
+def test_external_build_respects_zig_cache_environment(
+        tmp_path, monkeypatch, project_cache, standard_cache, selected):
+    monkeypatch.chdir(tmp_path)
+    for key, value in (("SCRATCHV_ZIG_CACHE", project_cache),
+                       ("ZIG_GLOBAL_CACHE_DIR", standard_cache)):
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+    model, _ = artifact()
+    write_weight_bundle(model.external_weights, model.external_initializers, tmp_path / "weights")
+    received = []
+
+    def compiler(command, *, cwd, timeout, env):
+        received.append(env)
+        # Inspect the actual subprocess environment without compiling a model.
+        return subprocess.CompletedProcess(command, 1, b"", b"controlled compile stop")
+
+    monkeypatch.setattr(runtime, "_run_process", compiler)
+    with pytest.raises(RuntimeError, match="controlled compile stop"):
+        build_external(model, tmp_path / "weights", tmp_path / "build",
+                       RiscVToolchain(("zig", "cc"), "unused-qemu"))
+    expected = (tmp_path / selected if selected else
+                Path(runtime.__file__).resolve().parents[2] / "output" / ".riscv-zig-cache")
+    assert len(received) == 1
+    assert received[0]["ZIG_GLOBAL_CACHE_DIR"] == str(expected.resolve())
+    assert received[0]["ZIG_LOCAL_CACHE_DIR"] == str(tmp_path / "build" / ".zig-cache")
 
 
 @pytest.mark.skipif(not os.environ.get("SCRATCHV_QEMU"), reason="requires explicit SCRATCHV_QEMU/CC")

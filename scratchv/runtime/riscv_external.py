@@ -194,8 +194,10 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0)
     temporary.mkdir()
     env.update(TMP=str(temporary), TEMP=str(temporary), TMPDIR=str(temporary))
     if toolchain.is_zig:
-        env["ZIG_GLOBAL_CACHE_DIR"] = str(Path(os.environ.get("SCRATCHV_ZIG_CACHE",
-            Path(__file__).resolve().parents[2] / "output/.riscv-zig-cache")).resolve())
+        shared_cache = Path(__file__).resolve().parents[2] / "output" / ".riscv-zig-cache"
+        env["ZIG_GLOBAL_CACHE_DIR"] = str(
+            Path(os.environ.get("SCRATCHV_ZIG_CACHE", os.environ.get("ZIG_GLOBAL_CACHE_DIR", shared_cache))).resolve()
+        )
         env["ZIG_LOCAL_CACHE_DIR"] = str(build_dir / ".zig-cache")
     start = time.perf_counter()
     try:
