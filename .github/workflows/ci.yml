@@ -44,6 +44,14 @@ jobs:
     name: Topic 06 benchmark
     uses: ./.github/workflows/topic06-benchmark.yml
 
+  w4:
+    name: W4 small QEMU checks
+    needs: scope
+    if: github.event_name == 'pull_request' && needs.scope.outputs.w4 == 'true'
+    uses: ./.github/workflows/w4-full-numeric.yml
+    with:
+      run_full: false
+
   # ═════════════════════════════════════════════════════════════════════════
   # 课题功能测试：所有14个模块的单元测试 + 集成测试
   # ═════════════════════════════════════════════════════════════════════════
@@ -125,6 +133,16 @@ jobs:
           $PY -m pip install -e ".[all]"
           $PY -m pip install "pytest>=7,<10" "PyYAML==6.0.3"
 
+      - name: Install pinned CPU dependencies for Qwen and W3 tests
+        run: |
+          set -euo pipefail
+          # The full test suite collects W3 subgraph and workflow tests.
+          # Install their actual dependencies instead of skipping those tests.
+          $PY -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
+          $PY -m pip install -r requirements/qwen3-small-probe.txt "PyYAML==6.0.3"
+          $PY -m pip check
+          $PY -c "import torch, yaml, safetensors; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
+
       # Unconditional: a docs-only change never selects the deployment scope, so
       # this check cannot live behind a path filter.
       - name: Check public instructions and Bash syntax
@@ -192,6 +210,9 @@ jobs:
         env:
           PYTHONHASHSEED: "0"
           SCRATCHV_REQUIRE_RISCV_EXECUTION: "1"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          MKL_NUM_THREADS: "1"
         run: |
           mkdir -p benchmark_reports
           $PY -m pytest tests/ -v --tb=short \
@@ -740,7 +761,7 @@ jobs:
   acceptance:
     name: CI acceptance
     if: always()
-    needs: [scope, test, benchmark, topic06, llm]
+    needs: [scope, test, benchmark, topic06, llm, w4]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

@@ -1,0 +1,351 @@
+{
+  "completed_at": "2026-10-09T11:19:40.699363+08:00",
+  "scope": "Fixed-commit Linux validation; W4 one complete full_seed_0 case and W3 seven complete reference-mode cases. No team acceptance or remote Nightly claim.",
+  "branch": "codex/w4-full-runtime",
+  "current_commit": "cf0f7d3e1287d4383bb2bd4356d9ae94a8320d75",
+  "environment": {
+    "os": "Ubuntu 24.04.4 LTS",
+    "cpu": "AMD Ryzen 5 7500F 6-Core Processor",
+    "runtime": {
+      "python": "3.12.3",
+      "executable": ".venv-w4/bin/python",
+      "platform": "Linux-7.0.0-28-generic-x86_64-with-glibc2.39",
+      "versions": {
+        "numpy": "2.2.6",
+        "onnx": "1.18.0",
+        "onnxruntime": "1.22.1",
+        "torch": "2.7.1+cpu",
+        "transformers": "4.51.3",
+        "safetensors": "0.5.3"
+      },
+      "numeric_runtime": {
+        "machine": "x86_64",
+        "processor": "x86_64",
+        "thread_environment": {
+          "OMP_NUM_THREADS": "1",
+          "OPENBLAS_NUM_THREADS": "1",
+          "MKL_NUM_THREADS": "1"
+        },
+        "blas_environment": {
+          "OPENBLAS_CORETYPE": null
+        },
+        "numpy_openblas": {
+          "status": "available",
+          "libraries": [
+            {
+              "path": ".venv-w4/lib/python3.12/site-packages/numpy.libs/libscipy_openblas64_-56d6093b.so",
+              "status": "available",
+              "core_name": "SkylakeX",
+              "config": "OpenBLAS 0.3.29  USE64BITINT DYNAMIC_ARCH NO_AFFINITY SkylakeX MAX_THREADS=64"
+            }
+          ]
+        },
+        "numpy_build_summary": {
+          "blas": "scipy-openblas",
+          "lapack": "scipy-openblas",
+          "openblas_version": "0.3.29",
+          "integer_interface": "64-bit",
+          "build_configuration": "DYNAMIC_ARCH NO_AFFINITY Haswell MAX_THREADS=64",
+          "c_compiler": "gcc 10.2.1",
+          "cxx_compiler": "gcc 10.2.1",
+          "cython": "3.1.0"
+        },
+        "numpy_runtime_summary": {
+          "threadpoolctl_available": false,
+          "simd_extensions": {
+            "baseline": [
+              "SSE",
+              "SSE2",
+              "SSE3"
+            ],
+            "found": [
+              "SSSE3",
+              "SSE41",
+              "POPCNT",
+              "SSE42",
+              "AVX",
+              "F16C",
+              "FMA3",
+              "AVX2",
+              "AVX512F",
+              "AVX512CD",
+              "AVX512_SKX",
+              "AVX512_CLX",
+              "AVX512_CNL",
+              "AVX512_ICL"
+            ],
+            "not_found": [
+              "AVX512_KNL",
+              "AVX512_KNM"
+            ]
+          }
+        }
+      }
+    },
+    "execution_tools": {
+      "compiler": "0.14.1",
+      "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+      "target": "riscv64 / RV64GC / LP64D / QEMU virt / bare metal",
+      "math_library": "Zig-bundled musl"
+    },
+    "execution_tool_binary_sha256": {
+      "cc": "9df4f1d2eaa7c6ee7649d0e13853ad40deed5d94e643e9ff2a2bab52ffd9feee",
+      "qemu": "49b77f94862a9ae0e6e31d031a31cce9a668d647b5e827d706bf1e9951e96710"
+    }
+  },
+  "model_files": [
+    {
+      "name": "model.onnx",
+      "bytes": 25053577,
+      "sha256": "0b2e02436055e02612764851384e158467b3f8f544a1c51f52276afc0d229eea"
+    },
+    {
+      "name": "weights-00001.data",
+      "bytes": 1069704192,
+      "sha256": "7b224f4a23a7358463efadd5463998692cf9b861c185d7adcf8f849cf2a5c816"
+    },
+    {
+      "name": "weights-00002.data",
+      "bytes": 692165632,
+      "sha256": "67d403833bac37c7b333c012b62ab05fc634af7fabe8afe0ee19fe0832004176"
+    },
+    {
+      "name": "weights-00003.data",
+      "bytes": 622331904,
+      "sha256": "3cd1b7be0661489fbd0cc65701fdc8be2d79630f09295c2fd30f065cfd0070bf"
+    }
+  ],
+  "linux_fixes": [
+    {
+      "commit": "01aff1df755f6c049c5086cd8434ddf670a59f2a",
+      "problem": "QEMU may disconnect before acknowledging quit; still require complete output, normal exit and cleanup.",
+      "original_failure": {
+        "path": "output/w4-linux-20261009/fma-preflight/report.json",
+        "sha256": "3593a35c79608f6e2a8dc22f62a10a9cdc39fc37651b84343a309a69469d22b3"
+      }
+    },
+    {
+      "commit": "cf0f7d3e1287d4383bb2bd4356d9ae94a8320d75",
+      "problem": "Resolving the virtualenv Python symlink launched system Python; preserve the selected interpreter path.",
+      "original_failure": {
+        "path": "output/w4-linux-20261009/w3-full/report.json",
+        "sha256": "48d42b73ce7bc6a673e1d01bf84e1e8d283fd58bab7b973f215e2abdc3758fca"
+      }
+    }
+  ],
+  "regressions": {
+    "w4": {
+      "path": "output/w4-linux-20261009/unit-qmp-fixed/tests.xml",
+      "sha256": "61d0816cb08e9ae144325d8be2054dda2ace8f009e64dcc7c99a796c122708b9",
+      "passed": 1017,
+      "failed": 0,
+      "skipped": 1,
+      "skip_reasons": [
+        "Non-Linux directory-junction behavior; platform-specific test not executed on this Linux host."
+      ]
+    },
+    "required_target_and_linux": [
+      {
+        "name": "test_external_rv64_matmul_and_reuse",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_weight_pointer_above_32bit_limit",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_real_rv64_fma_exact_conformance",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2]",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_real_qemu_contiguous_loader_segments_and_success_cleanup[chunk31-3]",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_post_execution_transport_corruption_fails_and_retains_copies",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_success_copy_cleanup_failure_is_not_a_pass",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_actual_shared_library_executes_kernel_calls_and_unloads[sequential]",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_symlinked_weight_file_and_bundle_directory_are_rejected",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_posix_sigterm_reaps_owned_process_session",
+        "executed_and_passed": true
+      },
+      {
+        "name": "test_link_replacement_is_not_followed_or_removed",
+        "executed_and_passed": true
+      }
+    ],
+    "shared_parser_and_ir": {
+      "path": "output/w4-linux-20261009/shared-boundary-tests.xml",
+      "sha256": "fc0a8921b647389e8b89aabd9ce8372325cb9688aa05916d45955fbb342ed960",
+      "passed": 380,
+      "failed": 0,
+      "skipped": 0,
+      "skip_reasons": []
+    },
+    "venv_launchers_and_resources": {
+      "path": "output/w4-linux-20261009/environment/w3-venv-regression-after.xml",
+      "sha256": "e2edeea359cde7aec40a8a32976b57313608c8a67bdb457a40f6c8ea17a31e6c",
+      "passed": 80,
+      "failed": 0,
+      "skipped": 1,
+      "skip_reasons": [
+        "Non-Linux process-job ownership; platform-specific test not executed on this Linux host."
+      ]
+    },
+    "note": "Suites overlap; counts are not additive. Skip reasons are platform-neutral semantic summaries rather than verbatim JUnit messages."
+  },
+  "w4": {
+    "executed_commit": "01aff1df755f6c049c5086cd8434ddf670a59f2a",
+    "git_dirty": false,
+    "report": {
+      "path": "output/w4-linux-20261009/full-run1/report.json",
+      "sha256": "0d5114fe0884ae619f4597ab60f368cfa0ceb9cfa7f3342dd63b3612f2167f79"
+    },
+    "audit": {
+      "path": "output/w4-linux-20261009/full-run1-audit/report.json",
+      "sha256": "585eee381f16564c583b65ae60b051f5cb594e0a2d0de2cee0e7697c08d77079"
+    },
+    "source_snapshot": {
+      "file": "source-snapshot.zip",
+      "sha256": "2985abc5e759493e9cb8b146d7c7406eed2afa94679444c34253129e088834d9",
+      "scope": "Hashed production/probe/script sources and fixed requirements/manifests; restore over recorded Git base, not a complete standalone repository"
+    },
+    "elf_sha256": "bf1891f676d795551d833bb6094ec4b5439f53bc2b9b984afa7beb036f19baaf",
+    "weight_sha256": "efe08b8e48fc2438bcc5175c4cdfa7e2dba61e9b3d5846474f0fb065bea1dd7d",
+    "fma_passed": true,
+    "audit_passed": true,
+    "gates": {
+      "build:riscv-full": true,
+      "smoke:qemu-full": true,
+      "numeric:qemu-full-qwen3": true
+    },
+    "coverage": "full_seed_0",
+    "numeric": [
+      {
+        "case": "full_seed_0",
+        "passed": true,
+        "atol": 0.001,
+        "rtol": 0.0,
+        "criterion": "strict max_abs < atol across every output element",
+        "max_abs": 8.58306884765625e-05,
+        "worst_index": [
+          0,
+          0,
+          8974
+        ],
+        "elements_at_or_above_atol": 0,
+        "rmse": 5.391918773554923e-06,
+        "elements_compared": 38895616
+      }
+    ],
+    "elf_bytes": 11378920,
+    "qemu_wall_s": 3351.1213785799996,
+    "sampled_peak_qemu_rss_bytes": 5813882880,
+    "elapsed_seconds": 3448.77511255,
+    "exit_code": 0,
+    "current_source_changes_since_run": [
+      "probes/w3_qwen3_full/run.py",
+      "scripts/run_w3_preparation.py"
+    ],
+    "numeric_and_w4_runtime_sources_unchanged": true,
+    "source_note": "W4 ran at its recorded commit. The later commit changes only W3 interpreter launch paths and tests; it does not relabel W4 as executed on the later commit."
+  },
+  "w3": {
+    "executed_commit": "cf0f7d3e1287d4383bb2bd4356d9ae94a8320d75",
+    "git_dirty": false,
+    "report": {
+      "path": "output/w4-linux-20261009/w3-full-run2/report.json",
+      "sha256": "b4d5750365b1fbf86ecac7fb972e92530647315292a7d92cf8e51e19f1bbab12"
+    },
+    "audit": {
+      "path": "output/w4-linux-20261009/w3-full-run2-audit/report.json",
+      "sha256": "a9bb716dd37e6b1e07fc6f7cc054806c38f51986beeb4e619f9e90bf4f2b2e9c"
+    },
+    "audit_passed": true,
+    "fp32_mode": "reference",
+    "coverage_complete": true,
+    "cases": [
+      {
+        "name": "full_seed_0",
+        "passed": true,
+        "max_logits_abs": 0.0,
+        "max_checkpoint_abs": 0.0
+      },
+      {
+        "name": "full_seed_42",
+        "passed": true,
+        "max_logits_abs": 0.0,
+        "max_checkpoint_abs": 0.0
+      },
+      {
+        "name": "one_token",
+        "passed": true,
+        "max_logits_abs": 0.0,
+        "max_checkpoint_abs": 0.0
+      },
+      {
+        "name": "short_17",
+        "passed": true,
+        "max_logits_abs": 0.0,
+        "max_checkpoint_abs": 0.0
+      },
+      {
+        "name": "short_255",
+        "passed": true,
+        "max_logits_abs": 0.0,
+        "max_checkpoint_abs": 0.0
+      },
+      {
+        "name": "changed_future",
+        "passed": true,
+        "max_logits_abs": 0.0,
+        "max_checkpoint_abs": 0.0
+      },
+      {
+        "name": "changed_padding",
+        "passed": true,
+        "max_logits_abs": 0.0,
+        "max_checkpoint_abs": 0.0
+      }
+    ],
+    "invariants_passed": 4,
+    "elapsed_seconds": 540.218816481
+  },
+  "pending": [
+    "Remote Nightly execution",
+    "Independent team reproduction and acceptance",
+    "W5 text generation"
+  ],
+  "publication": {
+    "kind": "redacted evidence summary, not an original execution report",
+    "path_base": "repository root; output paths index external run artifacts and do not imply files are tracked in Git",
+    "redaction": [
+      "Executable and shared-library paths are repository-relative.",
+      "Host name and free-form NumPy build/runtime dumps containing machine or build paths are omitted; relevant versions, BLAS and SIMD details are retained as structured summaries.",
+      "Skip reasons are semantic summaries, not verbatim JUnit messages; counts and unexecuted platform coverage are preserved."
+    ],
+    "original_reports_unchanged": true,
+    "recorded_file_hashes_unchanged": true,
+    "current_commit_scope": "source state when this fixed evidence summary was first assembled; each run retains its own executed_commit"
+  }
+}

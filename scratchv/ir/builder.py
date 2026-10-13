@@ -256,10 +256,16 @@ class IRBuilder:
         return dest
 
     def gemm(self, a: Value, w: Value, b: Value,
-             trans_a: bool = False, trans_b: bool = False) -> Value:
+             trans_a: bool = False, trans_b: bool = False, *,
+             alpha: float = 1.0, beta: float = 1.0) -> Value:
         dest = self.make_value(dtype=a.dtype)
+        scales = {}
+        if alpha != 1:
+            scales["alpha"] = alpha
+        if beta != 1:
+            scales["beta"] = beta
         self._emit(OpCode.GEMM, dest, [a, w, b],
-                   trans_a=trans_a, trans_b=trans_b)
+                   trans_a=trans_a, trans_b=trans_b, **scales)
         return dest
 
     def sigmoid(self, val: Value) -> Value:

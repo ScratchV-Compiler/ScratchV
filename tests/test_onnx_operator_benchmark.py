@@ -146,6 +146,8 @@ def test_failed_round_cannot_retain_success_median():
     assert merged["status"] == "NUMERIC_ERROR" and merged["run_median_s"] is None
 
 
+@pytest.mark.skipif(not (bench.ROOT / ".git").exists(),
+                    reason="Historical baseline integration requires this source root's Git checkout; archives omit history")
 def test_actual_git_baseline_and_dirty_snapshot_are_isolated(tmp_path):
     original_hash = worker.source_hash(bench.ROOT)
     selected = ["add_float32", "gather", "scalar_fp32_add_chain", "singleton_initializer", "constant"]
@@ -171,19 +173,56 @@ def test_actual_git_baseline_and_dirty_snapshot_are_isolated(tmp_path):
 
 def test_worker_timeout_is_visible_in_new_report(tmp_path, monkeypatch):
     actual_run = subprocess.run
+    attempts = []
+
+    def fake_snapshots(work, baseline_ref):
+        # Timeout handling is independent of Git history. Real tiny source
+        # directories still satisfy the runner's post-execution hash check.
+        versions = []
+        for side in ("before", "after"):
+            source = work / side
+            (source / "scratchv").mkdir(parents=True)
+            (source / "scratchv" / "__init__.py").write_text("# timeout fixture\n")
+            versions.append({"source_path": str(source), "source_sha256": worker.source_hash(source)})
+        versions[0]["commit"] = baseline_ref
+        versions[1].update(head="fixture-current", dirty=False)
+        return versions
 
     def timeout(command, **kwargs):
         if command[0] == sys.executable:
+            attempts.append(command)
             raise subprocess.TimeoutExpired(command, 60)
         return actual_run(command, **kwargs)
 
+    monkeypatch.setattr(bench, "snapshots", fake_snapshots)
     monkeypatch.setattr(subprocess, "run", timeout)
     assert bench.main(["--output-dir", str(tmp_path), "--case", "add_float32",
                        "--warmup", "0", "--repeats", "1"]) == 1
     report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     assert not report["passed"]
+    assert len(attempts) == 4
+    assert report["results"][0]["before"]["status"] == "WORKER_ERROR"
     assert report["results"][0]["after"]["status"] == "WORKER_ERROR"
     assert "timed out" in report["results"][0]["after"]["error"]
+
+
+def test_archive_cannot_discover_parent_git_and_reports_clear_failure(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    archive = tmp_path / "extracted-source"
+    archive.mkdir()
+    monkeypatch.setattr(bench, "ROOT", archive)
+
+    def no_parent_git(*args, **kwargs):
+        pytest.fail("Source archive must reject history comparison before invoking Git")
+
+    monkeypatch.setattr(subprocess, "run", no_parent_git)
+    with pytest.raises(RuntimeError, match="requires a Git checkout"):
+        bench.git("rev-parse", "HEAD")
+    output = tmp_path / "report"
+    assert bench.main(["--output-dir", str(output), "--case", "add_float32"]) == 1
+    report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    assert not report["passed"] and not report["results"]
+    assert "extracted source archive has no Git history" in report["runner_error"]
 
 
 def test_preparation_failure_replaces_stale_pass_report(tmp_path, monkeypatch):

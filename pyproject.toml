@@ -7,7 +7,7 @@ name = "scratchv"
 version = "0.3.0"
 description = "A compiler from ONNX models to RISC-V assembly and LLVM IR"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "MIT AND MPL-2.0"}
 keywords = ["compiler", "risc-v", "onnx", "llvm", "machine-learning"]
 requires-python = ">=3.8"
 dependencies = [
@@ -20,6 +20,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Education",
     "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -45,6 +46,9 @@ Documentation = "https://github.com/kinsomwang/ScratchV/tree/main/docs/INDEX.md"
 
 [project.scripts]
 scratchv = "scratchv.main:main"
+
+[tool.setuptools]
+license-files = ["LICENSE", "LICENSES/*.txt", "THIRD_PARTY_NOTICES.txt"]
 
 [tool.setuptools.packages.find]
 include = ["scratchv", "scratchv.*", "scratchv_dag", "scratchv_dag.*", "benchmarks", "benchmarks.*"]

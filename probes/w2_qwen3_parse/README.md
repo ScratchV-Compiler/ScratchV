@@ -39,6 +39,12 @@ python -X utf8 -B probes/w2_qwen3_parse/run.py --mode verify \
 
 这些是固定图的结构规则，不是对算子数值实现或所有可能 ONNX 导出形式的证明。
 
+通用前端还按算子版本与属性限制支持范围：`Softmax` 要求 opset ≥ 13；旧版的展平
+语义尚未实现，解析时明确拒绝。ONNX `Gelu` 仅接受显式 `approximate="tanh"`，
+默认精确公式不自动替换成近似公式。`Gemm` 的 alpha/beta、转置与可选 bias 已传入
+IR 解释器；这不表示 Tensor-C 已支持 GEMM，旧标量后端也会拒绝不支持的缩放参数。
+固定 Qwen3 图使用 opset 18 的 Softmax、MatMul 与 SwiGLU，不依赖这些未实现变体。
+
 转换审计记录实际 parser 的每个节点，核对 IR 指令区间、opcode、输入 Value、输出映射和静态属性，允许合法的 Constant 绑定与 Identity 别名而不把它们误报为漏转换。形状、切片和轴等控制参数从原 ONNX 小型控制子图独立求值，不复用被检查解析器的常量缓存。所有 ONNX value 的静态 shape/dtype、全局张量集合与唯一 RETURN 也会核对。权重和 Constant 绑定逐张量比较 shape、dtype 与内容 SHA256；外部分片按块读取校验，不为审计再保存一套权重。该审计采用明确支持的基础算子转换规则，未知转换方式应报错，由新增规则和测试后再接受。
 
 | 文件 | 用途 |

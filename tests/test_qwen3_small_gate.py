@@ -1,7 +1,7 @@
 """Exercise the real export and prove corrupt IR cannot produce a green gate.
 
-The LLM workflow runs this file in the pinned CPU environment. The generic
-compiler job has no torch/transformers dependency and skips this module.
+The LLM workflow and full compiler CI run this file in the pinned CPU stack.
+Minimal local compiler installations may omit torch/transformers and skip it.
 """
 
 import json

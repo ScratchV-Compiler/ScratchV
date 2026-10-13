@@ -152,8 +152,9 @@ padding 隔离。每个比较仍要求 FP32、形状一致、有限值、最大�
 失败、输入目录混用或哈希不一致应直接失败，不能只靠当前 ORT 比较通过。该绑定
 用于避免意外混用产物，不是第三方认证；参考计算仍须在指定环境重新生成。
 
-当前执行环境与完整源码归属的报告增强单独见 [W1 PR #93](https://github.com/ScratchV-Compiler/ScratchV/pull/93)。
-W2 分支未包含该报告代码修复；未合并前不能把原导出环境当成本次 QEMU 对照的执行环境。
+当前代码已包含 [W1 PR #93](https://github.com/ScratchV-Compiler/ScratchV/pull/93) 的执行环境与源码归属修复。
+报告顶层 `environment` 和 `source_sha256` 记录本次 RISC-V 探测进程及其 ORT/IR 参考的环境与源码；
+`export_evidence.environment` 仅记录上游导出环境，不能当成本次 QEMU 对照的执行环境。
 
 `output/qwen3-riscv/` 包含 `report.json/md/html`、生成的 C、启动汇编与链接脚本、
 ELF、编译器/QEMU 命令与日志、每次执行的输入和 UART 二进制以及 QEMU/ORT 数组。

@@ -158,56 +158,102 @@ def _stop_process_tree(process: subprocess.Popen, job=None) -> None:
 
 
 def _run_process(command, *, cwd, timeout, env=None) -> subprocess.CompletedProcess:
+    """Run one owned tree with bounded process waits, including setup failures."""
     options = {"creationflags": _creation_flags()}
     if os.name == "nt":
         options["creationflags"] |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         options["start_new_session"] = True
-    with subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, **options) as process:
-        job = _windows_job(process)
+    process, job, primary_error, previous_term = None, None, None, None
+    try:
         # The W2 supervisor first sends SIGTERM to the probe. This invocation
         # owns a different session, so killing the probe group alone would
-        # orphan its compiler/QEMU. Unwind through cleanup before exiting.
-        previous_term = None
+        # orphan its compiler/QEMU. Install before spawning, so setup failures
+        # and interruptions also unwind through the same cleanup boundary.
         if os.name != "nt" and threading.current_thread() is threading.main_thread():
             previous_term = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, _terminate_invocation)
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            _stop_process_tree(process, job)
-            try:
-                stdout, stderr = process.communicate(timeout=10)
-            except subprocess.TimeoutExpired as drain:
-                # A failed OS-level tree termination must not turn a bounded
-                # compiler timeout into an unbounded pipe read.
-                process.kill()
-                if process.stdout:
-                    process.stdout.close()
-                if process.stderr:
-                    process.stderr.close()
-                process.wait(timeout=5)
-                stdout, stderr = drain.output or b"", drain.stderr or b""
-            raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from exc
-        except BaseException:
-            # Cancellation and Ctrl-C must also close the owned invocation.
-            # Do not replace the primary interruption with a cleanup failure.
-            try:
-                _stop_process_tree(process, job)
-                process.communicate(timeout=5)
-            except (OSError, subprocess.SubprocessError):
-                process.kill()
-                for stream in (process.stdout, process.stderr):
-                    if stream:
-                        stream.close()
-            raise
-        finally:
-            if previous_term is not None:
-                signal.signal(signal.SIGTERM, previous_term)
-            if job is not None:
-                job[0].CloseHandle(job[1])
+        # Do not use Popen's context manager: its implicit __exit__.wait() has
+        # no deadline, even if Job setup failed before communicate() began.
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, **options)
+        job = _windows_job(process)
+        stdout, stderr = process.communicate(timeout=timeout)
         return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        cleanup_errors = []
+        drain_failed = False
+
+        def cleanup(label, action):
+            try:
+                action()
+            except BaseException as exc:
+                cleanup_errors.append(f"{label}: {type(exc).__name__}: {exc}")
+
+        def close_pipe(stream):
+            if not drain_failed or os.name != "nt":
+                stream.close()
+                return
+            # Windows communicate() owns reader threads. If a descendant kept
+            # a pipe open after a failed tree kill, BufferedReader.close() can
+            # block acquiring its reader's lock. Do not turn bounded recovery
+            # into an unbounded wait on that lock. The daemon keeps the stream
+            # alive and eventually closes it when the reader releases the lock.
+            failures = []
+            def close():
+                try:
+                    stream.close()
+                except BaseException as exc:
+                    failures.append(exc)
+            closer = threading.Thread(target=close, daemon=True)
+            closer.start()
+            closer.join(timeout=0.25)
+            if closer.is_alive():
+                raise TimeoutError("Pipe close is pending on a Windows reader thread")
+            if failures:
+                raise failures[0]
+
+        if process is not None:
+            if primary_error is not None:
+                cleanup("process-tree termination", lambda: _stop_process_tree(process, job))
+                try:
+                    stdout, stderr = process.communicate(timeout=10)
+                    if isinstance(primary_error, subprocess.TimeoutExpired):
+                        primary_error.output, primary_error.stderr = stdout, stderr
+                except BaseException as exc:
+                    drain_failed = True
+                    cleanup_errors.append(f"pipe drain: {type(exc).__name__}: {exc}")
+                    if (isinstance(primary_error, subprocess.TimeoutExpired)
+                            and isinstance(exc, subprocess.TimeoutExpired)):
+                        if exc.output is not None:
+                            primary_error.output = exc.output
+                        if exc.stderr is not None:
+                            primary_error.stderr = exc.stderr
+                    cleanup("process.kill fallback", process.kill)
+                    cleanup("process.wait fallback", lambda: process.wait(timeout=5))
+        # Kill-on-close is a second chance to release inherited pipe handles
+        # before attempting their close, even if explicit tree termination failed.
+        if job is not None:
+            def close_job():
+                if job[0].CloseHandle(job[1]) == 0:
+                    raise OSError("CloseHandle failed")
+            cleanup("close Windows Job", close_job)
+        if process is not None:
+            for name in ("stdout", "stderr"):
+                stream = getattr(process, name, None)
+                if stream is not None:
+                    cleanup(f"close {name}", lambda stream=stream: close_pipe(stream))
+        if previous_term is not None:
+            cleanup("restore SIGTERM", lambda: signal.signal(signal.SIGTERM, previous_term))
+        if cleanup_errors:
+            detail = "; ".join(cleanup_errors)
+            if primary_error is None:
+                raise RuntimeError("Process cleanup failed: " + detail)
+            if hasattr(primary_error, "add_note"):
+                primary_error.add_note("Process cleanup: " + detail)
 
 
 def _terminate_invocation(signum, frame):

@@ -123,9 +123,11 @@ def test_iteration_never_exceeds_requested_buffer(monkeypatch):
     assert len(lengths) > 2 and max(lengths) <= 127
 
 
-def test_new_metrics_do_not_weaken_absolute_gate():
+@pytest.mark.parametrize("gate", ["w2", "w3"])
+def test_new_metrics_do_not_weaken_absolute_gate(gate):
     from probes.w2_qwen3_small.diagnostics import tensor_diff
-    compare = tensor_diff
+    from probes.w3_qwen3_full.comparison import compare_tensor
+    compare = tensor_diff if gate == "w2" else compare_tensor
     actual = np.array([2, 4], dtype=np.float32)
     expected = np.array([1, 2], dtype=np.float32)
     result = compare(actual, expected)
@@ -143,8 +145,10 @@ def test_new_metrics_do_not_weaken_absolute_gate():
 
 def test_empty_gate_policies_are_preserved():
     from probes.w2_qwen3_small.diagnostics import tensor_diff
+    from probes.w3_qwen3_full.comparison import compare_tensor
     array = np.empty(0, dtype=np.float32)
-    row = tensor_diff(array, array)
-    assert row["passed"]
-    assert row["relative_l2"] is None and row["cosine_similarity"] is None
-    assert row["relative_l2_reason"] and row["cosine_similarity_reason"]
+    w2, w3 = tensor_diff(array, array), compare_tensor(array, array)
+    assert w2["passed"] and not w3["passed"]
+    for row in (w2, w3):
+        assert row["relative_l2"] is None and row["cosine_similarity"] is None
+        assert row["relative_l2_reason"] and row["cosine_similarity_reason"]

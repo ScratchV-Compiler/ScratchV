@@ -188,7 +188,7 @@ def test_memory_errors(mode):
     if mode == "numeric_address":
         b.ret(b.load(b.make_const(42, D.INT32)))
     if mode == "vector_store":
-        value = Value("value", D.INT32)
+        value = Value("value", D.INT32, shape=(2,))
         b.current_func.params = [value]
         b.store(slot, value)
         b.ret()

@@ -33,8 +33,11 @@ def compare(path, feed, *, exact=False, reference_evaluator=False):
     program = parser.parse(str(path))
     assert verify_ir(program) == (True, [])
     actual = IRInterpreter(program).run(feed, initializers=parser.initializers).return_value
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 1
+    options.inter_op_num_threads = 1
     session = (ReferenceEvaluator(str(path)) if reference_evaluator else
-               ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]))
+               ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"]))
     reference = session.run(None, feed)[0]
     assert actual.shape == reference.shape
     assert actual.dtype == reference.dtype

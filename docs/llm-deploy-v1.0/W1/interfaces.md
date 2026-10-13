@@ -107,7 +107,7 @@ int scratchv_run(const void *const inputs[], void *output);
 
 `scratchv/runtime/riscv_tensor.py` 提供 `discover_toolchain`、`build_riscv_tensor`、`run_riscv_tensor`。工具可从环境变量或仓库 `output/tools/` 发现；缺工具显式失败，不隐式下载安装。
 
-当前 QEMU 使用 virt/TCG、512 MiB RAM、无 BIOS/OS，自带启动汇编和链接脚本。输入通过 raw loader 写入保留区域（地址 `0x9c000000`，容量 64 MiB），输出通过 UART 二进制帧返回。帧包含标识、状态、长度、校验和和结束标记；解析拒绝截断/损坏/异常状态，超时失败并清理本次子进程。该传输是现有探测协议，不应误写为通用 Linux FFI 或 mmap。
+本节小模型 QEMU 使用 virt/TCG、512 MiB RAM、无 BIOS/OS，自带启动汇编和链接脚本。输入通过 raw loader 写入保留区域（地址 `0x9c000000`，容量 64 MiB），输出通过 UART 二进制帧返回。帧包含标识、状态、长度、校验和和结束标记；解析拒绝截断/损坏/异常状态，超时失败并清理本次子进程。该传输是现有探测协议，不应误写为通用 Linux FFI 或 mmap。
 
 ### 5.3 W2 Host 运行时辅助接口
 
@@ -119,7 +119,7 @@ int scratchv_run(const void *const inputs[], void *output);
 
 ### 5.4 后续运行时边界
 
-生成循环和完整模型权重装载仍待实现/验收。当前小模型权重静态嵌入；完整 0.6B 外部分片合计 2,384,201,728 bytes（约 2.22 GiB），不应直接套用 512 MiB guest 配置。W4 需设计代码与权重分离，明确名称/偏移/dtype/shape 描述、装载策略、容量和地址重叠检查、生命周期及分块输出；选择 Linux mmap 时须另建 Linux guest/user-mode 路线，裸机不具备该系统调用。完整 logits 对照仍是原数值门槛，后续生成专用“最后有效位置 logits”接口需独立验收，不能悄悄替换原输出。
+本节的二参数 ABI、512 MiB guest 和 UART 张量协议限定于小模型探测。W4 另提供代码/权重分离、名称/偏移/dtype/shape 绑定、完整地址规划及五参数外置 ABI；通过分段 raw loader 装载和完成帧后的 QMP 转储执行完整前向，详见 [W4 运行接口](../W4/runtime-contract.md)。两种入口并存，不能把 W4 的 workspace/weights 参数按旧签名传递，也不能套用旧固定地址。完整数值、跨平台和团队确认按 [W4 验收](../W4/validation.md) 单独记录；实现存在不代表团队已冻结接口。裸机不提供 Linux mmap，若选择 Linux guest/user-mode 须另建路线。生成循环仍属 W5；生成专用“最后有效位置 logits”接口需独立验收，不能悄悄替换完整 logits 数值门槛。
 
 固定长度的 host 生成循环须复用已验收的最后有效位置、mask、ID 范围、空输入、EOS 和长度边界辅助函数，不能选择右侧 padding 的最后物理位置或静默截断。后续仍需将这些能力与完整模型前向组合验证；当前探测未提供端到端生成 API。
 
@@ -133,7 +133,8 @@ int scratchv_run(const void *const inputs[], void *output);
 | 完整模型 IR 数值与容量 | 未由小模型验收 | E2/E4/E5：逐步扩大配置及预训练权重验证 |
 | 完整 ONNX 门禁 | 历史导出、本地 verify，以及 `545e696` 的[Linux download/ORT 重型任务](https://github.com/yuki-328/ScratchV/actions/runs/36983119833/job/110761955767)均通过；三项验证源码至 `5ea22ec` 未变 | E1/E5：第二人复现及受影响门禁；不冒称重新导出或 `5ea22ec` 重跑重型任务 |
 | Tokenizer / mask / greedy | W2 基础模块与独立门禁已交付，结果按当前提交检查 | E4/E5：第二人复现，后续集成验收 |
-| 生成 / 大权重加载 | 当前探测不覆盖 | E4：W4 权重装载、W5 生成集成及专项验收 |
+| 完整权重加载 | W4 提供独立外置 ABI、布局及加载路径，小模型 ABI 保持兼容 | E1/E3/E4/E5：完整前向、接口确认和独立复现 |
+| 生成循环 | 已有输入、greedy 和停止辅助函数，尚需 W5 集成 | E4：token 循环、持久会话、端到端专项验收 |
 
 ## 7. 团队待决议与确认
 
@@ -144,7 +145,7 @@ int scratchv_run(const void *const inputs[], void *output);
 - [ ] D3：接受 ONNX INT64 IDs；如另需 INT32 接口，显式设计转换与范围校验。
 - [ ] D4：接受 tensor-c + Zig/LLVM FP32 实现；不宣称原标量选择器已修复。
 - [ ] D5：接受基础算子图作为正确性基线，融合节点作为后续优化。
-- [ ] D6：确认小模型静态嵌入边界，另行设计完整权重加载和内存计划。
+- [ ] D6：确认小模型静态嵌入边界，评审 W4 外置权重加载、完整内存计划及与小模型接口的区别。
 - [ ] D7：确认接口版本、变更审批及消费方测试责任。
 - [ ] D8：确认未使用算子的数值错误是否可被优化消除，以及对应 effect/安全判定和验收范围。
 
