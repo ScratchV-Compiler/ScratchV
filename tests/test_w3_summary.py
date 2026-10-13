@@ -41,7 +41,9 @@ def test_full_missing_case_comparison_remains_an_explicit_placeholder():
         {"name": "failed_worker", "passed": False, "workers": [{"backend": "ir", "passed": False}]}]}
     markdown, page = summary_views(report)
     assert "未记录 1/2" in markdown and "未记录 1/2" in page
-    assert "门槛未通过" in markdown
+    for rendered in (markdown, page):
+        assert "未通过（通过 1/2，失败 0，未确认 1）；指标不完整" in rendered
+        assert "通过（1/1）" not in rendered
     assert "failed_worker" in markdown
 
 
@@ -58,7 +60,7 @@ def test_medium_schema_uses_normal_final_logits_not_diagnostic_checkpoints():
     assert all(rows == [ir_logits] + [{}] * 6 for _, rows in comparisons[1:])
     markdown, page = summary_views({"gate": "w3-medium-host", "cases": [case]})
     assert "未记录 6/7" in markdown and "已记录 1/7" in page
-    assert "门槛通过" not in markdown
+    assert "未通过（通过 1/7，失败 0，未确认 6）；指标不完整" in markdown
 
 
 def test_missing_medium_logit_is_not_replaced_by_passing_intermediate():
@@ -66,7 +68,7 @@ def test_missing_medium_logit_is_not_replaced_by_passing_intermediate():
     _, comparisons, _ = numerical_summary({"gate": "w3-medium-host", "cases": [case]})
     assert comparisons[0][1] == [{}] * 7
     markdown, _ = summary_views({"gate": "w3-medium-host", "cases": [case]})
-    assert "门槛通过" not in markdown
+    assert "未通过（通过 0/7，失败 0，未确认 7）；指标不完整" in markdown
 
 
 @pytest.mark.parametrize("length", [17, 256])
@@ -101,7 +103,7 @@ def test_attention_missing_optimization_does_not_vanish_from_table():
     assert all(rows[1] == {} for _, rows in comparisons)
     markdown, _ = summary_views(report)
     assert "未记录 1/2" in markdown
-    assert "门槛通过" not in markdown
+    assert "未通过（通过 1/2，失败 0，未确认 1）；指标不完整" in markdown
 
 
 def test_audit_is_distinguished_from_execution_and_language_quality():
@@ -141,7 +143,8 @@ def test_views_fold_full_evidence_without_changing_overall_failed_status(tmp_pat
     markdown = (tmp_path / "report.md").read_text(encoding="utf-8")
     page = (tmp_path / "report.html").read_text(encoding="utf-8")
     assert "Result: **FAIL**" in markdown
-    assert "门槛通过" in markdown and "总体结论" in markdown
+    assert "通过（1/1）" in markdown and "总体结论" in markdown
+    assert "隔离检查未通过 1 项" in markdown
     assert "<details>" in markdown and "<details>" in page
     assert markdown.index("最大绝对误差") < markdown.index("<details>")
     assert '"checkpoints"' not in markdown
