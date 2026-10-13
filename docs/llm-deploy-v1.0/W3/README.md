@@ -2,9 +2,9 @@
 
 对外复现统一使用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)，并在同一个 Bash 会话、仓库根目录执行以下命令；`SCRATCHV_PYTHON`、`SCRATCHV_CC`、`SCRATCHV_QEMU` 由该指南设置。
 
-本目录汇总完整 Qwen3 IR 数值验证、准备探测、诊断与复现交付。W3 已提交至 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96)，本地开发工作树为 `codex/w3-preparation`，原 W2 基线为 `65616a8cde6a581661ac3734378da78a9fcbe5ed`。当前同提交 Linux 全部硬门槛和下载数组 audit 已通过，下一步由团队确认口径、独立复现并验收 Nightly。PR 可能继续更新，复现时按清单获取 head 并记录实际完整 SHA，不能只记录分支名或旧基线。
+本目录汇总完整 Qwen3 IR 数值验证、准备探测、诊断与复现交付，代码见 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96)。完整模型通过结果按实际执行提交登记；PR 后续修改及普通 CI 通过不自动成为完整模型重新执行的证据。复现时固定并记录实际完整 SHA，不能只记录分支名或旧基线。
 
-提交 `1c49e8acbcd9174491b2d0c2a5a0072178ae5f9a` 的[第四轮 Linux 手动编排](https://github.com/yuki-328/ScratchV/actions/runs/37299235103)已完成 preparation 五项、完整七组 full 及汇总，全部通过；v4/avx2-fma3 下普通/诊断完整 logits 最大误差为 0，完整 runner 约 24.6 分钟。通用 CI 为 3821 passed、5 skipped，W1/W2 和 Topic06 通过。preparation 下载诊断已复核；完整 raw 已下载验真、七组数组离线 audit 通过。前三轮失败记录与历史 v2/v3 证据均保留，不能跨提交拼接。定时 Nightly 未启用，E1/E2/E5 团队独立复现尚未登记。各轮结果和下载方法见 [Linux CI 与 Nightly](Linux-CI与Nightly.md)。
+最近一次已登记的完整作者运行是 **2026-10-11** 的 [Linux 手动编排](https://github.com/yuki-328/ScratchV/actions/runs/38131237341)，执行提交为 `210baa5fbd87844e61e5dfb273b49748a978b708`：preparation 五项及完整七组均通过；reference-v4/avx512 下普通/诊断完整 logits 最大绝对误差均为 0，完整 runner 耗时 621.381 秒。下载原始数组的离线复核也通过，但不代替另一位开发者执行。10 月 5 日第四轮及此前失败记录保留原提交、环境和数值，见 [Linux CI 与 Nightly](Linux-CI与Nightly.md)。本次仅更新文档，没有重新执行完整模型；定时 Nightly 和 E1/E2/E5 独立复现仍待登记。
 
 Linux 预备与完整执行的数据分别见 [预备验收记录](W3-预备工作本地验收报告.md) 和 [完整模型执行记录](W3-完整模型执行与数值诊断报告.md)。早期个人开发机记录只保留为固定提交历史索引，不用于 Linux 验收；本次说明调整没有重新执行模型。
 
@@ -17,7 +17,7 @@ Linux 交付入口：
 
 优先使用 PR 的固定提交复现；需要交付未提交修改或离线源码时，可通过 `scripts/package_w3_repro.py` 生成带文件哈希和 snapshot ID 的本地源码包。源码包不是新的 Git 提交，不包含模型、运行产物或环境。解压后先校验源码，再按清单准备已有资产和依赖。报告中的历史源码指纹保持原样，旧报告不会自动成为新提交重新执行的证据。
 
-完整 28 层的实际 ORT/IR 执行、内存受控模式和同输入局部诊断见 [完整模型入口](../../../probes/w3_qwen3_full/README.md)。完整入口默认采用显式版本化的 `reference` FP32 模式，当前已提交接口为 `numpy-fp32-reference-v4`；`SCRATCHV_FP32_REFERENCE_CPU=auto|avx2-fma3|avx512` 选择 IR 参考算术策略，默认 `auto`，不控制 ORT dispatch。解释器 API 仍默认 `native`；复现时记录并核对模式、完整 profile 和解析后的 `cpu_strategy`。历史 v2/v3 证据保留原契约，应使用对应历史源码核对；这些通过记录不能作为 v4 的验收结果，v4 完整七组已在第四轮实际通过，原始数组已下载验真、离线 audit 通过。统一 preparation 的五项 PASS 只代表准备范围通过，完整模型 gate 另行执行。
+完整 28 层的实际 ORT/IR 执行、内存受控模式和同输入局部诊断见 [完整模型入口](../../../probes/w3_qwen3_full/README.md)。完整入口默认采用显式版本化的 `reference` FP32 模式，当前已提交接口为 `numpy-fp32-reference-v4`；`SCRATCHV_FP32_REFERENCE_CPU=auto|avx2-fma3|avx512` 选择 IR 参考算术策略，默认 `auto`，不控制 ORT dispatch。解释器 API 仍默认 `native`；复现时记录并核对模式、完整 profile 和解析后的 `cpu_strategy`。历史 v2/v3 证据保留原契约，应使用对应历史源码核对；这些通过记录不能作为 v4 的验收结果，v4 的第四轮 avx2-fma3 和 2026-10-11 avx512 七组通过分别属于对应提交与环境，原始数组离线复核结果也分别登记。统一 preparation 的五项 PASS 只代表准备范围通过，完整模型 gate 另行执行。
 
 本轮完成可独立执行的数值与资源准备，不代表 W3 阶段出口通过。开发计划要求的完整 28 层 IR/ORT 数值 <1e-4、W1 人工验收前置、E1/E2/E5 三人复现及 Nightly 仍单独验收。
 

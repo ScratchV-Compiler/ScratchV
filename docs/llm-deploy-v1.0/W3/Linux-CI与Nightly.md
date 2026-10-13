@@ -4,9 +4,23 @@
 
 对外复现统一使用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)，并在同一个 Bash 会话、仓库根目录执行以下命令；`SCRATCHV_PYTHON`、`SCRATCHV_CC`、`SCRATCHV_QEMU` 由该指南设置。
 
-配置已随 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96) 提交。2026-10-05，作者在提交 `1c49e8acbcd9174491b2d0c2a5a0072178ae5f9a` 的[第四轮 Linux 手动编排](https://github.com/yuki-328/ScratchV/actions/runs/37299235103)中完成同提交 preparation、完整七组 full-numeric 和汇总，均为 success。preparation 下载已复核；完整 reports/raw 均已下载验真，七组原始数组离线 audit 通过。前三轮失败与历史数值 profile 原样保留。下面区分实际运行记录与通用命令模板；没有设置 Nightly 远端开关，手动调用不等于 schedule，也不替代他人独立复现。团队确认内容见 [独立复现与验收清单](独立复现与验收清单.md)。
+配置已随 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96) 提交。最近登记的完整作者手动运行是 [2026-10-11 / run 38131237341](https://github.com/yuki-328/ScratchV/actions/runs/38131237341)，执行提交为 `210baa5fbd87844e61e5dfb273b49748a978b708`；该提交的 preparation、完整七组 full-numeric 及汇总均通过。后续 PR 修改和普通 CI 通过不自动继承这次完整模型结论。下面按日期和执行提交分别记录证据；没有启用定时 Nightly，手动调用及作者数组复核不替代他人独立执行。团队确认内容见 [独立复现与验收清单](独立复现与验收清单.md)。
 
-## 2026-10-05 Linux 实测记录
+## 2026-10-11 Linux 实测记录
+
+运行：[38131237341](https://github.com/yuki-328/ScratchV/actions/runs/38131237341)，执行提交 `210baa5fbd87844e61e5dfb273b49748a978b708`，通过既有手动入口显式开启 `run_w3_validation=true`。Actions 页面分别提供 **W3 preparation** 和 **W3 complete IR numeric** 摘要；它们不是完整模型 QEMU 的结果。
+
+| 检查 | 实际结果 | 流程耗时 |
+|---|---|---:|
+| preparation | medium、真实权重子图、Attention QEMU、完整资产预检和 layer-diff，五项 PASS | 150.176 s |
+| 完整七组 full-numeric | 真实 28 层、FP32、L256、无 KV cache；reference-v4/avx512、IR none；普通/诊断全部 logits 最大绝对误差 0，相对 L2 误差 0，余弦相似度 1；严格 `max_abs < 1e-4`、`rtol=0` | 621.381 s |
+| 保存数组离线复核 | 七组及四项不变量 PASS；只读取已有数组，没有重新执行模型 | 44.257 s |
+
+完整输出比较覆盖全部 256 个位置，包括 padding query；每组 30 个诊断检查点用于定位，不能把最终 logits 的指标与检查点混成同一统计。耗时包含准备、执行、比较与证据写盘，不是单次前向性能 benchmark；也不能与不同 CPU 策略的历史运行直接作为加速比。
+
+报告保存在该运行的 `w3-preparation-reports`、`w3-full-numeric-reports`；原始数组单独保留于 `w3-full-numeric-raw`，受各自产物保留期限制。这些是执行提交的历史数据，本次文档更新未重跑完整模型，也未补记独立复现或定时 Nightly 成功。
+
+## 2026-10-05 Linux 实测记录（历史）
 
 ### 第一轮：preparation 通过，完整模型失败
 
@@ -112,7 +126,7 @@ preparation 主报告 SHA256 为 `ceeeb239ac7b88c22372d0e76f5506841e1b634a81b5b1
 
 原 audit 记录 `source_comparison.matches_current=false`、129 个字节哈希差异。随后只读核对 `1c49e8a` 的 Git blob：159 个生产源码哈希全部与该提交 blob 吻合，129 个本地差异仅为 CRLF/LF 换行，其余 30 个文件逐字节相同；记录位于 `output/w3-linux-37299235103/source-checkout-line-ending-audit.json`（`all_producer_match_committed_blobs=true`、`all_working_copies_identical_or_crlf_only=true`）。原 audit 和生产报告均未改写；这项核对解释源码身份，不将数组 audit 当成重新执行。
 
-当前作者在同提交上的两套 Linux gate、汇总、产物下载及完整数组 audit 均已完成。作者手动远端实跑、作者下载数组 audit、E1/E2/E5 独立执行、定时 schedule 和团队签认仍是不同事项；本轮保留 `w3_exit_accepted=false`，没有启用定时 Nightly。
+本节第四轮执行提交的两套 Linux gate、汇总、产物下载及完整数组 audit 均已完成。作者手动远端实跑、作者下载数组 audit、E1/E2/E5 独立执行、定时 schedule 和团队签认仍是不同事项；本轮保留 `w3_exit_accepted=false`，没有启用定时 Nightly。
 
 ## 入口与验收范围
 
