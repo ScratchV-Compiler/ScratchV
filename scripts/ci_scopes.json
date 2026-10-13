@@ -8,6 +8,7 @@
     "scripts/check_w1_repro_env.py",
     "scripts/run_w2_acceptance.py",
     "scripts/check_w2_ci_results.py",
+    "scripts/summarize_w2_ci.py",
     "export_qwen3_onnx.py",
     "scratchv/**",
     "requirements/**",
@@ -28,18 +29,6 @@
     "tests/test_numeric_metrics.py",
     "tests/test_numeric_summary.py",
     ".github/workflows/llm-deploy.yml"
-  ],
-  "docs": [
-    "docs/**",
-    "probes/**/*.md",
-    "probes/**/*.txt",
-    "benchmarks/**/*.md",
-    "benchmarks/**/*.txt",
-    "README.md",
-    "CONTRIBUTING.md",
-    "scripts/check_linux_repro_docs.py",
-    "tests/test_linux_repro_docs.py",
-    ".github/workflows/linux-reproduction-docs.yml"
   ],
   "w4": []
 }

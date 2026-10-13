@@ -21,7 +21,7 @@ def render_summary(results: object) -> tuple[str, bool]:
     w4_flag = outputs.get("w4") if isinstance(outputs, dict) else None
     include_w4 = "w4" in jobs or w4_flag != "false"
     rows = []
-    for name in (*REQUIRED, "docs", "llm", *(("w4",) if include_w4 else ())):
+    for name in (*REQUIRED, "llm", *(("w4",) if include_w4 else ())):
         job = jobs.get(name)
         outcome = job.get("result") if isinstance(job, dict) else None
         requested = True

@@ -49,6 +49,25 @@ def test_success_requires_both_optimization_levels(tmp_path, monkeypatch, fake_t
     assert report["passed_executions"] == 2
     assert report["qemu_process_wall_seconds"] == {"measured_count": 2, "total": 0.5}
     assert report["atol"] == 1e-5 and report["rtol"] == 0
+    assert report["cases"][0]["frontend_parse"] == {
+        "passed": True, "operators": {"MatMul": 1}}
+
+
+@pytest.mark.parametrize("fault", ["parse", "verifier"])
+def test_failed_frontend_never_records_parsed_operators(tmp_path, monkeypatch, fake_target, fault):
+    if fault == "parse":
+        def broken_parse(*args, **kwargs):
+            raise ValueError("injected parse failure")
+        monkeypatch.setattr(probe.ONNXParser, "parse", broken_parse)
+    else:
+        monkeypatch.setattr(probe, "verify_ir", lambda *args, **kwargs:
+                            (False, ["injected verifier failure"]))
+    code, report = result(tmp_path)
+    row = report["cases"][0]
+    assert code == 1 and not report["passed"]
+    assert row["stage"] == "reference" and row["executions"] == []
+    assert "injected" in row["error"]
+    assert "frontend_parse" not in row
 
 
 @pytest.mark.parametrize("fault", ["numeric", "nan", "shape", "dtype", "second_level"])
@@ -71,6 +90,8 @@ def test_incorrect_qemu_output_is_not_a_pass(tmp_path, monkeypatch, fake_target,
     assert code == 1 and report["passed"] is False
     assert report["completed_executions"] == 2
     assert report["passed_executions"] == (1 if fault == "second_level" else 0)
+    assert report["cases"][0]["frontend_parse"] == {
+        "passed": True, "operators": {"MatMul": 1}}
 
 
 def test_qemu_timeout_preserves_measured_time_and_failures(tmp_path, monkeypatch, fake_target):
@@ -93,6 +114,8 @@ def test_formula_disagreement_cannot_enter_qemu(tmp_path, monkeypatch, fake_targ
     code, report = result(tmp_path)
     assert code == 1 and report["cases"][0]["executions"] == []
     assert "NumPy formula" in report["cases"][0]["error"]
+    assert report["cases"][0]["frontend_parse"] == {
+        "passed": True, "operators": {"MatMul": 1}}
 
 
 def test_compiler_failure_cannot_become_qemu_success(tmp_path, monkeypatch, fake_target):
@@ -105,6 +128,8 @@ def test_compiler_failure_cannot_become_qemu_success(tmp_path, monkeypatch, fake
     assert code == 1 and report["completed_executions"] == 0
     assert all(item["stage"] == "compile" and "unsupported operator" in item["error"]
                for item in report["cases"][0]["executions"])
+    assert report["cases"][0]["frontend_parse"] == {
+        "passed": True, "operators": {"MatMul": 1}}
 
 
 @pytest.mark.parametrize("fault", ["empty", "missing_family", "duplicate_name"])
