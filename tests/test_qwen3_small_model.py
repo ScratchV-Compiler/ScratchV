@@ -50,6 +50,18 @@ def checkpoints(wrapper, inputs):
     return dict(zip(wrapper.output_names, result))
 
 
+@pytest.fixture(scope="module")
+def exported_model(wrapper, inputs, tmp_path_factory):
+    pytest.importorskip("onnx")
+    pytest.importorskip("onnxruntime")
+    pytest.importorskip("onnxscript")
+    path = tmp_path_factory.mktemp("qwen3-small-export") / "checkpoints.onnx"
+    original = modeling_qwen3.eager_attention_forward
+    metadata = export_onnx(wrapper, path, *inputs)
+    assert_observers_removed(wrapper, original)
+    return path, metadata
+
+
 def raw_logits(model, inputs, positions):
     return model(
         input_ids=inputs[0], attention_mask=inputs[1], position_ids=positions,
@@ -244,13 +256,12 @@ def test_capture_does_not_intercept_other_official_model_with_more_layers(wrappe
     assert_observers_removed(wrapper, original)
 
 
-def test_dynamo_export_names_and_all_checkpoints_round_trip(wrapper, inputs, checkpoints, tmp_path):
+def test_dynamo_export_names_and_all_checkpoints_round_trip(wrapper, inputs, checkpoints, exported_model):
     onnx = pytest.importorskip("onnx")
     ort = pytest.importorskip("onnxruntime")
     pytest.importorskip("onnxscript")
     original = modeling_qwen3.eager_attention_forward
-    path = tmp_path / "diagnostics.onnx"
-    metadata = export_onnx(wrapper, path, *inputs)
+    path, metadata = exported_model
     assert_observers_removed(wrapper, original)
     graph = onnx.load(str(path))
     onnx.checker.check_model(graph)
@@ -267,3 +278,68 @@ def test_dynamo_export_names_and_all_checkpoints_round_trip(wrapper, inputs, che
     for name, result in zip(wrapper.output_names, actual):
         np.testing.assert_allclose(result, checkpoints[name].numpy(), atol=1e-5, rtol=1e-5,
                                    err_msg=name)
+
+
+@pytest.mark.parametrize("fault", ["normal_parse", "normal_verifier", "diagnostic_parse",
+                                   "diagnostic_verifier", "numeric"])
+def test_run_probe_records_only_verified_graphs(tmp_path, monkeypatch, wrapper, exported_model, fault):
+    """Run the real small-model stages; reuse one export and stop at the fault."""
+    from collections import Counter
+    import shutil
+    import onnx
+    from probes.w2_qwen3_small import model, run
+    from scratchv.analysis import ir_verifier
+    from scratchv.frontend.onnx_parser import ONNXParser
+    from scratchv.verification.ir_interpreter import IRInterpreter
+
+    source, metadata = exported_model
+    monkeypatch.setattr(run, "environment", lambda: {"fixture": "pinned small-model stack"})
+    monkeypatch.setattr(model, "build_model", lambda **kwargs: wrapper)
+
+    def reuse_export(wrapper, path, *inputs):
+        shutil.copyfile(source, path)
+        return metadata
+    monkeypatch.setattr(model, "export_onnx", reuse_export)
+    original_parse, original_verify = ONNXParser.parse, ir_verifier.verify_ir
+    parsed = []
+
+    def parse(self, path):
+        kind = "normal" if str(path).endswith("model.onnx") else "diagnostic"
+        parsed.append(kind)
+        if fault == f"{kind}_parse":
+            raise ValueError(f"injected {fault}")
+        return original_parse(self, path)
+
+    def verify(program):
+        if fault == f"{parsed[-1]}_verifier":
+            return False, [f"injected {fault}"]
+        return original_verify(program)
+
+    def numeric_failure(*args, **kwargs):
+        raise ValueError("injected numeric")
+
+    monkeypatch.setattr(ONNXParser, "parse", parse)
+    monkeypatch.setattr(ir_verifier, "verify_ir", verify)
+    if fault == "numeric":
+        monkeypatch.setattr(IRInterpreter, "run", numeric_failure)
+    report = {"passed": False}
+    previous = torch.are_deterministic_algorithms_enabled()
+    previous_warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        with pytest.raises(ValueError, match="injected"):
+            run.run_probe(tmp_path, report, model_seed=193)
+    finally:
+        torch.use_deterministic_algorithms(previous, warn_only=previous_warn_only)
+    assert not report["passed"]
+    assert report["planned_cases"] == len(run.input_cases()) == 7
+    assert report["stage"] == ("numeric" if fault == "numeric" else "parse")
+    if fault.startswith("normal"):
+        assert "frontend_parse" not in report
+    else:
+        graphs = ["normal", "diagnostic"] if fault == "numeric" else ["normal"]
+        operators = Counter()
+        for kind in graphs:
+            path = tmp_path / ("model.onnx" if kind == "normal" else "diagnostics.onnx")
+            operators.update(node.op_type for node in onnx.load(path).graph.node)
+        assert report["frontend_parse"] == {
+            "passed": True, "operators": dict(operators), "graphs": graphs}

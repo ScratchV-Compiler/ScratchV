@@ -23,7 +23,7 @@ def load_script(name):
 
 scope = load_script("ci_scope")
 summary = load_script("summarize_ci")
-CONFIG = {"llm": ["scratchv/**", "probes/**"], "docs": ["docs/**"], "w4": []}
+CONFIG = {"llm": ["scratchv/**", "probes/**"], "w4": []}
 
 
 def git(root, *args):
@@ -77,7 +77,7 @@ def test_real_diff_includes_rename_source_deletion_and_space_names(repository):
     assert set(paths) == {"scratchv/delete.py", "docs/old.md", "moved outside docs.md",
                           "unrelated name with spaces.txt"}
     assert scope.detect_scopes(root, "pull_request", event, config) == (
-        {"llm": True, "docs": True, "w4": False}, 4)
+        {"llm": True, "w4": False}, 4)
 
 
 def test_merge_base_diff_excludes_base_branch_only_changes(repository):
@@ -89,18 +89,18 @@ def test_merge_base_diff_excludes_base_branch_only_changes(repository):
     head = commit(root, "PR branch")
     set_event(event, advanced_base, head)
     assert scope.detect_scopes(root, "pull_request", event, config) == (
-        {"llm": False, "docs": False, "w4": False}, 1)
+        {"llm": False, "w4": False}, 1)
 
 
 @pytest.mark.parametrize("path,expected", [
-    ("scratchv/backend/test.py", (True, False, False)),
-    ("probes/model/run.py", (True, False, False)),
-    ("docs/nested/readme.md", (False, True, False)),
-    ("README.md", (False, False, False)),
-    (".github/workflows/test.yml", (True, True, False)),
-    ("scripts/ci_scopes.json", (True, True, False)),
-    ("scripts/summarize_ci.py", (True, True, False)),
-    ("tests/test_ci_routing.py", (True, True, False)),
+    ("scratchv/backend/test.py", (True, False)),
+    ("probes/model/run.py", (True, False)),
+    ("docs/nested/readme.md", (False, False)),
+    ("README.md", (False, False)),
+    (".github/workflows/test.yml", (True, False)),
+    ("scripts/ci_scopes.json", (True, False)),
+    ("scripts/summarize_ci.py", (True, False)),
+    ("tests/test_ci_routing.py", (True, False)),
 ])
 def test_path_scopes_and_shared_configuration(path, expected):
     assert tuple(scope.select_scopes(CONFIG, [path]).values()) == expected
@@ -133,7 +133,7 @@ def test_non_pr_never_activates_scopes_or_needs_event(repository, event_name):
     root, _, config, event = repository
     event.write_text("invalid JSON", encoding="utf-8")
     assert scope.detect_scopes(root, event_name, event, config) == (
-        {"llm": False, "docs": False, "w4": False}, 0)
+        {"llm": False, "w4": False}, 0)
 
 
 @pytest.mark.parametrize("event_name", ["pull_request_target", "", "unexpected", "pull_request\n"])
@@ -144,8 +144,8 @@ def test_unknown_or_missing_event_fails_closed(repository, event_name):
 
 
 @pytest.mark.parametrize("value", [None, [], {}, {"llm": []}, {**CONFIG, "unexpected": []},
-                                 {**CONFIG, "docs": "docs/**"}, {**CONFIG, "docs": [""]},
-                                 {**CONFIG, "docs": [None]}])
+                                 {**CONFIG, "llm": "scratchv/**"}, {**CONFIG, "llm": [""]},
+                                 {**CONFIG, "llm": [None]}])
 def test_invalid_scope_configuration_fails(tmp_path, value):
     path = tmp_path / "scope.json"
     path.write_text(json.dumps(value), encoding="utf-8")
@@ -193,8 +193,8 @@ def test_missing_history_and_event_fail(repository):
 
 def test_cli_writes_only_boolean_scopes_and_count(repository, monkeypatch, capsys):
     root, base, config, event = repository
-    write(root, "docs/private filename.md")
-    head = commit(root, "docs")
+    write(root, "scratchv/private filename.md")
+    head = commit(root, "llm scope")
     set_event(event, base, head)
     write(root, "scripts/ci_scopes.json", config.read_text(encoding="utf-8"))
     monkeypatch.setattr(scope, "ROOT", root)
@@ -203,7 +203,7 @@ def test_cli_writes_only_boolean_scopes_and_count(repository, monkeypatch, capsy
     output = root.parent / "github-output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     assert scope.main() == 0
-    assert output.read_text(encoding="utf-8") == "llm=false\ndocs=true\nw4=false\n"
+    assert output.read_text(encoding="utf-8") == "llm=true\nw4=false\n"
     captured = capsys.readouterr()
     assert "Changed path count: 1" in captured.out
     assert "private" not in captured.out and not captured.err
@@ -247,10 +247,10 @@ def test_git_timeout_is_bounded_and_never_publishes_success(repository, monkeypa
 
 def successful_jobs(*, requested=True, w4=False):
     results = {name: {"result": "success"} for name in summary.REQUIRED}
-    results["scope"]["outputs"] = {name: str(requested).lower() for name in ("llm", "docs", "w4")}
+    results["scope"]["outputs"] = {name: str(requested).lower() for name in ("llm", "w4")}
     if not w4:
         results["scope"]["outputs"]["w4"] = "false"
-    for name in ("llm", "docs", *(("w4",) if w4 else ())):
+    for name in ("llm", *(("w4",) if w4 else ())):
         results[name] = {"result": "success" if requested else "skipped"}
     return results
 
@@ -265,7 +265,7 @@ def test_complete_summary_accepts_only_requested_success_or_unrequested_skip(req
     assert len(text) < 1600
 
 
-@pytest.mark.parametrize("name", [*summary.REQUIRED, "llm", "docs", "w4"])
+@pytest.mark.parametrize("name", [*summary.REQUIRED, "llm", "w4"])
 @pytest.mark.parametrize("outcome", ["failure", "cancelled", "skipped", "pending", None, True, {}])
 def test_requested_jobs_never_accept_failure_missing_or_skip(name, outcome):
     results = successful_jobs(w4=True)
@@ -274,7 +274,7 @@ def test_requested_jobs_never_accept_failure_missing_or_skip(name, outcome):
     assert not passed and "**FAIL**" in text
 
 
-@pytest.mark.parametrize("name", [*summary.REQUIRED, "llm", "docs"])
+@pytest.mark.parametrize("name", [*summary.REQUIRED, "llm"])
 def test_missing_required_jobs_fail(name):
     results = successful_jobs()
     del results[name]
@@ -289,7 +289,7 @@ def test_w4_cannot_disappear_from_needs_unless_explicitly_unrequested(flag):
     assert not passed and "| w4 | MISSING |" in text
 
 
-@pytest.mark.parametrize("name", ["llm", "docs", "w4"])
+@pytest.mark.parametrize("name", ["llm", "w4"])
 @pytest.mark.parametrize("flag", [None, True, False, "TRUE", "", "1", []])
 def test_missing_or_invalid_scope_outputs_fail_closed(name, flag):
     results = successful_jobs(w4=True)
@@ -298,14 +298,14 @@ def test_missing_or_invalid_scope_outputs_fail_closed(name, flag):
     assert not passed and "Invalid/missing scope output" in text
 
 
-@pytest.mark.parametrize("outputs", [None, [], "true", {}, {"llm": "true"}, {"docs": "false"}])
+@pytest.mark.parametrize("outputs", [None, [], "true", {}, {"llm": "true"}, {"w4": "false"}])
 def test_missing_or_malformed_output_object_fails_closed(outputs):
     results = successful_jobs()
     results["scope"]["outputs"] = outputs
     assert not summary.render_summary(results)[1]
 
 
-@pytest.mark.parametrize("name", ["llm", "docs", "w4"])
+@pytest.mark.parametrize("name", ["llm", "w4"])
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancelled", None])
 def test_unrequested_jobs_must_really_be_skipped(name, outcome):
     results = successful_jobs(requested=False, w4=True)

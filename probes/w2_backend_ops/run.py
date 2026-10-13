@@ -6,6 +6,7 @@ nonfinite tensors, shape/type changes or max_abs >= 1e-5 fail the gate.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import copy
 import hashlib
 from html import escape
@@ -104,6 +105,10 @@ def run_probe(out, report, *, cc=None, qemu=None, timeout=120):
         try:
             path = folder / "model.onnx"
             expected, parser, program = reference_case(case, path)
+            row["frontend_parse"] = {
+                "passed": True,
+                "operators": dict(sorted(Counter(node.op_type for node in case.model.graph.node).items())),
+            }
             np.savez(folder / "inputs.npz", **case.feed)
             np.save(folder / "numpy.npy", case.expected)
             np.save(folder / "ort.npy", expected)

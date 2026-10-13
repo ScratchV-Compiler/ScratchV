@@ -24,21 +24,21 @@ def test_worst_metrics_are_aggregated_independently_without_mutating_evidence():
     assert format(3e-6, ".16e") in result
     assert format(2e-7, ".16e") in result
     assert format(0.9, ".17g") in result
-    assert "门槛通过（2/2）" in result
+    assert "通过（2/2）" in result
     assert rows == original
 
 
 @pytest.mark.parametrize("render", [compact_metric_table, compact_metric_table_html])
 def test_legacy_pass_does_not_claim_complete_metric_evidence(render):
     result = render([("legacy", [{"passed": True, "max_abs": 0.0}])])
-    assert "门槛通过（1/1）；指标不完整" in result
+    assert "通过（1/1）；指标不完整" in result
     assert result.count("未记录 1/1") == 2
 
 
 @pytest.mark.parametrize("rows", [[], [{}], [{"passed": "true"}], [{"passed": 1}]])
 def test_empty_missing_and_nonboolean_status_never_pass(rows):
     result = compact_metric_table([("unexecuted", rows)])
-    assert "门槛通过" not in result
+    assert "未通过" in result or "未测" in result
     assert "未测" in result or "未确认 1" in result
 
 
@@ -46,9 +46,24 @@ def test_failures_are_not_hidden_by_passing_rows():
     failed = record()
     failed["passed"] = False
     result = compact_metric_table([("mixed", [record(), failed, {}])])
-    assert "门槛未通过（通过 1/3，失败 1，未确认 1）" in result
+    assert "未通过（通过 1/3，失败 1，未确认 1）" in result
     assert "已记录 2/3" in result
     assert "未记录 1/3" in result
+
+
+@pytest.mark.parametrize("render", [compact_metric_table, compact_metric_table_html])
+def test_missing_comparisons_keep_the_count_and_failure_reason(render):
+    result = render([("partial", [record(), {"missing_reason": "编译失败"}])])
+    assert "未完成（通过 1/2，未得到结果 1：编译失败 ×1）" in result
+    assert "已记录 1/2" in result
+    assert "未记录 1/2" in result
+    assert "通过（1/1）" not in result
+
+
+def test_numerical_failures_remain_distinct_from_missing_comparisons():
+    failed = dict(record(), passed=False)
+    result = compact_metric_table([("mixed", [record(), failed, {"missing_reason": "编译失败"}])])
+    assert "通过 1/3，数值比较失败 1，未得到结果 1" in result
 
 
 def test_undefined_values_show_reason_and_coverage_not_zero():
@@ -86,7 +101,7 @@ def test_small_nonzero_errors_and_near_one_cosines_remain_distinguishable():
 def test_cosine_domain_and_existing_gate_flags_are_not_reinterpreted():
     # Cosine observes directional similarity; it does not impose a new gate.
     result = compact_metric_table([("opposite", [record(cosine_similarity=-1.0)])])
-    assert "门槛通过（1/1）" in result and "未定义" not in result
+    assert "通过（1/1）" in result and "未定义" not in result
     invalid = compact_metric_table([("invalid", [record(cosine_similarity=1.1)])])
     assert "未定义 1/1（数值无效 ×1）" in invalid
 
