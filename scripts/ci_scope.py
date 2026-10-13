@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 
-SCOPES = ("llm", "docs", "w4")
+SCOPES = ("llm", "w4")
 SHARED_PATHS = (".github/workflows/**", "scripts/ci_*", "scripts/summarize_ci.py", "tests/test_ci_*")
 SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def read_config(path: Path) -> dict[str, list[str]]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or set(value) != set(SCOPES):
-        raise ValueError("scope configuration must define llm, docs and w4")
+        raise ValueError("scope configuration must define llm and w4")
     for patterns in value.values():
         if not isinstance(patterns, list) or any(
             not isinstance(pattern, str) or not pattern for pattern in patterns

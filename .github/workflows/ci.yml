@@ -24,7 +24,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       llm: ${{ steps.scope.outputs.llm }}
-      docs: ${{ steps.scope.outputs.docs }}
       w4: ${{ steps.scope.outputs.w4 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -40,12 +39,6 @@ jobs:
     needs: scope
     if: github.event_name == 'pull_request' && needs.scope.outputs.llm == 'true'
     uses: ./.github/workflows/llm-deploy.yml
-
-  docs:
-    name: Documentation checks
-    needs: scope
-    if: github.event_name == 'pull_request' && needs.scope.outputs.docs == 'true'
-    uses: ./.github/workflows/linux-reproduction-docs.yml
 
   topic06:
     name: Topic 06 benchmark
@@ -150,8 +143,12 @@ jobs:
           $PY -m pip check
           $PY -c "import torch, yaml, safetensors; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
 
+      # Unconditional: a docs-only change never selects the deployment scope, so
+      # this check cannot live behind a path filter.
+      - name: Check public instructions and Bash syntax
+        run: $PY scripts/check_linux_repro_docs.py --check-bash
+
       - name: Run Topic 04 PassManager regressions
-        id: topic04_pass_manager
         env:
           PYTHONHASHSEED: "0"
         run: |
@@ -165,20 +162,6 @@ jobs:
             -v --tb=short \
             --junit-xml=benchmark_reports/topic04_pass_manager.xml \
             | tee benchmark_reports/topic04_pass_manager.txt
-
-      - name: Summarize Topic 04 PassManager results
-        if: always()
-        env:
-          TOPIC04_OUTCOME: ${{ steps.topic04_pass_manager.outcome }}
-        run: |
-          {
-            echo "## Topic 04 PassManager"
-            echo "Result: $TOPIC04_OUTCOME"
-            echo ""
-            echo "Coverage: pass registration, enable/disable switches, constant folding, functional pipelines, and optimizer regressions."
-            echo ""
-            echo "JUnit XML and detailed test output are included in the test-reports artifact when tests run."
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run IR interpreter and LICM regressions
         timeout-minutes: 5
@@ -778,7 +761,7 @@ jobs:
   acceptance:
     name: CI acceptance
     if: always()
-    needs: [scope, test, benchmark, topic06, docs, llm, w4]
+    needs: [scope, test, benchmark, topic06, llm, w4]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
