@@ -71,9 +71,9 @@ def checkout_evidence():
     return result
 
 
-def initial_report(mode):
+def initial_report():
     return {"schema_version": 1, "gate": GATE, "passed": False, "stage": "initialization",
-            "created_at": datetime.now(timezone.utc).isoformat(), "mode": mode, "scope": SCOPE,
+            "created_at": datetime.now(timezone.utc).isoformat(), "scope": SCOPE,
             "model_id": artifacts.MANIFEST["model_id"], "revision": artifacts.MANIFEST["revision"],
             "stages_seconds": {}}
 
@@ -87,7 +87,7 @@ def save_failure_evidence(path, value, report):
             f"{path.name}: {type(exc).__name__}: {exc}")
 
 
-def run_validation(model_dir, out, report, *, mode="verify", manifest=None, progress=None):
+def run_validation(model_dir, out, report, *, manifest=None, progress=None):
     """Run real parsing. Small test fixtures may explicitly supply a manifest.
 
     The CLI always uses the committed full-model manifest and architecture.
@@ -112,8 +112,6 @@ def run_validation(model_dir, out, report, *, mode="verify", manifest=None, prog
         finally:
             report["stages_seconds"][name] = time.perf_counter() - started
 
-    if mode == "download":
-        report["acquisition"] = stage("acquire", lambda: artifacts.acquire_model(model_dir, manifest=manifest))
     report["hashes"] = stage("hashes", lambda: artifacts.verify_files(model_dir, manifest))
     report["onnx_structure"] = stage("onnx-structure", lambda: artifacts.inspect_model(model_dir, report["hashes"]))
     model = stage("graph-load", lambda: onnx.load(str(model_dir / "model.onnx"), load_external_data=False))
@@ -165,7 +163,7 @@ def run_validation(model_dir, out, report, *, mode="verify", manifest=None, prog
 
 
 def worker_main(args):
-    report = initial_report(args.mode)
+    report = initial_report()
     out = args.output_dir.resolve()
     started = time.perf_counter()
     last_checkpoint = -math.inf
@@ -185,7 +183,7 @@ def worker_main(args):
         report["environment"] = artifacts.environment()
         report["checkout"] = checkout_evidence()
         report["source_sha256"] = source_fingerprints()
-        run_validation(args.model_dir, out, report, mode=args.mode, progress=checkpoint)
+        run_validation(args.model_dir, out, report, progress=checkpoint)
     except Exception as exc:
         report["passed"] = False
         report["error"] = f"{type(exc).__name__}: {exc}"
@@ -199,7 +197,7 @@ def worker_main(args):
 
 def worker_command(args):
     return [sys.executable, "-B", "-X", "utf8", str(Path(__file__).resolve()), "--worker",
-            "--mode", args.mode, "--model-dir", str(args.model_dir.resolve()),
+            "--model-dir", str(args.model_dir.resolve()),
             "--output-dir", str(args.output_dir.resolve())]
 
 
@@ -306,8 +304,7 @@ def write_reports(out, report):
 
 
 def main(argv=None):
-    cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("--mode", choices=("verify", "download"), default="verify")
+    cli = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     cli.add_argument("--model-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/onnx")
     cli.add_argument("--output-dir", type=Path, default=ROOT / "output/qwen3-parse")
     cli.add_argument("--timeout", type=float, default=300)
@@ -321,7 +318,7 @@ def main(argv=None):
     if out.exists() and (not out.is_dir() or any(out.iterdir())):
         cli.error("--output-dir must be absent or empty; preserve previous evidence")
     out.mkdir(parents=True, exist_ok=True)
-    report = initial_report(args.mode)
+    report = initial_report()
     report.update(stage="worker-launch", timeout_seconds=args.timeout)
     started = time.perf_counter()
     result = None

@@ -59,9 +59,9 @@ python probes/w1_qwen3_export/run.py --output-dir output/linux-onnx-verify-01
 python probes/w2_runtime/run.py --output-dir output/linux-tokenizer-01
 ```
 
-W2 入口默认读取上述资产目录并使用 `verify`，不再要求单独下载 Release 或 Hugging Face 文件。
+W2 入口只读取上述本地资产并执行测试，不提供资产下载功能或模式参数。
 小算子和两层随机模型仍在 `output/` 生成。资产缺失、未展开或哈希不匹配时验收失败，
-不会自动联网替换。历史 `download` 模式保留为显式兼容入口，正常复现使用 LFS。
+不会联网获取或替换资产。W1 导出工具仍保留独立的 `download` / `export` 模式；W2 复现通过 Git LFS 准备资产。
 
 ## 4. 执行与留存证据
 

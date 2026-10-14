@@ -14,7 +14,7 @@ ONNX 固定 batch=1、sequence=256、opset=18，无 KV cache。完整预训练�
 三个分片中；本目录不重复保存原始 Hugging Face `model.safetensors`，重新导出时另行获取。
 
 Git LFS 的初始化和拉取方法见 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)。
-验收入口默认离线读取此目录并检查固定 SHA256；未拉取的 LFS pointer、缺文件和损坏文件均失败。
+W2 验收入口只离线读取此目录并检查固定 SHA256；未拉取的 LFS pointer、缺文件和损坏文件均失败。
 生成的小模型、参考输出和报告写入 `output/`，不提交到此目录。
 
 更新资产时必须同时更新来源 revision、manifest 与相关验收证据，并保持 external-data

@@ -10,7 +10,7 @@ from probes.w2_qwen3_parse import run as gate
 
 
 def completed_report(out, *, passed=True, stage="complete"):
-    report = gate.initial_report("verify")
+    report = gate.initial_report()
     report.update(passed=passed, stage=stage, validation_seconds=1.0,
                   graph={"passed": True, "layers": [{"layer": index} for index in range(28)]},
                   stages_seconds={"scratchv-parse": 0.25},
@@ -25,6 +25,14 @@ def completed_report(out, *, passed=True, stage="complete"):
 
 def invoke(tmp_path):
     return ["--model-dir", str(tmp_path / "model"), "--output-dir", str(tmp_path / "report")]
+
+
+@pytest.mark.parametrize("mode", ["download", "verify"])
+def test_removed_mode_is_rejected_before_launch(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(gate, "launch_worker", lambda args: pytest.fail("must not launch"))
+    with pytest.raises(SystemExit, match="2"):
+        gate.main([*invoke(tmp_path), "--mode", mode])
+    assert not (tmp_path / "report").exists()
 
 
 def test_success_keeps_separate_parse_time_and_scope(tmp_path, monkeypatch):
@@ -288,12 +296,13 @@ def test_worker_uses_same_python_explicit_paths_and_timeout(tmp_path, monkeypatc
         captured.update(command=command, **kwargs)
         return subprocess.CompletedProcess(command, 0, b"", b"")
     monkeypatch.setattr(runtime, "_run_process", process)
-    args = SimpleNamespace(mode="verify", model_dir=tmp_path / "model with spaces",
+    args = SimpleNamespace(model_dir=tmp_path / "model with spaces",
                            output_dir=tmp_path / "output with spaces", timeout=12.5)
     gate.launch_worker(args)
     assert captured["command"][0] == gate.sys.executable
     assert str(args.model_dir.resolve()) in captured["command"]
     assert "--worker" in captured["command"] and captured["timeout"] == 12.5
+    assert "--mode" not in captured["command"]
 
 
 def test_worker_dependency_failure_writes_report_before_parsing(tmp_path, monkeypatch):
@@ -301,7 +310,7 @@ def test_worker_dependency_failure_writes_report_before_parsing(tmp_path, monkey
         raise RuntimeError("pinned environment mismatch")
     monkeypatch.setattr(gate.artifacts, "environment", bad_environment)
     monkeypatch.setattr(gate, "run_validation", lambda *args, **kwargs: pytest.fail("must not parse"))
-    args = SimpleNamespace(mode="verify", model_dir=tmp_path / "model", output_dir=tmp_path)
+    args = SimpleNamespace(model_dir=tmp_path / "model", output_dir=tmp_path)
     assert gate.worker_main(args) == 1
     result = json.loads((tmp_path / "worker-report.json").read_text(encoding="utf-8"))
     assert result["stage"] == "environment" and not result["passed"]
@@ -314,7 +323,7 @@ def test_corrupt_hash_cannot_reach_scratchv_parser(tmp_path, monkeypatch):
         raise ValueError("Artifact size/SHA-256 mismatch: weights.data")
     monkeypatch.setattr(gate.artifacts, "verify_files", bad_files)
     monkeypatch.setattr(audit.AuditedONNXParser, "parse", lambda *args: pytest.fail("must not parse"))
-    report = gate.initial_report("verify")
+    report = gate.initial_report()
     with pytest.raises(ValueError, match="SHA-256"):
         gate.run_validation(tmp_path / "model", tmp_path, report)
     assert report["stage"] == "hashes" and not report["passed"]
@@ -363,7 +372,7 @@ def test_real_decoder_pipeline_and_failure_context(tmp_path, monkeypatch, fault,
             self.initializers["model.lm_head.weight"][0, 0] += 1
             return program
         monkeypatch.setattr(audit.AuditedONNXParser, "parse", misbind)
-    report = gate.initial_report("verify")
+    report = gate.initial_report()
     if evidence_locked:
         original_write = gate.write_json
         def write(path, value):

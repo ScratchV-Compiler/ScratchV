@@ -19,8 +19,8 @@ SPEC.loader.exec_module(runner)
 
 def arguments(tmp_path, gates=None):
     return argparse.Namespace(output_dir=tmp_path / "fresh", gates=list(runner.GATES) if gates is None else gates,
-                              python=sys.executable, tokenizer_dir=tmp_path / "assets", tokenizer_mode="verify",
-                              model_dir=tmp_path / "model", model_mode="verify", cc="compiler", qemu="emulator",
+                              python=sys.executable, tokenizer_dir=tmp_path / "assets",
+                              model_dir=tmp_path / "model", cc="compiler", qemu="emulator",
                               qemu_timeout=180, parse_timeout=300)
 
 
@@ -57,7 +57,7 @@ def test_plan_is_fresh_serial_and_explicit(tmp_path):
         assert str(gate.output) in " ".join(gate.command)
     assert plan[5].dependencies == ("small-ir",)
     assert str(args.output_dir / "small-ir") in plan[5].command
-    assert "--mode" in plan[-1].command and "verify" in plan[-1].command
+    assert all("--mode" not in gate.command for gate in plan)
     assert "compiler" in plan[1].command and "emulator" in plan[1].command
 
 
@@ -162,6 +162,15 @@ def test_existing_output_is_not_read_as_pass(tmp_path):
     (folder / "report.json").write_text('{"passed":true}')
     result = runner.run_gate(runner.Gate("runtime", (), folder), {}, timeout=1)
     assert result["status"] == "FAIL" and "already exists" in result["error"]
+
+
+@pytest.mark.parametrize("option", ["--tokenizer-mode", "--model-mode"])
+@pytest.mark.parametrize("mode", ["download", "verify"])
+def test_removed_asset_modes_are_rejected(tmp_path, option, mode):
+    out = tmp_path / "new"
+    with pytest.raises(SystemExit, match="2"):
+        runner.main(["--output-dir", str(out), option, mode])
+    assert not out.exists()
 
 
 def test_zero_exit_without_report_is_failure(tmp_path):
@@ -449,7 +458,7 @@ def test_default_lfs_assets_and_failure_propagation(tmp_path, monkeypatch, selec
         launched.append(gate.name)
         assert gate.command[gate.command.index(option) + 1] == str(
             runner.ROOT / "assets/qwen3-0.6b" / directory)
-        assert gate.command[gate.command.index("--mode") + 1] == "verify"
+        assert "--mode" not in gate.command
         return {"name": gate.name, "status": "FAIL", "passed": False, "error": "Missing LFS assets"}
 
     monkeypatch.setattr(runner, "run_gate", fail_assets)

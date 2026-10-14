@@ -81,7 +81,7 @@ def test_qwen_assets_select_acceptance_and_jobs_fetch_only_required_lfs_files():
             assert 'assets/qwen3-0.6b/onnx' not in pull
         commands = '\n'.join(step.get('run', '') for step in steps)
         assert '--mode download' not in commands
-        assert '--mode verify' in commands
+        assert ('--mode verify' in commands) == (name == 'full-qwen3-onnx')
 
 
 def test_the_test_job_writes_no_step_summary():

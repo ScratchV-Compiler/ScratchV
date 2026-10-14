@@ -173,7 +173,7 @@ jobs:
         id: runtime
         timeout-minutes: 10
         run: |
-          "$QWEN3_PY" probes/w2_runtime/run.py --mode verify \
+          "$QWEN3_PY" probes/w2_runtime/run.py \
             --tokenizer-dir assets/qwen3-0.6b/tokenizer --output-dir output/w2-runtime
 
       - name: "integration:runtime-model"
@@ -482,7 +482,7 @@ jobs:
           OPENBLAS_NUM_THREADS: "1"
         run: |
           set -euo pipefail
-          python3 "$PROBE_QWEN3_PARSE" --mode verify \
+          python3 "$PROBE_QWEN3_PARSE" \
             --model-dir assets/qwen3-0.6b/onnx \
             --output-dir output/qwen3-parse --timeout 1200
       - name: Summarize complete Qwen3 frontend gate

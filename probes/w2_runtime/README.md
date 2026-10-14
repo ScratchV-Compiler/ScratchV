@@ -12,7 +12,7 @@
 python probes/w2_runtime/run.py --output-dir output/w2-runtime
 ```
 
-默认从 `assets/qwen3-0.6b/tokenizer` 读取七个文件并使用 `verify` 离线校验。资产拉取方法见 Linux 复现约定。输出目录必须为空或不存在，每次复现选择新的目录。CLI 退出 0 且本次 `report.json` 的 `passed=true` 才代表通过。报告写入不完整、依赖缺失、下载或哈希校验失败均为失败。
+默认从 `assets/qwen3-0.6b/tokenizer` 读取七个文件并离线校验。资产拉取方法见 Linux 复现约定。输出目录必须为空或不存在，每次复现选择新的目录。CLI 退出 0 且本次 `report.json` 的 `passed=true` 才代表通过。报告写入不完整、依赖或资产缺失、哈希校验失败均为失败。
 
 ## 验收内容
 

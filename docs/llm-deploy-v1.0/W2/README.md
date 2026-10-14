@@ -20,7 +20,7 @@ W2 的范围是完整前端解析、小模型 IR 数值、基础后端和 Host �
 python scripts/run_w2_acceptance.py --output-dir output/w2-acceptance-linux-01
 ```
 
-默认读取 Git LFS 管理的 `assets/qwen3-0.6b/tokenizer` 和 `assets/qwen3-0.6b/onnx`，资产获取见环境指南。使用其他本地目录时可指定 `--tokenizer-dir` 和 `--model-dir`。所有文件必须匹配固定 manifest，只有 LFS pointer 不可运行。默认 `verify` 全程离线；解析需要数 GiB 空闲内存。`--output-dir` 必须是本次全新的路径，连已存在的空目录也会被拒绝。
+默认读取 Git LFS 管理的 `assets/qwen3-0.6b/tokenizer` 和 `assets/qwen3-0.6b/onnx`，资产获取见环境指南。使用其他本地目录时可指定 `--tokenizer-dir` 和 `--model-dir`。所有文件必须匹配固定 manifest，只有 LFS pointer 不可运行。测试全程离线；解析需要数 GiB 空闲内存。`--output-dir` 必须是本次全新的路径，连已存在的空目录也会被拒绝。
 
 | 门禁 | 实际执行与判断 |
 |---|---|
