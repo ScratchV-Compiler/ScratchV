@@ -2,17 +2,14 @@
 
 `unit:runtime` 验证文本 tokenizer、固定输入准备、最后有效位置 greedy 采样及停止边界，不执行完整模型或生成循环。生产模块只依赖 NumPy 与可选的 `tokenizers`；Transformers 只用于此门禁的官方对照。
 
-## 固定资产与环境
+## 固定资产与运行入口
 
 模型为 `Qwen/Qwen3-0.6B`，revision `c1899de289a04d12100db370d81485cdf75e47ca`。复用 [W1 manifest](../w1_qwen3_export/manifest.json) 的七个 `source_files` 哈希：配置、tokenizer JSON、merges、vocab 与许可证，合计约 15.2 MiB。下载模式只获取这些文件，不下载模型权重。已有资产必须全部匹配哈希；损坏目录保留并失败，不静默覆盖。
 
-使用 [两层模型指南](../w2_qwen3_small/README.md) 中的 Python 3.12 固定 CPU 环境；其中已包含 `numpy==2.2.6`、`tokenizers==0.21.4`、`transformers==4.51.3`。仅使用生产 tokenizer 时可安装 `pip install -e ".[llm]"`，无需 Torch；复现 gate 仍使用固定版本和官方参考依赖。
-
-正式复现使用 Ubuntu 24.04 x86_64 / Bash；先按 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) 激活环境，在仓库根目录运行：
+安装与系统工具要求见 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)。以下命令在仓库根目录使用已安装 `llm-deploy` 的 Python 环境执行。
 
 ```bash
-.venv-linux/bin/python -B -X utf8 probes/w2_runtime/run.py \
-  --mode download --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime
+python probes/w2_runtime/run.py --mode download --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime
 ```
 
 已有七个文件时使用 `--mode verify`，该模式不访问网络。输出目录必须为空或不存在，每次复现选择新的目录。CLI 退出 0 且本次 `report.json` 的 `passed=true` 才代表通过。报告写入不完整、依赖缺失、下载或哈希校验失败均为失败。

@@ -17,6 +17,12 @@ import platform
 import re
 import subprocess
 import sys
+import tomllib
+from urllib.parse import unquote, urlsplit
+
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name, parse_wheel_filename
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = "probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx"
@@ -40,25 +46,31 @@ def run(command: list[str], root: Path) -> str:
 
 
 def check_packages(root: Path) -> dict:
-    """Read the same exact pins as the probe; do not maintain a second version list."""
+    """Read deployment pins from the same extra used for installation."""
     packages = {}
-    for line in (root / "requirements/qwen3-small-probe.txt").read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^\s;]+)", line)
-        if not match:
-            raise ValueError(f"Unsupported requirement; review the preflight parser: {line}")
-        name, expected = match.groups()
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    for line in config["project"]["optional-dependencies"]["llm-deploy"]:
+        requirement = Requirement(line)
+        name = requirement.name
+        if requirement.url:
+            filename = unquote(Path(urlsplit(requirement.url).path).name)
+            wheel_name, version, _, _ = parse_wheel_filename(filename)
+            if wheel_name != canonicalize_name(name):
+                raise ValueError(f"Wheel name does not match requirement: {line}")
+            expected = str(version)
+        else:
+            match = re.fullmatch(r"==([^\s*,]+)", str(requirement.specifier))
+            if not match or requirement.marker:
+                raise ValueError(f"Expected an exact deployment pin: {line}")
+            expected = match.group(1)
         try:
             installed = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
             installed = None
-        # A local wheel tag such as torch 2.7.1+cpu satisfies the pinned release.
         packages[name] = {"expected": expected, "installed": installed,
-                          "ok": installed is not None and installed.split("+", 1)[0] == expected}
+                          "ok": installed is not None and installed in SpecifierSet(f"=={expected}")}
     if not packages:
-        raise ValueError("The pinned requirements file is empty")
+        raise ValueError("The llm-deploy dependency group is empty")
     return {"ok": all(p["ok"] for p in packages.values()), "packages": packages}
 
 

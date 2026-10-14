@@ -15,19 +15,11 @@ for blocked positions. Short-input predictions use the last valid token.
 
 ## Environment
 
-The published reproduction target is Ubuntu 24.04 x86_64 with Bash and Python 3.12. See the [Linux reproduction contract](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md). The existing `requirements/qwen3-small-probe.txt` CPU
-environment also satisfies this gate. For a separate reproducible export
-environment:
-
-```bash
-set -euo pipefail
-python3.12 -m venv .venv-linux
-source .venv-linux/bin/activate
-python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements/qwen3-export.txt
-```
-
-Keep this environment activated for all `python` commands below; the interpreter is `.venv-linux/bin/python`. Record the checkout SHA and actual dependency versions with each new run.
+The reproduction target is Ubuntu 24.04 x86_64 and Python 3.12. Install the
+`llm-deploy` extra as described in the [Linux reproduction contract](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md).
+All Python dependencies and the CPU wheel source are declared in `pyproject.toml`.
+Use that Python environment for the commands below, and record the checkout SHA
+and actual dependency versions with each new run.
 
 Verify/download
 mode enforces NumPy 2.2.6, ONNX 1.18.0, ONNX Runtime 1.22.1 and protobuf 5.29.5;

@@ -43,42 +43,21 @@ E4 建议领取 MatMul/两层 QEMU，E5 建议领取合成图/真实结构 IR/�
 
 ## 1. 建立固定CPU环境
 
-要求Python3.12，固定依赖在 `requirements/qwen3-small-probe.txt`。先安装CPU PyTorch，再装其余依赖，避免默认索引解析成CUDA包。
+Python 依赖统一使用 `pyproject.toml` 的 `llm-deploy` extra；安装命令与系统工具前提见 [Linux 复现约定](../LINUX_REPRODUCTION.md)。后续 `python` 指已安装该 extra 的 Python 3.12 解释器。Zig 自动从当前环境发现，QEMU 使用 PATH 中的可执行程序。
 
-Ubuntu 24.04 / Bash：
-
-```bash
-set -euo pipefail
-sudo apt-get update
-sudo apt-get install --no-install-recommends python3.12-venv git-lfs qemu-system-misc
-python3.12 -m venv .venv-linux
-. .venv-linux/bin/activate
-python -m pip install --upgrade pip
-python -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements/qwen3-small-probe.txt
-python -m pip install --no-deps -e .
-python -m pip install "ziglang==0.14.1"
-python -m pip check
-export SCRATCHV_CC="$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')"
-export SCRATCHV_PYTHON="$(pwd)/.venv-linux/bin/python"
-export SCRATCHV_QEMU="$(command -v qemu-system-riscv64)"
-export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-"$SCRATCHV_QEMU" --version
-```
-
-后续代码块中的 `python` 均指已激活的 `.venv-linux/bin/python`。在新终端先执行 `source .venv-linux/bin/activate` 并恢复工具环境变量。CPU小模型无需官方权重下载；首次编译Zig会建立缓存，应允许足够编译时间，不要将首次构建耗时解释为推理性能。
+CPU 小模型无需官方权重下载；首次编译 Zig 会建立缓存，应允许足够编译时间，不要将首次构建耗时解释为推理性能。
 
 当前交付提供环境预检入口（历史 `5ea22ec` 没有此脚本）：
 
 ```bash
-python -X utf8 -B scripts/check_w1_repro_env.py --require-clean --output-dir output/w1-repro-env
+python scripts/check_w1_repro_env.py --require-clean --output-dir output/w1-repro-env
 ```
 
 它检查 Python/固定依赖、CPU PyTorch、原生模块导入和 ORT CPU provider、`pip check`、Zig/QEMU 版本及 virt/rv64 能力、Git 状态和合成模型的真实 LFS 对象哈希；不安装工具、不下载模型、不运行数值测试。输出 `report.json/md`，`ready=true` 只表示环境具备前置条件，不能写成 W1 或第二人验收通过。失败时先看对应检查的实际版本/错误。专门验证额外本地改动时可去掉 `--require-clean`，报告仍记录 dirty 状态，须另保留完整增量。
 
 完整 ONNX 的固定 ZIP 约 1.24 GB，解包模型约 2.41 GB；已有 ORT 验证进程峰值约 5.97 GiB。按实际机器预留下载、解包和运行余量；该内存记录不是导出峰值或最低内存承诺。完整模型可以单独安排，不能将未执行记为成功。
 
-Bash 使用 `set -euo pipefail`，任何命令失败即停止；记录失败码时使用 `if command; then ...; else status=$?; ...; fi`，不要用后续成功命令覆盖失败。数值失败仍须保存报告和日志。
+命令失败后先核对退出码与报告，不要用后续成功覆盖失败。数值失败仍须保存报告和日志。
 
 ## 2. 文档、回归与原两层合成图
 

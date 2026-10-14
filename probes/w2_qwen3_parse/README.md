@@ -4,20 +4,12 @@
 
 本入口不执行完整模型 IR，不生成完整模型 RISC-V，不运行 QEMU，也不重新导出模型或比较 PyTorch/ORT 数值。完整模型的 ORT 执行继续由 [W1 导出门禁](../w1_qwen3_export/README.md) 负责；两项门禁分别报告结果。
 
-## 准备环境
+## 运行探测
 
-正式复现使用 Ubuntu 24.04 x86_64 / Bash / Python 3.12，固定 NumPy 2.2.6、ONNX 1.18.0、ONNX Runtime 1.22.1 和 protobuf 5.29.5。可直接复用 W1 的固定环境；单独准备时无需安装 torch、Zig 或 QEMU。
-
-Linux Bash：
+安装与系统工具要求见 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)。以下命令在仓库根目录使用已安装 `llm-deploy` 的 Python 环境执行。
 
 ```bash
-set -euo pipefail
-python3.12 -m venv output/qwen3-parse-venv
-. output/qwen3-parse-venv/bin/activate
-python -m pip install "numpy==2.2.6" "onnx==1.18.0" "onnxruntime==1.22.1" "protobuf==5.29.5"
-python -m pip check
-python -X utf8 -B probes/w2_qwen3_parse/run.py --mode verify \
-  --model-dir output/qwen3-full-model --output-dir output/qwen3-parse --timeout 300
+python probes/w2_qwen3_parse/run.py --mode verify --model-dir output/qwen3-full-model --output-dir output/qwen3-parse --timeout 300
 ```
 
 所有命令在仓库根目录执行。`--model-dir` 必填，应指向同目录保存 `model.onnx` 和三个真实 external-data 分片的完整产物，不能只有 ONNX 文件或 LFS pointer。`verify` 是默认模式，不访问网络；不存在完整模型时，将命令中的 `--mode verify` 改成 `--mode download`，由入口获取并校验 W1 固定发布产物。不要用新导出或其他 revision 的文件替换固定产物。
@@ -63,11 +55,10 @@ python -X utf8 -B probes/w2_qwen3_parse/run.py --mode verify \
 ## 轻量测试与 CI
 
 ```bash
-python -m pip install "pytest==9.1.1"
 python -m pytest tests/test_qwen3_full_structure.py tests/test_qwen3_full_audit.py tests/test_qwen3_full_parse.py -q
 ```
 
-命令中的 `python` 指已激活的 `output/qwen3-parse-venv/bin/python`。这些测试使用小型 fixture 和故障注入，不下载或加载完整权重，不能代替完整产物实跑。
+这些测试使用小型 fixture 和故障注入，不下载或加载完整权重，不能代替完整产物实跑。
 
 [LLM 工作流](../../.github/workflows/llm-deploy.yml) 的 PR 路径接入上述三组测试，并在独立 `full-qwen3-frontend` job 以 `--mode download` 实跑完整固定图。手动/定时同样运行该解析任务。解析有独立 Summary，并以 `always()` 上传 `output/qwen3-parse/`，artifact 名为 `qwen3-full-frontend-parse-output`。下载约 1.24 GB，解析 worker 峰值 RSS 约 5 GB；runner 的实际容量与耗时仍须远端验证。
 

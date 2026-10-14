@@ -75,10 +75,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install -e ".[all]"
-          python3 -m pip install numpy "pytest==9.1.1"
-          python3 -m pip install "ziglang==0.14.1"
-          echo "SCRATCHV_CC=$(python3 -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')" >> "$GITHUB_ENV"
+          python3 -m pip install -v -e ".[all,llm-deploy]"
 
       # ── docs:interfaces / docs:risks ──────────────────────────────────
       - name: "docs:interfaces + docs:risks"
@@ -139,16 +136,13 @@ jobs:
 
       # The real architecture probe uses random weights, needs no checkpoint
       # download, and runs on PRs. Keep its export stack isolated from W1 and
-      # the generic compiler tests. Install the CPU wheel before requirements
-      # so pip never resolves torch from PyPI with CUDA dependencies.
+      # the generic compiler tests. The extra selects the pinned CPU wheel.
       - name: Install pinned CPU Qwen3 probe environment
         run: |
           set -euo pipefail
           python3 -m venv output/qwen3-probe-venv
           "$QWEN3_PY" -m pip install --upgrade pip
-          "$QWEN3_PY" -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
-          "$QWEN3_PY" -m pip install -r requirements/qwen3-small-probe.txt
-          "$QWEN3_PY" -m pip install --no-deps -e .
+          "$QWEN3_PY" -m pip install -v -e ".[llm-deploy]"
           "$QWEN3_PY" -m pip check
           "$QWEN3_PY" -c "import torch; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
 
@@ -402,7 +396,7 @@ jobs:
           python-version: "3.12"
       - name: Install pinned full-model validation dependencies
         run: |
-          python3 -m pip install "numpy==2.2.6" "onnx==1.18.0" "onnxruntime==1.22.1" "protobuf==5.29.5"
+          python3 -m pip install -v -e ".[llm-deploy]"
           python3 -m pip check
       - name: "probe:qwen3-onnx"
         id: full_model
@@ -452,7 +446,7 @@ jobs:
           python-version: "3.12"
       - name: Install pinned frontend audit dependencies
         run: |
-          python3 -m pip install "numpy==2.2.6" "onnx==1.18.0" "onnxruntime==1.22.1" "protobuf==5.29.5"
+          python3 -m pip install -v -e ".[llm-deploy]"
           python3 -m pip check
       - name: "frontend:parse-qwen3"
         id: full_frontend
