@@ -308,7 +308,7 @@ def write_reports(out, report):
 def main(argv=None):
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--mode", choices=("verify", "download"), default="verify")
-    cli.add_argument("--model-dir", type=Path, required=True)
+    cli.add_argument("--model-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/onnx")
     cli.add_argument("--output-dir", type=Path, default=ROOT / "output/qwen3-parse")
     cli.add_argument("--timeout", type=float, default=300)
     cli.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)

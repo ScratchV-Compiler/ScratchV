@@ -46,7 +46,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
+      - name: Cache runtime LFS objects
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: runtime-lfs-${{ runner.os }}-${{ hashFiles('assets/qwen3-0.6b/tokenizer/*', 'probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx') }}
+      - name: Fetch runtime LFS assets
+        run: |
+          git lfs install --local
+          git lfs pull --include="assets/qwen3-0.6b/tokenizer/*,probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx" --exclude=""
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -164,8 +173,8 @@ jobs:
         id: runtime
         timeout-minutes: 10
         run: |
-          "$QWEN3_PY" probes/w2_runtime/run.py --mode download \
-            --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime
+          "$QWEN3_PY" probes/w2_runtime/run.py --mode verify \
+            --tokenizer-dir assets/qwen3-0.6b/tokenizer --output-dir output/w2-runtime
 
       - name: "integration:runtime-model"
         id: runtime_model
@@ -178,7 +187,7 @@ jobs:
           TRANSFORMERS_OFFLINE: "1"
         run: |
           "$QWEN3_PY" probes/w2_runtime_model/run.py \
-            --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime-model
+            --tokenizer-dir assets/qwen3-0.6b/tokenizer --output-dir output/w2-runtime-model
 
       - name: "numeric:ir-qwen3-small"
         id: qwen3_small
@@ -382,7 +391,7 @@ jobs:
 
   full-qwen3-onnx:
     name: "W1 / full Qwen3 ONNX release validation"
-    # This downloads 1.24 GB and executes the 2.38 GB FP32 model. It is not
+    # This fetches the pinned LFS objects and executes the complete FP32 model. It is not
     # counted as a passing gate on PRs where it did not execute.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
@@ -390,7 +399,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          lfs: false
+      - name: Cache full-model LFS objects
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: qwen3-onnx-lfs-${{ runner.os }}-${{ hashFiles('assets/qwen3-0.6b/onnx/*') }}
+      - name: Fetch full-model LFS assets
+        run: |
+          git lfs install --local
+          git lfs pull --include="assets/qwen3-0.6b/onnx/*" --exclude=""
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
@@ -405,8 +423,8 @@ jobs:
           OPENBLAS_NUM_THREADS: "2"
         run: |
           set -euo pipefail
-          python3 "$PROBE_QWEN3_EXPORT" --mode download \
-            --model-dir output/qwen3-full-model \
+          python3 "$PROBE_QWEN3_EXPORT" --mode verify \
+            --model-dir assets/qwen3-0.6b/onnx \
             --output-dir output/qwen3-full-probe --threads 2
       - name: Summarize full-model gate
         if: always()
@@ -440,7 +458,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          lfs: false
+      - name: Cache full-model LFS objects
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: qwen3-onnx-lfs-${{ runner.os }}-${{ hashFiles('assets/qwen3-0.6b/onnx/*') }}
+      - name: Fetch full-model LFS assets
+        run: |
+          git lfs install --local
+          git lfs pull --include="assets/qwen3-0.6b/onnx/*" --exclude=""
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
@@ -455,8 +482,8 @@ jobs:
           OPENBLAS_NUM_THREADS: "1"
         run: |
           set -euo pipefail
-          python3 "$PROBE_QWEN3_PARSE" --mode download \
-            --model-dir output/qwen3-full-model \
+          python3 "$PROBE_QWEN3_PARSE" --mode verify \
+            --model-dir assets/qwen3-0.6b/onnx \
             --output-dir output/qwen3-parse --timeout 1200
       - name: Summarize complete Qwen3 frontend gate
         if: always()

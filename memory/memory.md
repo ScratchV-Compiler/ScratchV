@@ -21,3 +21,5 @@
 [2026-10-02] 真实 Qwen3 小模型探测须保留 Q/K RMSNorm、全 head RoPE 和独立 head_dim，不能用 W1 手工 partial-RoPE 图替代。共享 IR 当前仅返回一个张量，逐层诊断可在 ONNX 副本追加 Reshape/Concat 打包观察点，并独立核对 ORT 具名输出和普通 logits-only 图；诊断图通过不能替代普通图验收。固定 CPU 导出环境、种子和输入，并分别验证 padding 隔离、因果性及故障非零退出。
 
 [2026-10-14] W2 部署的 Python 依赖统一声明在 pyproject.toml 的 llm-deploy extra，通过 pip install -v -e ".[llm-deploy]" 一次安装；设计与测试文档每个 Bash 块只放一条 Python 命令，不要求手动安装依赖或设置 Shell 环境。工具路径由运行入口自动发现，QEMU 等系统工具单独注明前提；保留模型身份、精度阈值和输出目录约束。
+
+[2026-10-14] W2 固定 Qwen3 资产位于 assets/qwen3-0.6b：完整 ONNX/权重分片及 Tokenizer 大文件由 Git LFS 管理，配置与许可证由普通 Git 管理；唯一哈希清单仍为 probes/w1_qwen3_export/manifest.json。入口默认离线 verify，CI 按门禁拉取并缓存 LFS；生成的随机模型和报告留在 output/，不得把 LFS pointer 当作真实资产。

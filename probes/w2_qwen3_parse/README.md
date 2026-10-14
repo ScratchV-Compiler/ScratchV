@@ -9,10 +9,10 @@
 安装与系统工具要求见 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)。以下命令在仓库根目录使用已安装 `llm-deploy` 的 Python 环境执行。
 
 ```bash
-python probes/w2_qwen3_parse/run.py --mode verify --model-dir output/qwen3-full-model --output-dir output/qwen3-parse --timeout 300
+python probes/w2_qwen3_parse/run.py --output-dir output/qwen3-parse --timeout 300
 ```
 
-所有命令在仓库根目录执行。`--model-dir` 必填，应指向同目录保存 `model.onnx` 和三个真实 external-data 分片的完整产物，不能只有 ONNX 文件或 LFS pointer。`verify` 是默认模式，不访问网络；不存在完整模型时，将命令中的 `--mode verify` 改成 `--mode download`，由入口获取并校验 W1 固定发布产物。不要用新导出或其他 revision 的文件替换固定产物。
+所有命令在仓库根目录执行。默认从 Git LFS 管理的 `assets/qwen3-0.6b/onnx` 读取 `model.onnx` 和三个真实 external-data 分片，获取方法见 Linux 复现约定。可用 `--model-dir` 指定其他已校验目录。`verify` 是默认模式，不访问网络；只有 ONNX 文件或 LFS pointer、文件缺失或哈希不匹配都会失败。不要用新导出或其他 revision 的文件替换固定产物。
 
 `--output-dir` 默认是 `output/qwen3-parse`，必须不存在或为空，每次使用新的目录以保留失败日志与首次报告。`--timeout` 默认 300 秒，限制整个验证子进程，包含文件检查、解析、审计，以及 download 模式的下载；慢网络应据实调整此上限。它是超时设置，不是执行耗时或纯解析耗时。
 
@@ -60,8 +60,8 @@ python -m pytest tests/test_qwen3_full_structure.py tests/test_qwen3_full_audit.
 
 这些测试使用小型 fixture 和故障注入，不下载或加载完整权重，不能代替完整产物实跑。
 
-[LLM 工作流](../../.github/workflows/llm-deploy.yml) 的 PR 路径接入上述三组测试，并在独立 `full-qwen3-frontend` job 以 `--mode download` 实跑完整固定图。手动/定时同样运行该解析任务。解析有独立 Summary，并以 `always()` 上传 `output/qwen3-parse/`，artifact 名为 `qwen3-full-frontend-parse-output`。下载约 1.24 GB，解析 worker 峰值 RSS 约 5 GB；runner 的实际容量与耗时仍须远端验证。
+[LLM 工作流](../../.github/workflows/llm-deploy.yml) 的 PR 路径接入上述三组测试，并在独立 `full-qwen3-frontend` job 按需拉取并缓存 LFS 权重，再以 `--mode verify` 实跑完整固定图。手动/定时同样运行该解析任务。解析有独立 Summary，并以 `always()` 上传 `output/qwen3-parse/`，artifact 名为 `qwen3-full-frontend-parse-output`。完整 ONNX 资产约 2.24 GiB，解析 worker 峰值 RSS 约 5 GB；runner 的实际容量与耗时仍须远端验证。
 
-`w2-acceptance` 汇总任务要求数值任务和完整解析任务均实际成功，失败、取消、跳过或缺失都不能通过。手动/定时的 `full-qwen3-onnx` job 独立保留 W1 完整 ONNX ORT 验证；解析不依赖它成功。并行的两个完整模型任务会各自下载资产。
+`w2-acceptance` 汇总任务要求数值任务和完整解析任务均实际成功，失败、取消、跳过或缺失都不能通过。手动/定时的 `full-qwen3-onnx` job 独立保留 W1 完整 ONNX ORT 验证；解析不依赖它成功。两个完整模型任务共用按资产版本区分的缓存键；首次并行运行且缓存未命中时仍会各自拉取资产。
 
 PR #91 已合并为 W1 基线；这些 W2 代码、测试、文档与 CI 配置独立发布，W1 两层报告修复见 [PR #93](https://github.com/ScratchV-Compiler/ScratchV/pull/93)。[W2 交付记录](../../docs/llm-deploy-v1.0/W2/README.md) 保存 Linux 复现入口与已记录的 Linux CI 证据，CI 配置存在不等于远端已通过。W1 已有旧提交的两层第二人复现；完整模型第二人复现和团队接口确认仍待完成，见 [W1 记录](../../docs/llm-deploy-v1.0/W1/README.md)。

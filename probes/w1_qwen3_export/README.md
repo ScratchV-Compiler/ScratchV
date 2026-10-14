@@ -26,33 +26,23 @@ mode enforces NumPy 2.2.6, ONNX 1.18.0, ONNX Runtime 1.22.1 and protobuf 5.29.5;
 export mode additionally enforces the complete fixed export stack, including
 `torch==2.7.1+cpu` and `tokenizers==0.21.4`.
 
-## Verify the fixed release
+## Verify the fixed LFS assets
+
+The complete ONNX graph and three external weight shards are tracked by Git LFS
+under `assets/qwen3-0.6b/onnx` (about 2.24 GiB). Fetch them as described in the
+Linux reproduction contract, then run the default offline verification:
 
 ```bash
-python probes/w1_qwen3_export/run.py --mode download \
-  --model-dir output/qwen3-full-model \
-  --output-dir output/qwen3-full-probe --threads 2
+python probes/w1_qwen3_export/run.py --output-dir output/qwen3-full-probe --threads 2
 ```
 
-The release tag is `qwen3-0.6b-onnx-l256` in `ScratchV-Compiler/ScratchV`.
-The 1,243,477,776-byte ZIP has SHA-256
-`f186b7dce98df466160b36ab09818cc04195029f091233c83dd31484b28bb080`.
-The committed `manifest.json` additionally pins the size and SHA-256 of the
-graph and all three external weight shards (about 2.24 GiB in total).
-Extraction rejects absolute/traversing paths, links and ambiguous model roots.
-An existing model directory is reused only after every pinned file passes;
-a corrupt existing directory is not overwritten. `--archive path/to.zip`
-uses a previously downloaded ZIP with the same size/hash checks.
+The committed `manifest.json` pins every file's size and SHA-256, the original
+source revision, and the upstream release ZIP. `--model-dir` can select another
+local directory. The explicit `download` mode remains available for legacy
+Release acquisition, including `--archive path/to.zip`; ordinary reproduction
+uses the files checked out by LFS. A corrupt directory is never overwritten.
 
-For an already available complete model directory, skip network access:
-
-```bash
-python probes/w1_qwen3_export/run.py --mode verify \
-  --model-dir models/qwen3-0.6b-onnx \
-  --output-dir output/qwen3-full-probe --threads 2
-```
-
-Both commands inspect every tensor's dtype and every external-data offset,
+Verification inspects every tensor's dtype and every external-data offset,
 length and file reference, run the full ONNX checker, then execute fresh ORT
 CPU inference for a short padded input and a full 256-token input. All logits
 must have the fixed shape, FP32 dtype and finite values. ORT graph optimization

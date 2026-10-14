@@ -17,10 +17,10 @@ W2 的范围是完整前端解析、小模型 IR 数值、基础后端和 Host �
 安装与系统工具要求见 [Linux 复现约定](../LINUX_REPRODUCTION.md)。以下命令在仓库根目录使用已安装 `llm-deploy` 的 Python 环境执行。
 
 ```bash
-python scripts/run_w2_acceptance.py --output-dir output/w2-acceptance-linux-01 --tokenizer-dir output/assets/tokenizer --model-dir output/assets/onnx
+python scripts/run_w2_acceptance.py --output-dir output/w2-acceptance-linux-01
 ```
 
-示例资产路径与环境指南一致；已有资产位于其他目录时，修改 `--tokenizer-dir` 和 `--model-dir`。目录必须包含固定 manifest 对应的真实资产。默认使用 `verify` 离线校验；无资产时可显式增加 `--tokenizer-mode download` 与 `--model-mode download`。后者下载约 1.24 GB 的固定完整发布包，解包及解析需要额外磁盘与数 GiB 空闲内存。`--output-dir` 必须是本次全新的路径，连已存在的空目录也会被拒绝。
+默认读取 Git LFS 管理的 `assets/qwen3-0.6b/tokenizer` 和 `assets/qwen3-0.6b/onnx`，资产获取见环境指南。使用其他本地目录时可指定 `--tokenizer-dir` 和 `--model-dir`。所有文件必须匹配固定 manifest，只有 LFS pointer 不可运行。默认 `verify` 全程离线；解析需要数 GiB 空闲内存。`--output-dir` 必须是本次全新的路径，连已存在的空目录也会被拒绝。
 
 | 门禁 | 实际执行与判断 |
 |---|---|

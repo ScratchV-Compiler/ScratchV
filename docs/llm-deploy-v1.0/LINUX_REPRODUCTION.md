@@ -35,26 +35,33 @@ python scripts/check_w1_repro_env.py --require-clean --output-dir output/linux-r
 预检输出目录必须不存在或为空。预检通过只证明前置条件，不代表数值验收通过。
 源码快照没有 Git 历史，应核对随包 manifest；不能声称通过依赖 Git 的预检或历史 benchmark。
 
-## 3. 准备固定资产
+## 3. 获取并核验固定资产
 
-W2 小算子和两层随机模型不需要完整预训练权重。完整前端解析使用固定发布的 ONNX，
-Host 运行时使用固定官方 Tokenizer。已有资产使用 `verify`；首次获取时显式使用 `download`。
+Qwen3 完整 ONNX、三个权重分片和 Tokenizer 大文件由 Git LFS 管理，固定在
+`assets/qwen3-0.6b/`；配置和许可证由普通 Git 管理。来源与 SHA256 以
+[固定 manifest](../../probes/w1_qwen3_export/manifest.json) 为准。
 
-下载并验证完整 ONNX：
+首次配置仓库时执行 `git lfs install --local`，然后执行
+`git lfs pull --include="assets/qwen3-0.6b/**,probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx" --exclude=""`。
+切换到资产版本不同的提交后重新拉取。必须得到真实文件，只有 LFS pointer 不可运行。
+完整 ONNX 约 2.24 GiB，Tokenizer 约 15.2 MiB；LFS 本地对象库与工作区各保存一份，
+需为模型、解析和测试输出预留磁盘空间及数 GiB 内存。
+
+离线验证完整 ONNX 并执行 ORT：
 
 ```bash
-python probes/w1_qwen3_export/run.py --mode download --model-dir output/assets/onnx --output-dir output/linux-onnx-verify-01
+python probes/w1_qwen3_export/run.py --output-dir output/linux-onnx-verify-01
 ```
 
-下载并验证 Tokenizer：
+离线验证 Tokenizer：
 
 ```bash
-python probes/w2_runtime/run.py --mode download --tokenizer-dir output/assets/tokenizer --output-dir output/linux-tokenizer-01
+python probes/w2_runtime/run.py --output-dir output/linux-tokenizer-01
 ```
 
-完整 ONNX 下载约 1.24 GB，此入口还会解压权重并执行 ORT 校验；请预留数 GiB 内存和磁盘空间。
-资产身份由 manifest 固定，不能换成任意同名 checkpoint。
-只做完整前端解析时，也可使用该探测的 `--mode download` 获取资产，见 [解析入口](../../probes/w2_qwen3_parse/README.md)。
+W2 入口默认读取上述资产目录并使用 `verify`，不再要求单独下载 Release 或 Hugging Face 文件。
+小算子和两层随机模型仍在 `output/` 生成。资产缺失、未展开或哈希不匹配时验收失败，
+不会自动联网替换。历史 `download` 模式保留为显式兼容入口，正常复现使用 LFS。
 
 ## 4. 执行与留存证据
 

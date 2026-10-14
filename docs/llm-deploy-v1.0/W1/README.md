@@ -134,15 +134,18 @@ QEMU 时长是宿主机观察的进程墙钟时间，包含 QEMU 启动、guest 
 
 入口 `probes/w1_qwen3_export/run.py` 提供三种模式。所有模式最终都执行真实ORT两组输入（短padding/满256），检查FP32静态I/O、完整logits形状和有限值；不是只读历史JSON便判PASS。
 
-### 4.1 下载固定发布产物并验证
+### 4.1 验证 Git LFS 固定资产
+
+按 [Linux 复现约定](../LINUX_REPRODUCTION.md) 拉取 LFS 对象后运行：
 
 ```bash
-python -X utf8 -B probes/w1_qwen3_export/run.py --mode download --model-dir output/w1-repro-full-model --output-dir output/w1-repro-full-download --threads 2
+python probes/w1_qwen3_export/run.py --output-dir output/w1-repro-full-verify --threads 2
 ```
 
-下载 ZIP 约 1.24 GB，解包后模型约 2.41 GB，需另留运行内存与磁盘空间。入口使用固定release与ZIP SHA256，并核对模型及三个权重分片哈希。已有固定ZIP可加 `--archive <实际ZIP路径>` 避免重复联网；下载目录按入口要求准备。产物manifest见 `probes/w1_qwen3_export/manifest.json`。
-
-`download` 模式验证既有导出并重新跑ORT，**不重新导出、不重新比较PyTorch数值**。它可重验W1“完整导出可载入、固定形状、ORT可执行”的交付物，不能写成完成了一次新导出。
+默认读取 `assets/qwen3-0.6b/onnx`，模型约 2.41 GB，需另留运行内存与磁盘空间。
+入口按 `probes/w1_qwen3_export/manifest.json` 核对模型及三个权重分片哈希。
+默认 `verify` 离线验证既有导出并重新跑 ORT，不重新导出或比较 PyTorch 数值。
+显式 `download` 模式仅保留为历史 Release 获取方式。
 
 ### 4.2 验证已有完整模型
 
@@ -174,9 +177,9 @@ peak_memory是验证器进程峰值RSS，**不包含导出子进程**，不能�
 
 工作流为 `.github/workflows/llm-deploy.yml`：
 
-- PR执行原合成图、小模型IR、小模型QEMU和 `tests/test_w1_qwen3_export.py` 的轻量回归，不下载完整模型。
-- 手动或定时运行另启 `full-qwen3-onnx` job，使用 `--mode download --threads 2` 校验固定发布产物并真实运行ORT两case，上传 `output/qwen3-full-probe/` 报告。
-- 完整模型job只需要固定NumPy2.2.6、ONNX1.18.0、ORT1.22.1、protobuf5.29.5，不需要PyTorch；这也意味着它不重新导出或比较PyTorch。
+- PR执行原合成图、小模型IR、小模型QEMU和 `tests/test_w1_qwen3_export.py` 的轻量回归；另由 W2 完整前端任务拉取 LFS 权重并解析，不执行完整 ORT 推理。
+- 手动或定时运行另启 `full-qwen3-onnx` job，拉取并缓存 LFS 权重，使用 `--mode verify --threads 2` 校验固定产物并真实运行ORT两case，上传 `output/qwen3-full-probe/` 报告。
+- 完整模型 job 统一安装 `llm-deploy` extra；verify 路径只执行 ONNX/ORT 校验，不重新导出或比较 PyTorch。
 - PR中完整模型job按条件未执行，应明确记录“ORT重型门禁未执行”，不能用轻量测试通过代替。
 
 提交 `545e696` 已有两项 Linux 成功证据；历史个人测量不充当 Linux 报告：

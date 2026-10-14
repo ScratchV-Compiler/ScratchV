@@ -405,9 +405,11 @@ def main(argv=None):
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--python", default=sys.executable, help="Existing pinned Python interpreter; no installation")
     cli.add_argument("--output-dir", type=Path, required=True, help="Must not exist, even if empty")
-    cli.add_argument("--tokenizer-dir", type=Path, help="Verified local official tokenizer assets")
+    cli.add_argument("--tokenizer-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/tokenizer",
+                     help="Verified local official tokenizer assets")
     cli.add_argument("--tokenizer-mode", choices=("verify", "download"), default="verify")
-    cli.add_argument("--model-dir", type=Path, help="Pinned full Qwen3 ONNX release directory")
+    cli.add_argument("--model-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/onnx",
+                     help="Pinned full Qwen3 ONNX release directory")
     cli.add_argument("--model-mode", choices=("verify", "download"), default="verify")
     cli.add_argument("--cc", help="RISC-V compiler / Zig executable")
     cli.add_argument("--qemu", help="qemu-system-riscv64 executable")

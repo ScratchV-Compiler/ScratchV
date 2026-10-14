@@ -2,6 +2,8 @@
   "llm": [
     "docs/llm-deploy-v1.0/**",
     "probes/**",
+    "assets/qwen3-0.6b/**",
+    ".gitattributes",
     "scripts/check_llm_deploy_docs.py",
     "scripts/check_linux_repro_docs.py",
     "tests/test_linux_repro_docs.py",

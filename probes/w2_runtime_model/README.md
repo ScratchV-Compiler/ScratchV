@@ -8,18 +8,12 @@
 
 安装与系统工具要求见 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)。以下命令在仓库根目录使用已安装 `llm-deploy` 的 Python 环境执行。
 
-Tokenizer 资产复用 [W2 Runtime 探测](../w2_runtime/README.md)下载的目录，或固定模型源目录；每次运行都会核验 [W1 manifest](../w1_qwen3_export/manifest.json) 的七个资产 SHA256，只读取小文件，不加载预训练权重。
-
-首次运行时准备 Tokenizer：
-
-```bash
-python probes/w2_runtime/run.py --mode download --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime
-```
+Tokenizer 默认读取 Git LFS 管理的 `assets/qwen3-0.6b/tokenizer`，获取方法见 Linux 复现约定。每次运行都会核验 [W1 manifest](../w1_qwen3_export/manifest.json) 的七个资产 SHA256，只读取配置与词表，不加载预训练权重。
 
 执行单步接口探测：
 
 ```bash
-python probes/w2_runtime_model/run.py --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime-model
+python probes/w2_runtime_model/run.py --output-dir output/w2-runtime-model
 ```
 
 输出目录必须不存在或为空。既有证据不会被覆盖；版本不匹配、资产缺失/损坏、数值或采样不一致、报告写入失败均返回非零。

@@ -63,6 +63,27 @@ def test_scopes_keep_required_frontend_coverage_and_no_dead_scope():
     assert bool(scopes['w4']) == (WORKFLOWS / 'w4-full-numeric.yml').exists()
 
 
+def test_qwen_assets_select_acceptance_and_jobs_fetch_only_required_lfs_files():
+    scopes = json.loads((ROOT / 'scripts/ci_scopes.json').read_text(encoding='utf-8'))
+    assert 'assets/qwen3-0.6b/**' in scopes['llm']
+    jobs = workflow('llm-deploy.yml')['jobs']
+    for name in ('llm-deploy', 'full-qwen3-onnx', 'full-qwen3-frontend'):
+        steps = jobs[name]['steps']
+        assert steps[0]['with']['lfs'] == 'false'
+        cache = next(step for step in steps if step.get('uses') == 'actions/cache@v4')
+        assert cache['with']['path'] == '.git/lfs'
+        pull = next(step['run'] for step in steps if 'git lfs pull' in step.get('run', ''))
+        assert pull.index('git lfs install --local') < pull.index('git lfs pull')
+        expected = 'tokenizer' if name == 'llm-deploy' else 'onnx'
+        assert f'assets/qwen3-0.6b/{expected}/*' in pull
+        if name == 'llm-deploy':
+            assert 'probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx' in pull
+            assert 'assets/qwen3-0.6b/onnx' not in pull
+        commands = '\n'.join(step.get('run', '') for step in steps)
+        assert '--mode download' not in commands
+        assert '--mode verify' in commands
+
+
 def test_the_test_job_writes_no_step_summary():
     """The step outcome and the test-reports artifact already say all of it."""
     steps = workflow('ci.yml')['jobs']['test']['steps']

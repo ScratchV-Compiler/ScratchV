@@ -435,14 +435,32 @@ def test_source_mutation_during_run_fails(tmp_path, monkeypatch):
     assert runner.main(["--output-dir", str(tmp_path / "new"), "--gates", "frontend"]) == 1
 
 
-def test_missing_assets_block_and_do_not_launch_dependent_gates(tmp_path, monkeypatch):
+@pytest.mark.parametrize("selected, launched_name, option, directory", [
+    ("runtime-model", "runtime", "--tokenizer-dir", "tokenizer"),
+    ("full-parse", "full-parse", "--model-dir", "onnx"),
+])
+def test_default_lfs_assets_and_failure_propagation(tmp_path, monkeypatch, selected,
+                                                  launched_name, option, directory):
     monkeypatch.setattr(runner, "checkout_evidence", lambda: {"head": None})
     monkeypatch.setattr(runner, "source_fingerprints", lambda: {})
-    monkeypatch.setattr(runner, "run_gate", lambda *a, **k: pytest.fail("must not run without required assets"))
+    launched = []
+
+    def fail_assets(gate, *args, **kwargs):
+        launched.append(gate.name)
+        assert gate.command[gate.command.index(option) + 1] == str(
+            runner.ROOT / "assets/qwen3-0.6b" / directory)
+        assert gate.command[gate.command.index("--mode") + 1] == "verify"
+        return {"name": gate.name, "status": "FAIL", "passed": False, "error": "Missing LFS assets"}
+
+    monkeypatch.setattr(runner, "run_gate", fail_assets)
     out = tmp_path / "new"
-    assert runner.main(["--output-dir", str(out), "--gates", "runtime-model"]) == 1
+    assert runner.main(["--output-dir", str(out), "--gates", selected]) == 1
+    assert launched == [launched_name]
     data = json.loads((out / "report.json").read_text())
-    assert [row["status"] for row in data["gates"] if row["name"] in {"runtime", "runtime-model"}] == ["BLOCKED", "BLOCKED"]
+    states = {row["name"]: row["status"] for row in data["gates"]}
+    assert states[launched_name] == "FAIL"
+    if selected == "runtime-model":
+        assert states["runtime-model"] == "BLOCKED"
 
 
 def test_help_has_no_heavy_imports(tmp_path):

@@ -404,7 +404,7 @@ def save_reports(out, report):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tokenizer-dir", required=True, type=Path)
+    parser.add_argument("--tokenizer-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/tokenizer")
     parser.add_argument("--output-dir", default=Path("output/w2-runtime-model"), type=Path)
     args = parser.parse_args(argv)
     out = args.output_dir.resolve()

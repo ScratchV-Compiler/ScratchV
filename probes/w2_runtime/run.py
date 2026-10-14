@@ -353,7 +353,7 @@ def save_report(directory, report):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--tokenizer-dir", type=Path, required=True)
+    ap.add_argument("--tokenizer-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/tokenizer")
     ap.add_argument("--mode", choices=("verify", "download"), default="verify")
     ap.add_argument("--output-dir", type=Path, default=Path("output/w2-runtime"))
     args = ap.parse_args(argv)
