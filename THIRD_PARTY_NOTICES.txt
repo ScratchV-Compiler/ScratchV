@@ -1,0 +1,14 @@
+ScratchV is distributed under the MIT license in LICENSE, with the following
+file-specific third-party material. Package metadata lists both applicable
+licenses; it does not replace these file-specific notices.
+
+scratchv/verification/fp32_eigen.py
+  Derived from Eigen at commit 1d8b82b0740839c0de7f1242a3585e3390ff5f33.
+  This file is licensed under MPL-2.0. Its source contains the original
+  copyright notices and source file references. The full license text is
+  distributed as LICENSES/Eigen-MPL-2.0.txt.
+
+scratchv/verification/fp32_reference.py
+  Contains polynomial constants and evaluation adapted from Microsoft ONNX
+  Runtime v1.22.1 (MLAS), under MIT. The source file includes the Microsoft
+  copyright notice and full license text.

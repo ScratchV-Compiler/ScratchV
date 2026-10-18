@@ -54,16 +54,23 @@ class DiagnosticQwen(nn.Module):
     instrumentation preserves the logits.
     """
 
-    def __init__(self, model: Qwen3ForCausalLM, seed: int):
+    def __init__(self, model: Qwen3ForCausalLM, seed: int, sequence_length=SEQUENCE_LENGTH):
         super().__init__()
         self.model = model
+        self.sequence_length = sequence_length
+        config = model.config
+        length = sequence_length
+        hidden = config.hidden_size
+        heads = config.num_attention_heads
+        kv_heads = config.num_key_value_heads
+        width = config.head_dim
         self.register_buffer(
-            "positions", torch.arange(SEQUENCE_LENGTH).reshape(1, SEQUENCE_LENGTH),
+            "positions", torch.arange(length).reshape(1, length),
             persistent=False,
         )
         self.config_metadata = {
-            **MODEL_CONFIG,
-            "sequence_length": SEQUENCE_LENGTH,
+            **{name: getattr(config, name) for name in MODEL_CONFIG},
+            "sequence_length": length,
             "batch_size": 1,
             "seed": seed,
             "dtype": "float32",
@@ -71,34 +78,34 @@ class DiagnosticQwen(nn.Module):
             "model_class": "transformers.Qwen3ForCausalLM",
             "transformers_version": TRANSFORMERS_VERSION,
             "weights": "fixed-seed random initialization; no pretrained weights",
-            "position_ids": "0..255, including right-padding positions",
+            "position_ids": f"0..{length - 1}, including right-padding positions",
             "mask": "4D FP32 additive causal + key padding; 0 / finfo(float32).min",
         }
         self.checkpoint_metadata = {}
         # "embedding" is also an exporter-generated internal value name; a
         # distinct checkpoint name avoids a torch 2.7 output-alias SSA clash.
-        self._describe("token_embedding", [1, 256, 32], 1, "Token embedding")
-        for index in range(MODEL_CONFIG["num_hidden_layers"]):
+        self._describe("token_embedding", [1, length, hidden], 1, "Token embedding")
+        for index in range(config.num_hidden_layers):
             prefix = f"layer_{index}."
             for name, shape, axis, description in (
-                ("input_norm", [1, 256, 32], 1, "Input RMSNorm"),
-                ("q_norm", [1, 256, 4, 16], 1, "Per-head Q RMSNorm before transpose"),
-                ("k_norm", [1, 256, 2, 16], 1, "Per-head K RMSNorm before transpose"),
-                ("v_proj", [1, 256, 32], 1, "V projection before KV-head reshape"),
-                ("rope_q", [1, 4, 256, 16], 2, "Q after official RoPE"),
-                ("rope_k", [1, 2, 256, 16], 2, "K after official RoPE, before GQA repetition"),
-                ("attn_probs", [1, 4, 256, 256], 2, "Masked softmax probabilities"),
-                ("attn_context", [1, 256, 64], 1, "Attention context, input to output projection"),
-                ("attn_output", [1, 256, 32], 1, "Attention output after output projection"),
-                ("attn_residual", [1, 256, 32], 1, "Residual after attention"),
-                ("post_attention_norm", [1, 256, 32], 1, "RMSNorm before MLP"),
-                ("mlp", [1, 256, 32], 1, "Official SwiGLU MLP output"),
-                ("residual", [1, 256, 32], 1, "Decoder output after MLP residual"),
+                ("input_norm", [1, length, hidden], 1, "Input RMSNorm"),
+                ("q_norm", [1, length, heads, width], 1, "Per-head Q RMSNorm before transpose"),
+                ("k_norm", [1, length, kv_heads, width], 1, "Per-head K RMSNorm before transpose"),
+                ("v_proj", [1, length, kv_heads * width], 1, "V projection before KV-head reshape"),
+                ("rope_q", [1, heads, length, width], 2, "Q after official RoPE"),
+                ("rope_k", [1, kv_heads, length, width], 2, "K after official RoPE, before GQA repetition"),
+                ("attn_probs", [1, heads, length, length], 2, "Masked softmax probabilities"),
+                ("attn_context", [1, length, heads * width], 1, "Attention context, input to output projection"),
+                ("attn_output", [1, length, hidden], 1, "Attention output after output projection"),
+                ("attn_residual", [1, length, hidden], 1, "Residual after attention"),
+                ("post_attention_norm", [1, length, hidden], 1, "RMSNorm before MLP"),
+                ("mlp", [1, length, hidden], 1, "Official SwiGLU MLP output"),
+                ("residual", [1, length, hidden], 1, "Decoder output after MLP residual"),
             ):
                 self._describe(prefix + name, shape, axis, description)
             self.checkpoint_metadata[prefix + "attn_probs"]["key_sequence_axis"] = 3
-        self._describe("final_norm", [1, 256, 32], 1, "Final RMSNorm")
-        self._describe("logits", [1, 256, 128], 1, "Tied language-model head logits")
+        self._describe("final_norm", [1, length, hidden], 1, "Final RMSNorm")
+        self._describe("logits", [1, length, config.vocab_size], 1, "Tied language-model head logits")
         self.output_names = tuple(self.checkpoint_metadata)
         self._captured = {}
         self._capture_active = False
@@ -202,14 +209,40 @@ class DiagnosticQwen(nn.Module):
         return outputs
 
 
-def build_model(seed=0):
-    """Construct the fixed small architecture with reproducible FP32 weights."""
+def build_model(seed=0, model_config=None, sequence_length=SEQUENCE_LENGTH):
+    """Construct an official FP32 probe; omitted options preserve the W2 preset.
+
+    ``model_config`` overrides named ``MODEL_CONFIG`` fields. Checkpoint shapes
+    derive from the constructed model, including independent Q/KV head widths.
+    The sequence length is a static export contract, not a dynamic dimension.
+    """
     if transformers.__version__ != TRANSFORMERS_VERSION:
         raise RuntimeError(
             f"This probe requires transformers=={TRANSFORMERS_VERSION}; "
             f"found {transformers.__version__}"
         )
-    config = Qwen3Config(**MODEL_CONFIG)
+    settings = dict(MODEL_CONFIG)
+    if model_config is not None:
+        unknown = set(model_config) - set(settings)
+        if unknown:
+            raise ValueError(f"Unsupported probe configuration fields: {sorted(unknown)}")
+        settings.update(model_config)
+    for name in ("vocab_size", "hidden_size", "intermediate_size", "num_hidden_layers",
+                 "num_attention_heads", "num_key_value_heads", "head_dim",
+                 "max_position_embeddings"):
+        if isinstance(settings[name], bool) or not isinstance(settings[name], int) or settings[name] < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    if isinstance(sequence_length, bool) or not isinstance(sequence_length, int) or sequence_length < 1:
+        raise ValueError("sequence_length must be a positive integer")
+    if sequence_length > settings["max_position_embeddings"]:
+        raise ValueError("sequence_length exceeds max_position_embeddings")
+    if settings["num_attention_heads"] % settings["num_key_value_heads"]:
+        raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
+    if settings["head_dim"] % 2:
+        raise ValueError("head_dim must be even for RoPE")
+    if settings["use_cache"] or not settings["tie_word_embeddings"]:
+        raise ValueError("The probe requires use_cache=False and tie_word_embeddings=True")
+    config = Qwen3Config(**settings)
     config._attn_implementation = "eager"
     # Preserve the caller's random state; CPU initialization never downloads.
     with torch.random.fork_rng(devices=[]):
@@ -217,23 +250,24 @@ def build_model(seed=0):
         model = Qwen3ForCausalLM(config).float().eval()
     if model.lm_head.weight is not model.model.embed_tokens.weight:
         raise RuntimeError("The official model did not tie its embedding and LM-head weights")
-    return DiagnosticQwen(model, seed).eval()
+    return DiagnosticQwen(model, seed, sequence_length).eval()
 
 
 def export_onnx(wrapper, path, input_ids, attention_mask):
     """Export all named outputs using the same Dynamo path as the full model.
 
-    Inputs have fixed shapes [1,256] INT64 and [1,1,256,256] FP32. No dynamic
+    Inputs have fixed shapes [1,L] INT64 and [1,1,L,L] FP32. No dynamic
     shapes, fallback exporter, or ONNX optimizer is enabled. The small random
     weights are embedded in a single ONNX file rather than external data.
     """
-    if input_ids.shape != (1, SEQUENCE_LENGTH) or input_ids.dtype != torch.int64:
-        raise ValueError("input_ids must have fixed shape [1,256] and dtype INT64")
+    length = wrapper.sequence_length
+    if input_ids.shape != (1, length) or input_ids.dtype != torch.int64:
+        raise ValueError(f"input_ids must have fixed shape [1,{length}] and dtype INT64")
     if (
-        attention_mask.shape != (1, 1, SEQUENCE_LENGTH, SEQUENCE_LENGTH)
+        attention_mask.shape != (1, 1, length, length)
         or attention_mask.dtype != torch.float32
     ):
-        raise ValueError("attention_mask must have fixed shape [1,1,256,256] and dtype FP32")
+        raise ValueError(f"attention_mask must have fixed shape [1,1,{length},{length}] and dtype FP32")
     if wrapper.training or wrapper.model.training:
         raise ValueError("The Qwen probe must be exported in eval mode")
     path = Path(path)

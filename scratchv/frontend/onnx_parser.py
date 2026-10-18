@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,9 +34,20 @@ class ONNXParser:
         self._producers = {}
         self._constant_cache = {}
         self._base_dir = ""
+        self._mmap_external_data = False
 
-    def parse(self, model_path: str) -> Program:
-        """Parse an ONNX model file and return an IR Program."""
+    def parse(self, model_path: str, *, mmap_external_data: bool = False) -> Program:
+        """Parse ONNX, optionally mapping external weights as read-only arrays.
+
+        The default loader is unchanged. The explicit mmap mode avoids
+        materializing external weights in TensorProto.raw_data. External files
+        must be within the model directory, with valid byte ranges matching
+        the tensor shape and dtype. The caller must keep those files unchanged
+        while this parser's initializer arrays are in use. Mapping is not an
+        integrity check; model/weight hashes must be validated separately.
+        """
+        if not isinstance(mmap_external_data, bool):
+            raise ONNXParseError("mmap_external_data must be boolean")
         try:
             import onnx
         except ImportError:
@@ -52,6 +63,7 @@ class ONNXParser:
         self._producers = {}
         self._constant_cache = {}
         self._base_dir = str(Path(model_path).resolve().parent)
+        self._mmap_external_data = mmap_external_data
         # Inspect/infer the graph before materializing external weights. This
         # avoids serializing a >2 GiB protobuf just to infer tensor shapes.
         model = onnx.load(model_path, load_external_data=False)
@@ -93,7 +105,10 @@ class ONNXParser:
 
         # Map ONNX initializers (constants) to IR values
         for init in graph.initializer:
-            arr = onnx.numpy_helper.to_array(init, base_dir=self._base_dir)
+            if mmap_external_data and onnx.external_data_helper.uses_external_data(init):
+                arr = self._map_external_initializer(init)
+            else:
+                arr = onnx.numpy_helper.to_array(init, base_dir=self._base_dir)
             self._bind_constant(init.name, arr)
 
         # Map graph inputs to function params
@@ -126,6 +141,66 @@ class ONNXParser:
             self.builder.ret()
 
         return self.builder.program
+
+    def _map_external_initializer(self, tensor):
+        """Validate before mapping; never populate the TensorProto raw_data."""
+        import numpy as np
+        from onnx import helper
+
+        self._dtype(tensor.data_type)  # Keep the frontend's supported dtype set.
+        fields = {}
+        for entry in tensor.external_data:
+            if entry.key in fields:
+                raise ONNXParseError(f"Duplicate external field for {tensor.name}: {entry.key}")
+            fields[entry.key] = entry.value
+        unknown = set(fields) - {"location", "offset", "length", "checksum"}
+        if unknown:
+            raise ONNXParseError(f"Unsupported external fields for {tensor.name}: {sorted(unknown)}")
+        location = fields.get("location", "")
+        windows = PureWindowsPath(location)
+        path = Path(location)
+        if (not location or path.is_absolute() or windows.is_absolute()
+                or windows.drive or ".." in path.parts or ".." in windows.parts):
+            raise ONNXParseError(f"External path must stay within the model directory: {tensor.name}")
+        # Recognize either separator on every host; resolve symlinks as well.
+        base = Path(self._base_dir).resolve()
+        candidate = (base / Path(*windows.parts)).resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError as exc:
+            raise ONNXParseError(f"External path escapes the model directory: {tensor.name}") from exc
+        if candidate == base:
+            raise ONNXParseError(f"External path escapes the model directory: {tensor.name}")
+        if tensor.HasField("raw_data") or tensor.HasField("segment"):
+            raise ONNXParseError(f"Ambiguous raw or segmented external tensor: {tensor.name}")
+        shape = tuple(tensor.dims)
+        if any(dimension < 0 for dimension in shape):
+            raise ONNXParseError(f"Negative external tensor dimension: {tensor.name}")
+        dtype = np.dtype(helper.tensor_dtype_to_np_dtype(tensor.data_type)).newbyteorder("<")
+        expected = math.prod(shape) * dtype.itemsize
+
+        def size_field(name, default):
+            value = fields.get(name)
+            if value is None:
+                return default
+            if not value or not value.isascii() or not value.isdecimal():
+                raise ONNXParseError(f"External {name} must be a nonnegative integer: {tensor.name}")
+            return int(value)
+
+        offset = size_field("offset", 0)
+        length = size_field("length", expected)
+        if length != expected:
+            raise ONNXParseError(f"External length disagrees with tensor shape/dtype: {tensor.name}")
+        try:
+            if not candidate.is_file() or offset + expected > candidate.stat().st_size:
+                raise ONNXParseError(f"External tensor byte range exceeds file: {tensor.name}")
+            if expected == 0:
+                array = np.empty(shape, dtype=dtype)
+                array.setflags(write=False)
+                return array
+            return np.memmap(candidate, mode="r", dtype=dtype, offset=offset, shape=shape, order="C")
+        except (OSError, ValueError, OverflowError) as exc:
+            raise ONNXParseError(f"Cannot map external tensor {tensor.name}: {exc}") from exc
 
     def _translate_node(self, node, output_names: set[str]) -> None:
         """Translate a single ONNX node to IR instructions."""
@@ -244,13 +319,16 @@ class ONNXParser:
 
     def _handle_constant(self, node, inputs, outputs):
         import numpy as np
-        from onnx import numpy_helper
+        from onnx import external_data_helper, numpy_helper
         attrs = self._attributes(node)
         if len(attrs) != 1 or len(outputs) != 1 or inputs:
             raise ONNXParseError("Constant requires one value attribute and one output")
         key, value = next(iter(attrs.items()))
         if key == "value":
-            data = numpy_helper.to_array(value, base_dir=self._base_dir)
+            if self._mmap_external_data and external_data_helper.uses_external_data(value):
+                data = self._map_external_initializer(value)
+            else:
+                data = numpy_helper.to_array(value, base_dir=self._base_dir)
         elif key in ("value_int", "value_ints"):
             data = np.asarray(value, dtype=np.int64)
         elif key in ("value_float", "value_floats"):

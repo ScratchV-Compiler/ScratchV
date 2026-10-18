@@ -183,12 +183,15 @@ def check_instruction(instr: Instruction):
             raise OpError("AttributeError", f"{key} must be finite numeric")
 
 
-def compute(instr, operands):
+def compute(instr, operands, *, fp32_mode="native"):
+    handler = KERNELS[instr.opcode].handler
+    dtype = DTYPES[instr.dest.dtype]
+    if fp32_mode == "reference" and dtype == np.dtype("float32"):
+        from scratchv.verification.fp32_reference import HANDLERS
+        handler = HANDLERS.get(instr.opcode, handler)
     with np.errstate(over="raise", divide="raise", invalid="raise", under="ignore"):
         result = np.asarray(
-            KERNELS[instr.opcode].handler(
-                operands, instr.attrs, DTYPES[instr.dest.dtype]
-            )
+            handler(operands, instr.attrs, dtype)
         )
     if np.issubdtype(result.dtype, np.floating) and not np.isfinite(result).all():
         raise OpError("NumericError", "operation produced nonfinite output")
