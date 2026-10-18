@@ -70,6 +70,8 @@ include = ["scratchv", "scratchv.*", "scratchv_dag", "scratchv_dag.*", "benchmar
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "benchmarks"]
+# Run the model/toolchain suite explicitly with `python -m pytest tests/llm-deploy`.
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "llm-deploy"]
 markers = [
     "unit: unit tests",
     "blackbox: black-box tests",
