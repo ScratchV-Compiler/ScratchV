@@ -4,6 +4,11 @@ W4 使用固定 Qwen3-0.6B ONNX，沿用共享 ScratchV IR，通过 Tensor-C、Z
 RV64GC/LP64D ELF，在 QEMU virt 裸机中计算完整 logits。范围为 FP32、batch=1、L=256、
 28 层、无 KV cache；阶段要求见[开发计划](../开发计划.md)。
 
+W2 已由 [#106](https://github.com/ScratchV-Compiler/ScratchV/pull/106) 合入主干；
+W3 [#96](https://github.com/ScratchV-Compiler/ScratchV/pull/96) 已于 2026-10-15 合入，
+本分支同步主干 `8f726507c539607331f6b3599f2be811205a3e86`，保留 W4 扩展及共享修复。
+代码依赖已合入；独立复现、Nightly 和团队验收仍按[验收与 CI](validation.md)分别确认。
+
 本目录保存接口、复现和验收约定。原始运行产物保存在被 Git 忽略的 `output/` 中，
 公开验收记录应引用固定源码、模型、工具和输入身份，并保留原始报告摘要；更新文档
 不会改变已有运行的执行身份。
