@@ -95,7 +95,7 @@ def test_the_w1_w2_job_writes_no_step_summary():
     data = workflow('llm-deploy.yml')
     writers = {name for name, job in data['jobs'].items()
                for step in job.get('steps', []) if 'GITHUB_STEP_SUMMARY' in step.get('run', '')}
-    assert writers == {'full-qwen3-onnx'}
+    assert writers == {'full-qwen3-onnx', 'w3-execution-summary'}
 
 
 def test_linux_reproduction_check_runs_without_a_path_filter():
