@@ -19,8 +19,8 @@ SPEC.loader.exec_module(runner)
 
 def arguments(tmp_path, gates=None):
     return argparse.Namespace(output_dir=tmp_path / "fresh", gates=list(runner.GATES) if gates is None else gates,
-                              python=sys.executable, tokenizer_dir=tmp_path / "assets", tokenizer_mode="verify",
-                              model_dir=tmp_path / "model", model_mode="verify", cc="compiler", qemu="emulator",
+                              python=sys.executable, tokenizer_dir=tmp_path / "assets",
+                              model_dir=tmp_path / "model", cc="compiler", qemu="emulator",
                               qemu_timeout=180, parse_timeout=300)
 
 
@@ -57,7 +57,7 @@ def test_plan_is_fresh_serial_and_explicit(tmp_path):
         assert str(gate.output) in " ".join(gate.command)
     assert plan[5].dependencies == ("small-ir",)
     assert str(args.output_dir / "small-ir") in plan[5].command
-    assert "--mode" in plan[-1].command and "verify" in plan[-1].command
+    assert all("--mode" not in gate.command for gate in plan)
     assert "compiler" in plan[1].command and "emulator" in plan[1].command
 
 
@@ -162,6 +162,15 @@ def test_existing_output_is_not_read_as_pass(tmp_path):
     (folder / "report.json").write_text('{"passed":true}')
     result = runner.run_gate(runner.Gate("runtime", (), folder), {}, timeout=1)
     assert result["status"] == "FAIL" and "already exists" in result["error"]
+
+
+@pytest.mark.parametrize("option", ["--tokenizer-mode", "--model-mode"])
+@pytest.mark.parametrize("mode", ["download", "verify"])
+def test_removed_asset_modes_are_rejected(tmp_path, option, mode):
+    out = tmp_path / "new"
+    with pytest.raises(SystemExit, match="2"):
+        runner.main(["--output-dir", str(out), option, mode])
+    assert not out.exists()
 
 
 def test_zero_exit_without_report_is_failure(tmp_path):
@@ -435,14 +444,32 @@ def test_source_mutation_during_run_fails(tmp_path, monkeypatch):
     assert runner.main(["--output-dir", str(tmp_path / "new"), "--gates", "frontend"]) == 1
 
 
-def test_missing_assets_block_and_do_not_launch_dependent_gates(tmp_path, monkeypatch):
+@pytest.mark.parametrize("selected, launched_name, option, directory", [
+    ("runtime-model", "runtime", "--tokenizer-dir", "tokenizer"),
+    ("full-parse", "full-parse", "--model-dir", "onnx"),
+])
+def test_default_lfs_assets_and_failure_propagation(tmp_path, monkeypatch, selected,
+                                                  launched_name, option, directory):
     monkeypatch.setattr(runner, "checkout_evidence", lambda: {"head": None})
     monkeypatch.setattr(runner, "source_fingerprints", lambda: {})
-    monkeypatch.setattr(runner, "run_gate", lambda *a, **k: pytest.fail("must not run without required assets"))
+    launched = []
+
+    def fail_assets(gate, *args, **kwargs):
+        launched.append(gate.name)
+        assert gate.command[gate.command.index(option) + 1] == str(
+            runner.ROOT / "assets/qwen3-0.6b" / directory)
+        assert "--mode" not in gate.command
+        return {"name": gate.name, "status": "FAIL", "passed": False, "error": "Missing LFS assets"}
+
+    monkeypatch.setattr(runner, "run_gate", fail_assets)
     out = tmp_path / "new"
-    assert runner.main(["--output-dir", str(out), "--gates", "runtime-model"]) == 1
+    assert runner.main(["--output-dir", str(out), "--gates", selected]) == 1
+    assert launched == [launched_name]
     data = json.loads((out / "report.json").read_text())
-    assert [row["status"] for row in data["gates"] if row["name"] in {"runtime", "runtime-model"}] == ["BLOCKED", "BLOCKED"]
+    states = {row["name"]: row["status"] for row in data["gates"]}
+    assert states[launched_name] == "FAIL"
+    if selected == "runtime-model":
+        assert states["runtime-model"] == "BLOCKED"
 
 
 def test_help_has_no_heavy_imports(tmp_path):

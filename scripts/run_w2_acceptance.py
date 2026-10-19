@@ -103,12 +103,10 @@ def build_plan(args, root=ROOT):
                     command += ["--" + option, getattr(args, option)]
         if name in {"runtime", "runtime-model"}:
             command += ["--tokenizer-dir", str(args.tokenizer_dir)]
-        if name == "runtime":
-            command += ["--mode", args.tokenizer_mode]
         if name == "small-qemu":
             command += ["--model-dir", str(args.output_dir / "small-ir")]
         if name == "full-parse":
-            command += ["--model-dir", str(args.model_dir), "--mode", args.model_mode,
+            command += ["--model-dir", str(args.model_dir),
                         "--timeout", str(args.parse_timeout)]
         dependencies = (("small-ir",) if name == "small-qemu" else
                         ("runtime",) if name == "runtime-model" else ())
@@ -405,10 +403,10 @@ def main(argv=None):
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--python", default=sys.executable, help="Existing pinned Python interpreter; no installation")
     cli.add_argument("--output-dir", type=Path, required=True, help="Must not exist, even if empty")
-    cli.add_argument("--tokenizer-dir", type=Path, help="Verified local official tokenizer assets")
-    cli.add_argument("--tokenizer-mode", choices=("verify", "download"), default="verify")
-    cli.add_argument("--model-dir", type=Path, help="Pinned full Qwen3 ONNX release directory")
-    cli.add_argument("--model-mode", choices=("verify", "download"), default="verify")
+    cli.add_argument("--tokenizer-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/tokenizer",
+                     help="Verified local official tokenizer assets")
+    cli.add_argument("--model-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/onnx",
+                     help="Pinned full Qwen3 ONNX release directory")
     cli.add_argument("--cc", help="RISC-V compiler / Zig executable")
     cli.add_argument("--qemu", help="qemu-system-riscv64 executable")
     cli.add_argument("--gate-timeout", type=float, default=1800, help="Wall seconds per gate including child workers")

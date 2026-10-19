@@ -43,42 +43,21 @@ E4 建议领取 MatMul/两层 QEMU，E5 建议领取合成图/真实结构 IR/�
 
 ## 1. 建立固定CPU环境
 
-要求Python3.12，固定依赖在 `requirements/qwen3-small-probe.txt`。先安装CPU PyTorch，再装其余依赖，避免默认索引解析成CUDA包。
+Python 依赖统一使用 `pyproject.toml` 的 `llm-deploy` extra；安装命令与系统工具前提见 [Linux 复现约定](../LINUX_REPRODUCTION.md)。后续 `python` 指已安装该 extra 的 Python 3.12 解释器。Zig 自动从当前环境发现，QEMU 使用 PATH 中的可执行程序。
 
-Ubuntu 24.04 / Bash：
-
-```bash
-set -euo pipefail
-sudo apt-get update
-sudo apt-get install --no-install-recommends python3.12-venv git-lfs qemu-system-misc
-python3.12 -m venv .venv-linux
-. .venv-linux/bin/activate
-python -m pip install --upgrade pip
-python -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements/qwen3-small-probe.txt
-python -m pip install --no-deps -e .
-python -m pip install "ziglang==0.14.1"
-python -m pip check
-export SCRATCHV_CC="$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')"
-export SCRATCHV_PYTHON="$(pwd)/.venv-linux/bin/python"
-export SCRATCHV_QEMU="$(command -v qemu-system-riscv64)"
-export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-"$SCRATCHV_QEMU" --version
-```
-
-后续代码块中的 `python` 均指已激活的 `.venv-linux/bin/python`。在新终端先执行 `source .venv-linux/bin/activate` 并恢复工具环境变量。CPU小模型无需官方权重下载；首次编译Zig会建立缓存，应允许足够编译时间，不要将首次构建耗时解释为推理性能。
+CPU 小模型无需官方权重下载；首次编译 Zig 会建立缓存，应允许足够编译时间，不要将首次构建耗时解释为推理性能。
 
 当前交付提供环境预检入口（历史 `5ea22ec` 没有此脚本）：
 
 ```bash
-python -X utf8 -B scripts/check_w1_repro_env.py --require-clean --output-dir output/w1-repro-env
+python scripts/check_w1_repro_env.py --require-clean --output-dir output/w1-repro-env
 ```
 
 它检查 Python/固定依赖、CPU PyTorch、原生模块导入和 ORT CPU provider、`pip check`、Zig/QEMU 版本及 virt/rv64 能力、Git 状态和合成模型的真实 LFS 对象哈希；不安装工具、不下载模型、不运行数值测试。输出 `report.json/md`，`ready=true` 只表示环境具备前置条件，不能写成 W1 或第二人验收通过。失败时先看对应检查的实际版本/错误。专门验证额外本地改动时可去掉 `--require-clean`，报告仍记录 dirty 状态，须另保留完整增量。
 
 完整 ONNX 的固定 ZIP 约 1.24 GB，解包模型约 2.41 GB；已有 ORT 验证进程峰值约 5.97 GiB。按实际机器预留下载、解包和运行余量；该内存记录不是导出峰值或最低内存承诺。完整模型可以单独安排，不能将未执行记为成功。
 
-Bash 使用 `set -euo pipefail`，任何命令失败即停止；记录失败码时使用 `if command; then ...; else status=$?; ...; fi`，不要用后续成功命令覆盖失败。数值失败仍须保存报告和日志。
+命令失败后先核对退出码与报告，不要用后续成功覆盖失败。数值失败仍须保存报告和日志。
 
 ## 2. 文档、回归与原两层合成图
 
@@ -155,15 +134,18 @@ QEMU 时长是宿主机观察的进程墙钟时间，包含 QEMU 启动、guest 
 
 入口 `probes/w1_qwen3_export/run.py` 提供三种模式。所有模式最终都执行真实ORT两组输入（短padding/满256），检查FP32静态I/O、完整logits形状和有限值；不是只读历史JSON便判PASS。
 
-### 4.1 下载固定发布产物并验证
+### 4.1 验证 Git LFS 固定资产
+
+按 [Linux 复现约定](../LINUX_REPRODUCTION.md) 拉取 LFS 对象后运行：
 
 ```bash
-python -X utf8 -B probes/w1_qwen3_export/run.py --mode download --model-dir output/w1-repro-full-model --output-dir output/w1-repro-full-download --threads 2
+python probes/w1_qwen3_export/run.py --output-dir output/w1-repro-full-verify --threads 2
 ```
 
-下载 ZIP 约 1.24 GB，解包后模型约 2.41 GB，需另留运行内存与磁盘空间。入口使用固定release与ZIP SHA256，并核对模型及三个权重分片哈希。已有固定ZIP可加 `--archive <实际ZIP路径>` 避免重复联网；下载目录按入口要求准备。产物manifest见 `probes/w1_qwen3_export/manifest.json`。
-
-`download` 模式验证既有导出并重新跑ORT，**不重新导出、不重新比较PyTorch数值**。它可重验W1“完整导出可载入、固定形状、ORT可执行”的交付物，不能写成完成了一次新导出。
+默认读取 `assets/qwen3-0.6b/onnx`，模型约 2.41 GB，需另留运行内存与磁盘空间。
+入口按 `probes/w1_qwen3_export/manifest.json` 核对模型及三个权重分片哈希。
+默认 `verify` 离线验证既有导出并重新跑 ORT，不重新导出或比较 PyTorch 数值。
+显式 `download` 模式仅保留为历史 Release 获取方式。
 
 ### 4.2 验证已有完整模型
 
@@ -195,9 +177,9 @@ peak_memory是验证器进程峰值RSS，**不包含导出子进程**，不能�
 
 工作流为 `.github/workflows/llm-deploy.yml`：
 
-- PR执行原合成图、小模型IR、小模型QEMU和 `tests/test_w1_qwen3_export.py` 的轻量回归，不下载完整模型。
-- 手动或定时运行另启 `full-qwen3-onnx` job，使用 `--mode download --threads 2` 校验固定发布产物并真实运行ORT两case，上传 `output/qwen3-full-probe/` 报告。
-- 完整模型job只需要固定NumPy2.2.6、ONNX1.18.0、ORT1.22.1、protobuf5.29.5，不需要PyTorch；这也意味着它不重新导出或比较PyTorch。
+- PR执行原合成图、小模型IR、小模型QEMU和 `tests/test_w1_qwen3_export.py` 的轻量回归；另由 W2 完整前端任务拉取 LFS 权重并解析，不执行完整 ORT 推理。
+- 手动或定时运行另启 `full-qwen3-onnx` job，拉取并缓存 LFS 权重，使用 `--mode verify --threads 2` 校验固定产物并真实运行ORT两case，上传 `output/qwen3-full-probe/` 报告。
+- 完整模型 job 统一安装 `llm-deploy` extra；verify 路径只执行 ONNX/ORT 校验，不重新导出或比较 PyTorch。
 - PR中完整模型job按条件未执行，应明确记录“ORT重型门禁未执行”，不能用轻量测试通过代替。
 
 提交 `545e696` 已有两项 Linux 成功证据；历史个人测量不充当 Linux 报告：

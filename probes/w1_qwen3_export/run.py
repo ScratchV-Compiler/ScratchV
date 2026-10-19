@@ -421,7 +421,7 @@ def write_reports(out, report):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("verify", "download", "export"), default="verify")
-    parser.add_argument("--model-dir", type=Path, default=ROOT / "models/qwen3-0.6b-onnx")
+    parser.add_argument("--model-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/onnx")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "output/qwen3-export-probe")
     parser.add_argument("--archive", type=Path, help="Already downloaded pinned release ZIP (download mode)")
     parser.add_argument("--source-dir", type=Path, help="Pinned official HF snapshot (export mode)")

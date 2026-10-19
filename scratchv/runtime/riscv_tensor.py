@@ -264,11 +264,23 @@ def _workspace_tool(name: str) -> str | None:
     return None
 
 
+def _packaged_zig() -> str | None:
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        package = distribution("ziglang")
+    except PackageNotFoundError:
+        return None
+    executable = "zig.exe" if os.name == "nt" else "zig"
+    candidate = Path(package.locate_file("ziglang")) / executable
+    return str(candidate.resolve()) if candidate.is_file() else None
+
+
 def discover_toolchain(
     cc: Sequence[str] | str | os.PathLike[str] | None = None,
     qemu: str | os.PathLike[str] | None = None,
 ) -> RiscVToolchain:
-    """Resolve explicit paths, workspace portable tools, or executables on PATH.
+    """Resolve overrides, workspace/PATH tools, or the installed ziglang wheel.
 
     ``cc`` accepts an executable path or a prefix such as ``[zig, "cc"]``.
     Environment overrides are SCRATCHV_CC and SCRATCHV_QEMU; the
@@ -276,7 +288,7 @@ def discover_toolchain(
     """
     if cc is None:
         cc = (os.environ.get("SCRATCHV_CC") or os.environ.get("SCRATCHV_RISCV_CC") or _workspace_tool("zig")
-              or shutil.which("zig") or shutil.which("clang"))
+              or shutil.which("zig") or _packaged_zig() or shutil.which("clang"))
     if cc is None:
         raise FileNotFoundError("Install portable Zig or provide a RISC-V clang compiler path")
     command = [os.fspath(cc)] if isinstance(cc, (str, os.PathLike)) else list(cc)

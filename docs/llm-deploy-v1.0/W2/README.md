@@ -14,31 +14,13 @@ W2 的范围是完整前端解析、小模型 IR 数值、基础后端和 Host �
 
 ## 七项统一验收
 
-先完成环境准备，激活 `.venv-linux`，并设置 `SCRATCHV_PYTHON`、`SCRATCHV_CC`、`SCRATCHV_QEMU`。模型及官方 Tokenizer 目录必须包含固定 manifest 对应的真实资产。在仓库根目录执行：
+安装与系统工具要求见 [Linux 复现约定](../LINUX_REPRODUCTION.md)。以下命令在仓库根目录使用已安装 `llm-deploy` 的 Python 环境执行。
 
 ```bash
-set -euo pipefail
-source .venv-linux/bin/activate
-export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
-export PYTHONIOENCODING=utf-8
-export SCRATCHV_PYTHON="$(pwd)/.venv-linux/bin/python"
-export SCRATCHV_CC="$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')"
-export SCRATCHV_QEMU="$(command -v qemu-system-riscv64)"
-W2_TOKENIZER=/absolute/path/to/fixed-qwen3-tokenizer
-W2_MODEL=/absolute/path/to/fixed-qwen3-onnx
-
-git rev-parse HEAD
-git status --short
-"$SCRATCHV_PYTHON" -B -X utf8 scripts/run_w2_acceptance.py \
-  --python "$SCRATCHV_PYTHON" \
-  --output-dir output/w2-acceptance-linux-01 \
-  --tokenizer-dir "$W2_TOKENIZER" \
-  --model-dir "$W2_MODEL" \
-  --cc "$SCRATCHV_CC" \
-  --qemu "$SCRATCHV_QEMU"
+python scripts/run_w2_acceptance.py --output-dir output/w2-acceptance-linux-01
 ```
 
-把两项资产路径改成 Linux 实际目录。默认使用 `verify` 离线校验；无资产时可显式增加 `--tokenizer-mode download` 与 `--model-mode download`。后者下载约 1.24 GB 的固定完整发布包，解包及解析需要额外磁盘与数 GiB 空闲内存。入口不安装依赖。`--output-dir` 必须是本次全新的路径，连已存在的空目录也会被拒绝。
+默认读取 Git LFS 管理的 `assets/qwen3-0.6b/tokenizer` 和 `assets/qwen3-0.6b/onnx`，资产获取见环境指南。使用其他本地目录时可指定 `--tokenizer-dir` 和 `--model-dir`。所有文件必须匹配固定 manifest，只有 LFS pointer 不可运行。测试全程离线；解析需要数 GiB 空闲内存。`--output-dir` 必须是本次全新的路径，连已存在的空目录也会被拒绝。
 
 | 门禁 | 实际执行与判断 |
 |---|---|
@@ -88,7 +70,7 @@ PR 中按条件未运行的完整 ONNX ORT 重型任务仍是未执行，不因�
 
 ## 分项入口与后续边界
 
-- [完整前端解析](../../../probes/w2_qwen3_parse/README.md)：无须 Torch 或 QEMU，可单独准备固定解析环境。报告含 `nodes.json`、`bindings.json`、`ir.txt`。
+- [完整前端解析](../../../probes/w2_qwen3_parse/README.md)：验证完整图的解析与绑定。报告含 `nodes.json`、`bindings.json`、`ir.txt`。
 - [前端模式与基础后端](../../../probes/w2_backend_ops/README.md)：NumPy 独立公式、ORT、IR 和 QEMU 四路检查。
 - [Tokenizer 与输入](../../../probes/w2_runtime/README.md) 和 [单步模型接口](../../../probes/w2_runtime_model/README.md)：模型词表 151936 与实际可解码 ID 集合分开处理，不取模重映射。
 - [两层数值探测](../../../probes/w2_qwen3_small/README.md)：普通图、诊断图、产物绑定、仿真计时与精度边界。

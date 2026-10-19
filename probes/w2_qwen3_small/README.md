@@ -15,7 +15,6 @@ RV64GC ELF，在 QEMU `virt` 裸机执行。下文“不是 RISC-V 验证”的�
 
 | 项目 | 值 |
 |---|---|
-| Python / PyTorch / Transformers | 3.12 / 2.7.1 CPU / 4.51.3 |
 | 层数 / hidden_size / intermediate_size | 2 / 32 / 96 |
 | Query heads / KV heads / head_dim | 4 / 2 / 16 |
 | 词表 / batch / 序列长度 | 128 / 1 / 256 |
@@ -27,25 +26,19 @@ RV64GC ELF，在 QEMU `virt` 裸机执行。下文“不是 RISC-V 验证”的�
 
 ONNX 输入为 `input_ids: INT64 [1,256]` 与 `attention_mask: FP32 [1,1,256,256]`。mask 是加性因果和 key-padding 掩码（允许位置为 0，屏蔽位置为 FP32 最小有限值），不是 tokenizer 常用的二维 0/1 mask；位置编号固定为 `0..255`。普通图输出为 `logits: FP32 [1,256,128]`。
 
-## Linux 复现
+## 运行数值探测
 
-正式交付使用 Ubuntu 24.04 x86_64 / Bash / Python 3.12。通用工具准备见 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)；在仓库根目录执行：
+安装与系统工具要求见 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)。以下命令在仓库根目录使用已安装 `llm-deploy` 的 Python 环境执行。
 
 ```bash
-set -euo pipefail
-python3.12 -m venv .venv-linux
-source .venv-linux/bin/activate
-python -m pip install --upgrade pip
-python -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements/qwen3-small-probe.txt
-python -m pip install --no-deps -e .
-python -m pip check
-export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 python probes/w2_qwen3_small/run.py --output-dir output/qwen3-small
-python -m pytest tests/test_qwen3_small_probe.py tests/test_qwen3_small_model.py tests/test_qwen3_small_gate.py -q
 ```
 
-CPU PyTorch 必须在安装依赖文件前单独安装；随后 `torch==2.7.1` 会保留已安装的 `2.7.1+cpu`。不要只执行依赖文件安装而让 pip 从默认索引另选 CUDA 依赖。导出相关包采用已验证的固定组合，避免环境升级改变导出图或数值基线。
+探测入口的回归测试：
+
+```bash
+python -m pytest tests/test_qwen3_small_probe.py tests/test_qwen3_small_model.py tests/test_qwen3_small_gate.py -q
+```
 
 `--output-dir` 必须不存在或为空。复跑时指定新的目录，例如 `--output-dir output/qwen3-small-run02`；脚本拒绝覆盖已有报告和模型。默认模型权重 seed 为 0，可通过 `--model-seed` 显式更改，所用值和权重哈希会写入报告。
 
@@ -120,24 +113,24 @@ ScratchV 承担 ONNX/IR、IR 优化、张量循环生成、内存规划与输入
 这条新路径不经过旧的标量寄存器选择器，不表示该选择器已经实现张量计算；
 标准编译入口现在会拒绝把张量图交给旧 `riscv/llvm` 后端，以免生成占位汇编。
 
-Linux 工具准备（Python 导出依赖仍按前面的固定版本安装）：
+交叉编译器由 `llm-deploy` 提供，QEMU 的系统工具要求见 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)。
 
-```bash
-sudo apt-get update
-sudo apt-get install --no-install-recommends qemu-system-misc
-python -m pip install ziglang==0.14.1
-export SCRATCHV_CC="$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')"
-```
-
-设置 `SCRATCHV_QEMU="$(command -v qemu-system-riscv64)"`；所有工具均为 Linux 可执行文件。脚本不会隐式联网安装工具。
-
-先验证矩阵乘，再导出模型并运行完整验收；输出目录必须为空，避免覆盖旧证据：
+先验证矩阵乘；每次使用新的输出目录，避免覆盖旧证据：
 
 ```bash
 python probes/w1_matmul_4x4/run.py --output-dir output/qemu-matmul
+```
+
+导出并验证两层模型。若已完成上面的数值探测，直接复用本轮产物：
+
+```bash
 python probes/w2_qwen3_small/run.py --output-dir output/qwen3-small
-python probes/w2_qwen3_small/riscv.py \
-  --model-dir output/qwen3-small --output-dir output/qwen3-riscv
+```
+
+执行 RISC-V/QEMU 验收：
+
+```bash
+python probes/w2_qwen3_small/riscv.py --model-dir output/qwen3-small --output-dir output/qwen3-riscv
 ```
 
 第三步对普通图、诊断图均执行 `none/basic/all` 优化后的 IR 数值验收；并分别
@@ -152,9 +145,8 @@ padding 隔离。每个比较仍要求 FP32、形状一致、有限值、最大�
 失败、输入目录混用或哈希不一致应直接失败，不能只靠当前 ORT 比较通过。该绑定
 用于避免意外混用产物，不是第三方认证；参考计算仍须在指定环境重新生成。
 
-当前代码已包含 [W1 PR #93](https://github.com/ScratchV-Compiler/ScratchV/pull/93) 的执行环境与源码归属修复。
-报告顶层 `environment` 和 `source_sha256` 记录本次 RISC-V 探测进程及其 ORT/IR 参考的环境与源码；
-`export_evidence.environment` 仅记录上游导出环境，不能当成本次 QEMU 对照的执行环境。
+当前执行环境与完整源码归属的报告增强单独见 [W1 PR #93](https://github.com/ScratchV-Compiler/ScratchV/pull/93)。
+W2 分支未包含该报告代码修复；未合并前不能把原导出环境当成本次 QEMU 对照的执行环境。
 
 `output/qwen3-riscv/` 包含 `report.json/md/html`、生成的 C、启动汇编与链接脚本、
 ELF、编译器/QEMU 命令与日志、每次执行的输入和 UART 二进制以及 QEMU/ORT 数组。
@@ -198,8 +190,7 @@ Actions Summary，并将 JSON/HTML 和已生成的失败报告保存在
 只生成张量 C 可使用标准入口：
 
 ```bash
-python -m scratchv.main model.onnx --backend tensor-c --optimize all \
-  --verify-ir --tensor-workspace-mib 256 -o model.c
+python -m scratchv.main model.onnx --backend tensor-c --optimize all --verify-ir --tensor-workspace-mib 256 -o model.c
 ```
 
 `--verify-ir` 检查编译流程的 IR 契约；执行数值验收须运行上述 QEMU 探测。

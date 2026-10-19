@@ -1,6 +1,6 @@
 # W2 前端模式与基础后端算子验收
 
-正式复现使用 Ubuntu 24.04 x86_64 / Bash / Python 3.12，先按 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) 准备并激活环境。下文 `python` 为 `.venv-linux/bin/python`。
+安装与系统工具要求见 [Linux 复现约定](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)。以下命令在仓库根目录使用已安装 `llm-deploy` 的 Python 环境执行。
 
 `unit:frontend-ops` 明确检查 RMSNorm、RoPE、SwiGLU、GQA 四种分解图模式。
 这些模式由现有 ONNX 基础算子表达，不声明已有独立融合 Attention/RMSNorm IR。
@@ -14,13 +14,17 @@ python -m pytest tests/test_qwen3_frontend_patterns.py -q
 `none`、`all` 两个优化级别，共 32 次目标执行；不下载模型权重。
 
 ```bash
-python probes/w2_backend_ops/run.py --output-dir output/w2-backend-ops --cc "$SCRATCHV_CC" --qemu "$SCRATCHV_QEMU"
+python probes/w2_backend_ops/run.py --output-dir output/w2-backend-ops
+```
+
+基础后端门禁的回归测试：
+
+```bash
 python -m pytest tests/test_w2_backend_ops_gate.py -q
 ```
 
-也可省略工具参数，使用 PATH 或 `SCRATCHV_CC`、`SCRATCHV_QEMU`。
-使用现有 `requirements/qwen3-small-probe.txt` 中的 NumPy/ONNX/ORT 环境即可，
-本探测不需要 PyTorch。输出目录须不存在或为空；依赖、工具、编译、执行或
+Zig 自动从当前 Python 环境发现，QEMU 使用 PATH 中的可执行程序。
+输出目录须不存在或为空；依赖、工具、编译、执行或
 比较失败均非零退出，不将跳过当通过。
 
 | 类别 | 用例与针对的问题 |
