@@ -367,10 +367,13 @@ def main(argv: list[str] | None = None) -> int:
         if result.stats.get("schedule", {}).get("report"):
             print(result.stats["schedule"]["report"], file=sys.stderr)
         if result.stats.get("instruction_count"):
-            # Render the 9-category instruction breakdown table to stderr
-            from scratchv.backend.inst_counter import InstructionStats, render_text
-            st = InstructionStats.from_dict(result.stats["instruction_count"])
-            print(render_text(st), file=sys.stderr)
+            # Render the instruction breakdown table to stderr
+            try:
+                from scratchv.backend.inst_counter import InstructionStats, render_text
+                st = InstructionStats.from_dict(result.stats["instruction_count"])
+                print(render_text(st), file=sys.stderr)
+            except Exception as e:  # noqa: BLE001
+                print(f"  note: failed to render instruction counts: {e}", file=sys.stderr)
 
         # Verification
         if args.verify:

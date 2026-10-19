@@ -209,6 +209,18 @@ class TestInstructionStats:
         assert stats.source == "tinyfive"
         assert stats.isa == "rv32im"
 
+    def test_from_emulator_counts_uppercase_and_misc(self):
+        # Mixed casing and uppercase unknown opcodes
+        emu_opcodes = {"ADD": 10, "AMOADD.W": 5, "CUSTOM_EXT": 2}
+        stats = from_emulator_counts(emu_opcodes, source="spike", isa="rv32im")
+        assert stats.total == 17
+        assert stats.category_counts["ALU"] == 10
+        assert stats.category_counts["ATOMIC"] == 5
+        assert stats.category_counts["MISC"] == 2
+        assert stats.unknown_opcodes == {"custom_ext": 2}
+        assert "custom_ext" in stats.opcode_counts
+        assert "amoadd.w" in stats.opcode_counts
+
 
 class TestAnalyzeInstructions:
     """Tests for analysis API functions."""
@@ -310,6 +322,16 @@ class TestComparison:
         with pytest.raises(ValueError, match="not comparable"):
             compare_stats([("s1", s1), ("s2", s2)])
 
+    def test_comparison_result_invalid_baseline(self):
+        s1 = InstructionStats(category_counts={c: 0 for c in _CATEGORY_ORDER}, opcode_counts={}, unknown_opcodes={}, total=0)
+        with pytest.raises(ValueError, match="baseline_label 'nonexistent' must be present in stats"):
+            ComparisonResult(
+                baseline_label="nonexistent",
+                stats={"s1": s1},
+                category_deltas={},
+                opcode_deltas={},
+            )
+
 
 class TestRenderers:
     """Tests for text, JSON, markdown, and HTML report rendering."""
@@ -408,6 +430,26 @@ class TestCLI:
             with open(json_p, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 assert data["kind"] == "comparison"
+
+    def test_cli_single_file_json_stdout_purity(self, capsys):
+        target = str(FIXTURES_DIR / "basic_rv32im.s")
+        ret = main([target, "--json"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        # Verify stdout is strictly valid JSON without text table prepended
+        data = json.loads(captured.out)
+        assert data["kind"] == "single"
+        assert data["total"] == 15
+
+    def test_cli_compare_json_stdout_purity(self, capsys):
+        b = str(FIXTURES_DIR / "compare_before.s")
+        a = str(FIXTURES_DIR / "compare_after.s")
+        ret = main([b, a, "--compare", "--json"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        # Verify stdout is strictly valid JSON without text table prepended
+        data = json.loads(captured.out)
+        assert data["kind"] == "comparison"
 
 
 class TestCompilerDriverIntegration:

@@ -233,7 +233,7 @@ def _classify_opcode(opcode: str) -> str:
 def _extract_opcode(line: str) -> Optional[str]:
     """Legacy helper: extract opcode from line using shared assembly parser."""
     parsed = parse_line(line)
-    if parsed.is_directive or parsed.opcode is None:
+    if parsed is None or parsed.is_directive or parsed.opcode is None:
         return None
     return parsed.opcode.lower()
 
@@ -344,6 +344,10 @@ class ComparisonResult:
     opcode_deltas: Mapping[str, Mapping[str, int]]
 
     def __post_init__(self) -> None:
+        if self.baseline_label not in self.stats:
+            raise ValueError(
+                f"baseline_label '{self.baseline_label}' must be present in stats: {list(self.stats.keys())}"
+            )
         stats_copy = {k: v for k, v in self.stats.items()}
         cat_deltas_copy = {
             label: MappingProxyType({c: cd for c, cd in deltas.items()})
@@ -463,7 +467,7 @@ def analyze_instructions(
 
     for line in asm_text.splitlines():
         parsed = parse_line(line)
-        if parsed.is_directive or parsed.opcode is None:
+        if parsed is None or parsed.is_directive or parsed.opcode is None:
             continue
 
         op = parsed.opcode.lower()
@@ -504,19 +508,23 @@ def from_emulator_counts(
 ) -> InstructionStats:
     """Construct an InstructionStats object from emulator dynamic opcode execution counts (count_mode='dynamic')."""
     cat_counts = {cat: 0 for cat in _CATEGORY_ORDER}
+    norm_opcodes: dict[str, int] = {}
     unknown_opcodes: dict[str, int] = {}
-    total = sum(opcode_counts.values())
+    total = 0
 
     for op, cnt in opcode_counts.items():
         op_norm = str(op).strip().lower()
+        cnt_int = int(cnt)
+        norm_opcodes[op_norm] = norm_opcodes.get(op_norm, 0) + cnt_int
         info = classify_opcode(op_norm)
-        cat_counts[info.category] += cnt
+        cat_counts[info.category] += cnt_int
+        total += cnt_int
         if info.category == "MISC":
-            unknown_opcodes[op_norm] = cnt
+            unknown_opcodes[op_norm] = unknown_opcodes.get(op_norm, 0) + cnt_int
 
     return InstructionStats(
         category_counts=cat_counts,
-        opcode_counts=dict(opcode_counts),
+        opcode_counts=norm_opcodes,
         unknown_opcodes=unknown_opcodes,
         total=total,
         source=source,
@@ -1354,8 +1362,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if st.unknown_opcodes:
                     has_unknown = True
 
-            # Print comparison to stdout
-            print(render_text(comp, verbose=args.verbose))
+            # Print comparison to stdout (suppress when machine-readable --json is requested)
+            if not args.json:
+                print(render_text(comp, verbose=args.verbose))
 
             # Charts
             if args.chart:
@@ -1394,7 +1403,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 multi_stats.append(st)
                 if st.unknown_opcodes:
                     has_unknown = True
-                print(render_text(st, verbose=args.verbose))
+                if not args.json:
+                    print(render_text(st, verbose=args.verbose))
 
             # Charts
             if args.chart and len(multi_stats) == 1:

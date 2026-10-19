@@ -1,3 +1,6 @@
+# Static assembly test fixture for instruction counter (static textual parsing).
+# Note: Not intended for runtime execution; contains intentional branch/jump
+# patterns and post-return instructions to verify static categorization coverage.
 .text
 .globl main
 main:

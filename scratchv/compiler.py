@@ -385,9 +385,12 @@ class CompilerDriver:
         # instructions into 9 canonical functional categories, attaching the statistics dict
         # to the CompileResult stats for CLI and programmatic consumers.
         instruction_count_stats = None
-        if self.config.count_instr:
-            from scratchv.backend.inst_counter import analyze_instructions
-            instruction_count_stats = analyze_instructions(asm_text).to_dict()
+        if self.config.count_instr and asm_text:
+            try:
+                from scratchv.backend.inst_counter import analyze_instructions
+                instruction_count_stats = analyze_instructions(asm_text).to_dict()
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"Instruction counting failed: {e}")
 
         # --- 7. Cycle estimation ---
         cycle_report = ""

@@ -16,7 +16,7 @@
 
 [2026-09-26] Topic 04 的 PassRegistry 注册只声明可用工厂，build 才按名称构造并调度；禁用先于构造。IR 和汇编分阶段建管线，常量折叠与汇编常量加载合并不可混用；新增调用点须使用统一工厂，避免旧 ConstantFolder(program).run() 接口。
 
-[2026-09-28] Topic 12 指令计数统计器采用文本静态 mnemonic 口径（每个出现在文本中的指令计 1 条，不猜测展开长度）；控制流伪指令（call/tail/j/jr/ret）归入 JUMP，条件分支归入 BRANCH，仅非控制流语法糖归入 PSEUDO，未知指令进入 MISC 并保留 unknown_opcodes 明细；解析必须复用共享 parser 且在所有汇编后处理之后执行；正常统计存入 CompileResult.stats["instruction_count"] 而非 warnings；多文件对比校验 schema/classification/count_mode/isa 可比性，同名 basename 须做唯一 label 消歧。适用于后端汇编统计、A/B 优化比对与 CI。
+[2026-09-28] Topic 12 指令计数统计器采用文本静态 mnemonic 口径（每个出现在文本中的助记符计 1 条，不猜测汇编宏展开长度；如需真实机器指令数需待后续扩展或结合仿真器动态执行数）；控制流指令（call/tail/j/jr/ret）归入 JUMP，条件分支归入 BRANCH，仅非控制流语法糖归入 PSEUDO，未知指令进入 MISC 并保留 unknown_opcodes 明细且记录于 stats["instruction_count"]["unknown_opcodes"]；解析必须复用共享 parser 且在所有汇编后处理之后执行；正常统计存入 CompileResult.stats["instruction_count"] 而非 warnings；多文件对比校验 schema/classification/count_mode（合法值为 textual/dynamic）/isa 可比性，同名 basename 须做唯一 label 消歧；9 分类表与不变式由 tests/test_inst_counter.py 锁定回归。适用于后端汇编统计、A/B 优化比对与 CI。
 
 [2026-10-01] ONNX initializer 是否为标量应按秩为 0 判断，不能按元素数为 1 判断。保留 CNN 的 fc2.bias 为 (1,) 后，IR 指令数由 17 变 16，Topic 17 的峰值寄存器压力由 11 变 12；更新统计基线时须同时检查张量形状、真实汇编执行和零 spill，不能恢复错误标量化来迎合旧断言。专项测试通过后仍须覆盖现有 CNN 与寄存器分配回归。
 
