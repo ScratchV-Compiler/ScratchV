@@ -212,7 +212,8 @@ def parse_line(line: str, lineno: int = 0) -> ParsedAsmLine:
     Returns:
         A ParsedAsmLine with all fields populated.
     """
-    m = _LINE_RE.match(line)
+    clean = line.rstrip("\r\n")
+    m = _LINE_RE.match(clean)
     if m is None:
         return ParsedAsmLine(raw=line, lineno=lineno)
 
@@ -230,6 +231,9 @@ def parse_line(line: str, lineno: int = 0) -> ParsedAsmLine:
         if opcode_raw.startswith("."):
             is_directive = True
             opcode = opcode_raw.lstrip(".").lower()
+        elif opcode_raw.lower().startswith("cfi_"):
+            is_directive = True
+            opcode = opcode_raw.lower()
         else:
             opcode = opcode_raw.lower()
 

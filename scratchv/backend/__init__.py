@@ -9,7 +9,11 @@ from .instruction_select import InstructionSelector
 from .register_alloc import RegisterAllocator
 from .asm_emit import AsmEmitter
 from .asm_beautifier import beautify_asm
-from .inst_counter import count_instructions
+from .inst_counter import (
+    count_instructions, InstructionStats, ComparisonResult, CategoryDelta,
+    analyze_instructions, analyze_file, compare_stats, compare_files,
+    from_emulator_counts,
+)
 from .asm_peephole import AsmPeepholeOptimizer
 from .const_merge import merge_constants
 from .regalloc_linear import (
@@ -37,6 +41,9 @@ __all__ = [
     # passes
     "InstructionSelector", "RegisterAllocator", "AsmEmitter",
     "beautify_asm", "count_instructions",
+    "InstructionStats", "ComparisonResult", "CategoryDelta",
+    "analyze_instructions", "analyze_file", "compare_stats", "compare_files",
+    "from_emulator_counts",
     "AsmPeepholeOptimizer", "merge_constants",
     "LinearScanAllocator", "block_from_machine_instrs", "machine_instrs_from_block",
     "InstructionScheduler", "parse_instructions", "machine_instrs_from_scheduled",
