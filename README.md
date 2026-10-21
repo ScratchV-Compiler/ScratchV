@@ -9,6 +9,7 @@
 [![Poster](https://img.shields.io/badge/📢-项目海报-orange)](https://scratchv-compiler.github.io/ScratchV/ScratchV.html)
 
 ---
+![Uploading 企业微信截图_17871286604710.png…]()
 
 > 📢 **[查看项目海报](https://scratchv-compiler.github.io/ScratchV/ScratchV.html)** — 了解项目招募信息、3个月学习路线、课题精选
 
