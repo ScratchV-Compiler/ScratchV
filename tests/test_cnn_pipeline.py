@@ -1,12 +1,12 @@
-"""End-to-end test: ONNX CNN model → RISC-V binary → data verification.
+"""CNN pipeline tests, including explicit IR semantic verification.
 
 Full pipeline test:
     1. Parse cnn.onnx → ScratchV IR
     2. IR → RISC-V assembly (instruction selection + register alloc + emit)
     3. RISC-V assembly → 32-bit machine code (RV32IM encoder)
-    4. IR trace execution (numpy) → compiled output
+    4. IR trace execution (numpy) → IR semantic output
     5. ONNX Runtime reference inference → expected output
-    6. MSE / MAE comparison
+    6. Strict shape and numerical comparison
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ import pytest
 # ── Path to project root ────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "graph", "cnn.onnx")
+IR_RTOL = 1e-4
+IR_ATOL = 1e-5
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(MODEL_PATH),
@@ -41,6 +43,11 @@ def onnx_model():
         shape = [d.dim_value for d in inp.type.tensor_type.shape.dim]
         inputs.append({"name": inp.name, "shape": shape})
 
+    outputs = []
+    for output in graph.output:
+        shape = [d.dim_value for d in output.type.tensor_type.shape.dim]
+        outputs.append({"name": output.name, "shape": shape})
+
     nodes = []
     for node in graph.node:
         nodes.append({
@@ -57,6 +64,7 @@ def onnx_model():
     return {
         "graph_name": graph.name,
         "inputs": inputs,
+        "outputs": outputs,
         "nodes": nodes,
         "num_nodes": len(nodes),
         "initializers": initializers,
@@ -102,8 +110,8 @@ def test_input():
 
 
 @pytest.fixture(scope="module")
-def scratchv_output(ir_program, onnx_model, test_input):
-    """Step 4: Execute IR via trace executor → compiled output."""
+def ir_output(ir_program, onnx_model, test_input):
+    """Step 4: Execute IR via trace executor → IR semantic output."""
     from scratchv.simulator.rv32_emulator import IRTraceExecutor
     executor = IRTraceExecutor(ir_program, onnx_model["initializers"])
     return executor.run(test_input)
@@ -292,31 +300,31 @@ class TestBinaryEncoding:
 class TestExecution:
     """Verify IR trace execution produces valid output."""
 
-    def test_output_is_array(self, scratchv_output):
+    def test_output_is_array(self, ir_output):
         """Output should be a numpy array."""
-        assert isinstance(scratchv_output, np.ndarray)
+        assert isinstance(ir_output, np.ndarray)
 
-    def test_output_is_finite(self, scratchv_output):
+    def test_output_is_finite(self, ir_output):
         """Output should not contain NaN or Inf."""
-        assert np.all(np.isfinite(scratchv_output))
+        assert np.all(np.isfinite(ir_output))
 
-    def test_output_range_reasonable(self, scratchv_output):
+    def test_output_range_reasonable(self, ir_output):
         """Sigmoid output should be in [0, 1]."""
-        out = np.asarray(scratchv_output, dtype=np.float32).flatten()
+        out = np.asarray(ir_output, dtype=np.float32).flatten()
         for v in out:
             assert 0.0 <= v <= 1.0, f"Output {v} outside sigmoid range [0,1]"
 
-    def test_output_shape(self, scratchv_output):
+    def test_output_shape(self, ir_output):
         """Final output should be scalar-like (sigmoid)."""
-        assert scratchv_output.size == 1
+        assert ir_output.size == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Test 6: Verification (MSE / MAE)
+# Test 6: IR semantic verification against ONNX Runtime
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestVerification:
-    """Compare ScratchV output against ONNX Runtime reference."""
+    """Compare IR trace output against the named ONNX Runtime output."""
 
     @pytest.mark.skipif(
         not __import__("importlib").util.find_spec("onnxruntime"),
@@ -331,40 +339,36 @@ class TestVerification:
         not __import__("importlib").util.find_spec("onnxruntime"),
         reason="onnxruntime not installed",
     )
-    def test_mse_below_threshold(self, scratchv_output, onnxrt_output):
-        """MSE should be finite."""
-        ref = list(onnxrt_output.values())[0]
-        comp = np.asarray(scratchv_output, dtype=np.float32).flatten()
-        ref = np.asarray(ref, dtype=np.float32).flatten()
-
-        mse = float(np.mean((ref[:len(comp)] - comp) ** 2))
-        assert np.isfinite(mse)
-        assert mse < 1.0  # should be well below 1.0 for sigmoid output
+    def test_output_names_match_model(self, onnx_model, onnxrt_output):
+        """Runtime outputs should match the names declared by the model."""
+        expected_names = {output["name"] for output in onnx_model["outputs"]}
+        assert set(onnxrt_output) == expected_names
 
     @pytest.mark.skipif(
         not __import__("importlib").util.find_spec("onnxruntime"),
         reason="onnxruntime not installed",
     )
-    def test_mae_below_threshold(self, scratchv_output, onnxrt_output):
-        """MAE should be finite."""
-        ref = list(onnxrt_output.values())[0]
-        comp = np.asarray(scratchv_output, dtype=np.float32).flatten()
-        ref = np.asarray(ref, dtype=np.float32).flatten()
+    def test_ir_output_matches_onnxruntime(
+            self, ir_output, onnx_model, onnxrt_output):
+        """IR execution should match the corresponding runtime output."""
+        output_names = [output["name"] for output in onnx_model["outputs"]]
+        assert len(output_names) == 1, (
+            "IRTraceExecutor returns one final value; the model must expose "
+            "exactly one output for this comparison"
+        )
 
-        mae = float(np.mean(np.abs(ref[:len(comp)] - comp)))
-        assert np.isfinite(mae)
-        assert mae < 1.0
+        output_name = output_names[0]
+        assert output_name in onnxrt_output
 
-    @pytest.mark.skipif(
-        not __import__("importlib").util.find_spec("onnxruntime"),
-        reason="onnxruntime not installed",
-    )
-    def test_output_not_identical(self, scratchv_output, onnxrt_output):
-        """Outputs should differ (different implementations)."""
-        ref = list(onnxrt_output.values())[0]
-        comp = np.asarray(scratchv_output, dtype=np.float32).flatten()
-        ref = np.asarray(ref, dtype=np.float32).flatten()
-        assert not np.allclose(ref[:len(comp)], comp, rtol=1e-6)
+        actual = np.asarray(ir_output, dtype=np.float32)
+        expected = np.asarray(onnxrt_output[output_name], dtype=np.float32)
+        assert actual.shape == expected.shape
+        np.testing.assert_allclose(
+            actual,
+            expected,
+            rtol=IR_RTOL,
+            atol=IR_ATOL,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

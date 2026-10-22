@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -190,8 +191,19 @@ def test_diagnostic_cli_rejects_unbounded_timeout_before_creating_output(tmp_pat
 @pytest.mark.parametrize("policy,kernel_calls,flags", [
     ("sequential", True, []),
     ("sequential", False, ["--no-kernel-calls"]),
-    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--kernel-calls"]),
+    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--kernel-calls", "--harts", "4"]),
     ("blocked_fma", False, ["--matmul-policy", "blocked_fma", "--no-kernel-calls"]),
+    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--harts", "auto"]),
+    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--matmul-tile", "1x4"]),
+    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--matmul-tile", "2x4", "--harts", "4"]),
+    ("blocked_fma", False, ["--matmul-policy", "blocked_fma", "--matmul-tile", "1x8",
+                          "--no-kernel-calls", "--harts", "auto"]),
+    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--matmul-rhs-layout", "column-panel",
+                         "--matmul-tile", "2x4", "--harts", "4"]),
+    ("blocked_fma", False, ["--matmul-policy", "blocked_fma", "--matmul-rhs-layout", "column-panel",
+                          "--no-kernel-calls", "--harts", "auto"]),
+    ("sequential", True, ["--qemu-workspace-layout", "two-buffer-pad-4k"]),
+    ("sequential", True, ["--qemu-workspace-layout", "two-buffer-pad-4k", "--harts", "4"]),
 ])
 def test_diagnostic_codegen_policy_reaches_build_and_failed_build_never_accepts_gate(
         tmp_path, monkeypatch, policy, kernel_calls, flags):
@@ -209,6 +221,10 @@ def test_diagnostic_codegen_policy_reaches_build_and_failed_build_never_accepts_
     builder.new_block("entry")
     builder.program.global_values.append(w)
     target = builder.matmul(x, w)
+    requested_layout = (flags[flags.index("--qemu-workspace-layout") + 1]
+                        if "--qemu-workspace-layout" in flags else "none")
+    if requested_layout != "none":
+        target = builder.neg(builder.neg(target))
     builder.ret(target)
     parser = SimpleNamespace(
         _value_map={"checkpoint": target},
@@ -224,8 +240,18 @@ def test_diagnostic_codegen_policy_reaches_build_and_failed_build_never_accepts_
     monkeypatch.setattr(onnx_parser, "ONNXParser", lambda: parser)
     monkeypatch.setattr(diagnostic, "discover_toolchain", lambda *a: object())
     generated = []
+    requested_harts = flags[flags.index("--harts") + 1] if "--harts" in flags else "1"
+    requested_harts = "auto" if requested_harts == "auto" else int(requested_harts)
+    expected_harts = 2 if requested_harts == "auto" else requested_harts
+    probes = []
+    def available_cpus(pid):
+        assert requested_harts == "auto"
+        probes.append(pid)
+        return {3, 5, 7}
+    monkeypatch.setattr(os, "sched_getaffinity", available_cpus, raising=False)
 
     def stopped_build(artifact, *a, **kw):
+        assert type(kw["harts"]) is int and kw["harts"] == expected_harts
         generated.append(artifact)
         raise RuntimeError("intentional unit-test build stop")
 
@@ -236,9 +262,24 @@ def test_diagnostic_codegen_policy_reaches_build_and_failed_build_never_accepts_
     assert len(generated) == 1
     artifact = generated[0]
     assert artifact.matmul_policy == policy and artifact.kernel_calls is kernel_calls
+    requested_tile = flags[flags.index("--matmul-tile") + 1] if "--matmul-tile" in flags else "1x4"
+    assert artifact.matmul_tile == requested_tile
+    requested_rhs_layout = (flags[flags.index("--matmul-rhs-layout") + 1]
+                            if "--matmul-rhs-layout" in flags else "original")
+    assert artifact.matmul_rhs_layout == requested_rhs_layout
+    assert bool(artifact.matmul_rhs_panels) is (requested_rhs_layout == "column-panel")
+    assert artifact.qemu_workspace_layout == requested_layout
     assert ("__builtin_fmaf(" in artifact.source) is (policy == "blocked_fma")
     report = json.loads((out / "report.json").read_text())
     assert report["matmul_policy"] == report["codegen"]["matmul_policy"] == policy
+    assert report["matmul_tile"] == report["codegen"]["matmul_tile"] == requested_tile
+    assert report["matmul_rhs_layout"] == report["codegen"]["matmul_rhs_layout"] == requested_rhs_layout
+    assert report["codegen"]["matmul_rhs_panels"] == list(artifact.matmul_rhs_panels)
+    assert report["harts_requested"] == requested_harts
+    assert report["harts"] == expected_harts
+    assert report["qemu_workspace_layout_requested"] == requested_layout
+    assert report["codegen"]["qemu_workspace_layout"] == requested_layout
+    assert probes == ([0] if requested_harts == "auto" else [])
     assert report["kernel_calls"] is report["codegen"]["kernel_calls"] is kernel_calls
     assert report["codegen"]["compile_flags"] == list(artifact.compile_flags)
     assert report["status"] == "FAIL" and not report["passed"]
@@ -247,10 +288,31 @@ def test_diagnostic_codegen_policy_reaches_build_and_failed_build_never_accepts_
     assert not report["full_qemu_forward_executed"] and not report["w4_team_accepted"]
 
 
-def test_diagnostic_rejects_unknown_policy_before_output_creation(tmp_path):
+@pytest.mark.parametrize("flag", [
+    "--matmul-policy", "--matmul-tile", "--qemu-workspace-layout", "--matmul-rhs-layout",
+])
+def test_diagnostic_rejects_unknown_policy_before_output_creation(tmp_path, flag):
     target = tmp_path / "report"
     with pytest.raises(SystemExit) as exc:
         diagnostic.main(["--model-dir", str(tmp_path), "--output-dir", str(target),
-                         "--matmul-policy", "unknown"])
+                         flag, "unknown"])
+    assert exc.value.code == 2
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("tile", ["2x4", "1x8"])
+def test_diagnostic_rejects_matmul_tile_without_blocked_fma_before_output_creation(tmp_path, tile):
+    target = tmp_path / "report"
+    with pytest.raises(SystemExit) as exc:
+        diagnostic.main(["--model-dir", str(tmp_path), "--output-dir", str(target),
+                         "--matmul-tile", tile])
+    assert exc.value.code == 2
+    assert not target.exists()
+
+def test_diagnostic_rejects_panel_without_blocked_fma_before_output_creation(tmp_path):
+    target = tmp_path / "report"
+    with pytest.raises(SystemExit) as exc:
+        diagnostic.main(["--model-dir", str(tmp_path), "--output-dir", str(target),
+                         "--matmul-rhs-layout", "column-panel"])
     assert exc.value.code == 2
     assert not target.exists()

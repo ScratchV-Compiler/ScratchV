@@ -10,15 +10,29 @@ from scripts import check_w1_repro_env as env
 
 
 def requirements(tmp_path, text="torch==2.7.1\nnumpy==2.2.6\n"):
-    path = tmp_path / "requirements/qwen3-small-probe.txt"
-    path.parent.mkdir()
-    path.write_text(text, encoding="utf-8")
+    path = tmp_path / "pyproject.toml"
+    path.write_text("[project.optional-dependencies]\nllm-deploy = "
+                    + json.dumps(text.splitlines()) + "\n", encoding="utf-8")
 
 
 def test_local_cpu_version_tag_is_allowed(tmp_path, monkeypatch):
     requirements(tmp_path)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: {"torch": "2.7.1+cpu", "numpy": "2.2.6"}[name])
     assert env.check_packages(tmp_path)["ok"]
+
+
+@pytest.mark.parametrize("installed,ok", [("2.7.1+cpu", True), ("2.7.1", False), ("2.7.1+cu126", False)])
+def test_direct_cpu_wheel_pin_checks_local_build(tmp_path, monkeypatch, installed, ok):
+    requirements(tmp_path, "torch @ https://download.pytorch.org/whl/cpu/"
+                 "torch-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl\n")
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed)
+    assert env.check_packages(tmp_path)["ok"] is ok
+
+
+def test_wheel_name_must_match_dependency(tmp_path):
+    requirements(tmp_path, "numpy @ https://example.com/torch-2.7.1-cp312-cp312-linux_x86_64.whl\n")
+    with pytest.raises(ValueError, match="Wheel name"):
+        env.check_packages(tmp_path)
 
 
 @pytest.mark.parametrize("installed", [None, "2.3.0", "2.2.6rc1"])

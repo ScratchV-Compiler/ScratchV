@@ -2,7 +2,7 @@
 
 普通 PR 的通用测试、部署与文档检查归入统一 **CI** 运行页，详见 [Actions 入口说明](../../CI.md)。本页完整 W3 手动验证和 Nightly 的选择方式保持不变，原始数组及数值门槛不变。
 
-对外复现统一使用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)，并在同一个 Bash 会话、仓库根目录执行以下命令；`SCRATCHV_PYTHON`、`SCRATCHV_CC`、`SCRATCHV_QEMU` 由该指南设置。
+对外复现统一使用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)，并在同一个 Bash 会话、仓库根目录执行以下命令；`python` 指已安装固定依赖的当前解释器，Zig 和 QEMU 由运行入口自动发现。
 
 配置已随 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96) 提交。最近登记的完整作者手动运行是 [2026-10-11 / run 38131237341](https://github.com/yuki-328/ScratchV/actions/runs/38131237341)，执行提交为 `210baa5fbd87844e61e5dfb273b49748a978b708`；该提交的 preparation、完整七组 full-numeric 及汇总均通过。后续 PR 修改和普通 CI 通过不自动继承这次完整模型结论。下面按日期和执行提交分别记录证据；没有启用定时 Nightly，手动调用及作者数组复核不替代他人独立执行。团队确认内容见 [独立复现与验收清单](独立复现与验收清单.md)。
 
@@ -209,9 +209,9 @@ gh run download "$W3_RUN_ID" --repo "$W3_REPO" \
   -n w3-full-numeric-reports --dir "$W3_DOWNLOAD/reports"
 gh run download "$W3_RUN_ID" --repo "$W3_REPO" \
   -n w3-full-numeric-raw --dir "$W3_DOWNLOAD/raw"
-W3_REPORT_SHA=$("$SCRATCHV_PYTHON" -c 'import hashlib,pathlib,sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$W3_DOWNLOAD/reports/w3-full/report.json")
+W3_REPORT_SHA=$(python -c 'import hashlib,pathlib,sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$W3_DOWNLOAD/reports/w3-full/report.json")
 printf '%s\n' "$W3_REPORT_SHA"
-"$SCRATCHV_PYTHON" -B -X utf8 scripts/verify_w3_evidence.py \
+python -B -X utf8 scripts/verify_w3_evidence.py \
   --evidence-dir "$W3_DOWNLOAD/raw/w3-full" \
   --output-dir output/w3-ci-evidence-audit-RUN_ID \
   --expected-report-sha256 "$W3_REPORT_SHA"
@@ -241,7 +241,7 @@ W3_NIGHTLY_ENABLED=true
 
 ```bash
 set -euo pipefail
-"$SCRATCHV_PYTHON" -B -X utf8 -m pytest tests/test_w3_workflows.py -q -p no:cacheprovider
+python -B -X utf8 -m pytest tests/test_w3_workflows.py -q -p no:cacheprovider
 actionlint -shellcheck= -pyflakes= .github/workflows/w3-preparation.yml .github/workflows/w3-full-numeric.yml .github/workflows/w3-nightly.yml
 ```
 

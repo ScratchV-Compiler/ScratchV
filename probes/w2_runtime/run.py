@@ -12,10 +12,7 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
-import tempfile
 import time
-import urllib.error
-import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -56,45 +53,6 @@ def verify_assets(directory, manifest=MANIFEST):
     if seen != required:
         raise ValueError("Tokenizer gate requires exactly the seven pinned source files")
     return rows
-
-
-def download_file(url, destination):
-    """Bound downloads; retry transient server failures without trusting a cache."""
-    for attempt in range(3):
-        try:
-            request = urllib.request.Request(url, headers={"User-Agent": "ScratchV-W2-runtime"})
-            with urllib.request.urlopen(request, timeout=30) as incoming, Path(destination).open("wb") as out:
-                count = 0
-                while block := incoming.read(1024 * 1024):
-                    count += len(block)
-                    if count > MAX_FILE_BYTES:
-                        raise ValueError("Tokenizer download exceeds per-file limit")
-                    out.write(block)
-            return
-        except urllib.error.HTTPError as exc:
-            if exc.code not in (429, 500, 502, 503, 504) or attempt == 2:
-                raise
-            time.sleep(attempt + 1)
-
-
-def acquire_assets(directory, manifest=MANIFEST):
-    directory = Path(directory).resolve()
-    if directory.exists():
-        return {"reused": True, "files": verify_assets(directory, manifest)}
-    directory.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="qwen3-tokenizer-", dir=directory.parent) as tmp:
-        stage = Path(tmp).resolve()
-        for item in manifest["source_files"]:
-            name = item["name"]
-            if not name or name in (".", "..") or any(c in name for c in "/\\:"):
-                raise ValueError(f"Invalid tokenizer asset name: {name}")
-            url = f"https://huggingface.co/{manifest['model_id']}/resolve/{manifest['revision']}/{name}"
-            download_file(url, stage / name)
-        rows = verify_assets(stage, manifest)
-        if not stage.is_relative_to(directory.parent) or directory.exists():
-            raise ValueError("Tokenizer destination changed during download")
-        stage.rename(directory)
-    return {"reused": False, "files": rows}
 
 
 def require_environment():
@@ -243,8 +201,6 @@ def run_checks(args, report):
     report["stage"] = "environment"
     report["environment"] = require_environment()
     report["stage"] = "assets"
-    if args.mode == "download":
-        report["acquisition"] = acquire_assets(args.tokenizer_dir)
     report["files"] = verify_assets(args.tokenizer_dir)
     report["stage"] = "tokenizer"
     from transformers import AutoTokenizer
@@ -353,8 +309,7 @@ def save_report(directory, report):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--tokenizer-dir", type=Path, required=True)
-    ap.add_argument("--mode", choices=("verify", "download"), default="verify")
+    ap.add_argument("--tokenizer-dir", type=Path, default=ROOT / "assets/qwen3-0.6b/tokenizer")
     ap.add_argument("--output-dir", type=Path, default=Path("output/w2-runtime"))
     args = ap.parse_args(argv)
     args.tokenizer_dir = args.tokenizer_dir.resolve()
@@ -363,7 +318,7 @@ def main(argv=None):
         ap.error("--output-dir must be absent or empty; preserve earlier evidence")
     out.mkdir(parents=True, exist_ok=True)
     report = {"gate": "unit:runtime", "passed": False, "stage": "initialize",
-              "created_at": datetime.now(timezone.utc).isoformat(), "mode": args.mode,
+              "created_at": datetime.now(timezone.utc).isoformat(),
               "model_id": MANIFEST["model_id"], "revision": MANIFEST["revision"],
               "tokenizer_dir": str(args.tokenizer_dir), "tokenizer_cases": [], "runtime_cases": []}
     started = time.perf_counter()

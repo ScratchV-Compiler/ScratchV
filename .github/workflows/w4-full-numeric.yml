@@ -72,6 +72,7 @@ jobs:
             tests/test_weight_bundle.py tests/test_tensor_c_external.py \
             tests/test_w4_contract.py tests/test_riscv_external_contract.py \
             tests/test_riscv_external.py tests/test_w4_full_probe.py \
+            tests/test_riscv_external_harts.py \
             tests/test_w4_full_probe_contract.py tests/test_w4_diagnostic.py \
             tests/test_w4_audit.py tests/test_w4_audit_contract.py \
             tests/test_w4_large_address.py tests/test_w4_host_diagnostic.py \
@@ -86,7 +87,11 @@ jobs:
           root = ET.parse("output/w4-unit/tests.xml").getroot()
           required = ("test_external_rv64_matmul_and_reuse", "test_weight_pointer_above_32bit_limit",
                       "test_real_rv64_fma_exact_conformance",
-                      "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2]",
+                      "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-1]",
+                      "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-2]",
+                      "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-4]",
+                      "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-auto]",
+                      "test_column_panel_rv64_errors_recover_in_same_guest_workspace",
                       "test_real_qemu_contiguous_loader_segments_and_success_cleanup[chunk31-3]",
                       "test_post_execution_transport_corruption_fails_and_retains_copies",
                       "test_success_copy_cleanup_failure_is_not_a_pass",

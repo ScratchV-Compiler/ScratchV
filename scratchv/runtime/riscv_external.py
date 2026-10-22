@@ -8,15 +8,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ctypes
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import signal
 import socket
 import stat
 import struct
 import subprocess
+import sys
 import threading
 import time
 
@@ -27,7 +30,8 @@ from .riscv_tensor import (
     _run_process, _save_process_logs, _spec_layout, _stop_process_tree,
     _terminate_invocation, _windows_job, input_layout, pack_inputs, toolchain_versions,
 )
-from .weight_bundle import plan_guest_memory, validate_weight_bundle
+from .weight_bundle import MIB, plan_guest_memory, validate_weight_bundle
+from .riscv_harts import STARTUP_ASSEMBLY as MULTIHART_STARTUP, WORKER_SOURCE, resolve_harts, validate_harts
 from .weight_transport import (
     stage_transport, validate_transport, remove_transport, save_transport_report,
     refresh_transport_residuals,
@@ -117,6 +121,7 @@ class ExternalExecutable:
     weights: tuple
     toolchain: RiscVToolchain
     evidence: dict
+    harts: int = 1
 
 
 def guest_harness(artifact, manifest, layout):
@@ -143,39 +148,56 @@ static void uart_byte(u8 byte) {
     while (!(u[5]&0x20)) {} u[0]=byte;
 }
 static void frame(u32 status, u64 size) {
+    __asm__ volatile("fence rw,rw" ::: "memory");
     const char *magic="SVEXT001";
     for (int i=0;i<8;++i) uart_byte((u8)magic[i]);
     for (int i=0;i<4;++i) uart_byte((u8)(status>>(8*i)));
     for (int i=0;i<8;++i) uart_byte((u8)(size>>(8*i)));
     __asm__ volatile("fence rw,rw" ::: "memory");
+#if SCRATCHV_HARTS > 1
+    __asm__ volatile("csrw mie, zero" ::: "memory");
+#endif
     for (;;) __asm__ volatile("wfi");
 }
-void sv_trap_report(u64 cause) { frame(0x80000000U|(u32)cause, 0); }
-''' + f'''
+''' + WORKER_SOURCE + f'''
 extern int {function}(const void *const *, const void *const *, void *, usize, void *);
 void sv_main(void) {{
     const void *inputs[]={{ {inputs} }};
     const void *weights[]={{ {weights} }};
     int status={function}(inputs,weights,(void *)0x{layout['workspace_base']:x}UL,
         {artifact.workspace_bytes}UL,(void *)0x{layout['output_base']:x}UL);
+    sv_check_workers();
     frame((u32)status,{artifact.output.nbytes}ULL);
 }}
 '''
 
 
-def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0):
+def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0, harts=1):
+    harts = resolve_harts(harts)
     if artifact.constant_storage != "external":
         raise ValueError("External runtime requires external code generation")
     manifest = validate_weight_bundle(bundle_dir, artifact.external_weights)
     _, input_bytes = input_layout(artifact.inputs)
     layout = plan_guest_memory(workspace_bytes=artifact.workspace_bytes,
                                weight_bytes=manifest["total_bytes"], input_bytes=input_bytes,
-                               output_bytes=artifact.output.nbytes)
+                               output_bytes=artifact.output.nbytes, harts=harts)
     build_dir = Path(build_dir).resolve()
     build_dir.mkdir(parents=True, exist_ok=False)
     linker = LINKER_SCRIPT.replace("0x1c000000", hex(layout["code_capacity"]))
+    # Keep the small, frequently called expf on one 4096-byte guest page:
+    # crossing a page splits QEMU TCG blocks and adds dispatch on the hot path.
+    # A separate output section is omitted when expf is unused; do not KEEP it.
+    linker = linker.replace(
+        ".text : { KEEP(*(.text.start)) *(.text .text.*) } > RAM",
+        ".text.start : { KEEP(*(.text.start)) } > RAM\n"
+        "    .text.expf : ALIGN(4096) { *(.text.expf) } > RAM\n"
+        "    .text : { *(.text .text.*) } > RAM",
+    )
+    if harts != 1:
+        linker = linker.replace("0x100000", hex(harts * MIB)).replace(
+            "1 MiB guest stack", f"{harts} MiB guest stacks")
     sources = {"model.c": artifact.source, "guest.c": guest_harness(artifact, manifest, layout),
-               "start.S": STARTUP_ASSEMBLY, "link.ld": linker}
+               "start.S": STARTUP_ASSEMBLY if harts == 1 else MULTIHART_STARTUP, "link.ld": linker}
     for name, source in sources.items():
         (build_dir / name).write_text(source, encoding="utf-8")
     target = (["-target", "riscv64-linux-musl", "-static"] if toolchain.is_zig else
@@ -186,6 +208,7 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0)
                "-fno-stack-protector", "-fno-pie", "-fPIC" if toolchain.is_zig else "-fno-pic",
                "-fno-fast-math", "-ffp-contract=off", "-fno-strict-aliasing",
                "-ffunction-sections", "-fdata-sections", *artifact.compile_flags,
+               f"-DSCRATCHV_HARTS={harts}",
                "model.c", "guest.c", "start.S", "-Wl,-T,link.ld", "-Wl,-e,sv_boot",
                "-Wl,--gc-sections", "-Wl,--build-id=none", *(["-lm"] if toolchain.is_zig else []),
                "-o", "model.elf"]
@@ -209,14 +232,20 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0)
     if result.returncode:
         raise RuntimeError(result.stderr.decode(errors="replace")[-12000:])
     evidence = validate_external_elf(build_dir / "model.elf", layout)
-    evidence.update(compile_seconds=time.perf_counter() - start, command=command,
+    evidence.update(compile_seconds=time.perf_counter() - start, command=command, harts=harts,
+                    matmul_tile=artifact.matmul_tile,
+                    matmul_rhs_layout=artifact.matmul_rhs_layout,
+                    matmul_rhs_panels=list(artifact.matmul_rhs_panels),
+                    qemu_workspace_layout=artifact.qemu_workspace_layout,
+                    qemu_workspace_buffers=[{"offset": offset, "nbytes": size}
+                                            for offset, size in artifact.qemu_workspace_buffers],
                     versions=toolchain_versions(toolchain),
                     sources={name: sha256_file(build_dir / name) for name in sources})
     (build_dir / "layout.json").write_text(json.dumps(layout, indent=2) + "\n", encoding="utf-8")
     (build_dir / "build.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     return ExternalExecutable(build_dir / "model.elf", Path(bundle_dir).resolve(), manifest, layout,
                               tuple(artifact.inputs), artifact.output, tuple(artifact.external_weights),
-                              toolchain, evidence)
+                              toolchain, evidence, harts)
 
 
 class QMP:
@@ -345,6 +374,140 @@ def _owned_qemu_rss(process):
         return _linux_rss(Path(f"/proc/{process.pid}/status").read_text(encoding="utf-8"))
 
 
+class _UartCompletionWaiter:
+    """Observe complete UART frames without adding a polling interval on Linux.
+
+    Register before Popen so even a guest that finishes immediately is observed.
+    Other platforms/kernels retain the portable polling path. This measures host
+    observation of the validated frame, not an exact guest instruction timestamp.
+    """
+
+    def __init__(self, run_dir, output_bytes):
+        self.uart = Path(run_dir) / "uart.bin"
+        self.output_bytes = output_bytes
+        self.fd = None
+        self.pidfd = None
+        self.timing_mode = "polling"
+        self.fallback_reason = None
+        if not sys.platform.startswith("linux") or not hasattr(os, "pidfd_open"):
+            self.fallback_reason = "inotify/pidfd unavailable on this platform"
+            return
+        libc = ctypes.CDLL(None, use_errno=True)
+        if not hasattr(libc, "inotify_init1") or not hasattr(libc, "inotify_add_watch"):
+            self.fallback_reason = "inotify unavailable in libc"
+            return
+        libc.inotify_init1.argtypes = [ctypes.c_int]
+        libc.inotify_init1.restype = ctypes.c_int
+        libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        libc.inotify_add_watch.restype = ctypes.c_int
+        fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+        if fd < 0:
+            error = ctypes.get_errno()
+            if error in (errno.ENOSYS, errno.EINVAL, errno.EPERM):
+                self.fallback_reason = f"inotify unavailable: {os.strerror(error)}"
+                return
+            raise OSError(error, os.strerror(error))
+        try:
+            # MODIFY, CLOSE_WRITE, MOVED_TO, CREATE, DELETE_SELF, MOVE_SELF.
+            if libc.inotify_add_watch(fd, os.fsencode(run_dir), 0x2 | 0x8 | 0x80 | 0x100 | 0x400 | 0x800) < 0:
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
+        except BaseException:
+            os.close(fd)
+            raise
+        self.fd = fd
+        self.timing_mode = "event"
+
+    def _complete(self):
+        try:
+            data = self.uart.read_bytes()
+        except FileNotFoundError:
+            return False
+        if len(data) < FRAME.size:
+            return False
+        decode_completion(data, self.output_bytes)
+        return True
+
+    def _drain(self):
+        # Bound each read so unrelated directory writes cannot starve the
+        # completion/deadline checks in the outer wait loop.
+        try:
+            data = os.read(self.fd, 65536)
+        except BlockingIOError:
+            return
+        if not data:
+            raise RuntimeError("UART completion watch closed")
+        offset = 0
+        while offset < len(data):
+            _, mask, _, length = struct.unpack_from("iIII", data, offset)
+            offset += 16 + length
+            if mask & 0x4000:  # IN_Q_OVERFLOW: do not silently lose evidence.
+                raise RuntimeError("UART completion watch overflow")
+            if mask & (0x400 | 0x800 | 0x8000):
+                raise RuntimeError("UART completion watch lost its directory")
+
+    def wait(self, process, deadline, timeout):
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"RV64 forward exceeded {timeout}s")
+            # Inspect before checking exit: a valid final write may accompany exit.
+            if self._complete():
+                return
+            if process.poll() is not None:
+                # A final write may race the first read above.
+                if self._complete():
+                    return
+                raise RuntimeError(f"QEMU exited before guest completion ({process.returncode})")
+            if self.fd is None:
+                time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+                continue
+            if self.pidfd is None:
+                try:
+                    self.pidfd = os.pidfd_open(process.pid)
+                except ProcessLookupError:
+                    # The process may exit between poll and pidfd_open.
+                    if self._complete():
+                        return
+                    process.poll()
+                    raise RuntimeError(f"QEMU exited before guest completion ({process.returncode})")
+                except OSError as exc:
+                    if exc.errno not in (errno.ENOSYS, errno.EINVAL, errno.EPERM):
+                        raise
+                    self.close()
+                    self.timing_mode = "polling"
+                    self.fallback_reason = f"pidfd unavailable: {exc}"
+                    continue
+            # poll has no select() FD_SETSIZE limit and owns no extra fd.
+            # Keep the outer loop responsible for frame, exit and deadline checks.
+            poller = select.poll()
+            poller.register(self.fd, select.POLLIN)
+            poller.register(self.pidfd, select.POLLIN)
+            timeout_ms = min(2_147_483_647, max(0, deadline - time.monotonic()) * 1000)
+            for fd, events in poller.poll(timeout_ms):
+                if events & select.POLLNVAL:
+                    raise OSError(errno.EBADF, "UART completion wait descriptor is invalid")
+                if events & select.POLLERR:
+                    raise OSError(errno.EIO, "UART completion wait descriptor error")
+                if fd == self.fd:
+                    self._drain()
+
+    def close(self):
+        # Let run_external's cleanup wrapper preserve any primary failure,
+        # and attempt both descriptors even if one close fails.
+        first_error = None
+        for name in ("pidfd", "fd"):
+            fd = getattr(self, name)
+            if fd is not None:
+                setattr(self, name, None)
+                try:
+                    os.close(fd)
+                except OSError as exc:
+                    if first_error is None:
+                        first_error = exc
+        if first_error is not None:
+            raise first_error
+
+
 class _QemuMemoryMonitor:
     """Sample process RSS; this is observability, not an enforced RAM limit."""
     def __init__(self, process, interval=0.2):
@@ -391,6 +554,10 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
     """Run a fresh guest, require completion, stop, dump exact output, then quit."""
     if not np.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be positive and finite")
+    harts = validate_harts(getattr(executable, "harts", 1))
+    built_harts = validate_harts(executable.evidence.get("harts", 1))
+    if harts != built_harts or executable.layout["regions"]["stack"]["nbytes"] != harts * MIB:
+        raise ValueError("Executable hart count disagrees with its build or stack layout")
     if sha256_file(executable.elf_path) != executable.evidence["sha256"]:
         raise ValueError("ELF changed after build")
     manifest = validate_weight_bundle(executable.bundle_dir, executable.weights)
@@ -404,10 +571,10 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     layout = executable.layout
-    command = [executable.toolchain.qemu, "-machine", "virt", "-cpu", "rv64", "-accel", "tcg",
-               "-smp", "1", "-m", str(layout["memory_mib"]), "-bios", "none", "-display", "none",
+    command = [executable.toolchain.qemu, "-machine", "virt", "-cpu", "rv64", "-accel",
+               "tcg" if harts == 1 else "tcg,thread=multi", "-smp", str(harts), "-m", str(layout["memory_mib"]), "-bios", "none", "-display", "none",
                "-monitor", "none", "-serial", "file:uart.bin", "-no-reboot",
-               "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off",
+               "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off,nodelay=on",
                "-kernel", str(executable.elf_path), "-device",
                f"loader,file=inputs.bin,addr=0x{layout['input_base']:x},force-raw=on"]
     options = {"creationflags": _creation_flags()}
@@ -415,11 +582,14 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
         options["start_new_session"] = True
     started = time.perf_counter()
     report = {"passed": False, "status": "FAIL", "command": command, "timeout_s": timeout,
+              "harts": harts,
+              "qemu_workspace_layout": executable.evidence.get("qemu_workspace_layout", "none"),
               "transport": "QMP physical memory dump after guest completion", "guest_completed": False}
     transport_dir = run_dir / "weight-transport"
     report["weight_transport"] = {}
     qmp, process, job, primary_error, monitor = None, None, None, None, None
     qemu_started, qemu_exited = None, None
+    completion = None
     previous_term = None
     try:
         # SIGTERM must unwind through cleanup: QEMU owns a separate POSIX
@@ -436,25 +606,20 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
         # Empty bundles intentionally emit no raw loader: QEMU rejects 0-byte files.
         report["stage"] = "qemu"
         deadline = time.monotonic() + timeout
+        completion = _UartCompletionWaiter(run_dir, executable.output.nbytes)
         with (run_dir / "qemu.stdout").open("wb") as stdout, (run_dir / "qemu.stderr").open("wb") as stderr:
             qemu_started = time.perf_counter()
             process = subprocess.Popen(command, cwd=run_dir, stdout=stdout, stderr=stderr, **options)
             job = _windows_job(process)
             monitor = _QemuMemoryMonitor(process)
             monitor.start()
-            uart = run_dir / "uart.bin"
-            while True:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"RV64 forward exceeded {timeout}s")
-                if uart.exists() and uart.stat().st_size >= FRAME.size:
-                    decode_completion(uart.read_bytes(), executable.output.nbytes)
-                    break
-                if process.poll() is not None:
-                    raise RuntimeError(f"QEMU exited before guest completion ({process.returncode})")
-                time.sleep(0.05)
-            report.update(guest_completed=True, forward_wall_s=time.perf_counter() - qemu_started)
+            completion.wait(process, deadline, timeout)
+            report.update(guest_completed=True, forward_wall_s=time.perf_counter() - qemu_started,
+                          forward_wall_scope="QEMU launch through host validation of the UART completion frame")
             qmp = QMP(port, deadline)
             qmp.command("stop")
+            # A fast event must not hide bytes appended after the first valid frame.
+            decode_completion((run_dir / "uart.bin").read_bytes(), executable.output.nbytes)
             dump_started = time.perf_counter()
             output_path = run_dir / "output.bin"
             if executable.output.nbytes:
@@ -505,6 +670,10 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
 
         if qmp is not None:
             cleanup("qmp.close", qmp.close)
+        if completion is not None:
+            report["timing_mode"] = completion.timing_mode
+            report["completion_wait_fallback_reason"] = completion.fallback_reason
+            cleanup("UART completion watch close", completion.close)
         report.update(sampled_peak_qemu_rss_bytes=None, qemu_rss_observed_samples=0,
                       qemu_rss_availability="unavailable", qemu_rss_sample_interval_s=0.2)
         if monitor is not None:

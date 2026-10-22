@@ -2,6 +2,8 @@
   "llm": [
     "docs/llm-deploy-v1.0/**",
     "probes/**",
+    "assets/qwen3-0.6b/**",
+    ".gitattributes",
     "scripts/check_llm_deploy_docs.py",
     "scripts/check_linux_repro_docs.py",
     "tests/test_linux_repro_docs.py",
@@ -28,11 +30,7 @@
     "tests/test_w2_*.py",
     "tests/test_numeric_metrics.py",
     "tests/test_numeric_summary.py",
-    ".github/workflows/llm-deploy.yml",
-    "scripts/summarize_w3_ci.py",
-    "tests/test_w3_actions_summary.py",
-    "tests/test_w3_workflows.py",
-    ".github/workflows/w3-*.yml"
+    ".github/workflows/llm-deploy.yml"
   ],
   "w4": [
     ".github/workflows/w4-full-numeric.yml",

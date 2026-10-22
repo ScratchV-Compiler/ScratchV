@@ -20,6 +20,12 @@ name: LLM Deploy v1.0
 
 on:
   workflow_call:
+    inputs:
+      ci_covers_generic_regressions:
+        description: Caller requires its full generic test job to pass; deduplicate only ordinary PRs
+        type: boolean
+        required: false
+        default: false
   schedule:
     # Nightly, off the hour: 19:23 UTC = 03:23 北京时间.
     - cron: '23 19 * * *'
@@ -83,7 +89,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
+      - name: Cache runtime LFS objects
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: runtime-lfs-${{ runner.os }}-${{ hashFiles('assets/qwen3-0.6b/tokenizer/*', 'probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx') }}
+      - name: Fetch runtime LFS assets
+        run: |
+          git lfs install --local
+          git lfs pull --include="assets/qwen3-0.6b/tokenizer/*,probes/w1_tiny_transformer/out/tiny_transformer_2l.onnx" --exclude=""
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -112,10 +127,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install -e ".[all]"
-          python3 -m pip install numpy "pytest==9.1.1"
-          python3 -m pip install "ziglang==0.14.1"
-          echo "SCRATCHV_CC=$(python3 -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent / "zig")')" >> "$GITHUB_ENV"
+          python3 -m pip install -v -e ".[all,llm-deploy]"
 
       # ── docs:interfaces / docs:risks ──────────────────────────────────
       - name: "docs:interfaces + docs:risks"
@@ -132,7 +144,10 @@ jobs:
           set -euo pipefail
           python3 "$PROBE_MATMUL"
 
+      # Only CI's explicit PR caller delegates this coverage to its required
+      # test job. Independent callers, manual and scheduled runs keep it here.
       - name: Tensor compiler and runtime regressions
+        if: github.event_name != 'pull_request' || !inputs.ci_covers_generic_regressions
         run: |
           python3 -m pytest \
             tests/test_tensor_c_codegen.py tests/test_tensor_compiler.py \
@@ -140,12 +155,34 @@ jobs:
             tests/test_qwen_artifact_selection.py tests/test_w1_qwen3_export.py tests/test_qwen3_small_riscv_gate.py \
             tests/test_w1_repro_env.py tests/test_qwen3_full_structure.py \
             tests/test_qwen3_full_audit.py tests/test_qwen3_full_parse.py \
-            tests/test_llm_inputs.py tests/test_w2_backend_ops_gate.py \
-            tests/test_w2_runtime_gate.py tests/test_w2_runtime_metadata.py \
-            tests/test_w2_runtime_reporting.py tests/test_w2_acceptance.py tests/test_w2_ci_results.py \
+            tests/test_w2_backend_ops_gate.py \
+            tests/test_w2_acceptance.py tests/test_w2_ci_results.py \
             tests/test_numeric_metrics.py tests/test_numeric_summary.py tests/test_w2_actions_summary.py -q
 
+      # CI.test guarantees user-mode QEMU, not this system-mode Zig/musl case.
+      # Keep just this real execution check when generic coverage is delegated;
+      # independent/manual/scheduled runs already include it in the full set.
+      - name: Delegated PR RV64 musl execution regression
+        if: github.event_name == 'pull_request' && inputs.ci_covers_generic_regressions
+        run: |
+          set -euo pipefail
+          mkdir -p output/riscv-math-regression
+          python3 -m pytest \
+            tests/test_riscv_tensor_runtime.py::test_real_rv64_musl_math_binary_inputs_and_guest_failure \
+            -q -o junit_family=xunit1 --junit-xml=output/riscv-math-regression/tests.xml
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = ET.parse('output/riscv-math-regression/tests.xml').getroot().findall('.//testcase')
+          expected = 'test_real_rv64_musl_math_binary_inputs_and_guest_failure'
+          assert len(cases) == 1 and cases[0].get('name') == expected
+          assert not any(case.find(tag) is not None for case in cases for tag in ('skipped', 'failure', 'error'))
+          print('RV64 musl execution: 1 passed, 0 skipped')
+          PY
+
+      # Ordinary PRs run this once in CI.test or the independent generic set.
+      # Keep repeated race detection in scheduled and explicitly requested runs.
       - name: Repeated Linux timeout cleanup regression
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         timeout-minutes: 5
         run: |
           set -euo pipefail
@@ -179,16 +216,13 @@ jobs:
 
       # The real architecture probe uses random weights, needs no checkpoint
       # download, and runs on PRs. Keep its export stack isolated from W1 and
-      # the generic compiler tests. Install the CPU wheel before requirements
-      # so pip never resolves torch from PyPI with CUDA dependencies.
+      # the generic compiler tests. The extra selects the pinned CPU wheel.
       - name: Install pinned CPU Qwen3 probe environment
         run: |
           set -euo pipefail
           python3 -m venv output/qwen3-probe-venv
           "$QWEN3_PY" -m pip install --upgrade pip
-          "$QWEN3_PY" -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
-          "$QWEN3_PY" -m pip install -r requirements/qwen3-small-probe.txt
-          "$QWEN3_PY" -m pip install --no-deps -e .
+          "$QWEN3_PY" -m pip install -v -e ".[llm-deploy]"
           "$QWEN3_PY" -m pip check
           "$QWEN3_PY" -c "import torch; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
 
@@ -210,8 +244,8 @@ jobs:
         id: runtime
         timeout-minutes: 10
         run: |
-          "$QWEN3_PY" probes/w2_runtime/run.py --mode download \
-            --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime
+          "$QWEN3_PY" probes/w2_runtime/run.py \
+            --tokenizer-dir assets/qwen3-0.6b/tokenizer --output-dir output/w2-runtime
 
       - name: "integration:runtime-model"
         id: runtime_model
@@ -224,7 +258,7 @@ jobs:
           TRANSFORMERS_OFFLINE: "1"
         run: |
           "$QWEN3_PY" probes/w2_runtime_model/run.py \
-            --tokenizer-dir output/qwen3-tokenizer --output-dir output/w2-runtime-model
+            --tokenizer-dir assets/qwen3-0.6b/tokenizer --output-dir output/w2-runtime-model
 
       - name: "numeric:ir-qwen3-small"
         id: qwen3_small
@@ -428,7 +462,7 @@ jobs:
 
   full-qwen3-onnx:
     name: "W1 / full Qwen3 ONNX release validation"
-    # This downloads 1.24 GB and executes the 2.38 GB FP32 model. It is not
+    # This fetches the pinned LFS objects and executes the complete FP32 model. It is not
     # counted as a passing gate on PRs where it did not execute.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
@@ -436,13 +470,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          lfs: false
+      - name: Cache full-model LFS objects
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: qwen3-onnx-lfs-${{ runner.os }}-${{ hashFiles('assets/qwen3-0.6b/onnx/*') }}
+      - name: Fetch full-model LFS assets
+        run: |
+          git lfs install --local
+          git lfs pull --include="assets/qwen3-0.6b/onnx/*" --exclude=""
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install pinned full-model validation dependencies
         run: |
-          python3 -m pip install "numpy==2.2.6" "onnx==1.18.0" "onnxruntime==1.22.1" "protobuf==5.29.5"
+          python3 -m pip install -v -e ".[llm-deploy]"
           python3 -m pip check
       - name: "probe:qwen3-onnx"
         id: full_model
@@ -451,8 +494,8 @@ jobs:
           OPENBLAS_NUM_THREADS: "2"
         run: |
           set -euo pipefail
-          python3 "$PROBE_QWEN3_EXPORT" --mode download \
-            --model-dir output/qwen3-full-model \
+          python3 "$PROBE_QWEN3_EXPORT" --mode verify \
+            --model-dir assets/qwen3-0.6b/onnx \
             --output-dir output/qwen3-full-probe --threads 2
       - name: Summarize full-model gate
         if: always()
@@ -486,13 +529,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          lfs: false
+      - name: Cache full-model LFS objects
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: qwen3-onnx-lfs-${{ runner.os }}-${{ hashFiles('assets/qwen3-0.6b/onnx/*') }}
+      - name: Fetch full-model LFS assets
+        run: |
+          git lfs install --local
+          git lfs pull --include="assets/qwen3-0.6b/onnx/*" --exclude=""
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install pinned frontend audit dependencies
         run: |
-          python3 -m pip install "numpy==2.2.6" "onnx==1.18.0" "onnxruntime==1.22.1" "protobuf==5.29.5"
+          python3 -m pip install -v -e ".[llm-deploy]"
           python3 -m pip check
       - name: "frontend:parse-qwen3"
         id: full_frontend
@@ -501,8 +553,8 @@ jobs:
           OPENBLAS_NUM_THREADS: "1"
         run: |
           set -euo pipefail
-          python3 "$PROBE_QWEN3_PARSE" --mode download \
-            --model-dir output/qwen3-full-model \
+          python3 "$PROBE_QWEN3_PARSE" \
+            --model-dir assets/qwen3-0.6b/onnx \
             --output-dir output/qwen3-parse --timeout 1200
       - name: Summarize complete Qwen3 frontend gate
         if: always()

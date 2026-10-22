@@ -331,12 +331,18 @@ def validate_weight_bundle(directory, expected_specs=None):
 
 
 def plan_guest_memory(code_capacity=128 * MIB, workspace_bytes=0, weight_bytes=0,
-                      input_bytes=0, output_bytes=0, *, ram_base=0x80000000):
-    """Plan non-overlapping RV64 regions; code_capacity includes a 1 MiB stack.
+                      input_bytes=0, output_bytes=0, *, ram_base=0x80000000, harts=1):
+    """Plan RV64 regions; code_capacity includes one 1 MiB stack per hart.
 
     All bases are 64-byte aligned. RAM is rounded up to MiB with at least 16 MiB
     and at least 5% spare capacity. This plan does not replace ELF bounds checks.
     """
+    from .riscv_harts import validate_harts
+
+    try:
+        stack_bytes = validate_harts(harts) * MIB
+    except ValueError as exc:
+        raise WeightBundleError(str(exc)) from exc
     sizes = {"code_capacity": code_capacity, "workspace_bytes": workspace_bytes,
              "weight_bytes": weight_bytes, "input_bytes": input_bytes,
              "output_bytes": output_bytes, "ram_base": ram_base}
@@ -344,11 +350,11 @@ def plan_guest_memory(code_capacity=128 * MIB, workspace_bytes=0, weight_bytes=0
     code_capacity, ram_base = sizes["code_capacity"], sizes["ram_base"]
     if ram_base % ALIGNMENT or code_capacity % ALIGNMENT:
         raise WeightBundleError("RAM base and code capacity must be 64-byte aligned")
-    if code_capacity < MIB + ALIGNMENT:
-        raise WeightBundleError("Code capacity must include code plus a 1 MiB stack")
+    if code_capacity < stack_bytes + ALIGNMENT:
+        raise WeightBundleError("Code capacity must include code plus a 1 MiB stack per hart")
     regions = {}
     cursor = ram_base
-    for name, nbytes in (("code", code_capacity - MIB), ("stack", MIB),
+    for name, nbytes in (("code", code_capacity - stack_bytes), ("stack", stack_bytes),
                          ("inputs", sizes["input_bytes"]), ("outputs", sizes["output_bytes"]),
                          ("workspace", sizes["workspace_bytes"]), ("weights", sizes["weight_bytes"])):
         base = _align(cursor)

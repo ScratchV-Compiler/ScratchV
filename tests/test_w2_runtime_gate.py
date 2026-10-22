@@ -1,10 +1,7 @@
 """Runtime acceptance must reject missing/corrupt assets and reference drift."""
 import copy
 import hashlib
-import io
 import json
-from pathlib import Path
-import urllib.error
 
 import pytest
 
@@ -44,59 +41,25 @@ def test_asset_verification_rejects_incomplete_or_altered_source(assets, problem
         gate.verify_assets(source, manifest)
 
 
-def test_download_only_pinned_tokenizer_files_and_reuses_verified_assets(assets, tmp_path, monkeypatch):
-    _, data, manifest = assets
-    urls = []
-    def download(url, path):
-        urls.append(url)
-        Path(path).write_bytes(data[Path(path).name])
-    monkeypatch.setattr(gate, "download_file", download)
-    out = tmp_path / "download"
-    result = gate.acquire_assets(out, manifest)
-    assert not result["reused"] and len(result["files"]) == 7
-    assert len(urls) == 7 and all(manifest["revision"] in url for url in urls)
-    assert not any("safetensors" in url or ".onnx" in url for url in urls)
-    assert gate.acquire_assets(out, manifest)["reused"]
-    assert len(urls) == 7
+def test_local_assets_match_manifest(assets):
+    source, _, manifest = assets
+    assert len(gate.verify_assets(source, manifest)) == 7
 
 
-def test_download_hash_failure_never_installs_partial_directory(assets, tmp_path, monkeypatch):
-    _, _, manifest = assets
-    monkeypatch.setattr(gate, "download_file", lambda url, path: Path(path).write_bytes(b"wrong"))
-    out = tmp_path / "download"
-    with pytest.raises(ValueError, match="SHA256"):
-        gate.acquire_assets(out, manifest)
-    assert not out.exists()
-    assert not list(tmp_path.glob("qwen3-tokenizer-*"))
-
-
-def test_corrupt_existing_cache_is_preserved_not_silently_replaced(assets, monkeypatch):
+def test_corrupt_existing_assets_are_preserved(assets):
     source, _, manifest = assets
     (source / "tokenizer.json").write_bytes(b"keep this evidence")
-    monkeypatch.setattr(gate, "download_file", lambda *a: pytest.fail("must not redownload"))
     with pytest.raises(ValueError, match="SHA256"):
-        gate.acquire_assets(source, manifest)
+        gate.verify_assets(source, manifest)
     assert (source / "tokenizer.json").read_bytes() == b"keep this evidence"
 
 
-def test_download_retries_only_transient_http_errors(tmp_path, monkeypatch):
-    attempts = []
-    def open_url(*args, **kwargs):
-        attempts.append(1)
-        if len(attempts) == 1:
-            raise urllib.error.HTTPError("https://example.invalid/", 503, "busy", {}, None)
-        return io.BytesIO(b"payload")
-    monkeypatch.setattr(gate.urllib.request, "urlopen", open_url)
-    monkeypatch.setattr(gate.time, "sleep", lambda _: None)
-    gate.download_file("https://example.invalid/test", tmp_path / "asset")
-    assert len(attempts) == 2 and (tmp_path / "asset").read_bytes() == b"payload"
-
-
-def test_download_rejects_oversize_data(tmp_path, monkeypatch):
-    monkeypatch.setattr(gate, "MAX_FILE_BYTES", 4)
-    monkeypatch.setattr(gate.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b"12345"))
-    with pytest.raises(ValueError, match="exceeds"):
-        gate.download_file("https://example.invalid/test", tmp_path / "asset")
+@pytest.mark.parametrize("mode", ["download", "verify"])
+def test_removed_mode_is_rejected_before_creating_output(tmp_path, mode):
+    out = tmp_path / "report"
+    with pytest.raises(SystemExit, match="2"):
+        gate.main(["--mode", mode, "--output-dir", str(out)])
+    assert not out.exists()
 
 
 def test_missing_assets_produces_failed_report_with_source_identity(tmp_path, monkeypatch):
@@ -106,6 +69,7 @@ def test_missing_assets_produces_failed_report_with_source_identity(tmp_path, mo
     r = json.loads((out / "report.json").read_text())
     assert not r["passed"] and r["stage"] == "assets"
     assert "Missing tokenizer asset" in r["error"]
+    assert not (tmp_path / "absent").exists()
     assert r["source_sha256"]["scratchv/runtime/llm_inputs.py"]
     assert "FAIL" in (out / "report.md").read_text()
 

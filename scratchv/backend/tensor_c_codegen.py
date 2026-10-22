@@ -23,7 +23,8 @@ does not silently lower tensor operations to scalar integer instructions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from copy import copy
+from dataclasses import dataclass, field, replace
 import math
 from typing import Mapping
 
@@ -76,6 +77,11 @@ class TensorCArtifact:
     external_initializers: tuple[np.ndarray, ...] = field(default=(), repr=False, compare=False)
     kernel_calls: bool = False
     matmul_policy: str = "sequential"
+    matmul_tile: str = "1x4"
+    matmul_rhs_layout: str = "original"
+    matmul_rhs_panels: tuple[dict[str, object], ...] = ()
+    qemu_workspace_layout: str = "none"
+    qemu_workspace_buffers: tuple[tuple[int, int], ...] = ()
 
 
 def _shape(shape):
@@ -170,6 +176,11 @@ _EXTERNAL_PRELUDE = r'''
 /* External storage targets 64-bit hosts/guests; lengths are caller-validated. */
 _Static_assert(sizeof(size_t) == 8 && sizeof(uintptr_t) == 8,
                "external tensor ABI requires a 64-bit target");
+#if defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1
+/* Synchronous: all callbacks finish before workspace reuse or validation. */
+extern void sv_parallel_for(size_t count,
+                            void (*fn)(void *, size_t, size_t), void *context);
+#endif
 static int sv_buffer(const void *pointer, uint64_t bytes, size_t alignment) {
     uintptr_t address = (uintptr_t)pointer;
     return pointer && address % alignment == 0 && bytes <= UINTPTR_MAX - address;
@@ -190,7 +201,8 @@ class TensorCCodegen:
     def __init__(self, program: Program, initializers: Mapping[str, np.ndarray] | None = None,
                  *, max_workspace_bytes=256 * 1024 * 1024,
                  max_constant_bytes=256 * 1024 * 1024, constant_storage="inline",
-                 kernel_calls=False, matmul_policy="sequential"):
+                 kernel_calls=False, matmul_policy="sequential", matmul_tile="1x4",
+                 qemu_workspace_layout="none", matmul_rhs_layout="original"):
         self.program = program
         self.initializers = {} if initializers is None else dict(initializers)
         self.max_workspace_bytes = max_workspace_bytes
@@ -198,8 +210,12 @@ class TensorCCodegen:
         self.constant_storage = constant_storage
         self.kernel_calls = kernel_calls
         self.matmul_policy = matmul_policy
+        self.matmul_tile = matmul_tile
+        self.matmul_rhs_layout = matmul_rhs_layout
+        self.qemu_workspace_layout = qemu_workspace_layout
 
     def generate(self) -> TensorCArtifact:
+        program, initializers = self.program, self.initializers
         if self.constant_storage not in ("inline", "external"):
             raise TensorCCodegenError("constant_storage must be 'inline' or 'external'")
         if not isinstance(self.kernel_calls, bool):
@@ -210,9 +226,25 @@ class TensorCCodegen:
             raise TensorCCodegenError("matmul_policy must be 'sequential' or 'blocked_fma'")
         if self.matmul_policy != "sequential" and self.constant_storage != "external":
             raise TensorCCodegenError("Experimental MatMul policies require external constant storage")
-        if len(self.program.functions) != 1:
+        if not isinstance(self.matmul_tile, str) or self.matmul_tile not in ("1x4", "2x4", "1x8"):
+            raise TensorCCodegenError("matmul_tile must be '1x4', '2x4' or '1x8'")
+        if self.matmul_tile != "1x4" and (
+                self.constant_storage != "external" or self.matmul_policy != "blocked_fma"):
+            raise TensorCCodegenError("Experimental matmul_tile requires external blocked_fma MatMul")
+        if (not isinstance(self.matmul_rhs_layout, str)
+                or self.matmul_rhs_layout not in ("original", "column-panel")):
+            raise TensorCCodegenError("matmul_rhs_layout must be 'original' or 'column-panel'")
+        if self.matmul_rhs_layout != "original" and (
+                self.constant_storage != "external" or self.matmul_policy != "blocked_fma"):
+            raise TensorCCodegenError("column-panel requires external blocked_fma MatMul")
+        if (not isinstance(self.qemu_workspace_layout, str)
+                or self.qemu_workspace_layout not in ("none", "two-buffer-pad-4k")):
+            raise TensorCCodegenError("qemu_workspace_layout must be 'none' or 'two-buffer-pad-4k'")
+        if self.qemu_workspace_layout != "none" and self.constant_storage != "external":
+            raise TensorCCodegenError("Experimental QEMU workspace layout requires external storage")
+        if len(program.functions) != 1:
             raise TensorCCodegenError("Exactly one function is required")
-        func = self.program.functions[0]
+        func = program.functions[0]
         if len(func.blocks) != 1 or func.blocks[0].phi_nodes:
             raise TensorCCodegenError("Only one straight-line block without phi is supported")
         instructions = func.blocks[0].instructions
@@ -228,23 +260,28 @@ class TensorCCodegen:
             if (isinstance(bound, bool) or not isinstance(bound, int)
                     or not 0 <= bound <= _UINT64_MAX):
                 raise TensorCCodegenError("Memory limits must be nonnegative 64-bit integers")
+        program, initializers, self._rhs_panel_sources = self._panel_inputs(program, initializers)
+        func = program.functions[0]
+        instructions = func.blocks[0].instructions
+        self.matmul_rhs_panels = []
         self.specs, self.names, self.constants, self.body = {}, {}, [], []
         self.external_weights, self.external_initializers = [], []
         self.external_scalar_checks = []
         self.kernels = []
+        self._softmax_callbacks = {}
         self.constant_bytes = 0
         self._counter = 0
         defined = set()
-        for value in [*self.program.global_values, *func.params]:
+        for value in [*program.global_values, *func.params]:
             if value.name in defined:
                 raise TensorCCodegenError(f"Duplicate definition {value.name}")
             defined.add(value.name)
             self._register(value)
-        expected_initializers = {v.name for v in self.program.global_values}
-        if set(self.initializers) - expected_initializers:
+        expected_initializers = {v.name for v in program.global_values}
+        if set(initializers) - expected_initializers:
             raise TensorCCodegenError("Initializer bindings not declared in Program")
-        for value in self.program.global_values:
-            data = self.initializers.get(value.name)
+        for value in program.global_values:
+            data = initializers.get(value.name)
             if data is None and value.is_constant:
                 data = np.asarray(value.const_value, dtype=self.specs[value.name].numpy_dtype)
             if data is None:
@@ -264,6 +301,8 @@ class TensorCCodegen:
             for operand in instruction.operands:
                 last[operand.name] = index
         free, allocations, high = [], {}, 0
+        workspace_declarations = []
+        qemu_workspace_buffers = ()
         for index, instruction in enumerate(instructions[:-1]):
             if instruction.dest is None or instruction.dest.name in defined:
                 raise TensorCCodegenError(f"Instruction {index}: missing or duplicate SSA destination")
@@ -306,13 +345,16 @@ class TensorCCodegen:
             allocations[value.name] = (offset, needed)
             self.body.append(f"/* {index}: {instruction.opcode.value} */")
             arena = "sv_workspace" if self.constant_storage == "external" else "sv_arena.bytes"
-            self.body.append(f"{_TYPES[spec.dtype][0]} *{self.names[value.name]} = "
-                             f"({_TYPES[spec.dtype][0]} *)({arena} + {offset}ULL);")
+            declaration = (f"{_TYPES[spec.dtype][0]} *{self.names[value.name]} = "
+                           f"({_TYPES[spec.dtype][0]} *)({arena} + ")
+            if self.qemu_workspace_layout != "none":
+                workspace_declarations.append((len(self.body), declaration, offset, needed))
+            self.body.append(f"{declaration}{offset}ULL);")
             if self.kernel_calls:
                 self._emit_kernel(instruction, spec, details, index)
             else:
-                self._emit(instruction, spec, details)
-                self._finite_check(spec)
+                if not self._emit(instruction, spec, details):
+                    self._finite_check(spec)
             for name in list(allocations):
                 if last.get(name, index) <= index:
                     free.append(allocations.pop(name))
@@ -324,6 +366,25 @@ class TensorCCodegen:
                 else:
                     merged.append((offset, size))
             free = merged
+        if self.qemu_workspace_layout != "none":
+            # Keep the existing liveness plan. This QEMU experiment only shifts
+            # one of two fixed slots; split or differently sized reuse is not
+            # a two-buffer plan, even if no more than two values are live.
+            buffers = sorted({(offset, size) for _, _, offset, size in workspace_declarations})
+            if (len(buffers) != 2 or buffers[0][0] != 0
+                    or buffers[1][0] != buffers[0][1]
+                    or high != buffers[1][0] + buffers[1][1]):
+                raise TensorCCodegenError(
+                    "two-buffer-pad-4k requires exactly two fixed adjacent workspace buffers")
+            padded_high = high + 4096
+            if padded_high > self.max_workspace_bytes or padded_high > _UINT64_MAX:
+                raise TensorCCodegenError(f"Static workspace exceeds {self.max_workspace_bytes} bytes")
+            second = buffers[1][0]
+            for line, declaration, offset, _ in workspace_declarations:
+                if offset == second:
+                    self.body[line] = f"{declaration}{offset + 4096}ULL);"
+            high = padded_high
+            qemu_workspace_buffers = (buffers[0], (second + 4096, buffers[1][1]))
         returned = instructions[-1].operands[0]
         if returned.name not in self.specs:
             if not returned.is_constant:
@@ -337,7 +398,7 @@ class TensorCCodegen:
         # Empty shape on a builder-created intermediate still means "infer".
         # Parameters/globals and an explicit function signature are boundaries:
         # their empty shape is a scalar, never a wildcard for a tensor buffer.
-        bound_names = {value.name for value in [*self.program.global_values, *func.params]}
+        bound_names = {value.name for value in [*program.global_values, *func.params]}
         inferred_return = isinstance(returned.shape, (tuple, list)) and len(returned.shape) == 0
         if ((not inferred_return or returned.name in bound_names)
                 and _shape(returned.shape) != output.shape):
@@ -367,6 +428,11 @@ class TensorCCodegen:
                 external_initializers=tuple(self.external_initializers),
                 kernel_calls=self.kernel_calls,
                 matmul_policy=self.matmul_policy,
+                matmul_tile=self.matmul_tile,
+                matmul_rhs_layout=self.matmul_rhs_layout,
+                matmul_rhs_panels=tuple(self.matmul_rhs_panels),
+                qemu_workspace_layout=self.qemu_workspace_layout,
+                qemu_workspace_buffers=qemu_workspace_buffers,
             )
         source = (_PRELUDE + "\n" + "\n".join(self.constants)
                   + f"\nstatic union {{ uint64_t align; unsigned char bytes[{max(high, 8)}]; }} sv_arena;\n"
@@ -374,6 +440,100 @@ class TensorCCodegen:
                   + "int scratchv_run(const void *const inputs[], void *output) {\n  "
                   + "\n  ".join(self.body) + "\n}\n")
         return TensorCArtifact(source, inputs, output, high, self.constant_bytes)
+
+    def _panel_inputs(self, program, initializers):
+        """Select immutable 2D RHS storage; copy only IR containers we change.
+
+        A 2D RHS may broadcast across LHS batches. A shared non-MatMul use,
+        batched RHS or dynamic RHS keeps its original storage. Transpose
+        folding is deliberately local: one global's only use is a validated
+        2D transpose, and every use of its result is a later MatMul RHS.
+        """
+        if self.matmul_rhs_layout == "original":
+            return program, initializers, {}
+        func = program.functions[0]
+        instructions = func.blocks[0].instructions
+        globals_by_name = {value.name: value for value in program.global_values}
+        if set(initializers) - globals_by_name.keys():
+            raise TensorCCodegenError("Initializer bindings not declared in Program")
+        # Never remove a malformed SSA definition and accidentally legalize it.
+        definitions = [*program.global_values, *func.params]
+        definitions += [i.dest for i in instructions if i.dest is not None]
+        if len({v.name for v in definitions}) != len(definitions):
+            raise TensorCCodegenError("Duplicate definition in column-panel graph")
+        uses = {}
+        for index, instruction in enumerate(instructions):
+            for position, value in enumerate(instruction.operands):
+                uses.setdefault(value.name, []).append((index, position, instruction))
+        # Function signatures are also uses, even if malformed and inconsistent
+        # with the final RETURN. Leave their validation to the normal path.
+        signature_names = {v.name for v in func.returns}
+
+        def rhs_only(name, after=-1):
+            consumers = uses.get(name, ())
+            return (name not in signature_names and bool(consumers)
+                    and all(index > after and position == 1
+                            and instruction.opcode == OpCode.MATMUL
+                            and len(instruction.operands) == 2
+                            for index, position, instruction in consumers))
+
+        def eligible(value):
+            if value.dtype != DataType.FLOAT32 or value.is_constant:
+                return False
+            shape = _shape(value.shape)
+            return len(shape) == 2 and all(d > 0 for d in shape)
+
+        panels, replacements, folded = {}, {}, set()
+        bindings = dict(initializers)
+        for value in program.global_values:
+            if not eligible(value):
+                continue
+            if rhs_only(value.name):
+                panels[value.name] = dict(source_weight=value.name, folded_transpose=None)
+                continue
+            consumers = uses.get(value.name, ())
+            if len(consumers) != 1 or value.name in signature_names:
+                continue
+            index, position, instruction = consumers[0]
+            dest = instruction.dest
+            if (position != 0 or instruction.opcode != OpCode.TRANSPOSE
+                    or len(instruction.operands) != 1 or dest is None
+                    or instruction.target or dest.is_constant
+                    or dest.dtype != value.dtype
+                    or instruction.operands[0].dtype != value.dtype
+                    or not rhs_only(dest.name, after=index)):
+                continue
+            # Malformed transposes remain in the graph, so normal validation
+            # still rejects attributes, permutations and declared shapes.
+            try:
+                check_instruction(instruction)
+                if tuple(instruction.attrs.get("perm", (1, 0))) != (1, 0):
+                    continue
+                logical_shape = tuple(reversed(_shape(value.shape)))
+                if dest.shape and _shape(dest.shape) != logical_shape:
+                    continue
+            except (OpError, ValueError, TypeError):
+                continue
+            data = initializers.get(value.name)
+            if (not isinstance(data, np.ndarray) or data.shape != value.shape
+                    or data.dtype != _TYPES[value.dtype][1]):
+                continue
+            # No array copy: retain the input mapping and original IR intact.
+            replacements[value.name] = replace(dest, shape=logical_shape)
+            bindings.pop(value.name)
+            bindings[dest.name] = data.T
+            folded.add(index)
+            panels[dest.name] = dict(source_weight=value.name, folded_transpose=dest.name)
+        if not folded:
+            return program, initializers, panels
+        transformed = copy(program)
+        transformed.global_values = [replacements.get(v.name, v) for v in program.global_values]
+        function, block = copy(func), copy(func.blocks[0])
+        block.instructions = [instruction for index, instruction in enumerate(instructions)
+                              if index not in folded]
+        function.blocks = [block]
+        transformed.functions = [function]
+        return transformed, bindings, panels
 
     def _register(self, value, shape=None):
         if value.dtype not in _TYPES:
@@ -403,7 +563,14 @@ class TensorCCodegen:
             if (self.constant_storage == "external" and spec.dtype == DataType.FLOAT32
                     and data.view(np.uint32).item() != expected.view(np.uint32).item()):
                 raise TensorCCodegenError(f"Initializer {value.name} disagrees with scalar constant bits")
-        self.constant_bytes += spec.nbytes
+        physical = spec
+        panel = self._rhs_panel_sources.get(value.name)
+        if panel is not None:
+            k, n = spec.shape
+            columns = int(self.matmul_tile.split("x")[1])
+            physical = TensorSpec(spec.name, spec.dtype,
+                                  _shape(((n + columns - 1) // columns, k, columns)))
+        self.constant_bytes += physical.nbytes
         if self.constant_bytes > self.max_constant_bytes or self.constant_bytes > _UINT64_MAX:
             raise TensorCCodegenError("Constant tensor storage exceeds configured limit")
         if self.constant_storage == "external":
@@ -413,7 +580,35 @@ class TensorCCodegen:
                                        op_flags=["readonly"], order="C", buffersize=262144):
                     if not np.isfinite(chunk).all():
                         raise TensorCCodegenError("Nonfinite initializer/constant")
-            self.external_weights.append(spec)
+            if panel is not None:
+                count, k, columns = physical.shape
+                n = spec.shape[1]
+                if n % columns == 0:
+                    # Assigning shape to a view cannot silently make the
+                    # complete copy that reshape() may make for strided data.
+                    split = data.view()
+                    try:
+                        split.shape = (k, count, columns)
+                    except (AttributeError, ValueError) as exc:
+                        raise TensorCCodegenError("Cannot form a zero-copy column-panel view") from exc
+                    packed = split.transpose(1, 0, 2)
+                    if not np.shares_memory(packed, data):
+                        raise TensorCCodegenError("Column-panel view unexpectedly copied its source")
+                    materialization = "view"
+                else:
+                    # The physical byte limit was checked before this bounded
+                    # allocation. Inactive tail lanes stay finite zero.
+                    packed = np.zeros(physical.shape, dtype=data.dtype)
+                    for index in range(count):
+                        start, stop = index * columns, min((index + 1) * columns, n)
+                        packed[index, :, :stop-start] = data[:, start:stop]
+                    materialization = "padded-copy"
+                self.matmul_rhs_panels.append(dict(
+                    name=spec.name, logical_shape=list(spec.shape),
+                    physical_shape=list(physical.shape), panel_columns=columns,
+                    **panel, materialization=materialization))
+                data = packed
+            self.external_weights.append(physical)
             self.external_initializers.append(data)
             if value.is_constant:
                 name = self.names[value.name]
@@ -468,13 +663,13 @@ class TensorCCodegen:
     def _emit_kernel(self, instruction, output, details, index):
         """Bound each C optimizer unit without changing the arithmetic body.
 
-        Move the original operation and its immediate finite check verbatim.
+        Keep output validation with the operation, including fused checks.
         Shape-specialized loops retain their reduction order and FP flags.
         Explicit noinline prevents LLVM from rebuilding the giant graph body.
         """
         start = len(self.body)
-        self._emit(instruction, output, details)
-        self._finite_check(output)
+        if not self._emit(instruction, output, details):
+            self._finite_check(output)
         statements = self.body[start:]
         del self.body[start:]
         names = [self.names[output.name]]
@@ -613,6 +808,7 @@ class TensorCCodegen:
         raise TensorCCodegenError(f"Unsupported tensor opcode: {op.value}")
 
     def _emit(self, instruction, output, details):
+        """Emit the operation; return True when it also checks every output."""
         op, attrs = instruction.opcode, instruction.attrs
         xs = [self.specs[x.name] for x in instruction.operands]
         dst = self.names[output.name]
@@ -718,35 +914,119 @@ class TensorCCodegen:
             left = _broadcast_offset(batch, a[:-2], "batch")
             right = _broadcast_offset(batch, b[:-2], "batch")
             if self.matmul_policy == "blocked_fma":
-                # Explicit experiment: four adjacent output columns reuse each
-                # left value. K-block products use fused FP32 multiply-add in K
-                # order, then each block is added to an FP32 running sum. This
-                # deliberately differs from sequential separate mul/add rounding.
-                # __builtin_fmaf keeps the explicit operation even with
-                # -fno-builtin and -ffp-contract=off used by the RV64 runtime.
+                # Each output retains increasing K order, fused FP32 products,
+                # and a separate FP32 addition after each 128-element K block.
+                # Tiles only share input loads across independent outputs; they
+                # never split a reduction between harts or change its grouping.
+                # __builtin_fmaf retains explicit FMA with -ffp-contract=off.
+                tile_rows, tile_columns = (int(part) for part in self.matmul_tile.split("x"))
+                lanes = tile_rows * tile_columns
+                row_step = "++m" if tile_rows == 1 else f"m+={tile_rows}"
                 lines = [
                     f"for (size_t batch=0; batch<{math.prod(batch)}ULL; ++batch) "
-                    f"for (size_t m=0; m<{m}ULL; ++m) "
-                    f"for (size_t column=0; column<{n}ULL; column+=4) {{",
-                    "float sum0=0.0f, sum1=0.0f, sum2=0.0f, sum3=0.0f;",
+                    f"for (size_t m=0; m<{m}ULL; {row_step}) "
+                    f"for (size_t column=0; column<{n}ULL; column+={tile_columns}) {{",
+                    "float " + ", ".join(f"sum{lane}=0.0f" for lane in range(lanes)) + ";",
                     f"for (size_t block=0; block<{k}ULL; block+=128) {{",
-                    "float acc0=0.0f, acc1=0.0f, acc2=0.0f, acc3=0.0f;",
+                    "float " + ", ".join(f"acc{lane}=0.0f" for lane in range(lanes)) + ";",
                     f"size_t end=block+128 < {k}ULL ? block+128 : {k}ULL;",
                     "for (size_t k=block; k<end; ++k) {",
                     f"float left_value={names[0]}[({left})*{m*k}ULL+m*{k}ULL+k];",
-                    f"const float *right_values={names[1]}+({right})*{k*n}ULL+k*{n}ULL+column;",
-                    "acc0=__builtin_fmaf(left_value,right_values[0],acc0);",
                 ]
-                lines += [f"if (column+{lane}<{n}ULL) acc{lane}="
-                          f"__builtin_fmaf(left_value,right_values[{lane}],acc{lane});"
-                          for lane in range(1, 4)]
-                lines += ["}", "sum0+=acc0; sum1+=acc1; sum2+=acc2; sum3+=acc3;", "}",
-                          f"{dst}[batch*{m*n}ULL+m*{n}ULL+column]=sum0;"]
-                lines += [f"if (column+{lane}<{n}ULL) "
-                          f"{dst}[batch*{m*n}ULL+m*{n}ULL+column+{lane}]=sum{lane};"
-                          for lane in range(1, 4)]
+                if tile_rows == 2:
+                    lines += [
+                        "float left_value1=0.0f;",
+                        f"if (m+1<{m}ULL) left_value1="
+                        f"{names[0]}[({left})*{m*k}ULL+(m+1)*{k}ULL+k];",
+                    ]
+                if instruction.operands[1].name in self._rhs_panel_sources:
+                    lines.append(
+                        f"const float *right_values={names[1]}+(column/{tile_columns}ULL)*"
+                        f"{k*tile_columns}ULL+k*{tile_columns}ULL;")
+                else:
+                    lines.append(
+                        f"const float *right_values={names[1]}+({right})*{k*n}ULL+k*{n}ULL+column;")
+                for column_lane in range(tile_columns):
+                    guard = f"if (column+{column_lane}<{n}ULL) " if column_lane else ""
+                    if tile_rows == 1:
+                        lines.append(
+                            f"{guard}acc{column_lane}="
+                            f"__builtin_fmaf(left_value,right_values[{column_lane}],acc{column_lane});")
+                    else:
+                        # Load each B element once for both rows. A missing tail
+                        # row/column performs neither a load nor an FP operation.
+                        lines.append(
+                            f"{guard}{{ float right_value=right_values[{column_lane}]; "
+                            f"acc{column_lane}=__builtin_fmaf(left_value,right_value,acc{column_lane}); "
+                            f"if (m+1<{m}ULL) acc{tile_columns+column_lane}="
+                            f"__builtin_fmaf(left_value1,right_value,acc{tile_columns+column_lane}); }}")
                 lines.append("}")
-                self.body.append(" ".join(lines))
+                if self.matmul_tile == "1x4":
+                    # Preserve the original default source, including inactive
+                    # lanes' exact 0+0 additions (which raise no FP flags).
+                    lines.append("sum0+=acc0; sum1+=acc1; sum2+=acc2; sum3+=acc3;")
+                else:
+                    for row_lane in range(tile_rows):
+                        for column_lane in range(tile_columns):
+                            lane = row_lane * tile_columns + column_lane
+                            conditions = ([f"m+{row_lane}<{m}ULL"] if row_lane else [])
+                            if column_lane:
+                                conditions.append(f"column+{column_lane}<{n}ULL")
+                            guard = f"if ({' && '.join(conditions)}) " if conditions else ""
+                            lines.append(f"{guard}sum{lane}+=acc{lane};")
+                lines.append("}")
+                for row_lane in range(tile_rows):
+                    row = f"(m+{row_lane})" if row_lane else "m"
+                    for column_lane in range(tile_columns):
+                        lane = row_lane * tile_columns + column_lane
+                        conditions = ([f"m+{row_lane}<{m}ULL"] if row_lane else [])
+                        if column_lane:
+                            conditions.append(f"column+{column_lane}<{n}ULL")
+                        guard = f"if ({' && '.join(conditions)}) " if conditions else ""
+                        column = f"column+{column_lane}" if column_lane else "column"
+                        lines.append(
+                            f"{guard}{dst}[batch*{m*n}ULL+{row}*{n}ULL+{column}]=sum{lane};")
+                lines.append("}")
+                serial = " ".join(lines)
+                columns = (n + tile_columns - 1) // tile_columns
+                rows = (m + tile_rows - 1) // tile_rows
+                tasks = math.prod(batch) * rows * columns
+                # Avoid dispatch/barrier overhead on small matrices. This is a
+                # conservative work floor, not a calibrated performance claim.
+                # Each task owns one (batch, row tile, column tile); its K loop
+                # and 128-element grouping are shared verbatim with serial.
+                if tasks >= 2 and math.prod(batch) * m * n * k >= 32768:
+                    condition = ("defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1 "
+                                 f"&& SCRATCHV_HARTS <= {tasks}")
+                    context = f"sv_matmul_{dst}"
+                    aliases = []
+                    seen = set()
+                    for name, member in zip(names, ("left", "right")):
+                        if name not in seen:
+                            aliases.append(f"const float *{name}=context->{member};")
+                            seen.add(name)
+                    self.kernels.append(
+                        f"\n#if {condition}\n"
+                        f"struct {context} {{ const float *left, *right; float *output; }};\n"
+                        f"static void {context}_range(void *opaque, size_t begin, size_t end) {{\n"
+                        f"  const struct {context} *context=opaque;\n  "
+                        + " ".join(aliases) + f" float *{dst}=context->output;\n"
+                        "  for (size_t task=begin; task<end; ++task) {\n"
+                        f"    size_t column=(task % {columns}ULL)*{tile_columns};\n"
+                        + (f"    size_t m=(task / {columns}ULL) % {rows}ULL;\n"
+                           if tile_rows == 1 else
+                           f"    size_t m=((task / {columns}ULL) % {rows}ULL)*{tile_rows};\n")
+                        + f"    size_t batch=task / {columns*rows}ULL;\n    "
+                        + " ".join(lines[1:-1]) + "\n  }\n}\n#endif\n"
+                    )
+                    self.body.append(
+                        f"\n#if {condition}\n"
+                        f"struct {context} context_{dst}={{{names[0]}, {names[1]}, {dst}}};\n"
+                        f"sv_parallel_for({tasks}ULL, {context}_range, &context_{dst});\n"
+                        f"#else\n{serial}\n#endif\n"
+                    )
+                else:
+                    self.body.append(serial)
                 return
             self.body.append(f"for (size_t batch=0; batch<{math.prod(batch)}ULL; ++batch) "
                 f"for (size_t m=0; m<{m}ULL; ++m) for (size_t n=0; n<{n}ULL; ++n) {{ "
@@ -769,13 +1049,58 @@ class TensorCCodegen:
             axis = details["axis"]
             outer, dimension, inner = math.prod(x.shape[:axis]), x.shape[axis], math.prod(x.shape[axis+1:])
             off = f"o*{dimension*inner}ULL+j*{inner}ULL+t"
-            self.body.append(f"for (size_t o=0; o<{outer}ULL; ++o) for (size_t t=0; t<{inner}ULL; ++t) {{ "
-                "float maximum=-0x1.fffffep+127f, sum=0.0f; "
+            # A row retains its original max, exp/sum and normalization order.
+            # Only independent (outer, inner) rows may run on different harts.
+            row = ("float maximum=-0x1.fffffep+127f, sum=0.0f; "
                 f"for (size_t j=0; j<{dimension}ULL; ++j) if ({src}[{off}]>maximum) maximum={src}[{off}]; "
                 f"for (size_t j=0; j<{dimension}ULL; ++j) {{ float shifted={src}[{off}]-maximum; "
                 "if (!sv_finite(shifted)) return 2; float v=expf(shifted); "
                 f"{dst}[{off}]=v; sum+=v; }} "
-                f"for (size_t j=0; j<{dimension}ULL; ++j) {dst}[{off}]/=sum; }}")
+                f"for (size_t j=0; j<{dimension}ULL; ++j) {{ {dst}[{off}]/=sum; "
+                f"if (!sv_finite({dst}[{off}])) return 2; }} ")
+            serial = (f"for (size_t o=0; o<{outer}ULL; ++o) "
+                      f"for (size_t t=0; t<{inner}ULL; ++t) {{ " + row + "}")
+            rows = outer * inner
+            # Keep small/empty graphs and inline storage on the original path.
+            # This floor avoids a barrier for tiny graphs; it is not autotuning.
+            if self.constant_storage == "external" and rows >= 2 and size >= 32768:
+                condition = ("defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1 "
+                             f"&& SCRATCHV_HARTS <= {rows}")
+                # Reuse code only: each operation keeps its own input/output
+                # pointers and status, initialized below before the joined call.
+                key = (x.dtype, x.shape, axis)
+                context = self._softmax_callbacks.get(key)
+                if context is None:
+                    context = f"sv_softmax_{dst}"
+                    parallel_row = row.replace(
+                        "return 2;",
+                        "{ "
+                        "__atomic_store_n(&context->status, 2, __ATOMIC_RELAXED); return; }")
+                    self.kernels.append(
+                        f"\n#if {condition}\n"
+                        f"struct {context} {{ const float *input; float *output; int status; }};\n"
+                        f"static void {context}_range(void *opaque, size_t begin, size_t end) {{\n"
+                        f"  struct {context} *context=opaque;\n"
+                        f"  const float *{src}=context->input; float *{dst}=context->output;\n"
+                        "  for (size_t task=begin; task<end; ++task) {\n"
+                        f"    size_t o=task / {inner}ULL, t=task % {inner}ULL;\n    "
+                        + parallel_row + "\n  }\n}\n#endif\n"
+                    )
+                    self._softmax_callbacks[key] = context
+                self.body.append(
+                    f"\n#if {condition}\n"
+                    f"struct {context} context_{dst}={{{src}, {dst}, 0}};\n"
+                    f"sv_parallel_for({rows}ULL, {context}_range, &context_{dst});\n"
+                    # All callbacks finish before checking the shared status or
+                    # reusing their output. Concurrent failures only write 2.
+                    f"if (__atomic_load_n(&context_{dst}.status, __ATOMIC_RELAXED)) return 2;\n"
+                    f"#else\n{serial}\n#endif\n"
+                )
+            else:
+                self.body.append(serial)
+            # Both serial and parallel rows validate the FP32 value just stored.
+            # The joined callback reports failure before any workspace reuse.
+            return True
         elif op == OpCode.GATHER:
             axis, count = details["axis"], xs[1].size
             dimension, inner = x.shape[axis], math.prod(x.shape[axis+1:])

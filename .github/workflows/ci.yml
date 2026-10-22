@@ -39,6 +39,9 @@ jobs:
     needs: scope
     if: github.event_name == 'pull_request' && needs.scope.outputs.llm == 'true'
     uses: ./.github/workflows/llm-deploy.yml
+    with:
+      # The parallel test job owns generic coverage; CI acceptance requires it.
+      ci_covers_generic_regressions: true
 
   topic06:
     name: Topic 06 benchmark
@@ -148,33 +151,6 @@ jobs:
       - name: Check public instructions and Bash syntax
         run: $PY scripts/check_linux_repro_docs.py --check-bash
 
-      - name: Run Topic 04 PassManager regressions
-        env:
-          PYTHONHASHSEED: "0"
-        run: |
-          set -euo pipefail
-          mkdir -p benchmark_reports
-          $PY -m pytest \
-            tests/test_pass_manager.py \
-            tests/test_pass_registry.py \
-            tests/test_optimizer.py \
-            tests/test_optimizer_advanced.py \
-            -v --tb=short \
-            --junit-xml=benchmark_reports/topic04_pass_manager.xml \
-            | tee benchmark_reports/topic04_pass_manager.txt
-
-      - name: Run IR interpreter and LICM regressions
-        timeout-minutes: 5
-        env:
-          PYTHONHASHSEED: "0"
-          OMP_NUM_THREADS: "1"
-          OPENBLAS_NUM_THREADS: "1"
-          MKL_NUM_THREADS: "1"
-        run: |
-          mkdir -p benchmark_reports
-          $PY -m pytest tests/test_ir_interpreter*.py tests/test_licm_safety.py -q \
-            --junit-xml=benchmark_reports/ir_interpreter_tests.xml
-
       - name: Prepare RISC-V test tools
         run: |
           set -euo pipefail
@@ -219,38 +195,13 @@ jobs:
             --junit-xml=benchmark_reports/test_results.xml \
             --ignore=tests/test_simulator.py
 
-      - name: Topic 01 DSL frontend regressions
+      # tests/test_simulator.py is excluded above; retain its selected regressions.
+      - name: Run excluded simulator regressions
         run: |
           $PY -m pytest \
-            tests/test_dsl_control_flow.py \
-            tests/test_dsl_control_flow_benchmark.py \
-            -v --tb=short
-
-      - name: Run assembly-beautifier regressions
-        run: |
-          $PY -m pytest \
-            tests/test_parser_for_beautifier.py \
-            tests/test_asm_beautifier_comments.py \
-            tests/test_asm_beautifier_formatting.py \
-            tests/test_asm_beautifier_integration.py \
-            tests/test_asm_beautifier_blackbox.py \
-            -v --tb=short
-
-      - name: Run constant-merge regressions
-        run: |
-          $PY -m pytest \
-            tests/test_const_merge.py \
-            tests/test_backend.py::TestConstMergeIntegration \
             tests/test_simulator.py::TestStubProfiledMachine \
+            tests/test_simulator.py::TestRealProfiledMachine::test_lw_preserves_all_four_bytes \
             -v --tb=short
-
-      - name: Run PR #37 register-allocation regressions
-        run: |
-          $PY -m pytest tests/test_pr37_regression.py -v --tb=short
-
-      - name: Run topic13 peephole regressions
-        run: |
-          $PY -m pytest tests/test_asm_peephole*.py -v --tb=short
 
       - name: Run topic13 peephole CLI smoke
         run: |
@@ -265,20 +216,6 @@ jobs:
             -o /tmp/peephole_out.s --report --json | tee /tmp/peephole_report.json
           $PY -c "import json; d=json.load(open('/tmp/peephole_report.json')); assert d['instructions_saved']>=1"
           grep -q "8" /tmp/peephole_out.s
-
-      - name: Run Topic 17 register-allocation regressions
-        run: |
-          $PY -m pytest \
-            tests/test_regalloc_pseudo.py \
-            tests/test_regalloc_pseudo_benchmark.py \
-            tests/test_regalloc_p1.py \
-            tests/test_regalloc_metrics.py \
-            tests/test_regalloc_spill_compare.py \
-            tests/test_abi_frame.py \
-            tests/test_riscv_encoder_validation.py \
-            tests/test_rv32_emulator.py \
-            tests/test_simulator.py::TestRealProfiledMachine::test_lw_preserves_all_four_bytes \
-            -v --tb=short
 
       - name: Topic 21 CNN IR verification smoke test
         run: |
@@ -307,11 +244,8 @@ jobs:
           name: test-reports
           path: |
             benchmark_reports/test_results.xml
-            benchmark_reports/ir_interpreter_tests.xml
             benchmark_reports/tests.html
             benchmark_reports/ir_verifier_smoke/
-            benchmark_reports/topic04_pass_manager.xml
-            benchmark_reports/topic04_pass_manager.txt
           retention-days: 30
 
   # ═════════════════════════════════════════════════════════════════════════

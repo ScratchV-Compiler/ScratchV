@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import venv
 from pathlib import Path
 
 import numpy as np
@@ -108,3 +109,63 @@ def test_worker_limits_and_cancellation_stop_process_tree(monkeypatch,cause):
         assert 'resource_monitor' in row and row['elapsed_seconds']>=0
     finally:
         if process.poll() is None:resources.terminate_process_tree(process)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux virtualenv symlink regression")
+@pytest.mark.parametrize("runner", ["preparation", "full"])
+@pytest.mark.parametrize("explicit_python", [False, True])
+def test_cli_preserves_symlink_virtualenv(tmp_path, monkeypatch, runner, explicit_python):
+    """Exercise CLI selection and real child imports without executing a model."""
+    environment = tmp_path / "venv"
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
+    python = environment / "bin/python"
+    assert python.is_symlink()
+    packages = (environment / "lib"
+                / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages")
+    (packages / "w3_venv_marker.py").write_text("VALUE = 'only-in-venv'\n")
+    monkeypatch.delenv("PYTHONHOME", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.chdir(tmp_path)
+    output = tmp_path / "output"
+
+    if runner == "preparation":
+        from scripts import run_w3_preparation as gate
+        monkeypatch.setattr(gate, "GATES", ("medium",))
+        monkeypatch.setattr(gate, "validate_report", lambda *args: {})
+        argv = ["--source-dir", str(tmp_path), "--model-dir", str(tmp_path),
+                "--output-dir", str(output), "--gate-timeout", "5"]
+        logs = [output / "logs/medium.log"]
+        expected_code = 0
+    else:
+        from probes.w3_qwen3_full import run as gate
+        monkeypatch.setattr(gate, "verify_files", lambda path: [])
+        monkeypatch.setattr(gate, "input_cases", lambda: [
+            ("short_17", 17, {"input_ids": np.zeros((1, 1), np.int64)})])
+        monkeypatch.setattr(gate, "validate_worker", lambda *args, **kwargs: {
+            "input": {"valid_length": 17}, "process_peak_rss_bytes": 4096,
+            "stages_seconds": {"run": 1}})
+        monkeypatch.setattr(gate, "sha256_file", lambda path: "fixture")
+        monkeypatch.setattr(gate, "compare_case", lambda *args: {
+            "passed": True, "max_logits_abs": 0, "worst": {"max_abs": 0}})
+        argv = ["--model-dir", str(tmp_path), "--output-dir", str(output),
+                "--case", "short_17", "--worker-timeout", "5"]
+        logs = [output / "short_17" / f"{backend}.log" for backend in ("ort", "ir")]
+        expected_code = 2  # One synthetic case is deliberately only partial.
+
+    if explicit_python:
+        argv += ["--python", str(python.relative_to(tmp_path))]
+    else:
+        monkeypatch.setattr(sys, "executable", str(python))
+    monkeypatch.setattr(gate, "source_evidence", lambda: {"source_sha256": {}})
+    monkeypatch.setattr(gate, "write_reports", lambda *args: None)
+    spawn_owned = gate.spawn_owned
+
+    def spawn_identity(command, **kwargs):
+        code = ("import json, sys, w3_venv_marker; "
+                "print(json.dumps([sys.prefix, w3_venv_marker.VALUE]))")
+        return spawn_owned([*command[:4], "-c", code], **kwargs)
+
+    monkeypatch.setattr(gate, "spawn_owned", spawn_identity)
+    assert gate.main(argv) == expected_code
+    for log in logs:
+        assert json.loads(log.read_text()) == [str(environment), "only-in-venv"]

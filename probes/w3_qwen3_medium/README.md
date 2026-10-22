@@ -1,6 +1,6 @@
 # W3 medium Qwen3 host numerical probe
 
-Reproduction targets **Ubuntu 24.04 x86_64, Bash and Python 3.12**. Complete the [Linux environment and asset setup](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) first. Run commands from the repository root in the same Bash session; the setup exports `SCRATCHV_PYTHON`, `SCRATCHV_CC` and `SCRATCHV_QEMU`.
+Reproduction targets **Ubuntu 24.04 x86_64, Bash and Python 3.12**. Complete the [Linux environment and asset setup](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) first. Run commands from the repository root in the same Bash session; `python` is the current interpreter with the pinned dependencies installed; the runners discover Zig and QEMU automatically.
 
 This is a fixed candidate for the W3 six-layer experiment. The plan fixes six
 layers; the dimensions below are the candidate chosen for this experiment,
@@ -34,7 +34,7 @@ set -euo pipefail
 export OMP_NUM_THREADS='1'
 export OPENBLAS_NUM_THREADS='1'
 export MKL_NUM_THREADS='1'
-"$SCRATCHV_PYTHON" -m probes.w3_qwen3_medium.run --output-dir output/w3-medium --model-seed 0
+python -m probes.w3_qwen3_medium.run --output-dir output/w3-medium --model-seed 0
 ```
 
 The output directory must not already exist, even if it is empty. Preserve a
@@ -100,7 +100,7 @@ mark, including export and every backend; it is not an IR memory measurement.
 
 ```bash
 set -euo pipefail
-"$SCRATCHV_PYTHON" -m pytest tests/test_qwen3_medium_model.py tests/test_qwen3_medium_probe.py tests/test_qwen3_small_model.py tests/test_qwen3_small_probe.py tests/test_qwen3_small_gate.py -q
+python -m pytest tests/test_qwen3_medium_model.py tests/test_qwen3_medium_probe.py tests/test_qwen3_small_model.py tests/test_qwen3_small_probe.py tests/test_qwen3_small_gate.py -q
 ```
 
 Tests exercise all 81 medium shapes, a second configuration changing every

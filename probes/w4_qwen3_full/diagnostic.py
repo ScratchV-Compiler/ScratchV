@@ -31,6 +31,7 @@ from probes.w3_qwen3_full.worker import checkpoint_schema, checked_tensor, save_
 from probes.w4_qwen3_full.run import ATOL, save_executable, spec_json
 from scratchv.backend.tensor_c_codegen import TensorCCodegen
 from scratchv.ir.types import BasicBlock, DataType, Function, Instruction, OpCode, Program
+from scratchv.runtime.riscv_harts import resolve_harts
 from scratchv.runtime.riscv_external import build_external, run_external
 from scratchv.runtime.riscv_tensor import discover_toolchain
 from scratchv.runtime.weight_bundle import write_weight_bundle
@@ -191,12 +192,32 @@ def main(argv=None):
     cli.add_argument("--case", choices=CASE_NAMES, default="full_seed_0")
     cli.add_argument("--cc")
     cli.add_argument("--qemu")
+    cli.add_argument("--qemu-workspace-layout", choices=("none", "two-buffer-pad-4k"),
+                     default="none",
+                     help="QEMU-only experimental two-buffer workspace layout (default: none); "
+                          "padding adds 4 KiB and may reduce performance; unsupported graphs fail")
+    cli.add_argument("--harts", choices=("1", "2", "4", "auto"), default="1",
+                     help="RV64 harts (default: 1); auto selects 1/2/4 from available CPUs, "
+                          "up to 4; parallel MatMul requires blocked_fma")
     cli.add_argument("--matmul-policy", choices=("sequential", "blocked_fma"), default="sequential")
+    cli.add_argument("--matmul-tile", choices=("1x4", "2x4", "1x8"), default="1x4",
+                     help="MatMul output tile (default: 1x4); 2x4/1x8 require blocked_fma")
     cli.add_argument("--kernel-calls", action=argparse.BooleanOptionalAction, default=True,
                      help="Emit independent tensor kernel functions (default: enabled)")
     cli.add_argument("--timeout", type=float, default=3600)
     cli.add_argument("--build-timeout", type=float, default=900)
+    cli.add_argument("--matmul-rhs-layout", choices=("original", "column-panel"), default="original",
+                     help="Experimental immutable MatMul RHS packing (default: original); "
+                          "column-panel requires blocked_fma")
     args = cli.parse_args(argv)
+    if args.matmul_tile != "1x4" and args.matmul_policy != "blocked_fma":
+        cli.error("--matmul-tile 2x4/1x8 requires --matmul-policy blocked_fma")
+    if args.matmul_rhs_layout != "original" and args.matmul_policy != "blocked_fma":
+        cli.error("--matmul-rhs-layout column-panel requires --matmul-policy blocked_fma")
+    requested_harts = args.harts if args.harts == "auto" else int(args.harts)
+    args.harts = resolve_harts(requested_harts)
+    if requested_harts == "auto":
+        print(f"[W4] auto selected {args.harts} hart(s)", flush=True)
     if any(not math.isfinite(limit) or limit <= 0 for limit in (args.timeout, args.build_timeout)):
         cli.error("Timeouts must be finite and positive")
     out = new_output_dir(args.output_dir)
@@ -205,6 +226,10 @@ def main(argv=None):
               "passed": False, "status": "FAIL", "stage": "initialization",
               "stages_seconds": {}, "checkpoint": args.checkpoint, "case": args.case,
               "matmul_policy": args.matmul_policy, "kernel_calls": args.kernel_calls,
+              "harts_requested": requested_harts, "harts": args.harts,
+              "matmul_tile": args.matmul_tile,
+              "matmul_rhs_layout": args.matmul_rhs_layout,
+              "qemu_workspace_layout_requested": args.qemu_workspace_layout,
               "scope": "One reverse dependency checkpoint slice; not the complete W4 numerical gate",
               "full_qemu_forward_executed": False, "numeric_gate_passed": False,
               "w4_team_accepted": False, "qemu_checkpoint_executed": False}
@@ -244,23 +269,30 @@ def main(argv=None):
         artifact = stage("external_codegen", lambda: TensorCCodegen(sliced, bindings,
             constant_storage="external", max_constant_bytes=3 * 1024**3,
             max_workspace_bytes=1024**3, kernel_calls=args.kernel_calls,
-            matmul_policy=args.matmul_policy).generate())
+            matmul_policy=args.matmul_policy, matmul_tile=args.matmul_tile,
+            matmul_rhs_layout=args.matmul_rhs_layout,
+            qemu_workspace_layout=args.qemu_workspace_layout).generate())
         if list(artifact.output.shape) != row["shape"] or artifact.output.dtype != DataType.FLOAT32:
             raise ValueError("Generated checkpoint output disagrees with audited schema")
         report["codegen"] = {"source_bytes": len(artifact.source.encode()),
                               "workspace_bytes": artifact.workspace_bytes,
+                              "qemu_workspace_layout": artifact.qemu_workspace_layout,
+                              "qemu_workspace_buffers": artifact.qemu_workspace_buffers,
                               "constant_bytes": artifact.constant_bytes,
                               "kernel_calls": artifact.kernel_calls,
                               "matmul_policy": artifact.matmul_policy,
+                              "matmul_tile": artifact.matmul_tile,
+                              "matmul_rhs_layout": artifact.matmul_rhs_layout,
+                              "matmul_rhs_panels": list(artifact.matmul_rhs_panels),
                               "compile_flags": list(artifact.compile_flags),
                               "output": spec_json(artifact.output)}
         stage("write_weight_bundle", lambda: write_weight_bundle(artifact.external_weights,
             artifact.external_initializers, out / "weights"))
         tools = discover_toolchain(args.cc, args.qemu)
         exe = stage("build_riscv_checkpoint", lambda: build_external(artifact, out / "weights",
-            out / "build", tools, timeout=args.build_timeout))
+            out / "build", tools, timeout=args.build_timeout, harts=args.harts))
         save_executable(exe, out)
-        report.update(build=exe.evidence, memory_layout=exe.layout)
+        report.update(build=exe.evidence, memory_layout=exe.layout, harts=args.harts)
         report["derived_onnx"] = stage("slice_onnx", lambda: slice_onnx(model, row, model_dir, out / "checkpoint.onnx"))
         del artifact, bindings, sliced, program, parser, target, model
         gc.collect()

@@ -482,18 +482,16 @@ class IRTraceExecutor:
 
     def _op_reshape(self, instr):
         ops = self._get_operands(instr)
-        result = ops[0]
-        # Reshape to flatten: typically from (N,C,H,W) to (N, C*H*W)
-        # If the second operand is an initializer with shape info
-        if len(ops) > 1 and hasattr(ops[1], 'shape') and ops[1].size > 0:
-            target_shape = tuple(int(v) for v in ops[1].flatten() if v > 0)
-            if len(target_shape) > 0:
-                try:
-                    result = ops[0].reshape(target_shape)
-                except (ValueError, RuntimeError):
-                    # Fallback: flatten to 2D
-                    result = ops[0].reshape(ops[0].shape[0], -1)
-        if result is ops[0]:
+        target_shape = tuple(int(v) for v in instr.attrs.get("shape", ()))
+        if target_shape:
+            # ONNX Reshape uses 0 to copy the corresponding input dimension.
+            resolved_shape = tuple(
+                ops[0].shape[index] if dim == 0 else dim
+                for index, dim in enumerate(target_shape)
+            )
+            result = ops[0].reshape(resolved_shape)
+        else:
+            # Preserve the historical fallback for IR without shape metadata.
             result = ops[0].reshape(ops[0].shape[0], -1)
         if instr.dest:
             self._values[instr.dest.name] = result
@@ -542,8 +540,8 @@ class IRTraceExecutor:
             for j in range(K):
                 patch = x[:, :, i:i + H_out * stride:stride,
                           j:j + W_out * stride:stride]
-                cols[(i * K + j) * C_in:(i * K + j + 1) * C_in, :] = \
-                    patch.reshape(N * C_in, H_out * W_out)
+                cols[i * K + j::K * K, :] = \
+                    patch.transpose(1, 0, 2, 3).reshape(C_in, -1)
 
         # Weight: (C_out, C_in, K, K) → (C_out, C_in*K*K)
         w_mat = w.reshape(C_out, -1)

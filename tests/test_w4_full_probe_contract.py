@@ -8,6 +8,8 @@ tests; here only that validator is stubbed to isolate runner trust boundaries.
 import copy
 import hashlib
 import json
+import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -351,3 +353,355 @@ def test_original_failure_does_not_attempt_final_source_recheck(tmp_path, monkey
     assert checks == []
     assert "Selected cases" in saved["error"]
     assert "source_recheck" not in saved
+
+
+@pytest.mark.parametrize("harts", [1, 2, 4])
+def test_reused_executable_harts_and_layout_agree(tmp_path, monkeypatch, harts):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    record["harts"] = record["evidence"]["harts"] = harts
+    record["layout"] = plan_guest_memory(input_bytes=2048, output_bytes=256 * 151936 * 4,
+                                         workspace_bytes=64, harts=harts)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert run.load_executable(path).harts == harts
+
+
+@pytest.mark.parametrize("harts", [True, 0, 3, "2", "auto"])
+def test_reused_executable_rejects_invalid_harts(tmp_path, monkeypatch, harts):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    record["harts"] = record["evidence"]["harts"] = harts
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ValueError, match="hart"):
+        run.load_executable(path)
+
+
+def test_reused_executable_rejects_hart_count_changed_without_rebuild(tmp_path, monkeypatch):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    record["harts"] = 4
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ValueError, match="hart"):
+        run.load_executable(path)
+
+
+@pytest.mark.parametrize("requested", [None, 2, 4, "auto"])
+@pytest.mark.parametrize("layout", ["none", "two-buffer-pad-4k"])
+def test_full_cli_resolves_harts_once_before_tiny_graph_build(tmp_path, monkeypatch, requested, layout):
+    from scratchv.frontend import onnx_parser
+    from scratchv.ir.builder import IRBuilder
+    from scratchv.ir.types import Value
+
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    reuse_index = arguments.index("--reuse-build")
+    del arguments[reuse_index:reuse_index + 2]
+    x = Value("x", shape=(2, 3))
+    builder = IRBuilder()
+    builder.new_function("main", [x])
+    builder.new_block("entry")
+    target = builder.neg(x)
+    if layout != "none":
+        target = builder.neg(builder.neg(target))
+    builder.ret(target)
+    parser = SimpleNamespace(initializers={}, parse=lambda *a, **kw: builder.program)
+    monkeypatch.setattr(onnx_parser, "ONNXParser", lambda: parser)
+    monkeypatch.setattr(run, "discover_toolchain", lambda *a: object())
+    probes = []
+    def available_cpus(pid):
+        assert requested == "auto"
+        probes.append(pid)
+        return {3, 5, 7}
+    monkeypatch.setattr(os, "sched_getaffinity", available_cpus, raising=False)
+    expected = 2 if requested == "auto" else requested or 1
+    built = []
+    def stopped_build(artifact, *a, **kw):
+        built.append(kw["harts"])
+        assert type(kw["harts"]) is int and kw["harts"] == expected
+        assert artifact.qemu_workspace_layout == layout
+        raise RuntimeError("intentional tiny-graph build stop")
+    monkeypatch.setattr(run, "build_external", stopped_build)
+    if requested is not None:
+        arguments += ["--harts", str(requested)]
+    if layout != "none":
+        arguments += ["--qemu-workspace-layout", layout]
+    assert run.main(arguments + ["--build-only"]) == 1
+    saved = json.loads((output / "report.json").read_text())
+    assert built == [expected]
+    assert probes == ([0] if requested == "auto" else [])
+    assert saved["harts_requested"] == (requested if requested is not None else 1)
+    assert saved["harts"] == expected
+    assert saved["qemu_workspace_layout_requested"] == saved["codegen"]["qemu_workspace_layout"] == layout
+    assert "intentional tiny-graph build stop" in saved["error"]
+    assert not saved["full_qemu_forward_executed"]
+
+
+@pytest.mark.parametrize("built_harts", [2, 4])
+def test_full_cli_auto_reuse_requires_resolved_harts_to_match_build(tmp_path, monkeypatch, built_harts):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    existing = run.load_executable(None)
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing, harts=built_harts))
+    probes = []
+    monkeypatch.setattr(os, "sched_getaffinity",
+                        lambda pid: probes.append(pid) or {0, 1, 2, 3}, raising=False)
+    result = run.main(arguments + ["--harts", "auto", "--build-only"])
+    saved = json.loads((output / "report.json").read_text())
+    assert probes == [0]
+    assert saved["harts_requested"] == "auto" and saved["harts"] == 4
+    assert not saved["full_qemu_forward_executed"]
+    if built_harts == 4:
+        assert result == 0 and saved["status"] == "BUILD_ONLY"
+    else:
+        assert result == 1 and "hart count" in saved["error"]
+        assert saved["stage"] == "load_existing_build"
+
+
+@pytest.mark.parametrize("built_layout", [None, "none", "two-buffer-pad-4k"])
+@pytest.mark.parametrize("requested_layout", ["none", "two-buffer-pad-4k"])
+def test_full_cli_reuse_requires_same_qemu_workspace_layout(
+        tmp_path, monkeypatch, built_layout, requested_layout):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    existing = run.load_executable(None)
+    evidence = {} if built_layout is None else {"qemu_workspace_layout": built_layout}
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing, evidence=evidence))
+    result = run.main(arguments + ["--qemu-workspace-layout", requested_layout, "--build-only"])
+    saved = json.loads((output / "report.json").read_text())
+    assert saved["qemu_workspace_layout_requested"] == requested_layout
+    assert not saved["full_qemu_forward_executed"]
+    if (built_layout or "none") == requested_layout:
+        assert result == 0 and saved["status"] == "BUILD_ONLY"
+    else:
+        assert result == 1 and "workspace layout" in saved["error"]
+        assert saved["stage"] == "load_existing_build"
+
+
+def test_full_cli_rejects_unknown_qemu_workspace_layout_before_output_creation(tmp_path):
+    target = tmp_path / "report"
+    with pytest.raises(SystemExit) as exc:
+        run.main(["--model-dir", str(tmp_path), "--output-dir", str(target),
+                  "--qemu-workspace-layout", "automatic-padding"])
+    assert exc.value.code == 2
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("tile", [None, "1x4", "2x4", "1x8"])
+def test_full_cli_matmul_tile_reaches_tiny_graph_build(tmp_path, monkeypatch, tile):
+    from scratchv.frontend import onnx_parser
+    from scratchv.ir.builder import IRBuilder
+    from scratchv.ir.types import Value
+
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    reuse_index = arguments.index("--reuse-build")
+    del arguments[reuse_index:reuse_index + 2]
+    x, w = Value("x", shape=(2, 3)), Value("w", shape=(3, 2))
+    builder = IRBuilder()
+    builder.new_function("main", [x, w])
+    builder.new_block("entry")
+    builder.ret(builder.matmul(x, w))
+    parser = SimpleNamespace(initializers={}, parse=lambda *a, **kw: builder.program)
+    monkeypatch.setattr(onnx_parser, "ONNXParser", lambda: parser)
+    monkeypatch.setattr(run, "discover_toolchain", lambda *a: object())
+    generated = []
+
+    def stopped_build(artifact, *a, **kw):
+        generated.append(artifact)
+        assert kw["harts"] == 1 and artifact.qemu_workspace_layout == "none"
+        raise RuntimeError("intentional tile build stop")
+
+    monkeypatch.setattr(run, "build_external", stopped_build)
+    if tile is not None:
+        arguments += ["--matmul-tile", tile, "--matmul-policy", "blocked_fma"]
+    assert run.main(arguments + ["--build-only"]) == 1
+    saved = json.loads((output / "report.json").read_text())
+    assert len(generated) == 1 and generated[0].matmul_tile == (tile or "1x4")
+    assert generated[0].matmul_policy == ("sequential" if tile is None else "blocked_fma")
+    assert saved["matmul_tile"] == saved["codegen"]["matmul_tile"] == (tile or "1x4")
+    assert "intentional tile build stop" in saved["error"]
+    assert not saved["full_qemu_forward_executed"]
+
+
+@pytest.mark.parametrize("built_tile", [None, "1x4", "2x4", "1x8"])
+@pytest.mark.parametrize("requested_tile", ["1x4", "2x4", "1x8"])
+def test_full_cli_reuse_requires_same_matmul_tile(tmp_path, monkeypatch, built_tile, requested_tile):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    previous_path = tmp_path / "previous" / "report.json"
+    previous = json.loads(previous_path.read_text())
+    previous["matmul_policy"] = "blocked_fma"
+    if built_tile is not None:
+        previous["matmul_tile"] = built_tile
+    previous_path.write_text(json.dumps(previous))
+    existing = run.load_executable(None)
+    evidence = {} if built_tile is None else {"matmul_tile": built_tile}
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing, evidence=evidence))
+    result = run.main(arguments + ["--matmul-policy", "blocked_fma",
+                                  "--matmul-tile", requested_tile, "--build-only"])
+    saved = json.loads((output / "report.json").read_text())
+    assert saved["matmul_tile"] == requested_tile
+    assert not saved["full_qemu_forward_executed"]
+    if (built_tile or "1x4") == requested_tile:
+        assert result == 0 and saved["status"] == "BUILD_ONLY"
+    else:
+        assert result == 1 and "MatMul tile" in saved["error"]
+        assert saved["stage"] == "load_existing_build"
+
+
+@pytest.mark.parametrize("report_tile,build_tile", [
+    (None, "2x4"), ("1x4", "2x4"), ("2x4", None), ("2x4", "1x4"), ("1x8", "2x4"),
+])
+def test_full_cli_reuse_checks_report_and_build_matmul_tile(
+        tmp_path, monkeypatch, report_tile, build_tile):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    previous_path = tmp_path / "previous" / "report.json"
+    previous = json.loads(previous_path.read_text())
+    previous["matmul_policy"] = "blocked_fma"
+    if report_tile is not None:
+        previous["matmul_tile"] = report_tile
+    previous_path.write_text(json.dumps(previous))
+    existing = run.load_executable(None)
+    evidence = {} if build_tile is None else {"matmul_tile": build_tile}
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing, evidence=evidence))
+    result = run.main(arguments + ["--matmul-policy", "blocked_fma", "--matmul-tile", "2x4",
+                                  "--build-only"])
+    saved = json.loads((output / "report.json").read_text())
+    assert result == 1 and "MatMul tile" in saved["error"]
+    assert saved["stage"] == "load_existing_build"
+    assert not saved["full_qemu_forward_executed"]
+
+
+@pytest.mark.parametrize("tile", ["2x4", "1x8", "unknown"])
+def test_full_cli_rejects_invalid_matmul_tile_before_output_creation(tmp_path, tile):
+    target = tmp_path / "report"
+    with pytest.raises(SystemExit) as exc:
+        run.main(["--model-dir", str(tmp_path), "--output-dir", str(target),
+                  "--matmul-tile", tile])
+    assert exc.value.code == 2
+    assert not target.exists()
+
+@pytest.mark.parametrize("rhs_layout", [None, "original", "column-panel"])
+def test_full_cli_rhs_layout_reaches_tiny_graph_build(tmp_path, monkeypatch, rhs_layout):
+    import numpy as np
+    from scratchv.frontend import onnx_parser
+    from scratchv.ir.builder import IRBuilder
+    from scratchv.ir.types import Value
+
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    reuse_index = arguments.index("--reuse-build")
+    del arguments[reuse_index:reuse_index + 2]
+    x, w = Value("x", shape=(2, 3)), Value("w", shape=(3, 2))
+    builder = IRBuilder()
+    builder.new_function("main", [x])
+    builder.new_block("entry")
+    builder.program.global_values.append(w)
+    builder.ret(builder.matmul(x, w))
+    parser = SimpleNamespace(initializers={"w": np.arange(6, dtype=np.float32).reshape(3, 2)},
+                             parse=lambda *a, **kw: builder.program)
+    monkeypatch.setattr(onnx_parser, "ONNXParser", lambda: parser)
+    monkeypatch.setattr(run, "discover_toolchain", lambda *a: object())
+    generated = []
+
+    def stopped_build(artifact, *a, **kw):
+        generated.append(artifact)
+        assert kw["harts"] == 1 and artifact.qemu_workspace_layout == "none"
+        raise RuntimeError("intentional RHS layout build stop")
+
+    monkeypatch.setattr(run, "build_external", stopped_build)
+    if rhs_layout is not None:
+        arguments += ["--matmul-rhs-layout", rhs_layout, "--matmul-policy", "blocked_fma"]
+    assert run.main(arguments + ["--build-only"]) == 1
+    saved = json.loads((output / "report.json").read_text())
+    assert len(generated) == 1
+    model = generated[0]
+    assert model.matmul_rhs_layout == (rhs_layout or "original")
+    assert bool(model.matmul_rhs_panels) is (rhs_layout == "column-panel")
+    assert saved["matmul_rhs_layout"] == saved["codegen"]["matmul_rhs_layout"] == model.matmul_rhs_layout
+    assert saved["codegen"]["matmul_rhs_panels"] == list(model.matmul_rhs_panels)
+    assert "intentional RHS layout build stop" in saved["error"]
+    assert not saved["full_qemu_forward_executed"]
+
+
+@pytest.mark.parametrize("built_layout", [None, "original", "column-panel"])
+@pytest.mark.parametrize("requested_layout", ["original", "column-panel"])
+def test_full_cli_reuse_requires_same_rhs_layout(
+        tmp_path, monkeypatch, built_layout, requested_layout):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    previous_path = tmp_path / "previous" / "report.json"
+    previous = json.loads(previous_path.read_text())
+    previous["matmul_policy"] = "blocked_fma"
+    evidence = {}
+    if built_layout is not None:
+        previous["matmul_rhs_layout"] = built_layout
+        previous["build"] = {"matmul_rhs_panels": []}
+        evidence = {"matmul_rhs_layout": built_layout, "matmul_rhs_panels": []}
+    previous_path.write_text(json.dumps(previous))
+    existing = run.load_executable(None)
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing, evidence=evidence))
+    result = run.main(arguments + ["--matmul-policy", "blocked_fma",
+                                  "--matmul-rhs-layout", requested_layout, "--build-only"])
+    saved = json.loads((output / "report.json").read_text())
+    assert saved["matmul_rhs_layout"] == requested_layout
+    assert not saved["full_qemu_forward_executed"]
+    if (built_layout or "original") == requested_layout:
+        assert result == 0 and saved["status"] == "BUILD_ONLY"
+    else:
+        assert result == 1 and "MatMul RHS layout" in saved["error"]
+        assert saved["stage"] == "load_existing_build"
+
+
+@pytest.mark.parametrize("report_layout,build_layout", [
+    (None, "column-panel"), ("original", "column-panel"),
+    ("column-panel", None), ("column-panel", "original"),
+])
+def test_full_cli_reuse_checks_report_and_build_rhs_layout(
+        tmp_path, monkeypatch, report_layout, build_layout):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    previous_path = tmp_path / "previous" / "report.json"
+    previous = json.loads(previous_path.read_text())
+    previous["matmul_policy"] = "blocked_fma"
+    if report_layout is not None:
+        previous["matmul_rhs_layout"] = report_layout
+    previous["build"] = {"matmul_rhs_panels": []}
+    previous_path.write_text(json.dumps(previous))
+    existing = run.load_executable(None)
+    evidence = {"matmul_rhs_panels": []}
+    if build_layout is not None:
+        evidence["matmul_rhs_layout"] = build_layout
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing, evidence=evidence))
+    result = run.main(arguments + ["--matmul-policy", "blocked_fma",
+                                  "--matmul-rhs-layout", "column-panel", "--build-only"])
+    saved = json.loads((output / "report.json").read_text())
+    assert result == 1 and "MatMul RHS layout" in saved["error"]
+    assert saved["stage"] == "load_existing_build"
+    assert not saved["full_qemu_forward_executed"]
+
+
+@pytest.mark.parametrize("fault", ["missing-report", "missing-build", "different", "invalid-type"])
+def test_full_cli_reuse_requires_matching_rhs_panel_metadata(tmp_path, monkeypatch, fault):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    previous_path = tmp_path / "previous" / "report.json"
+    previous = json.loads(previous_path.read_text())
+    previous.update(matmul_policy="blocked_fma", matmul_rhs_layout="column-panel",
+                    build={"matmul_rhs_panels": []})
+    evidence = {"matmul_rhs_layout": "column-panel", "matmul_rhs_panels": []}
+    if fault == "missing-report":
+        previous.pop("build")
+    elif fault == "missing-build":
+        evidence.pop("matmul_rhs_panels")
+    elif fault == "different":
+        evidence["matmul_rhs_panels"] = [{"name": "wrong-physical-weight"}]
+    else:
+        previous["build"]["matmul_rhs_panels"] = evidence["matmul_rhs_panels"] = None
+    previous_path.write_text(json.dumps(previous))
+    existing = run.load_executable(None)
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing, evidence=evidence))
+    result = run.main(arguments + ["--matmul-policy", "blocked_fma",
+                                  "--matmul-rhs-layout", "column-panel", "--build-only"])
+    saved = json.loads((output / "report.json").read_text())
+    assert result == 1 and "MatMul RHS panel metadata" in saved["error"]
+    assert saved["stage"] == "load_existing_build"
+    assert not saved["full_qemu_forward_executed"]
+
+
+@pytest.mark.parametrize("layout", ["column-panel", "unknown"])
+def test_full_cli_rejects_rhs_layout_before_output_creation(tmp_path, layout):
+    target = tmp_path / "report"
+    with pytest.raises(SystemExit) as exc:
+        run.main(["--model-dir", str(tmp_path), "--output-dir", str(target),
+                  "--matmul-rhs-layout", layout])
+    assert exc.value.code == 2
+    assert not target.exists()

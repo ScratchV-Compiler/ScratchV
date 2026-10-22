@@ -21,6 +21,50 @@ from scratchv.runtime.riscv_tensor import (
 )
 
 
+def test_toolchain_discovers_installed_zig_without_shell_setup(tmp_path, monkeypatch):
+    import importlib.metadata
+    from scratchv.runtime import riscv_tensor as runtime
+
+    package = tmp_path / "ziglang"
+    package.mkdir()
+    zig = package / ("zig.exe" if os.name == "nt" else "zig")
+    zig.touch()
+    qemu = tmp_path / "qemu-system-riscv64"
+    qemu.touch()
+    for name in ("SCRATCHV_CC", "SCRATCHV_RISCV_CC"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(runtime, "_workspace_tool", lambda name: None)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: None)
+    monkeypatch.setattr(importlib.metadata, "distribution",
+                        lambda name: SimpleNamespace(locate_file=lambda path: package))
+    tools = discover_toolchain(qemu=qemu)
+    assert tools.cc == (str(zig), "cc")
+    assert tools.is_zig
+
+    explicit = tmp_path / "clang"
+    explicit.touch()
+    monkeypatch.setenv("SCRATCHV_CC", str(explicit))
+    assert discover_toolchain(qemu=qemu).cc == (str(explicit),)
+
+
+def test_missing_zig_package_preserves_path_compiler_fallback(tmp_path, monkeypatch):
+    import importlib.metadata
+    from scratchv.runtime import riscv_tensor as runtime
+
+    clang = tmp_path / "clang"
+    clang.touch()
+    qemu = tmp_path / "qemu-system-riscv64"
+    qemu.touch()
+    for name in ("SCRATCHV_CC", "SCRATCHV_RISCV_CC"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(runtime, "_workspace_tool", lambda name: None)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: str(clang) if name == "clang" else None)
+    def missing(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+    monkeypatch.setattr(importlib.metadata, "distribution", missing)
+    assert discover_toolchain(qemu=qemu).cc == (str(clang),)
+
+
 def spec(name, shape, dtype):
     dtype = np.dtype(dtype)
     return SimpleNamespace(name=name, shape=shape, numpy_dtype=dtype,

@@ -5,10 +5,12 @@ checks skip explicitly if no compiler is available; graph checks always run.
 """
 
 from contextlib import contextmanager
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -93,7 +95,8 @@ def arguments(artifact, x):
     weights = [np.array(array, copy=True, order="C") for array in artifact.external_initializers]
     workspace = np.empty(max(1, (artifact.workspace_bytes + 7) // 8), dtype=np.uint64)
     output = np.full(artifact.output.shape, -999, dtype=artifact.output.numpy_dtype)
-    return weights, workspace, output, [pointers([x]), pointers(weights),
+    inputs = [x[spec.name] for spec in artifact.inputs] if isinstance(x, dict) else [x]
+    return weights, workspace, output, [pointers(inputs), pointers(weights),
                                        workspace.ctypes.data, artifact.workspace_bytes,
                                        output.ctypes.data]
 
@@ -347,6 +350,550 @@ def test_blocked_fma_host_against_ort(tmp_path, host_cc, left, right):
         assert np.max(np.abs(output.astype(np.float64) - expected.astype(np.float64)), initial=0) < 1e-3
 
 
+@pytest.mark.parametrize("left,right,kernel_calls", [
+    ((3, 127), (127, 9), True),
+    ((3, 128), (128, 7), False),
+    ((3, 129), (129, 9), True),
+    ((2, 1, 3, 129), (1, 2, 129, 9), True),
+    ((129,), (129, 9), False),
+    ((3, 129), (129,), True),
+    ((1, 3), (3, 3), True),
+    ((2, 0), (0, 3), True),
+])
+def test_blocked_fma_microtiles_preserve_baseline_bits(
+        tmp_path, host_cc, left, right, kernel_calls):
+    # Compare to the existing K=128 grouped 1x4 kernel, not NumPy's reduction
+    # order. Odd M/N and vectors exercise both row and column cleanup paths.
+    program, bindings, data = matmul_experiment(left, right)
+    results = {}
+    for tile in ("1x4", "2x4", "1x8"):
+        model = TensorCCodegen(program, bindings, constant_storage="external",
+                              kernel_calls=kernel_calls, matmul_policy="blocked_fma",
+                              matmul_tile=tile).generate()
+        weights, workspace, output, args = arguments(model, data)
+        with library(tmp_path / tile, model, host_cc) as run:
+            assert run(*args) == 0
+        assert model.matmul_tile == tile
+        assert np.isfinite(output).all()
+        results[tile] = output.copy()
+    for tile in ("2x4", "1x8"):
+        np.testing.assert_array_equal(results[tile].view(np.uint32),
+                                      results["1x4"].view(np.uint32))
+
+
+@pytest.mark.parametrize("scenario", ["finite_edges", "overflow"])
+def test_blocked_fma_microtiles_preserve_numeric_edges(tmp_path, host_cc, scenario):
+    from scratchv.verification.fp32_fma import fma
+
+    program, bindings, _ = matmul_experiment((3, 129), (129, 9))
+    data = np.zeros((3, 129), np.float32)
+    matrix = np.zeros((129, 9), np.float32)
+    if scenario == "overflow":
+        data[:, 0] = np.finfo(np.float32).max
+        matrix[0, :] = np.float32(2)
+        expected = None
+    else:
+        subnormal = np.array(1, np.uint32).view(np.float32)[()]
+        tiny = np.float32(np.finfo(np.float32).tiny)
+        above_one = np.float32(1 + 2**-23)
+        below_one = np.float32(1 - 2**-23)
+        data[0, :] = np.float32(1)
+        data[0, 127:129] = above_one
+        data[1, 1::2] = np.float32(-0.0)
+        data[1, [0, 1, 127, 128]] = [tiny, subnormal, -subnormal, -0.0]
+        data[2, :] = -data[0, :]
+        # Column 0 loses the unit at its original K position; summing the
+        # opposite large values first would instead produce one.
+        matrix[[0, 1, 2], 0] = [2**24, 1, -(2**24)]
+        # Columns 1 and 6 put the same fused cancellation across and within
+        # the K=128 boundary, respectively. Their results must differ.
+        matrix[0, 1], matrix[128, 1] = -1, below_one
+        matrix[126, 6], matrix[127, 6] = -1, below_one
+        matrix[0, [2, 3, 4, 5]] = [subnormal, tiny, -subnormal, -0.0]
+        matrix[[0, 1], 7] = [2**100, -(2**100)]
+        matrix[127, 8], matrix[128, 8] = subnormal, -subnormal
+        # Reuse the independent exact FMA oracle, including subnormal inputs;
+        # only the specified FP32 addition joins the two K blocks.
+        expected = np.zeros((3, 9), np.float32)
+        for block in range(0, 129, 128):
+            accumulator = np.zeros_like(expected)
+            for k in range(block, min(block + 128, 129)):
+                accumulator = fma(data[:, k, None], matrix[k, :], accumulator)
+            expected = np.add(expected, accumulator, dtype=np.float32)
+        bits = expected.view(np.uint32)
+        assert bits[0, 0] == 0 and bits[0, 1] == 0
+        assert bits[0, 6] == 0xA8800000  # -2**-46: a fused, unrounded product.
+        assert bits[0, 2] == 1 and bits[0, 3] == 0x00800000
+        assert bits[0, 4] == 0x80000001 and bits[0, 5] == 0
+        assert np.float32(np.float32(2**24) + np.float32(-(2**24))) + np.float32(1) == 1
+        assert int(fma(above_one, below_one, np.float32(-1)).view(np.uint32)) == 0xA8800000
+    bindings["weight"] = matrix
+    assert np.isfinite(data).all() and np.isfinite(matrix).all()
+    results = {}
+    for tile in ("1x4", "2x4", "1x8"):
+        model = TensorCCodegen(program, bindings, constant_storage="external",
+                              kernel_calls=True, matmul_policy="blocked_fma",
+                              matmul_tile=tile).generate()
+        weights, workspace, output, args = arguments(model, data)
+        with library(tmp_path / tile, model, host_cc) as run:
+            status = run(*args)
+        if scenario == "overflow":
+            assert status == 2
+            assert np.all(output == -999)  # Reject before copying to the caller.
+        else:
+            assert status == 0
+            np.testing.assert_array_equal(output.view(np.uint32), expected.view(np.uint32))
+            results[tile] = output.copy()
+    if scenario == "finite_edges":
+        for tile in ("2x4", "1x8"):
+            np.testing.assert_array_equal(results[tile].view(np.uint32),
+                                          results["1x4"].view(np.uint32))
+
+
+def test_matmul_tile_is_explicit_external_blocked_fma_experiment():
+    program, bindings, _ = graph()
+    default = TensorCCodegen(program, bindings).generate()
+    assert default.matmul_tile == "1x4"
+    with pytest.raises(TensorCCodegenError, match="matmul_tile"):
+        TensorCCodegen(program, bindings, constant_storage="external",
+                       matmul_policy="blocked_fma", matmul_tile="2x8").generate()
+    for tile in ("2x4", "1x8"):
+        with pytest.raises(TensorCCodegenError):
+            TensorCCodegen(program, bindings, matmul_policy="blocked_fma",
+                           matmul_tile=tile).generate()
+        with pytest.raises(TensorCCodegenError):
+            TensorCCodegen(program, bindings, constant_storage="external",
+                           matmul_tile=tile).generate()
+
+
+
+# Exercise the generated callback ABI with real host threads. The target runtime
+# has its own hart/barrier tests; this executor checks disjoint output ownership
+# and the synchronous boundary without running a QEMU model.
+_PARALLEL_HOST_RUNTIME = r"""
+#include <pthread.h>
+#include <stdlib.h>
+size_t sv_test_dispatches;
+struct sv_test_job {
+    void (*fn)(void *, size_t, size_t);
+    void *context;
+    size_t begin, end;
+};
+static void *sv_test_worker(void *opaque) {
+    struct sv_test_job *job=opaque;
+    job->fn(job->context, job->begin, job->end);
+    return NULL;
+}
+void sv_parallel_for(size_t count, void (*fn)(void *, size_t, size_t), void *context) {
+    struct sv_test_job jobs[SCRATCHV_HARTS];
+    pthread_t threads[SCRATCHV_HARTS];
+    ++sv_test_dispatches;
+    for (size_t id=0; id<SCRATCHV_HARTS; ++id)
+        jobs[id]=(struct sv_test_job){fn,context,count*id/SCRATCHV_HARTS,
+                                     count*(id+1)/SCRATCHV_HARTS};
+    for (size_t id=SCRATCHV_HARTS-1; id>0; --id)
+        if (pthread_create(&threads[id],NULL,sv_test_worker,&jobs[id])) abort();
+    sv_test_worker(&jobs[0]);
+    for (size_t id=1; id<SCRATCHV_HARTS; ++id)
+        if (pthread_join(threads[id],NULL)) abort();
+}
+"""
+
+
+def _host_parallel_result(directory, model, compiler, data, harts):
+    if harts:
+        model = replace(model, source=model.source + _PARALLEL_HOST_RUNTIME)
+        compiler = [*compiler, f"-DSCRATCHV_HARTS={harts}", "-pthread"]
+    weights, workspace, output, args = arguments(model, data)
+    with library(directory, model, compiler) as run:
+        assert run(*args) == 0
+        calls = (ctypes.c_size_t.in_dll(ctypes.CDLL(str(directory / "model.so")),
+                                      "sv_test_dispatches").value if harts else 0)
+    return output.copy(), calls
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("kernel_calls", [False, True])
+@pytest.mark.parametrize("left,right", [
+    ((17, 127), (127, 17)), ((17, 128), (128, 19)),
+    ((2, 1, 17, 129), (1, 2, 129, 17)),
+    ((129,), (2, 129, 257)), ((2, 257, 129), (129,)),
+])
+def test_parallel_blocked_fma_keeps_exact_k_order(tmp_path, host_cc, kernel_calls, left, right):
+    program, bindings, data = matmul_experiment(left, right)
+    model = TensorCCodegen(program, bindings, constant_storage="external",
+                          kernel_calls=kernel_calls, matmul_policy="blocked_fma").generate()
+    expected, _ = _host_parallel_result(tmp_path / "default", model, host_cc, data, 0)
+    for harts in (1, 2, 4):
+        actual, calls = _host_parallel_result(tmp_path / str(harts), model, host_cc, data, harts)
+        assert calls == (0 if harts == 1 else 1)
+        np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("kernel_calls", [False, True])
+def test_parallel_matmuls_finish_before_workspace_reuse(tmp_path, host_cc, kernel_calls):
+    x = Value("x", shape=(33, 129))
+    w, back = Value("w", shape=(129, 33)), Value("back", shape=(33, 129))
+    builder = IRBuilder()
+    builder.new_function("main", [x])
+    builder.new_block("entry")
+    builder.program.global_values.extend([w, back])
+    first = builder.matmul(x, w)
+    # The middle callback receives the same tensor twice; its generated pointer
+    # aliases must be deduplicated in both monolithic and split-kernel modes.
+    second = builder.matmul(first, first)
+    shifted = builder.add(second, builder.make_const(0.125))
+    builder.ret(builder.matmul(shifted, back))
+    rng = np.random.default_rng(371)
+    data = rng.standard_normal(x.shape).astype(np.float32) / 8
+    bindings = {v.name: rng.standard_normal(v.shape).astype(np.float32) / 8 for v in (w, back)}
+    model = TensorCCodegen(builder.program, bindings, constant_storage="external",
+                          kernel_calls=kernel_calls, matmul_policy="blocked_fma").generate()
+    expected, _ = _host_parallel_result(tmp_path / "default", model, host_cc, data, 0)
+    for harts in (2, 4):
+        actual, calls = _host_parallel_result(tmp_path / str(harts), model, host_cc, data, harts)
+        assert calls == 3
+        np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("left,right", [
+    ((3, 129), (129, 5)), ((2, 0), (0, 3)),
+    ((0, 129), (129, 17)), ((17, 129), (129, 0)),
+    ((0, 17, 129), (129, 17)), ((1, 8192), (8192, 5)),
+])
+def test_parallel_matmul_small_empty_or_few_blocks_stays_serial(tmp_path, host_cc, left, right):
+    program, bindings, data = matmul_experiment(left, right)
+    model = TensorCCodegen(program, bindings, constant_storage="external",
+                          kernel_calls=True, matmul_policy="blocked_fma").generate()
+    expected, _ = _host_parallel_result(tmp_path / "default", model, host_cc, data, 0)
+    actual, calls = _host_parallel_result(tmp_path / "four", model, host_cc, data, 4)
+    assert calls == 0
+    np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
+
+def _softmax_experiment(shape, axis=-1, passes=1):
+    x = Value("x", shape=shape)
+    builder = IRBuilder()
+    builder.new_function("main", [x])
+    builder.new_block("entry")
+    value = x
+    for _ in range(passes):
+        value = builder.softmax(value, axis=axis)
+    builder.ret(value)
+    normalized_axis = axis % len(shape)
+    row_shape = shape[:normalized_axis] + shape[normalized_axis + 1:]
+    rows = int(np.prod(row_shape))
+    dimension = shape[normalized_axis]
+    rng = np.random.default_rng(683)
+    values = rng.standard_normal((rows, dimension)).astype(np.float32)
+    if rows >= 4 and dimension >= 8:
+        # Finite rows exercise signed zero, extreme but valid subtraction,
+        # exp underflow, and the original ordered sum of unequal magnitudes.
+        values[0, :] = 0.0
+        values[0, 1::2] = -0.0
+        values[1, :] = np.finfo(np.float32).max
+        values[2, :] = -np.finfo(np.float32).max
+        values[3, :] = 0.0
+        values[3, :8] = [-104, -100, -90, -80, 0, -0.0,
+                          np.finfo(np.float32).tiny, -np.finfo(np.float32).tiny]
+    data = np.ascontiguousarray(np.moveaxis(
+        values.reshape(row_shape + (dimension,)), -1, normalized_axis))
+    return builder.program, data
+
+
+def _softmax_pair_experiment(shape=(17, 2049), axis=-1):
+    # Keep both results live until Concat so stale callback pointers cannot be
+    # hidden by a long Softmax chain converging toward uniform rows.
+    _, first = _softmax_experiment(shape, axis)
+    second = np.random.default_rng(719).standard_normal(shape).astype(np.float32)
+    x, y = Value("x", shape=shape), Value("y", shape=shape)
+    builder = IRBuilder()
+    builder.new_function("main", [x, y])
+    builder.new_block("entry")
+    left = builder.softmax(x, axis=axis)
+    right = builder.softmax(y, axis=axis % len(shape))
+    builder.ret(builder.concat([left, right], axis=0))
+    return builder.program, {"x": first, "y": second}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("kernel_calls", [False, True])
+def test_parallel_softmax_shared_callback_keeps_independent_contexts(tmp_path, host_cc, kernel_calls):
+    program, data = _softmax_pair_experiment()
+    generator = TensorCCodegen(program, constant_storage="external", kernel_calls=kernel_calls)
+    model = generator.generate()
+    # Equal normalized axes share one code body, but generate() must not retain
+    # callback names from its previous artifact.
+    assert len(re.findall(r"static void sv_softmax_\w+_range\(", model.source)) == 1
+    assert generator.generate().source == model.source
+    expected, _ = _host_parallel_result(tmp_path / "serial", model, host_cc, data, 0)
+    split = data["x"].shape[0]
+    assert not np.array_equal(expected[:split], expected[split:])
+    swapped_expected = np.concatenate([expected[split:], expected[:split]], axis=0)
+    for harts in (1, 4):
+        weights, workspace, output, args = arguments(model, data)
+        parallel = replace(model, source=model.source + _PARALLEL_HOST_RUNTIME)
+        with library(tmp_path / str(harts), parallel,
+                     [*host_cc, f"-DSCRATCHV_HARTS={harts}", "-pthread"]) as run:
+            for inputs, wanted in ((data, expected),
+                                   ({"x": data["y"], "y": data["x"]}, swapped_expected),
+                                   (data, expected)):
+                args[0] = pointers([inputs[spec.name] for spec in model.inputs])
+                output.fill(-999)
+                assert run(*args) == 0
+                np.testing.assert_array_equal(output.view(np.uint32), wanted.view(np.uint32))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("second_shape,second_axis", [
+    pytest.param((128, 256), 0, id="different_axis"),
+    pytest.param((64, 512), 1, id="same_elements_different_shape"),
+])
+def test_parallel_softmax_callback_key_keeps_shape_and_axis(tmp_path, host_cc, second_shape, second_axis):
+    x, y = Value("x", shape=(128, 256)), Value("y", shape=second_shape)
+    builder = IRBuilder()
+    builder.new_function("main", [x, y])
+    builder.new_block("entry")
+    left = builder.reshape(builder.softmax(x, axis=1), (32768,))
+    right = builder.reshape(builder.softmax(y, axis=second_axis), (32768,))
+    builder.ret(builder.concat([left, right], axis=0))
+    rng = np.random.default_rng(720)
+    data = {value.name: rng.standard_normal(value.shape).astype(np.float32) for value in (x, y)}
+    model = TensorCCodegen(builder.program, constant_storage="external", kernel_calls=True).generate()
+    assert len(re.findall(r"static void sv_softmax_\w+_range\(", model.source)) == 2
+    expected, _ = _host_parallel_result(tmp_path / "serial", model, host_cc, data, 0)
+    actual, calls = _host_parallel_result(tmp_path / "parallel", model, host_cc, data, 4)
+    assert calls == 2
+    np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("kernel_calls", [False, True])
+@pytest.mark.parametrize("shape,axis", [
+    ((17, 2049), -1), ((3, 2049, 7), 1), ((3, 2049, 7), -2),
+    pytest.param((4, 8192), -1, id="at_threshold"),
+])
+def test_parallel_softmax_preserves_each_row_order(tmp_path, host_cc, kernel_calls, shape, axis):
+    # Seventeen/21 independent rows leave uneven work for four harts. The
+    # middle-axis cases also require strided element access within each row.
+    program, data = _softmax_experiment(shape, axis)
+    model = TensorCCodegen(program, constant_storage="external",
+                          kernel_calls=kernel_calls).generate()
+    assert model.matmul_policy == "sequential"  # Softmax does not depend on it.
+    expected, _ = _host_parallel_result(tmp_path / "default", model, host_cc, data, 0)
+    for harts in (1, 4):
+        actual, calls = _host_parallel_result(tmp_path / str(harts), model, host_cc, data, harts)
+        assert calls == (1 if harts == 4 else 0)
+        np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("kernel_calls", [False, True])
+def test_parallel_softmax_finishes_before_workspace_reuse(tmp_path, host_cc, kernel_calls):
+    program, data = _softmax_experiment((17, 2049), passes=4)
+    model = TensorCCodegen(program, constant_storage="external",
+                          kernel_calls=kernel_calls).generate()
+    assert model.workspace_bytes < 4 * data.nbytes  # Intermediates really reuse storage.
+    assert len(re.findall(r"static void sv_softmax_\w+_range\(", model.source)) == 1
+    expected, _ = _host_parallel_result(tmp_path / "serial", model, host_cc, data, 0)
+    actual, calls = _host_parallel_result(tmp_path / "parallel", model, host_cc, data, 4)
+    assert calls == 4
+    np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("shape", [
+    (17, 17), (3, 16384), (0, 2049),
+    pytest.param((4, 8191), id="below_threshold"),
+    pytest.param((1, 32768), id="single_row"),
+])
+def test_parallel_softmax_small_empty_or_few_rows_stays_serial(tmp_path, host_cc, shape):
+    program, data = _softmax_experiment(shape)
+    model = TensorCCodegen(program, constant_storage="external", kernel_calls=True).generate()
+    expected, _ = _host_parallel_result(tmp_path / "serial", model, host_cc, data, 0)
+    actual, calls = _host_parallel_result(tmp_path / "parallel", model, host_cc, data, 4)
+    assert calls == 0
+    np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("kernel_calls", [False, True])
+def test_parallel_softmax_worker_overflow_returns_status_and_recovers(tmp_path, host_cc, kernel_calls):
+    program, data = _softmax_pair_experiment()
+    model = TensorCCodegen(program, constant_storage="external",
+                          kernel_calls=kernel_calls).generate()
+    expected, _ = _host_parallel_result(tmp_path / "serial", model, host_cc, data, 0)
+    valid_last_row = data["y"][-1].copy()
+    for harts in (1, 4):
+        # Only the second invocation of the shared callback fails, on a row
+        # owned by a worker. The first branch has already completed normally.
+        data["y"][-1, 0] = np.finfo(np.float32).max
+        data["y"][-1, 1] = -np.finfo(np.float32).max
+        weights, workspace, output, args = arguments(model, data)
+        parallel = replace(model, source=model.source + _PARALLEL_HOST_RUNTIME)
+        with library(tmp_path / str(harts), parallel,
+                     [*host_cc, f"-DSCRATCHV_HARTS={harts}", "-pthread"]) as run:
+            assert run(*args) == 2
+            assert np.all(output == -999)  # No successful caller-output copy.
+            data["y"][-1, :] = valid_last_row
+            assert run(*args) == 0  # Both operation contexts reset their status.
+            np.testing.assert_array_equal(output.view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("kernel_calls", [False, True])
+def test_parallel_softmax_normalization_failure_returns_status_and_recovers(
+        tmp_path, host_cc, kernel_calls):
+    shape = (17, 2049)
+    x, y = Value("x", shape=shape), Value("y", shape=shape)
+    builder = IRBuilder()
+    builder.new_function("main", [x, y])
+    builder.new_block("entry")
+    builder.softmax(x)
+    # Return the second result directly: a downstream operation's finite
+    # check must not hide a missing check inside either Softmax context.
+    builder.ret(builder.softmax(y))
+    program = builder.program
+    data = {name: np.zeros(shape, dtype=np.float32) for name in ("x", "y")}
+    # Only the second context has this shifted value, on its last row. With
+    # four harts that row belongs to a worker, not the caller's own partition.
+    data["y"][-1, 0] = -13.0
+    assert all(np.isfinite(value).all() for value in data.values())
+    model = TensorCCodegen(program, constant_storage="external",
+                          kernel_calls=kernel_calls).generate()
+    expected, _ = _host_parallel_result(tmp_path / "reference", model, host_cc, data, 0)
+    # A stable Softmax of finite inputs normally cannot produce an invalid
+    # normalized value. Redirect only this test artifact's expf calls so the
+    # new output check is exercised independently of the shifted-input check.
+    fault_source = r"""
+#undef expf
+extern float expf(float);
+int sv_test_softmax_fault, sv_test_softmax_fault_hits;
+float sv_test_softmax_expf(float value) {
+    if (sv_test_softmax_fault && value == -13.0f) {
+        __atomic_fetch_add(&sv_test_softmax_fault_hits, 1, __ATOMIC_RELAXED);
+        if (sv_test_softmax_fault == 1) return -2048.0f;
+        union { uint32_t bits; float value; } invalid = {0x7fc00000U};
+        return invalid.value;
+    }
+    return expf(value);
+}
+"""
+    injected = replace(model, source="#define expf sv_test_softmax_expf\n"
+                       + model.source + _PARALLEL_HOST_RUNTIME + fault_source)
+    for harts in (1, 4):
+        weights, workspace, output, args = arguments(model, data)
+        directory = tmp_path / str(harts)
+        with library(directory, injected,
+                     [*host_cc, f"-DSCRATCHV_HARTS={harts}", "-pthread"]) as run:
+            loaded = ctypes.CDLL(str(directory / "model.so"))
+            fault = ctypes.c_int.in_dll(loaded, "sv_test_softmax_fault")
+            hits = ctypes.c_int.in_dll(loaded, "sv_test_softmax_fault_hits")
+            dispatches = ctypes.c_size_t.in_dll(loaded, "sv_test_dispatches")
+            for mode in (1, 2):
+                # Mode 1 has finite exp outputs whose ordered sum is exactly
+                # zero: -2048 followed by 2048 ones, making division infinite.
+                # Mode 2 poisons the sum with NaN; all input shifts stay finite.
+                fault.value, hits.value = mode, 0
+                output.fill(-999)
+                before = dispatches.value
+                assert run(*args) == 2
+                assert hits.value == 1
+                assert dispatches.value - before == (2 if harts == 4 else 0)
+                assert np.all(output == -999)
+                # The join completed even on failure. Reuse these exact input,
+                # workspace and output buffers, with fresh operation statuses.
+                fault.value, hits.value = 0, 0
+                assert run(*args) == 0
+                assert hits.value == 0
+                np.testing.assert_array_equal(output.view(np.uint32), expected.view(np.uint32))
+
+
+def test_inline_softmax_keeps_independent_serial_abi(tmp_path, host_cc):
+    program, data = _softmax_experiment((17, 2049))
+    inline = TensorCCodegen(program).generate()
+    assert "sv_parallel_for" not in inline.source
+    assert "SCRATCHV_HARTS" not in inline.source
+    external = TensorCCodegen(program, constant_storage="external").generate()
+    expected, _ = _host_parallel_result(tmp_path / "external", external, host_cc, data, 0)
+    actual = np.empty_like(expected)
+    with library(tmp_path / "inline", inline, host_cc) as run:
+        assert run(pointers([data]), actual.ctypes.data) == 0
+    np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.skipif(not os.environ.get("SCRATCHV_QEMU"), reason="requires explicit SCRATCHV_QEMU/CC")
+@pytest.mark.parametrize("paired", [False, True])
+@pytest.mark.parametrize("shape,axis,passes,kernel_calls", [
+    ((17, 2049), -1, 3, False), ((3, 2049, 7), 1, 1, True),
+])
+def test_parallel_softmax_rv64_matches_serial_bits(
+        tmp_path, host_cc, shape, axis, passes, kernel_calls, paired):
+    from scratchv.runtime.riscv_external import build_external, run_external
+    from scratchv.runtime.riscv_tensor import discover_toolchain
+    from scratchv.runtime.weight_bundle import write_weight_bundle
+
+    if paired:
+        program, data = _softmax_pair_experiment(shape, axis)
+    else:
+        program, values = _softmax_experiment(shape, axis, passes)
+        data = {"x": values}
+    # Move the expf-underflow row from hart 0 to a worker (row 4 for the last
+    # axis, row 10 for the middle axis), preserving all within-row values.
+    data["x"] = np.roll(data["x"], 1, axis=0)
+    model = TensorCCodegen(program, constant_storage="external",
+                          kernel_calls=kernel_calls).generate()
+    expected, _ = _host_parallel_result(tmp_path / "host", model, host_cc, data, 0)
+    write_weight_bundle(model.external_weights, model.external_initializers, tmp_path / "weights")
+    serial_output = None
+    for harts in (1, 4):
+        executable = build_external(model, tmp_path / "weights", tmp_path / f"build_{harts}",
+                                    discover_toolchain(), harts=harts)
+        actual, report = run_external(executable, data, tmp_path / f"run_{harts}", timeout=30)
+        assert report["passed"] and report["guest_completed"] and report["exit_code"] == 0
+        assert report["harts"] == harts
+        # Host and guest libm implementations may round expf differently.
+        # Check semantics against Host C, but require exact bits between the
+        # original serial and row-parallel RV64 paths using the same libm.
+        np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-7)
+        if harts == 1:
+            serial_output = actual.copy()
+        else:
+            np.testing.assert_array_equal(actual.view(np.uint32), serial_output.view(np.uint32))
+
+
+@pytest.mark.skipif(not os.environ.get("SCRATCHV_QEMU"), reason="requires explicit SCRATCHV_QEMU/CC")
+def test_parallel_softmax_rv64_propagates_worker_overflow(tmp_path):
+    from scratchv.runtime.riscv_external import build_external, run_external
+    from scratchv.runtime.riscv_tensor import discover_toolchain
+    from scratchv.runtime.weight_bundle import write_weight_bundle
+
+    program, data = _softmax_pair_experiment()
+    valid_last_row = data["y"][-1].copy()
+    model = TensorCCodegen(program, constant_storage="external", kernel_calls=True).generate()
+    write_weight_bundle(model.external_weights, model.external_initializers, tmp_path / "weights")
+    serial_output = None
+    for harts in (1, 4):
+        executable = build_external(model, tmp_path / "weights", tmp_path / f"build_{harts}",
+                                    discover_toolchain(), harts=harts)
+        # The second shared callback receives an independent input/context.
+        # Its final row runs on a worker when harts=4.
+        data["y"][-1, 0] = np.finfo(np.float32).max
+        data["y"][-1, 1] = -np.finfo(np.float32).max
+        with pytest.raises(RuntimeError, match="guest failed with status 0x00000002"):
+            run_external(executable, data, tmp_path / f"failed_{harts}", timeout=15)
+        data["y"][-1, :] = valid_last_row
+        actual, report = run_external(executable, data, tmp_path / f"recovered_{harts}", timeout=15)
+        assert report["passed"] and report["guest_completed"] and report["exit_code"] == 0
+        if harts == 1:
+            serial_output = actual.copy()
+        else:
+            np.testing.assert_array_equal(actual.view(np.uint32), serial_output.view(np.uint32))
+
+
 def test_matmul_policy_is_explicit_external_experiment():
     program, bindings, _ = graph()
     with pytest.raises(TensorCCodegenError, match="matmul_policy"):
@@ -464,3 +1011,470 @@ def test_memory_limits_fit_u64(field, bound):
     program, bindings, _ = graph()
     with pytest.raises(TensorCCodegenError, match="64-bit"):
         TensorCCodegen(program, bindings, constant_storage="external", **{field: bound}).generate()
+
+
+def test_qemu_two_buffer_padding_is_explicit_bounded_and_repeatable():
+    program, data = _softmax_experiment((4, 8), passes=4)
+    ordinary = TensorCCodegen(program, constant_storage="external").generate()
+    explicit = TensorCCodegen(program, constant_storage="external",
+                             qemu_workspace_layout="none").generate()
+    assert explicit.source == ordinary.source
+    assert explicit.workspace_bytes == ordinary.workspace_bytes == 2 * data.nbytes
+    assert ordinary.qemu_workspace_layout == "none"
+    assert ordinary.qemu_workspace_buffers == ()
+    capacity = ordinary.workspace_bytes + 4096
+    generator = TensorCCodegen(program, constant_storage="external",
+                              qemu_workspace_layout="two-buffer-pad-4k",
+                              max_workspace_bytes=capacity)
+    padded = generator.generate()
+    assert padded.workspace_bytes == capacity
+    assert padded.qemu_workspace_layout == "two-buffer-pad-4k"
+    assert padded.qemu_workspace_buffers == ((0, data.nbytes),
+                                            (data.nbytes + 4096, data.nbytes))
+    again = generator.generate()
+    assert again.source == padded.source
+    assert again.qemu_workspace_buffers == padded.qemu_workspace_buffers
+    for limit in (ordinary.workspace_bytes, capacity - 1):
+        with pytest.raises(TensorCCodegenError):
+            TensorCCodegen(program, constant_storage="external",
+                           qemu_workspace_layout="two-buffer-pad-4k",
+                           max_workspace_bytes=limit).generate()
+    for invalid in ("padding", None, True):
+        with pytest.raises(TensorCCodegenError):
+            TensorCCodegen(program, constant_storage="external",
+                           qemu_workspace_layout=invalid).generate()
+    with pytest.raises(TensorCCodegenError):
+        TensorCCodegen(program, qemu_workspace_layout="two-buffer-pad-4k").generate()
+
+
+@pytest.mark.parametrize("layout", ["one_slot", "three_slots", "resized_reuse"])
+def test_qemu_two_buffer_padding_rejects_other_allocation_plans(layout):
+    if layout == "one_slot":
+        program, _ = _softmax_experiment((4, 8))
+    elif layout == "three_slots":
+        program, _ = _softmax_pair_experiment((4, 8))
+    else:
+        # The third destination reuses the first offset with a smaller size.
+        # A count of distinct starting addresses would wrongly accept this.
+        x = Value("x", shape=(4, 8))
+        builder = IRBuilder()
+        builder.new_function("main", [x])
+        builder.new_block("entry")
+        reduced = builder.reduce_mean(builder.softmax(x), axes=(1,), keepdims=True)
+        builder.ret(builder.softmax(reduced))
+        program = builder.program
+    assert TensorCCodegen(program, constant_storage="external").generate().workspace_bytes > 0
+    with pytest.raises(TensorCCodegenError):
+        TensorCCodegen(program, constant_storage="external",
+                       qemu_workspace_layout="two-buffer-pad-4k").generate()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("harts", [1, 4])
+def test_qemu_two_buffer_padding_preserves_values_bounds_and_recovery(tmp_path, host_cc, harts):
+    # Four operations reuse both slots and the shared callback; 32768 elements
+    # exercise the existing parallel threshold without a large model.
+    program, data = _softmax_experiment((32, 1024), passes=4)
+    ordinary = TensorCCodegen(program, constant_storage="external", kernel_calls=True).generate()
+    expected, _ = _host_parallel_result(tmp_path / "reference", ordinary, host_cc, data, 0)
+    padded = TensorCCodegen(program, constant_storage="external", kernel_calls=True,
+                           qemu_workspace_layout="two-buffer-pad-4k").generate()
+    capacity, guard = padded.workspace_bytes, 16
+    storage = np.full((capacity + 2 * guard) // 8, 0x5A5A5A5A5A5A5A5A, dtype=np.uint64)
+    raw = storage.view(np.uint8)
+    weights, unused_workspace, output, args = arguments(padded, data)
+    args[2] = storage.ctypes.data + guard
+    parallel = replace(padded, source=padded.source + _PARALLEL_HOST_RUNTIME)
+    valid_last_row = data[-1].copy()
+    with library(tmp_path / "padded", parallel,
+                 [*host_cc, f"-DSCRATCHV_HARTS={harts}", "-pthread"]) as run:
+        # Rejection must precede touching caller output or any workspace byte.
+        args[3] = capacity - 1
+        assert run(*args) == 1
+        assert np.all(output == -999)
+        assert np.all(raw == 0x5A)
+        args[3] = capacity
+        assert run(*args) == 0
+        np.testing.assert_array_equal(output.view(np.uint32), expected.view(np.uint32))
+        output.fill(-999)
+        # A finite input whose subtraction overflows on a worker-owned row
+        # must propagate status without copying partially computed output.
+        data[-1, 0] = np.finfo(np.float32).max
+        data[-1, 1] = -np.finfo(np.float32).max
+        assert run(*args) == 2
+        assert np.all(output == -999)
+        data[-1] = valid_last_row
+        assert run(*args) == 0
+        np.testing.assert_array_equal(output.view(np.uint32), expected.view(np.uint32))
+        dispatches = ctypes.c_size_t.in_dll(
+            ctypes.CDLL(str(tmp_path / "padded" / "model.so")), "sv_test_dispatches").value
+        assert dispatches == (9 if harts == 4 else 0)
+    assert np.all(raw[:guard] == 0x5A)
+    assert np.all(raw[guard + capacity:] == 0x5A)
+    assert np.all(raw[guard + data.nbytes:guard + data.nbytes + 4096] == 0x5A)
+
+
+# Column panels change external weight storage, never the ordered FP reduction.
+def _panel_graph(k=129, n=17, m=17, transpose=False, lhs_batch=(), shared=False):
+    x = Value("panel_x", shape=(*lhs_batch, m, k))
+    weight = Value("panel_weight", shape=(n, k) if transpose else (k, n))
+    builder = IRBuilder()
+    builder.new_function("main", [x])
+    builder.new_block("entry")
+    builder.program.global_values.append(weight)
+    rhs = builder.transpose(weight, (1, 0)) if transpose else weight
+    left = builder.matmul(x, rhs)
+    right = builder.matmul(x, rhs)
+    # Both MatMuls share a single physical RHS, but retain distinct contexts.
+    result = builder.add(left, right)
+    if shared:
+        # Keeping even an unused non-MatMul consumer is intentional: the
+        # generator validates and executes it rather than silently deleting it.
+        builder.gather(weight, builder.make_const(0, DataType.INT64), axis=0)
+    builder.ret(builder.relu(result))
+    rng = np.random.default_rng(417)
+    bindings = {weight.name: rng.standard_normal(weight.shape).astype(np.float32) / 8}
+    data = rng.standard_normal(x.shape).astype(np.float32) / 8
+    return builder.program, bindings, data
+
+
+def _panel_artifact(program, bindings, layout="column-panel", **kwargs):
+    return TensorCCodegen(program, bindings, constant_storage="external",
+                          matmul_policy="blocked_fma", matmul_rhs_layout=layout,
+                          **kwargs).generate()
+
+
+def test_column_panel_policy_is_opt_in_and_default_source_unchanged():
+    program, bindings, _ = _panel_graph()
+    baseline = TensorCCodegen(program, bindings, constant_storage="external",
+                             matmul_policy="blocked_fma").generate()
+    explicit = _panel_artifact(program, bindings, "original")
+    assert baseline.source == explicit.source
+    assert baseline.matmul_rhs_layout == "original"
+    assert baseline.matmul_rhs_panels == ()
+    for invalid in (None, True, "packed"):
+        with pytest.raises(TensorCCodegenError, match="matmul_rhs_layout"):
+            _panel_artifact(program, bindings, invalid)
+    for options in ({}, {"constant_storage": "external"},
+                    {"matmul_policy": "blocked_fma"}):
+        with pytest.raises(TensorCCodegenError):
+            TensorCCodegen(program, bindings, matmul_rhs_layout="column-panel",
+                           **options).generate()
+
+
+@pytest.mark.parametrize("tile", ["1x4", "2x4", "1x8"])
+@pytest.mark.parametrize("transpose", [False, True])
+@pytest.mark.parametrize("storage", ["c", "fortran", "strided"])
+def test_column_panel_view_metadata_and_original_ir_unchanged(tile, transpose, storage):
+    program, bindings, _ = _panel_graph(k=9, n=16, transpose=transpose)
+    source = bindings["panel_weight"]
+    if storage == "fortran":
+        source = np.asfortranarray(source)
+    elif storage == "strided":
+        backing = np.empty((source.shape[0]*2, source.shape[1]*2), np.float32)
+        view = backing[::-2, ::2]
+        view[:] = source
+        source = view
+    bindings = {"panel_weight": source}
+    before = repr(program)
+    instruction_ids = [id(i) for i in program.functions[0].blocks[0].instructions]
+    generator = TensorCCodegen(program, bindings, constant_storage="external",
+                              matmul_policy="blocked_fma", matmul_tile=tile,
+                              matmul_rhs_layout="column-panel")
+    model = generator.generate()
+    assert generator.generate().source == model.source
+    assert repr(program) == before
+    assert instruction_ids == [id(i) for i in program.functions[0].blocks[0].instructions]
+    assert list(bindings) == ["panel_weight"] and bindings["panel_weight"] is source
+    assert len(model.matmul_rhs_panels) == 1
+    panel = model.matmul_rhs_panels[0]
+    columns = int(tile.split("x")[1])
+    assert panel["logical_shape"] == [9, 16]
+    assert panel["physical_shape"] == [16//columns, 9, columns]
+    assert panel["panel_columns"] == columns
+    assert panel["source_weight"] == "panel_weight"
+    assert bool(panel["folded_transpose"]) == transpose
+    assert panel["materialization"] == "view"
+    packed = model.external_initializers[0]
+    assert np.shares_memory(packed, source)
+    assert tuple(panel["physical_shape"]) == model.external_weights[0].shape
+    logical = packed.transpose(1, 0, 2).reshape(9, 16)
+    np.testing.assert_array_equal(logical.view(np.uint32),
+                                  (source.T if transpose else source).view(np.uint32))
+    assert "transpose */" not in model.source
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+@pytest.mark.parametrize("tile,transpose,kernel_calls,batch", [
+    ("1x4", False, False, ()), ("2x4", True, True, ()),
+    ("1x8", False, True, ()), ("2x4", True, False, (2,)),
+])
+def test_column_panel_bitwise_multiconsumer_tail_and_lhs_batch(
+        tmp_path, host_cc, tile, transpose, kernel_calls, batch):
+    program, bindings, data = _panel_graph(transpose=transpose, lhs_batch=batch)
+    common = dict(matmul_tile=tile, kernel_calls=kernel_calls)
+    original = _panel_artifact(program, bindings, "original", **common)
+    packed = _panel_artifact(program, bindings, **common)
+    assert len(packed.matmul_rhs_panels) == 1
+    assert packed.matmul_rhs_panels[0]["materialization"] == "padded-copy"
+    if transpose:
+        assert packed.workspace_bytes < original.workspace_bytes
+    expected, _ = _host_parallel_result(tmp_path/"reference", original, host_cc, data, 1)
+    for harts in (1, 4):
+        actual, calls = _host_parallel_result(tmp_path/str(harts), packed, host_cc, data, harts)
+        assert calls == (2 if harts == 4 else 0)
+        np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_column_panel_shared_non_rhs_consumer_keeps_original(transpose):
+    program, bindings, _ = _panel_graph(transpose=transpose, shared=True)
+    original = _panel_artifact(program, bindings, "original")
+    packed = _panel_artifact(program, bindings)
+    assert packed.matmul_rhs_panels == ()
+    assert packed.source == original.source
+    assert packed.external_weights == original.external_weights
+    assert packed.external_initializers[0] is bindings["panel_weight"]
+
+
+@pytest.mark.parametrize("right", [(2, 129, 17), (129,), (0, 17), (129, 0)])
+def test_column_panel_batched_vector_or_empty_rhs_keeps_original(right):
+    left = (17, right[-2]) if len(right) > 1 else (17, right[0])
+    program, bindings, _ = matmul_experiment(left, right)
+    original = _panel_artifact(program, bindings, "original")
+    packed = _panel_artifact(program, bindings)
+    assert packed.matmul_rhs_panels == ()
+    assert packed.source == original.source
+
+
+@pytest.mark.parametrize("malformed", [
+    "attrs", "perm", "dest_dtype", "dest_shape", "duplicate_dest",
+    "binding_shape", "binding_dtype", "extra_binding", "use_before_transpose",
+    "operand_dtype", "target",
+])
+def test_column_panel_fold_preserves_original_rejection(malformed):
+    from copy import copy
+    program, bindings, _ = _panel_graph(transpose=True)
+    instructions = program.functions[0].blocks[0].instructions
+    transpose = instructions[0]
+    if malformed == "attrs":
+        transpose.attrs["unexpected"] = 1
+    elif malformed == "perm":
+        transpose.attrs["perm"] = (0, 0)
+    elif malformed == "dest_dtype":
+        transpose.dest.dtype = DataType.INT32
+    elif malformed == "dest_shape":
+        transpose.dest.shape = (1, 1)
+    elif malformed == "duplicate_dest":
+        instructions.insert(1, copy(transpose))
+    elif malformed == "binding_shape":
+        bindings["panel_weight"] = bindings["panel_weight"].reshape(-1)
+    elif malformed == "binding_dtype":
+        bindings["panel_weight"] = bindings["panel_weight"].astype(np.float64)
+    elif malformed == "extra_binding":
+        bindings[transpose.dest.name] = bindings["panel_weight"].T
+    elif malformed == "use_before_transpose":
+        instructions[0], instructions[1] = instructions[1], instructions[0]
+    elif malformed == "operand_dtype":
+        transpose.operands = [replace(transpose.operands[0], dtype=DataType.INT32)]
+    elif malformed == "target":
+        transpose.target = "other_block"
+    for layout in ("original", "column-panel"):
+        with pytest.raises(TensorCCodegenError):
+            _panel_artifact(program, bindings, layout)
+
+
+def test_column_panel_physical_capacity_and_tail_zero():
+    program, bindings, _ = _panel_graph(k=9, n=5)
+    physical_bytes = 2 * 9 * 4 * 4
+    with pytest.raises(TensorCCodegenError, match="storage exceeds"):
+        _panel_artifact(program, bindings, max_constant_bytes=physical_bytes-1)
+    model = _panel_artifact(program, bindings, max_constant_bytes=physical_bytes)
+    assert model.constant_bytes == physical_bytes
+    assert model.external_weights[0].nbytes == physical_bytes
+    packed = model.external_initializers[0]
+    assert packed.shape == (2, 9, 4)
+    assert not np.shares_memory(packed, bindings["panel_weight"])
+    np.testing.assert_array_equal(packed[1, :, 1:], np.zeros((9, 3), np.float32))
+    bindings["panel_weight"][0, 0] = np.nan
+    with pytest.raises(TensorCCodegenError, match="Nonfinite"):
+        _panel_artifact(program, bindings)
+
+
+def test_column_panel_strided_view_streams_through_existing_weight_bundle(tmp_path):
+    from scratchv.runtime.weight_bundle import write_weight_bundle
+    program, bindings, _ = _panel_graph(k=9, n=16, transpose=True)
+    model = _panel_artifact(program, bindings)
+    packed = model.external_initializers[0]
+    assert np.shares_memory(packed, bindings["panel_weight"])
+    manifest = write_weight_bundle(model.external_weights, model.external_initializers,
+                                   tmp_path/"bundle")
+    assert manifest["tensors"][0]["shape"] == list(packed.shape)
+    restored = np.fromfile(tmp_path/"bundle/weights.bin", dtype="<f4").reshape(packed.shape)
+    np.testing.assert_array_equal(restored.view(np.uint32), packed.view(np.uint32))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pthread callback execution is a POSIX check")
+def test_column_panel_errors_physical_overlap_and_workspace_recovery(tmp_path, host_cc):
+    program, bindings, data = _panel_graph(transpose=True)
+    model = _panel_artifact(program, bindings, kernel_calls=True, matmul_tile="2x4")
+    original = _panel_artifact(program, bindings, "original", kernel_calls=True, matmul_tile="2x4")
+    expected, _ = _host_parallel_result(tmp_path/"reference", original, host_cc, data, 1)
+    for harts in (1, 4):
+        weights, workspace, output, args = arguments(model, data)
+        parallel = replace(model, source=model.source + _PARALLEL_HOST_RUNTIME)
+        with library(tmp_path/str(harts), parallel,
+                     [*host_cc, f"-DSCRATCHV_HARTS={harts}", "-pthread"]) as run:
+            # Nonfinite tail padding is still part of the declared physical
+            # weight buffer and must fail the existing complete-buffer check.
+            weights[0][-1, -1, -1] = np.inf
+            assert run(*args) == 2
+            assert np.all(output == -999)
+            weights[0][-1, -1, -1] = 0.0
+            bad_capacity = list(args)
+            bad_capacity[3] -= 1
+            assert run(*bad_capacity) == 1
+            bad_overlap = list(args)
+            logical_bytes = np.prod(model.matmul_rhs_panels[0]["logical_shape"])*4
+            bad_overlap[2] = weights[0].ctypes.data + (int(logical_bytes)+7)//8*8
+            assert run(*bad_overlap) == 1
+            saved_weights = weights[0].copy()
+            saved_input = data.copy()
+            weights[0].fill(np.finfo(np.float32).max)
+            data.fill(2)
+            assert run(*args) == 2
+            assert np.all(output == -999)
+            weights[0][:] = saved_weights
+            data[:] = saved_input
+            assert run(*args) == 0
+            np.testing.assert_array_equal(output.view(np.uint32), expected.view(np.uint32))
+            # Reuse the same workspace with a second input context.
+            data[:] = -saved_input
+            second_input = data.copy()  # Keep the ctypes input buffer alive.
+            second = arguments(model, second_input)
+            assert run(*second[3]) == 0
+            assert run(*args) == 0
+            np.testing.assert_array_equal(output.view(np.uint32), second[2].view(np.uint32))
+            data[:] = saved_input
+
+
+@pytest.mark.skipif(not os.environ.get("SCRATCHV_QEMU"),
+                    reason="requires explicit SCRATCHV_QEMU/CC")
+def test_column_panel_rv64_errors_recover_in_same_guest_workspace(tmp_path):
+    from scratchv.runtime.riscv_external import build_external, run_external
+    from scratchv.runtime.riscv_tensor import discover_toolchain
+    from scratchv.runtime.weight_bundle import write_weight_bundle
+
+    # Only the final row is poisoned, owned by a worker in the 4-hart 2x4 partition.
+    program, bindings, data = _panel_graph(k=129, n=17, m=17, transpose=True)
+    bindings["panel_weight"].fill(2.0)
+    data.fill(0.25)
+    model = _panel_artifact(program, bindings, kernel_calls=True, matmul_tile="2x4")
+    assert len(model.matmul_rhs_panels) == 1
+    panel = model.matmul_rhs_panels[0]
+    assert panel["folded_transpose"] and panel["physical_shape"] == [5, 129, 4]
+    assert panel["materialization"] == "padded-copy"
+    # Call the unmodified generated graph repeatedly inside one guest.
+    # Weight lengths have no C argument: bundle validation enforces that contract.
+    w = model.workspace_bytes
+    input_capacity = (data.nbytes + 7)//8*8
+    output_bytes = model.output.nbytes
+    input_offset = w + 32
+    other_offset = input_offset + input_capacity
+    output_guard_offset = other_offset + input_capacity
+    output_offset = output_guard_offset + 16
+    total = (output_offset + output_bytes + 16 + 7)//8*8
+    wrapper = r"""
+#undef scratchv_run_external
+static int sv_panel_test_guards(const unsigned char *base) {
+    for (size_t i=0; i<16; ++i)
+        if (base[i] != 0x5a || base[@W@+16+i] != 0x5a ||
+            base[@OUTPUT_GUARD@+i] != 0x5a ||
+            base[@OUTPUT@+@OUT_BYTES@+i] != 0x5a) return 0;
+    return 1;
+}
+static int sv_panel_test_values(const float *values, float expected) {
+    for (size_t i=0; i<289; ++i) if (values[i] != expected) return 0;
+    return 1;
+}
+int scratchv_run_external(const void *const inputs[], const void *const weights[],
+                         void *workspace, size_t bytes, void *output) {
+    if (bytes < @TOTAL@ULL) return 90;
+    unsigned char *base=workspace;
+    for (size_t i=0; i<@TOTAL@ULL; ++i) base[i]=0x5a;
+    void *core=base+16;
+    float *first=(float *)(base+@INPUT@);
+    float *other=(float *)(base+@OTHER@);
+    float *result=(float *)(base+@OUTPUT@);
+    const float *given=inputs[0];
+    for (size_t i=0; i<2193; ++i) {
+        first[i]=given[i];
+        other[i]=0.5f;
+    }
+    const void *first_inputs[]={first}, *other_inputs[]={other};
+    int status=sv_panel_graph(first_inputs,weights,core,@W@ULL,result);
+    if (status || !sv_panel_test_values(result,129.0f) ||
+        !sv_panel_test_guards(base)) return 91;
+
+    /* A one-byte-short workspace fails before any output or arena write. */
+    for (size_t i=0; i<289; ++i) result[i]=-999.0f;
+    for (size_t i=0; i<@W@ULL; ++i) ((unsigned char *)core)[i]=0xa5;
+    status=sv_panel_graph(first_inputs,weights,core,@W@ULL-1,result);
+    if (status != 1 || !sv_panel_test_values(result,-999.0f) ||
+        !sv_panel_test_guards(base)) return 92;
+    for (size_t i=0; i<@W@ULL; ++i)
+        if (((unsigned char *)core)[i] != 0xa5) return 93;
+
+    /* Physical, not just logical, weight range must reject writable overlap. */
+    status=sv_panel_graph(first_inputs,weights,core,@W@ULL,
+                         (unsigned char *)weights[0]+8772);
+    if (status != 1 || !sv_panel_test_guards(base)) return 94;
+    const float *packed=weights[0];
+    for (size_t p=0; p<5; ++p)
+        for (size_t k=0; k<129; ++k)
+            for (size_t lane=0; lane<4; ++lane)
+                if (packed[p*129*4+k*4+lane] != (p*4+lane<17 ? 2.0f : 0.0f))
+                    return 95;
+
+    /* Finite input, overflowing worker-owned FMA; output remains unpublished. */
+    first[16*129]=0x1.fffffep+127f;
+    status=sv_panel_graph(first_inputs,weights,core,@W@ULL,result);
+    if (status != 2 || !sv_panel_test_values(result,-999.0f) ||
+        !sv_panel_test_guards(base)) return 96;
+
+    first[16*129]=given[16*129];
+    status=sv_panel_graph(first_inputs,weights,core,@W@ULL,result);
+    if (status || !sv_panel_test_values(result,129.0f) ||
+        !sv_panel_test_guards(base)) return 97;
+
+    /* New input pointer/context, exact same workspace and result storage. */
+    status=sv_panel_graph(other_inputs,weights,core,@W@ULL,result);
+    if (status || !sv_panel_test_values(result,258.0f) ||
+        !sv_panel_test_guards(base)) return 98;
+    for (size_t i=0; i<289; ++i) ((float *)output)[i]=result[i];
+    return 0;
+}
+"""
+    for token, value in {
+        "@W@": w, "@INPUT@": input_offset, "@OTHER@": other_offset,
+        "@OUTPUT_GUARD@": output_guard_offset, "@OUTPUT@": output_offset,
+        "@OUT_BYTES@": output_bytes, "@TOTAL@": total,
+    }.items():
+        wrapper = wrapper.replace(token, str(value))
+    wrapped = replace(
+        model, source="#define scratchv_run_external sv_panel_graph\n" +
+        model.source + wrapper, workspace_bytes=total)
+    write_weight_bundle(wrapped.external_weights, wrapped.external_initializers,
+                        tmp_path/"weights")
+    outputs = []
+    for harts in (1, 4):
+        executable = build_external(wrapped, tmp_path/"weights", tmp_path/f"build_{harts}",
+                                    discover_toolchain(), harts=harts)
+        actual, report = run_external(executable, {"panel_x": data},
+                                      tmp_path/f"run_{harts}", timeout=20)
+        assert report["passed"] and report["guest_completed"] and report["exit_code"] == 0
+        assert report["harts"] == harts
+        assert executable.evidence["matmul_rhs_layout"] == "column-panel"
+        np.testing.assert_array_equal(actual, np.full((17, 17), 258.0, np.float32))
+        outputs.append(actual.view(np.uint32))
+    np.testing.assert_array_equal(outputs[0], outputs[1])

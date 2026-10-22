@@ -1,4 +1,5 @@
 """Real QEMU execution of the external tensor ABI (explicit tool opt-in)."""
+import errno
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,7 @@ from scratchv.runtime.weight_bundle import write_weight_bundle
 from scratchv.runtime import riscv_external as runtime
 
 
-def artifact():
+def artifact(**codegen_options):
     builder = IRBuilder()
     x, w = Value("x", shape=(4, 4)), Value("w", shape=(4, 4))
     builder.new_function("main", [x])
@@ -30,7 +31,7 @@ def artifact():
     builder.ret(builder.matmul(x, w))
     weights = np.arange(16, dtype=np.float32).reshape(4, 4) / 16
     return TensorCCodegen(builder.program, initializers={"w": weights},
-                         constant_storage="external").generate(), weights
+                         constant_storage="external", **codegen_options).generate(), weights
 
 
 @pytest.mark.parametrize("project_cache,standard_cache,selected", [
@@ -152,7 +153,7 @@ class _Process:
         self.returncode = -9
 
 
-@pytest.mark.parametrize("outcome", ["success", "nonzero", "timeout", "nonfinite", "cleanup"])
+@pytest.mark.parametrize("outcome", ["success", "nonzero", "timeout", "nonfinite", "cleanup", "trailing-uart"])
 def test_quit_without_reply_still_requires_exit_output_and_cleanup(tmp_path, monkeypatch, outcome):
     """A missing quit acknowledgement never replaces the runner's gates."""
     executable = _stub_executable(tmp_path)
@@ -183,6 +184,9 @@ def test_quit_without_reply_still_requires_exit_output_and_cleanup(tmp_path, mon
 
         def command(self, command, *args):
             events.append(command)
+            if command == "stop" and outcome == "trailing-uart":
+                with (out / "uart.bin").open("ab") as uart:
+                    uart.write(b"unexpected")
             if command == "human-monitor-command":
                 value = np.nan if outcome == "nonfinite" else 1.0
                 (out / "output.bin").write_bytes(np.array([value], dtype="<f4").tobytes())
@@ -211,11 +215,22 @@ def test_quit_without_reply_still_requires_exit_output_and_cleanup(tmp_path, mon
         assert "transport-cleanup" in events
     else:
         expected = {"nonzero": RuntimeError, "timeout": subprocess.TimeoutExpired,
-                    "nonfinite": ValueError, "cleanup": RuntimeError}[outcome]
+                    "nonfinite": ValueError, "cleanup": RuntimeError,
+                    "trailing-uart": ValueError}[outcome]
         with pytest.raises(expected):
             run_external(executable, {"x": np.ones(1, np.float32)}, out)
     report = json.loads((out / "run.json").read_text())
-    assert report["guest_completed"] and report["qmp_quit_reply_received"] is False
+    assert report["guest_completed"]
+    assert report["timing_mode"] in ("event", "polling")
+    assert "host validation" in report["forward_wall_scope"]
+    qmp_endpoint = report["command"][report["command"].index("-qmp") + 1]
+    assert qmp_endpoint.endswith(",server=on,wait=off,nodelay=on")
+    if outcome == "trailing-uart":
+        assert "human-monitor-command" not in events and "quit" not in events
+        assert "trailing completion frame" in report["error"]
+        assert "close" in events
+        return
+    assert report["qmp_quit_reply_received"] is False
     assert report["passed"] is (outcome == "success")
     assert events.index("human-monitor-command") < events.index("quit") < events.index("wait")
     assert "close" in events
@@ -425,3 +440,299 @@ def test_posix_sigterm_reaps_owned_process_session(tmp_path):
                 os.killpg(child_pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux") or not hasattr(os, "pidfd_open"),
+                    reason="inotify/pidfd event wait is Linux-specific")
+@pytest.mark.parametrize("fd_target", ["normal", "inotify", "pidfd"])
+@pytest.mark.parametrize("outcome", ["split", "failed", "exit", "timeout"])
+def test_uart_event_wait_handles_partial_frames_exit_and_deadline(
+        tmp_path, monkeypatch, outcome, fd_target):
+    import fcntl
+    import resource
+
+    limit = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    if fd_target != "normal" and limit != resource.RLIM_INFINITY and limit <= 1024:
+        pytest.skip("high-FD regression requires an existing descriptor limit above 1024")
+    waiter = runtime._UartCompletionWaiter(tmp_path, 4)
+    assert waiter.timing_mode == "event"
+    frame = runtime.FRAME.pack(runtime.MAGIC, 0x80000005 if outcome == "failed" else 0, 4)
+    code = {
+        "split": ("import time; from pathlib import Path; "
+                  f"p=Path('uart.bin'); p.write_bytes({frame[:8]!r}); "
+                  f"time.sleep(0.03); p.write_bytes({frame!r})"),
+        "failed": f"from pathlib import Path; Path('uart.bin').write_bytes({frame!r})",
+        "exit": "pass",
+        "timeout": "import time; time.sleep(10)",
+    }[outcome]
+    process = None
+    opened_pidfds, registrations = [], []
+    original_pidfd_open, original_poll = os.pidfd_open, runtime.select.poll
+
+    def open_pidfd(pid):
+        descriptor = original_pidfd_open(pid)
+        if fd_target == "pidfd":
+            try:
+                high = fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 1024)
+            finally:
+                os.close(descriptor)
+            descriptor = high
+        opened_pidfds.append(descriptor)
+        return descriptor
+
+    released = False
+
+    class ReleaseOnPoll:
+        def __init__(self):
+            self.poller = original_poll()
+
+        def register(self, descriptor, mask):
+            registrations.append(descriptor)
+            self.poller.register(descriptor, mask)
+
+        def poll(self, timeout):
+            nonlocal released
+            if not released:
+                # Do not let a fast child finish before the high FD is actually
+                # registered and waited on. Only one byte, no timing assumption.
+                process.stdin.write(b"x")
+                process.stdin.flush()
+                released = True
+            return self.poller.poll(timeout)
+
+    try:
+        if fd_target == "inotify":
+            old = waiter.fd
+            waiter.fd = fcntl.fcntl(old, fcntl.F_DUPFD_CLOEXEC, 1024)
+            os.close(old)
+        fd = waiter.fd
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1); " + code],
+            cwd=tmp_path, stdin=subprocess.PIPE)
+        # No completion polling or busy wait is allowed in the event path.
+        with monkeypatch.context() as patch:
+            patch.setattr(runtime.time, "sleep", lambda _: pytest.fail("event wait polled"))
+            patch.setattr(runtime.os, "pidfd_open", open_pidfd)
+            patch.setattr(runtime.select, "poll", ReleaseOnPoll)
+            deadline = time.monotonic() + (0.05 if outcome == "timeout" else 3)
+            if outcome == "split":
+                waiter.wait(process, deadline, 3)
+                assert (tmp_path / "uart.bin").read_bytes() == frame
+            else:
+                error, message = {
+                    "failed": (RuntimeError, "0x80000005"),
+                    "exit": (RuntimeError, "exited before guest completion"),
+                    "timeout": (TimeoutError, "forward exceeded"),
+                }[outcome]
+                with pytest.raises(error, match=message):
+                    waiter.wait(process, deadline, 3)
+        assert released and fd in registrations and opened_pidfds
+        assert opened_pidfds[0] in registrations
+        if fd_target != "normal":
+            assert (fd if fd_target == "inotify" else opened_pidfds[0]) >= 1024
+        assert waiter.timing_mode == "event" and waiter.fallback_reason is None
+    finally:
+        waiter.close()
+        waiter.close()
+        if process is not None:
+            process.stdin.close()
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+    for descriptor in [fd, *opened_pidfds]:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux") or not hasattr(os, "pidfd_open"),
+                    reason="inotify/pidfd event wait is Linux-specific")
+@pytest.mark.parametrize("failure", ["closed-inotify", "closed-pidfd", "poll-error"])
+def test_uart_event_wait_rejects_invalid_descriptors_without_busy_wait(
+        tmp_path, monkeypatch, failure):
+    waiter = runtime._UartCompletionWaiter(tmp_path, 4)
+    process = SimpleNamespace(pid=os.getpid(), poll=lambda: None)
+    waiter.pidfd = os.pidfd_open(process.pid)
+    invalid_name = {"closed-inotify": "fd", "closed-pidfd": "pidfd"}.get(failure)
+    if invalid_name:
+        os.close(getattr(waiter, invalid_name))
+    original_poll = runtime.select.poll
+    calls = []
+
+    class CheckedPoll:
+        def __init__(self):
+            self.poller = original_poll()
+
+        def register(self, descriptor, mask):
+            self.poller.register(descriptor, mask)
+
+        def poll(self, timeout):
+            calls.append(1)
+            assert len(calls) == 1, "invalid descriptor caused an event busy loop"
+            if failure == "poll-error":
+                return [(waiter.fd, runtime.select.POLLERR)]
+            return self.poller.poll(timeout)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(runtime.select, "poll", CheckedPoll)
+            patch.setattr(runtime.time, "sleep", lambda _: pytest.fail("invalid FD used polling fallback"))
+            with pytest.raises(OSError) as exc:
+                waiter.wait(process, time.monotonic() + 1, 1)
+        assert exc.value.errno == (errno.EIO if failure == "poll-error" else errno.EBADF)
+        assert calls == [1]
+    finally:
+        # The injected invalid FD is already closed; release the other owned FD.
+        if invalid_name:
+            setattr(waiter, invalid_name, None)
+        waiter.close()
+
+
+def test_uart_wait_observes_frame_completed_before_wait(tmp_path, monkeypatch):
+    waiter = runtime._UartCompletionWaiter(tmp_path, 4)
+    try:
+        (tmp_path / "uart.bin").write_bytes(runtime.FRAME.pack(runtime.MAGIC, 0, 4))
+        # The frame may already be complete when Popen returns, even before
+        # pidfd_open can observe an exited child.
+        process = SimpleNamespace(poll=lambda: pytest.fail("already completed"), pid=-1)
+        waiter.wait(process, time.monotonic() + 1, 1)
+    finally:
+        waiter.close()
+
+
+@pytest.mark.parametrize("fallback", ["platform", "pidfd"])
+def test_uart_wait_retains_portable_polling_fallback(tmp_path, monkeypatch, fallback):
+    if fallback == "platform":
+        monkeypatch.setattr(runtime, "sys", SimpleNamespace(platform="unsupported"))
+    elif not sys.platform.startswith("linux") or not hasattr(os, "pidfd_open"):
+        pytest.skip("pidfd fallback requires Linux")
+    else:
+        def unavailable(_pid):
+            raise OSError(errno.ENOSYS, "pidfd unsupported")
+        monkeypatch.setattr(runtime.os, "pidfd_open", unavailable)
+    waiter = runtime._UartCompletionWaiter(tmp_path, 4)
+    sleeps = []
+
+    def complete_on_poll(interval):
+        sleeps.append(interval)
+        (tmp_path / "uart.bin").write_bytes(runtime.FRAME.pack(runtime.MAGIC, 0, 4))
+
+    monkeypatch.setattr(runtime.time, "sleep", complete_on_poll)
+    try:
+        waiter.wait(_Process(), time.monotonic() + 1, 1)
+        assert waiter.timing_mode == "polling" and waiter.fallback_reason
+        assert sleeps == [0.05]
+        assert waiter.fd is None
+    finally:
+        waiter.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux") or not hasattr(os, "pidfd_open"),
+                    reason="inotify watch failure is Linux-specific")
+@pytest.mark.parametrize("mask,message", [(0x4000, "overflow"), (0x8000, "lost its directory")])
+def test_uart_watch_loss_is_not_silently_accepted(tmp_path, monkeypatch, mask, message):
+    waiter = runtime._UartCompletionWaiter(tmp_path, 4)
+    try:
+        monkeypatch.setattr(runtime.os, "read", lambda *_: struct.pack("iIII", -1, mask, 0, 0))
+        with pytest.raises(RuntimeError, match=message):
+            waiter._drain()
+    finally:
+        waiter.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux") or not hasattr(os, "pidfd_open"),
+                    reason="inotify setup failure is Linux-specific")
+def test_uart_watch_setup_failure_closes_fd(tmp_path, monkeypatch):
+    read_fd, write_fd = os.pipe()
+
+    def init(_flags):
+        return read_fd
+
+    def add_watch(*_args):
+        runtime.ctypes.set_errno(errno.ENOSPC)
+        return -1
+
+    monkeypatch.setattr(runtime.ctypes, "CDLL", lambda *_args, **_kwargs:
+                        SimpleNamespace(inotify_init1=init, inotify_add_watch=add_watch))
+    try:
+        with pytest.raises(OSError, match="No space"):
+            runtime._UartCompletionWaiter(tmp_path, 4)
+        with pytest.raises(OSError):
+            os.fstat(read_fd)
+    finally:
+        os.close(write_fd)
+
+
+def test_uart_wait_accepts_final_frame_written_during_exit_check(tmp_path):
+    waiter = runtime._UartCompletionWaiter(tmp_path, 4)
+
+    def exit_after_write():
+        (tmp_path / "uart.bin").write_bytes(runtime.FRAME.pack(runtime.MAGIC, 0, 4))
+        return 0
+
+    try:
+        waiter.wait(SimpleNamespace(poll=exit_after_write, returncode=0),
+                    time.monotonic() + 1, 1)
+    finally:
+        waiter.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux") or not hasattr(os, "pidfd_open"),
+                    reason="inotify drain is Linux-specific")
+def test_uart_watch_drain_is_bounded_under_continuous_events(tmp_path, monkeypatch):
+    waiter = runtime._UartCompletionWaiter(tmp_path, 4)
+    reads = []
+
+    def continuous_events(*_args):
+        reads.append(1)
+        assert len(reads) == 1, "unbounded drain starved the outer deadline check"
+        return struct.pack("iIII", 1, 0x2, 0, 0)
+
+    try:
+        monkeypatch.setattr(runtime.os, "read", continuous_events)
+        waiter._drain()
+        assert reads == [1]
+    finally:
+        waiter.close()
+
+
+def test_uart_cleanup_attempts_both_descriptors_after_close_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(platform="unsupported"))
+    waiter = runtime._UartCompletionWaiter(tmp_path, 4)
+    waiter.pidfd, waiter.fd = 111, 222
+    attempts = []
+
+    def close(fd):
+        attempts.append(fd)
+        if fd == 111:
+            raise OSError("injected pidfd close failure")
+
+    monkeypatch.setattr(runtime.os, "close", close)
+    with pytest.raises(OSError, match="pidfd close failure"):
+        waiter.close()
+    assert attempts == [111, 222]
+    assert waiter.pidfd is None and waiter.fd is None
+    waiter.close()
+    assert attempts == [111, 222]
+
+
+@pytest.mark.parametrize("tile", ["1x4", "2x4", "1x8"])
+@pytest.mark.parametrize("rhs_layout", ["original", "column-panel"])
+def test_external_build_records_matmul_tile_without_execution(
+        tmp_path, monkeypatch, tile, rhs_layout):
+    model, _ = artifact(matmul_policy="blocked_fma", matmul_tile=tile,
+                        matmul_rhs_layout=rhs_layout)
+    write_weight_bundle(model.external_weights, model.external_initializers, tmp_path / "weights")
+    monkeypatch.setattr(runtime, "_run_process",
+                        lambda command, **kw: subprocess.CompletedProcess(command, 0, b"", b""))
+    monkeypatch.setattr(runtime, "validate_external_elf", lambda *a: {})
+    monkeypatch.setattr(runtime, "toolchain_versions", lambda *a: {})
+    executable = build_external(model, tmp_path / "weights", tmp_path / "build",
+                                RiscVToolchain(("unused-cc",), "unused-qemu"))
+    saved = json.loads((tmp_path / "build" / "build.json").read_text())
+    assert saved["matmul_tile"] == executable.evidence["matmul_tile"] == tile
+    assert saved["matmul_rhs_layout"] == executable.evidence["matmul_rhs_layout"] == rhs_layout
+    assert saved["matmul_rhs_panels"] == list(model.matmul_rhs_panels)
+    assert executable.evidence["matmul_rhs_panels"] == saved["matmul_rhs_panels"]
+    assert bool(saved["matmul_rhs_panels"]) is (rhs_layout == "column-panel")
+    assert executable.harts == 1
+    assert saved["qemu_workspace_layout"] == "none"

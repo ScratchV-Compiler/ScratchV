@@ -1,6 +1,6 @@
 # 完整 Qwen3 IR 数值验证
 
-复现统一采用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 环境与资产准备](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)，再在同一个 Bash 会话、仓库根目录执行命令；该指南设置 `SCRATCHV_PYTHON`、`SCRATCHV_CC` 和 `SCRATCHV_QEMU`。
+复现统一采用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 环境与资产准备](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md)，再在同一个 Bash 会话、仓库根目录执行命令；`python` 指已安装固定依赖的当前解释器，Zig 和 QEMU 由运行入口自动发现。
 
 该入口实际执行固定发布的 28 层 Qwen3-0.6B FP32 ONNX，比较 ScratchV IR 与 ORT 的完整 logits，包括右侧 padding query。它使用优化前 IR（none），不会把资产检查、两层模型或部分输入通过视为完整模型数值验收。
 
@@ -45,7 +45,7 @@ AVX2 矩阵路径按两个输出行计算，尾行和单列临时补零后裁回
 set -euo pipefail
 W3_MODEL=/absolute/path/to/qwen3-0.6b-onnx
 export SCRATCHV_FP32_REFERENCE_CPU=auto
-"$SCRATCHV_PYTHON" -B -X utf8 probes/w3_qwen3_full/run.py \
+python -B -X utf8 probes/w3_qwen3_full/run.py \
   --model-dir "$W3_MODEL" --output-dir output/w3-full-new \
   --fp32-mode reference --worker-timeout 1800 --max-worker-memory-gib 10
 ~~~

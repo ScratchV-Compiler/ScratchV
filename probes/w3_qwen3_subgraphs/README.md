@@ -1,6 +1,6 @@
 # W3 authenticated Qwen3 pretrained subgraphs
 
-Reproduction targets **Ubuntu 24.04 x86_64, Bash and Python 3.12**. Complete the [Linux environment and asset setup](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) first. Run commands from the repository root in the same Bash session; the setup exports `SCRATCHV_PYTHON`, `SCRATCHV_CC` and `SCRATCHV_QEMU`.
+Reproduction targets **Ubuntu 24.04 x86_64, Bash and Python 3.12**. Complete the [Linux environment and asset setup](../../docs/llm-deploy-v1.0/LINUX_REPRODUCTION.md) first. Run commands from the repository root in the same Bash session; `python` is the current interpreter with the pinned dependencies installed; the runners discover Zig and QEMU automatically.
 
 This offline gate exercises selected first-layer subgraphs of the pinned
 `Qwen/Qwen3-0.6B` checkpoint at revision
@@ -20,7 +20,7 @@ Run from this checkout with the pinned CPU export environment:
 ```bash
 set -euo pipefail
 W3_SOURCE=/absolute/path/to/qwen3-source/c1899de289a04d12100db370d81485cdf75e47ca
-"$SCRATCHV_PYTHON" -X utf8 -B \
+python -X utf8 -B \
   probes/w3_qwen3_subgraphs/run.py \
   --source-dir "$W3_SOURCE" \
   --output-dir output/w3-qwen3-subgraphs-l256 \
@@ -98,7 +98,7 @@ Unit checks:
 
 ```bash
 set -euo pipefail
-"$SCRATCHV_PYTHON" -m pytest \
+python -m pytest \
   tests/test_w3_qwen3_subgraphs.py -q
 ```
 
