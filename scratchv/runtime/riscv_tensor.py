@@ -157,19 +157,29 @@ def _stop_process_tree(process: subprocess.Popen, job=None) -> None:
             pass
 
 
-def _run_process(command, *, cwd, timeout, env=None) -> subprocess.CompletedProcess:
-    """Run one owned tree with bounded process waits, including setup failures."""
+def _run_process(command, *, cwd, timeout, env=None, inherit_process_group=False,
+                 cleanup_descendants=False) -> subprocess.CompletedProcess:
+    """Run a command with bounded waits and explicit process-group ownership.
+
+    POSIX nested commands may inherit a supervising worker's group. Only use
+    that mode under an outer invocation with cleanup_descendants=True: the
+    outer owner then reclaims all members even if its worker exits or cannot
+    handle cancellation. Standalone commands retain their private group.
+    Windows continues to use private kill-on-close Jobs.
+    """
+    if inherit_process_group and cleanup_descendants:
+        raise ValueError("An inherited process group cannot be owned by the child")
     options = {"creationflags": _creation_flags()}
     if os.name == "nt":
         options["creationflags"] |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
-        options["start_new_session"] = True
+        options["start_new_session"] = not inherit_process_group
     process, job, primary_error, previous_term = None, None, None, None
     try:
-        # The W2 supervisor first sends SIGTERM to the probe. This invocation
-        # owns a different session, so killing the probe group alone would
-        # orphan its compiler/QEMU. Install before spawning, so setup failures
-        # and interruptions also unwind through the same cleanup boundary.
+        # The W2 supervisor first sends SIGTERM to the probe. Standalone
+        # commands own a different session; nested Host C commands explicitly
+        # borrow their supervisor's group. Install before spawning so setup
+        # failures and interruptions unwind through the same cleanup boundary.
         if os.name != "nt" and threading.current_thread() is threading.main_thread():
             previous_term = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, _terminate_invocation)
@@ -217,10 +227,21 @@ def _run_process(command, *, cwd, timeout, env=None) -> subprocess.CompletedProc
                 raise failures[0]
 
         if process is not None:
+            if primary_error is not None or cleanup_descendants:
+                # Never signal our own inherited group here. Its outer owner
+                # performs the group cleanup after this worker unwinds, or on
+                # its own timeout/cancellation if the worker cannot unwind.
+                if os.name != "nt" and inherit_process_group:
+                    cleanup("nested process termination", process.kill)
+                else:
+                    cleanup("process-tree termination", lambda: _stop_process_tree(process, job))
             if primary_error is not None:
-                cleanup("process-tree termination", lambda: _stop_process_tree(process, job))
                 try:
-                    stdout, stderr = process.communicate(timeout=10)
+                    # Nested descendants can still hold these pipes until the
+                    # outer owner cleans the group. Do not wait ten seconds
+                    # for them before allowing the worker to report failure.
+                    drain_timeout = 0.25 if os.name != "nt" and inherit_process_group else 10
+                    stdout, stderr = process.communicate(timeout=drain_timeout)
                     if isinstance(primary_error, subprocess.TimeoutExpired):
                         primary_error.output, primary_error.stderr = stdout, stderr
                 except BaseException as exc:

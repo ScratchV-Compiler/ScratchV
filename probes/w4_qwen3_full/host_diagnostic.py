@@ -106,7 +106,7 @@ def read_worker_report(path):
     return report
 
 
-def build_library(artifact, directory, compiler, timeout=900.0):
+def build_library(artifact, directory, compiler, timeout=900.0, *, supervised=False):
     if artifact.constant_storage != "external":
         raise ValueError("Host diagnostic requires the external tensor ABI")
     directory = Path(directory).resolve()
@@ -124,7 +124,10 @@ def build_library(artifact, directory, compiler, timeout=900.0):
     environment["ZIG_GLOBAL_CACHE_DIR"] = str(ROOT / "output/zig-global-cache")
     environment["ZIG_LOCAL_CACHE_DIR"] = str(directory / "zig-cache")
     try:
-        result = _run_process(command, cwd=directory, timeout=timeout, env=environment)
+        # Under --worker, keep the compiler in the outer supervisor's group.
+        # A separate session could survive the worker being forcibly stopped.
+        result = _run_process(command, cwd=directory, timeout=timeout, env=environment,
+                              inherit_process_group=supervised)
     except subprocess.TimeoutExpired as exc:
         _save_process_logs(directory, "compiler", exc.stdout, exc.stderr)
         raise TimeoutError(f"Host C compilation exceeded {timeout}s") from exc
@@ -133,7 +136,8 @@ def build_library(artifact, directory, compiler, timeout=900.0):
         raise RuntimeError(f"Host C compiler failed ({result.returncode}): "
                            + result.stderr.decode(errors="replace")[-8000:])
     version_command = [compiler[0], "version"] if len(compiler) == 2 else [compiler[0], "--version"]
-    version = _run_process(version_command, cwd=directory, timeout=30, env=environment)
+    version = _run_process(version_command, cwd=directory, timeout=30, env=environment,
+                           inherit_process_group=supervised)
     if version.returncode:
         raise RuntimeError("Could not record the host compiler version")
     return library, {"command": command, "compiler_version": version.stdout.decode(errors="replace").strip(),
@@ -275,7 +279,7 @@ def worker(args):
                              "output_shape": list(artifact.output.shape), "kernel_calls": True}
         compiler = compiler_command(args.cc)
         library, report["build"] = stage("host_shared_library", lambda:
-            build_library(artifact, out / "build", compiler, args.compile_timeout))
+            build_library(artifact, out / "build", compiler, args.compile_timeout, supervised=True))
         buffers = stage("allocate_native_buffers", lambda: prepare_buffers(artifact, feed))
         report["buffer_policy"] = {"workspace_alignment": 64, "copied_weight_bytes": buffers.copied_weight_bytes,
                                    "borrowed_weight_count": sum(array is original for array, original in
@@ -329,7 +333,8 @@ def main(argv=None):
     environment = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
     start = time.perf_counter()
     try:
-        result = _run_process(command, cwd=ROOT, timeout=args.timeout, env=environment)
+        result = _run_process(command, cwd=ROOT, timeout=args.timeout, env=environment,
+                              cleanup_descendants=True)
         _save_process_logs(out, "worker", result.stdout, result.stderr)
         child = read_worker_report(out / "worker/report.json")
         if (type(child.get("schema_version")) is not int or child["schema_version"] != 1

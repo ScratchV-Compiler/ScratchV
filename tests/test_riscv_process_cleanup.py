@@ -161,3 +161,76 @@ def test_popen_failure_restores_posix_handler_without_touching_a_child(monkeypat
         runtime._run_process(["compiler"], cwd=None, timeout=1)
     assert caught.value is failure
     assert events == [("signal", runtime._terminate_invocation), ("launch",), ("signal", "original")]
+
+
+def test_inherited_group_cannot_claim_outer_ownership(monkeypatch):
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *a, **k: pytest.fail("must not spawn"))
+    with pytest.raises(ValueError, match="inherited process group"):
+        runtime._run_process(["compiler"], cwd=None, timeout=1,
+                             inherit_process_group=True, cleanup_descendants=True)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX nested group ownership")
+def test_nested_timeout_keeps_own_group_alive_and_preserves_logs(monkeypatch):
+    process, options, calls = Process(), {}, []
+    def launch(*args, **kwargs):
+        options.update(kwargs)
+        return process
+    def communicate(timeout=None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(["compiler"], timeout, output=b"partial")
+        return b"full stdout", b"full stderr"
+    process.communicate = communicate
+    monkeypatch.setattr(runtime.subprocess, "Popen", launch)
+    monkeypatch.setattr(runtime, "_windows_job", lambda child: None)
+    monkeypatch.setattr(runtime, "_stop_process_tree", lambda *a: pytest.fail("must not kill inherited group"))
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        runtime._run_process(["compiler"], cwd=None, timeout=1, inherit_process_group=True)
+    assert options["start_new_session"] is False
+    assert ("kill",) in process.events
+    assert calls == [1, 0.25]
+    assert caught.value.output == b"full stdout" and caught.value.stderr == b"full stderr"
+    assert process.stdout.closed and process.stderr.closed
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX nested group ownership")
+def test_nested_open_descendant_pipe_does_not_delay_outer_cleanup(monkeypatch):
+    process, calls = Process(), []
+    original = subprocess.TimeoutExpired(["compiler"], 1, output=b"first")
+    def communicate(timeout=None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise original
+        raise subprocess.TimeoutExpired(["compiler"], timeout, output=b"partial out", stderr=b"partial err")
+    process.communicate = communicate
+    monkeypatch.setattr(runtime.subprocess, "Popen", lambda *a, **k: process)
+    monkeypatch.setattr(runtime, "_windows_job", lambda child: None)
+    monkeypatch.setattr(runtime, "_stop_process_tree", lambda *a: pytest.fail("must not kill inherited group"))
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        runtime._run_process(["compiler"], cwd=None, timeout=1, inherit_process_group=True)
+    assert caught.value is original and calls == [1, 0.25]
+    assert caught.value.output == b"partial out" and caught.value.stderr == b"partial err"
+    assert ("wait", 5) in process.events
+    assert process.stdout.closed and process.stderr.closed
+    assert any("pipe drain" in note for note in caught.value.__notes__)
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_outer_owner_cleans_descendants_after_worker_exit(monkeypatch, returncode):
+    process, stopped, options = Process(), [], {}
+    def launch(*args, **kwargs):
+        options.update(kwargs)
+        return process
+    def communicate(timeout=None):
+        process.returncode = returncode
+        return b"worker stdout", b"worker stderr"
+    process.communicate = communicate
+    monkeypatch.setattr(runtime.subprocess, "Popen", launch)
+    monkeypatch.setattr(runtime, "_windows_job", lambda child: None)
+    monkeypatch.setattr(runtime, "_stop_process_tree", lambda child, job: stopped.append(child))
+    result = runtime._run_process(["worker"], cwd=None, timeout=1, cleanup_descendants=True)
+    assert result.returncode == returncode and result.stdout == b"worker stdout"
+    assert stopped == [process]
+    if sys.platform != "win32":
+        assert options["start_new_session"] is True
