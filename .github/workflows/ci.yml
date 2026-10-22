@@ -218,6 +218,29 @@ jobs:
           $PY -c "import json; d=json.load(open('/tmp/peephole_report.json')); assert d['instructions_saved']>=1"
           grep -q "8" /tmp/peephole_out.s
 
+      - name: Run Topic 12 instruction-counter regressions
+        run: |
+          $PY -m pytest tests/test_inst_counter.py -v --tb=short
+
+      - name: Run Topic 12 instruction-counter CLI smoke & reports
+        run: |
+          mkdir -p benchmark_reports
+          $PY -m scratchv.backend.inst_counter \
+            tests/fixtures/inst_counter/basic_rv32im.s \
+            --verbose \
+            --json-output benchmark_reports/topic12_basic.json \
+            --markdown benchmark_reports/topic12_basic.md \
+            --html benchmark_reports/topic12_basic.html
+          $PY -c "import json; d=json.load(open('benchmark_reports/topic12_basic.json')); assert d['kind']=='single' and d['total']==15"
+          $PY -m scratchv.backend.inst_counter \
+            tests/fixtures/inst_counter/compare_before.s \
+            tests/fixtures/inst_counter/compare_after.s \
+            --compare \
+            --json-output benchmark_reports/topic12_compare.json \
+            --markdown benchmark_reports/topic12_compare.md \
+            --html benchmark_reports/topic12_compare.html
+          $PY -c "import json; d=json.load(open('benchmark_reports/topic12_compare.json')); assert d['kind']=='comparison'"
+
       - name: Run Topic 17 register-allocation regressions
         run: |
           $PY -m pytest \
@@ -417,6 +440,11 @@ jobs:
       # ── 3.1.2 课题13：窥孔前后对比报告 ─────────────────────────────
       - name: Topic 13 peephole compare report
         run: make -s ci-peephole
+
+      # ── 3.1.3 课题12：指令统计基准 ──────────────────────────────────────
+      - name: Topic 12 instruction-counter benchmark
+        run: |
+          timeout 300s $PY benchmarks/bench_inst_counter.py --repeats 20
 
       # ── 3.2 DSL 用例编译 + 模拟基准 ────────────────────────────────────
       - name: DSL case compilation benchmarks
@@ -621,6 +649,11 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/peephole_summary.md ]; then
             cat benchmark_reports/peephole_summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f benchmark_reports/topic12_compare.md ]; then
+            echo "### Topic 12 Instruction Counter Compare" >> $GITHUB_STEP_SUMMARY
+            cat benchmark_reports/topic12_compare.md >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -f benchmark_reports/github_summary.md ]; then
