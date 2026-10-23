@@ -143,6 +143,12 @@ def load_executable(path):
             or type(exe.evidence.get("harts", 1)) is not int
             or exe.evidence.get("harts", 1) != exe.harts):
         raise ValueError("Reused hart count does not match build evidence")
+    mean_policy = exe.evidence.get("mean_policy", "sequential")
+    if not isinstance(mean_policy, str) or mean_policy not in ("sequential", "two-four-lane-last-axis"):
+        raise ValueError("Unsupported reused Mean policy")
+    nonlinear_policy = exe.evidence.get("nonlinear_policy", "libm")
+    if not isinstance(nonlinear_policy, str) or nonlinear_policy not in ("libm", "fp32-reference"):
+        raise ValueError("Unsupported reused nonlinear policy")
     manifest = validate_weight_bundle(exe.bundle_dir, exe.weights)
     if manifest != exe.manifest:
         raise ValueError("Reused weights do not match build manifest")
@@ -197,6 +203,10 @@ def main(argv=None):
     cli.add_argument("--build-timeout", type=float, default=900)
     cli.add_argument("--build-only", action="store_true")
     cli.add_argument("--matmul-policy", choices=("sequential", "blocked_fma"), default="sequential")
+    cli.add_argument("--mean-policy", choices=("sequential", "two-four-lane-last-axis"), default="sequential",
+                     help="FP32 last-axis Mean order; explicit W3 reference component, not its full profile")
+    cli.add_argument("--nonlinear-policy", choices=("libm", "fp32-reference"), default="libm",
+                     help="Explicit FP32 Trig/Sigmoid/Softmax order; default preserves platform libm")
     cli.add_argument("--matmul-tile", choices=("1x4", "2x4", "1x8"), default="1x4",
                      help="MatMul output tile (default: 1x4); 2x4/1x8 require blocked_fma")
     cli.add_argument("--reuse-build", type=Path, help="Local executable.json; verified before every run")
@@ -218,7 +228,8 @@ def main(argv=None):
     report = {"schema_version": 1, "gate": "numeric:qemu-full-qwen3", "passed": False,
               "status": "FAIL", "stage": "initialization", "stages_seconds": {}, "cases": [],
               "harts_requested": requested_harts, "harts": args.harts,
-              "matmul_tile": args.matmul_tile,
+              "matmul_tile": args.matmul_tile, "mean_policy": args.mean_policy,
+              "nonlinear_policy": args.nonlinear_policy,
               "matmul_rhs_layout": args.matmul_rhs_layout,
               "qemu_workspace_layout_requested": args.qemu_workspace_layout,
               "gates": {"build:riscv-full": False, "smoke:qemu-full": False,
@@ -261,6 +272,14 @@ def main(argv=None):
             exe = stage("load_existing_build", lambda: load_executable(args.reuse_build))
             if exe.harts != args.harts:
                 raise ValueError("Reused build hart count differs from requested --harts")
+            if (exe.evidence.get("mean_policy", "sequential") != args.mean_policy
+                    or previous.get("mean_policy", "sequential") != args.mean_policy):
+                raise ValueError("Reused build Mean policy differs from requested --mean-policy; "
+                                 "rebuild the executable")
+            if (exe.evidence.get("nonlinear_policy", "libm") != args.nonlinear_policy
+                    or previous.get("nonlinear_policy", "libm") != args.nonlinear_policy):
+                raise ValueError("Reused build nonlinear policy differs from requested --nonlinear-policy; "
+                                 "rebuild the executable")
             if (exe.evidence.get("matmul_tile", "1x4") != args.matmul_tile
                     or previous.get("matmul_tile", "1x4") != args.matmul_tile):
                 raise ValueError("Reused build MatMul tile differs from requested --matmul-tile; "
@@ -304,6 +323,7 @@ def main(argv=None):
                 initializers=parser.initializers, constant_storage="external",
                 max_constant_bytes=3 * 1024**3, max_workspace_bytes=1024**3,
                 kernel_calls=True, matmul_policy=args.matmul_policy, matmul_tile=args.matmul_tile,
+                mean_policy=args.mean_policy, nonlinear_policy=args.nonlinear_policy,
                 matmul_rhs_layout=args.matmul_rhs_layout,
                 qemu_workspace_layout=args.qemu_workspace_layout).generate())
             report["codegen"] = {"source_bytes": len(artifact.source.encode()),
@@ -313,6 +333,8 @@ def main(argv=None):
                                   "qemu_workspace_buffers": artifact.qemu_workspace_buffers,
                                   "weights": len(artifact.external_weights),
                                   "kernel_calls": artifact.kernel_calls,
+                                  "mean_policy": artifact.mean_policy,
+                                  "nonlinear_policy": artifact.nonlinear_policy,
                                   "matmul_tile": artifact.matmul_tile,
                                   "matmul_rhs_layout": artifact.matmul_rhs_layout,
                                   "matmul_rhs_panels": list(artifact.matmul_rhs_panels),

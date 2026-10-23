@@ -37,6 +37,11 @@ on:
         required: false
         default: false
 
+      run_w5_validation:
+        description: W5 only; mutually exclusive with W3/W4 and skips legacy W1/W2 full runs
+        type: boolean
+        required: false
+        default: false
       run_w4_validation:
         description: Also build and execute one complete W4 RV64 QEMU forward
         type: boolean
@@ -69,20 +74,51 @@ env:
   QWEN3_PY: output/qwen3-probe-venv/bin/python
 
 jobs:
+  validation-selection:
+    name: Validate explicit full-run selection
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject conflicting W5 and legacy full selections
+        env:
+          W5_REQUESTED: ${{ inputs.run_w5_validation }}
+          W3_REQUESTED: ${{ inputs.run_w3_validation }}
+          W4_REQUESTED: ${{ inputs.run_w4_validation }}
+        run: |
+          python3 - <<'PY'
+          import os
+          selected = lambda name: os.environ.get(name, "").casefold() == "true"
+          if selected("W5_REQUESTED") and (os.environ["GITHUB_EVENT_NAME"] != "workflow_dispatch"
+                                          or selected("W3_REQUESTED") or selected("W4_REQUESTED")):
+              raise SystemExit("W5 requires a manual W5-only run; disable W3 and W4 selections")
+          PY
+
+  w5-validation:
+    name: "W5 / explicit container generation only"
+    needs: validation-selection
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_w5_validation }}
+    uses: ./.github/workflows/w4-full-numeric.yml
+    with:
+      run_w5: true
+
   w3-validation:
+    needs: validation-selection
     name: "W3 / explicit full validation"
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_w3_validation }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_w3_validation && !inputs.run_w5_validation }}
     uses: ./.github/workflows/w3-nightly.yml
 
   w4-validation:
+    needs: validation-selection
     name: "W4 / explicit full QEMU validation"
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_w4_validation }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_w4_validation && !inputs.run_w5_validation }}
     uses: ./.github/workflows/w4-full-numeric.yml
     with:
       run_full: true
       case: ${{ inputs.w4_case || 'full_seed_0' }}
 
   llm-deploy:
+    needs: validation-selection
+    if: ${{ !inputs.run_w5_validation }}
     name: "LLM Deploy v1.0 / W1 + W2"
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -128,6 +164,31 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install -v -e ".[all,llm-deploy]"
+
+      - name: W5 official three-round conversation template
+        run: |
+          set -euo pipefail
+          mkdir -p output/w5-multiturn
+          python3 -B -m pytest \
+            tests/test_conversation.py::test_official_three_round_rendering_matches_transformers \
+            -q -p no:cacheprovider --junitxml output/w5-multiturn/tests.xml
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("output/w5-multiturn/tests.xml").getroot()
+          for suffix in ("None", "Give brief answers."):
+              name = f"test_official_three_round_rendering_matches_transformers[{suffix}]"
+              rows = [node for node in root.iter("testcase") if node.get("name") == name]
+              if len(rows) != 1 or any(rows[0].find(tag) is not None for tag in ("skipped", "error", "failure")):
+                  raise SystemExit(f"Official three-round template must execute and pass: {name}")
+          PY
+      - name: Upload W5 conversation template evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w5-multiturn-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: output/w5-multiturn/tests.xml
 
       # ── docs:interfaces / docs:risks ──────────────────────────────────
       - name: "docs:interfaces + docs:risks"
@@ -461,10 +522,11 @@ jobs:
           }
 
   full-qwen3-onnx:
+    needs: validation-selection
     name: "W1 / full Qwen3 ONNX release validation"
     # This fetches the pinned LFS objects and executes the complete FP32 model. It is not
     # counted as a passing gate on PRs where it did not execute.
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && !inputs.run_w5_validation
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -522,6 +584,8 @@ jobs:
 
 
   full-qwen3-frontend:
+    needs: validation-selection
+    if: ${{ !inputs.run_w5_validation }}
     name: "W2 / complete Qwen3 frontend"
     # Required on PRs as well as manual/nightly runs. No full-model ORT or IR inference.
     runs-on: ubuntu-24.04
@@ -580,7 +644,7 @@ jobs:
   w2-acceptance:
     name: "W2 / required acceptance"
     needs: [llm-deploy, full-qwen3-frontend]
-    if: always()
+    if: always() && !inputs.run_w5_validation
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -693,4 +757,36 @@ jobs:
                            "Nightly activation, independent reproduction or team sign-off.\n\n</details>\n")
           if not (passed or not_run):
               raise SystemExit("Explicit W4 validation must actually run and pass")
+          PY
+
+  w5-execution-summary:
+    name: "W5 / explicit execution scope"
+    needs: [validation-selection, w5-validation, llm-deploy, full-qwen3-onnx, full-qwen3-frontend, w3-validation, w4-validation]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the requested W5-only execution
+        env:
+          W5_REQUESTED: ${{ inputs.run_w5_validation }}
+          W5_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          requested = (os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+                       and os.environ.get("W5_REQUESTED", "").casefold() == "true")
+          results = {name: item.get("result") for name, item in json.loads(os.environ["W5_JOB_RESULTS"]).items()}
+          selected = results.get("validation-selection") == "success"
+          passed = requested and selected and results.get("w5-validation") == "success"
+          if requested:
+              passed = passed and all(results.get(name) == "skipped" for name in (
+                  "llm-deploy", "full-qwen3-onnx", "full-qwen3-frontend", "w3-validation", "w4-validation"))
+          not_run = not requested and selected and results.get("w5-validation") == "skipped"
+          label = "PASS" if passed else "NOT RUN" if not_run else "FAIL"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
+              stream.write(f"## W5 execution scope\n\n**{label}** — explicit container generation, three frozen prompts and 24 forwards.\n\n")
+              stream.write("Only the selected W5 path may execute; the reusable workflow requires real small QEMU, "
+                           "official three-round template and full-generation evidence. NOT RUN is not W5 acceptance.\n")
+          if not (passed or not_run):
+              raise SystemExit("Requested W5-only validation must pass without concurrent legacy full runs")
           PY

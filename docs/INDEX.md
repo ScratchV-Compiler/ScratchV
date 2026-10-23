@@ -44,6 +44,7 @@
 | [developer_guide.md](reference/developer_guide.md) | 开发者指南：代码规范、测试、CI |
 | [optimization_guide.md](reference/optimization_guide.md) | 优化指南：从哪里入手、怎么验证 |
 | [verification.md](reference/verification.md) | 验证方法：如何确认编译结果正确 |
+| [W5 生成合同与当前进度](llm-deploy-v1.0/W5/README.md) | Host token 循环、固定参考、完整生成/容器证据与 CI 验收边界 |
 | [CODING_STANDARDS.md](reference/CODING_STANDARDS.md) | 代码风格规范 |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | 贡献指南 |
 

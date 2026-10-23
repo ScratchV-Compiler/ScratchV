@@ -17,6 +17,14 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+W5_REQUIRED = (
+    [f"test_real_qemu_multitoken_reuse_numerics_timeout_and_cancel[{h}]" for h in (1, 4)]
+    + [f"test_explicit_mean_order_rv64_and_context_reuse[{w}-{h}]"
+       for w in (13, 128, 1024) for h in (1, 4)]
+    + [f"test_explicit_mean_overflow_propagates_and_build_remains_reusable[{h}]" for h in (1, 4)]
+    + [f"test_reference_nonlinear_rv64_contexts_and_error_recovery[{h}]" for h in (1, 4)]
+)
+
 PATH = ROOT / ".github/workflows/w4-full-numeric.yml"
 NIGHTLY_PATH = ROOT / ".github/workflows/w4-nightly.yml"
 LLM_PATH = ROOT / ".github/workflows/llm-deploy.yml"
@@ -51,14 +59,16 @@ def _guard(expression, event):
 
 def test_expensive_forward_is_not_automatic_on_pr_or_enabled_as_a_schedule():
     data = workflow()
-    assert set(data["on"]) == {"workflow_call"}
+    assert set(data["on"]) == {"workflow_call", "workflow_dispatch"}
     run_full = data["on"]["workflow_call"]["inputs"]["run_full"]
     assert run_full["type"] == "boolean" and run_full["default"] == "false"
     assert data["permissions"] == {"contents": "read"}
     assert data["concurrency"]["cancel-in-progress"] == "false"
     full = data["jobs"]["full-numeric"]
     assert full["needs"] == "unit"
-    assert full["if"] == "${{ inputs.run_full }}"
+    assert full["if"] == ("${{ !inputs.run_w5 && inputs.mode != 'w5-generation' && "
+                          "(inputs.run_full || (github.event_name == 'workflow_dispatch' "
+                          "&& inputs.mode == 'w4-forward')) }}")
     assert "if" not in data["jobs"]["unit"]
 
 
@@ -86,7 +96,8 @@ def test_same_ref_unit_and_full_calls_do_not_share_a_concurrency_group():
     assert "${{ inputs.run_full && 'full' || 'unit' }}" in group
     assert concurrency["cancel-in-progress"] == "false"
     fixed = group.replace("${{ github.ref }}", "refs/heads/candidate").replace(
-        "${{ inputs.case || 'full_seed_0' }}", "full_seed_0")
+        "${{ inputs.case || 'full_seed_0' }}", "full_seed_0").replace(
+        "${{ inputs.run_w5 && 'w5' || inputs.mode || 'call' }}", "call")
     unit = fixed.replace("${{ inputs.run_full && 'full' || 'unit' }}", "unit")
     full = fixed.replace("${{ inputs.run_full && 'full' || 'unit' }}", "full")
     assert unit != full and "${{" not in unit + full
@@ -104,20 +115,21 @@ def test_registered_llm_entry_calls_same_commit_w4_without_changing_w3_or_pr_def
     assert inputs["w4_case"]["options"] == ["full_seed_0", "full_seed_42", "one_token",
                                           "short_17", "short_255", "changed_future", "changed_padding"]
     w4 = data["jobs"]["w4-validation"]
-    assert w4["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.run_w4_validation }}"
+    assert w4["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.run_w4_validation && !inputs.run_w5_validation }}"
     assert w4["uses"] == "./.github/workflows/w4-full-numeric.yml"
     assert w4["with"] == {"run_full": "true", "case": "${{ inputs.w4_case || 'full_seed_0' }}"}
     assert "continue-on-error" not in w4
     for event in ("pull_request", "schedule", "workflow_dispatch"):
         for enabled in (False, True):
             guard = w4["if"].removeprefix("${{").removesuffix("}}")
-            event_guard, flag = guard.split("&&")
+            event_guard, flag, w5_guard = guard.split("&&")
             allowed = _guard(event_guard, event) and enabled
             assert flag.strip() == "inputs.run_w4_validation"
+            assert w5_guard.strip() == "!inputs.run_w5_validation"
             assert allowed is (event == "workflow_dispatch" and enabled)
     assert inputs["run_w3_validation"]["default"] == "false"
     w3 = data["jobs"]["w3-validation"]
-    assert w3["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.run_w3_validation }}"
+    assert w3["if"] == "${{ github.event_name == 'workflow_dispatch' && inputs.run_w3_validation && !inputs.run_w5_validation }}"
     assert w3["uses"] == "./.github/workflows/w3-nightly.yml"
     assert data["jobs"]["w2-acceptance"]["needs"] == ["llm-deploy", "full-qwen3-frontend"]
     assert data["permissions"] == {"contents": "read"}
@@ -309,7 +321,7 @@ def test_actual_ci_report_gate_rejects_false_or_incomplete_acceptance(tmp_path, 
     "test_post_execution_transport_corruption_fails_and_retains_copies",
     "test_success_copy_cleanup_failure_is_not_a_pass",
     "test_actual_shared_library_executes_kernel_calls_and_unloads[sequential]",
-    "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]"])
+    "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]"] + W5_REQUIRED)
 def test_actual_junit_gate_requires_real_qemu_execution(tmp_path, result, required):
     folder = tmp_path / "output/w4-unit"
     folder.mkdir(parents=True)
@@ -330,7 +342,7 @@ def test_actual_junit_gate_requires_real_qemu_execution(tmp_path, result, requir
                  "test_post_execution_transport_corruption_fails_and_retains_copies",
                  "test_success_copy_cleanup_failure_is_not_a_pass",
                  "test_actual_shared_library_executes_kernel_calls_and_unloads[sequential]",
-                 "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]"):
+                 "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]") + tuple(W5_REQUIRED):
         if name != required:
             case += f'<testcase name="{name}"/>'
     (folder / "tests.xml").write_text(f"<testsuite>{case}</testsuite>", encoding="utf-8")
@@ -556,7 +568,7 @@ def test_ci_summary_actual_bash_failure_matrix(bash, tmp_path, event, requested,
     enabled = requested == "true"
     expected = unit == "success" and full == ("success" if enabled else "skipped")
     env = dict(os.environ, GITHUB_EVENT_NAME=event, UNIT_RESULT=unit, FULL_NUMERIC_RESULT=full,
-               FULL_REQUESTED=requested,
+               FULL_REQUESTED=requested, W5_REQUESTED="false", W5_GENERATION_RESULT="skipped",
                SELECTED_CASE="full_seed_0", GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1",
                GITHUB_STEP_SUMMARY=(tmp_path / "summary.md").as_posix())
     script = step("Record W4 CI result without promoting skipped gates")["run"].replace("python3 -", '"' + sys.executable.replace("\\", "/") + '" -')
@@ -593,7 +605,7 @@ def test_nightly_summary_preserves_disabled_and_rejects_every_missing_gate(bash,
 
 
 def test_failure_summaries_keep_json_artifacts_and_all_prerequisites():
-    for path, jobname, needs in ((PATH, "ci-status", ["unit", "full-numeric"]),
+    for path, jobname, needs in ((PATH, "ci-status", ["unit", "full-numeric", "w5-generation"]),
                                (NIGHTLY_PATH, "nightly-status", "full-numeric")):
         job = workflow(path)["jobs"][jobname]
         assert job["if"] == "${{ always() }}" and job["needs"] == needs
@@ -602,3 +614,257 @@ def test_failure_summaries_keep_json_artifacts_and_all_prerequisites():
         assert uploads[0]["with"]["if-no-files-found"] == "error"
         assert uploads[0]["with"]["path"].endswith("/status.json")
         assert all("continue-on-error" not in s for s in job["steps"])
+
+
+def _full_enabled(expression, event, mode, legacy, run_w5=False):
+    # Evaluate only the fixed, repository-owned workflow boolean expressions.
+    expression = expression.removeprefix("${{").removesuffix("}}").strip()
+    for key, value in (("github.event_name", event), ("inputs.mode", mode), ("inputs.run_full", legacy), ("inputs.run_w5", run_w5)):
+        expression = expression.replace(key, repr(value))
+    return bool(eval(re.sub(r"!(?!=)", " not ", expression.replace("&&", " and ").replace("||", " or ")),
+                     {"__builtins__": {}}))
+
+
+@pytest.mark.parametrize("event,mode,legacy,w4,w5", [
+    ("pull_request", "small", False, False, False),
+    ("pull_request", "w5-generation", False, False, False),
+    ("schedule", "w5-generation", False, False, False),
+    ("workflow_dispatch", "small", False, False, False),
+    ("workflow_dispatch", "w4-forward", False, True, False),
+    ("workflow_dispatch", "w5-generation", False, False, True),
+    ("workflow_call", "", True, True, False),
+    ("workflow_dispatch", "", True, True, False),  # Existing LLM Deploy caller.
+    ("schedule", "", True, True, False),  # Existing opt-in W4 nightly caller.
+    ("workflow_dispatch", "w5-generation", True, False, False),
+])
+def test_w5_manual_selection_is_exclusive_and_old_callers_remain(event, mode, legacy, w4, w5):
+    data = workflow()
+    choice = data["on"]["workflow_dispatch"]["inputs"]["mode"]
+    assert choice == {"description": "Small regressions by default; full modes are mutually exclusive",
+                      "type": "choice", "default": "small",
+                      "options": ["small", "w4-forward", "w5-generation"]}
+    assert _full_enabled(data["jobs"]["full-numeric"]["if"], event, mode, legacy) is w4
+    assert _full_enabled(data["jobs"]["w5-generation"]["if"], event, mode, legacy) is w5
+    assert not (w4 and w5)
+    assert set(data["on"]["workflow_call"]["inputs"]) == {"run_full", "run_w5", "case"}
+    assert "schedule" not in data["on"] and "pull_request" not in data["on"]
+
+
+def test_w5_manual_job_reuses_deployment_and_preserves_bounded_full_scope():
+    job = workflow()["jobs"]["w5-generation"]
+    assert job["needs"] == "unit"
+    run = step("Run the frozen W5 suite through the deployment script")
+    assert "bash scripts/deploy_w5.sh" in run["run"] and "--reference-suite" in run["run"]
+    assert "--model /assets/onnx/model.onnx" in run["run"]
+    assert "--verify-onnx /assets/onnx/model.onnx" in run["run"]
+    for flag in ("--harts 4", "--matmul-policy blocked_fma", "--matmul-tile 2x4",
+                 "--matmul-rhs-layout column-panel", "--mean-policy two-four-lane-last-axis",
+                 "--nonlinear-policy fp32-reference"):
+        assert flag in run["run"]
+    assert "probes.w4_qwen3_full.run" not in run["run"] and "--max-new-tokens" not in run["run"]
+    guest = int(re.search(r"--total-timeout (\d+)", run["run"]).group(1))
+    outer = int(re.search(r"--kill-after=30s (\d+)m", run["run"]).group(1))
+    assert 10540 < guest < outer * 60 < int(run["timeout-minutes"]) * 60
+    assert int(run["timeout-minutes"]) + 40 <= int(job["timeout-minutes"]) <= 360
+    bounded_steps = sum(int(item.get("timeout-minutes", 0)) for item in job["steps"])
+    assert bounded_steps + 10 <= int(job["timeout-minutes"])  # setup, diagnostics and artifact upload
+    assert job["steps"].index(step("Build the clean W5 deployment image")) < job["steps"].index(run)
+    assert job["steps"].index(step("Acquire only the fixed W5 ONNX and tokenizer assets")) < job["steps"].index(run)
+    upload = step("Upload W5 reports and failure diagnostics only")
+    assert upload["if"] == "always()" and upload["with"]["retention-days"] == "30"
+    assert not any(suffix in upload["with"]["path"] for suffix in (".bin", ".npy", ".onnx", ".elf", ".zip"))
+    gate = step("Require complete W5 generation evidence")
+    assert gate["if"] == "always()" and "scripts/check_w5_ci.py" in gate["run"]
+    assert "--exit-code-file output/w5-ci/runner-exit-code.txt" in gate["run"]
+    assert all("continue-on-error" not in item for item in job["steps"])
+
+
+@pytest.mark.parametrize("exit_code", [0, 1, 124, 130, 143])
+def test_w5_deployment_pipeline_preserves_actual_exit(bash, tmp_path, exit_code):
+    (tmp_path / "output/w5-ci").mkdir(parents=True)
+    script = step("Run the frozen W5 suite through the deployment script")["run"]
+    wrapper = 'timeout() { printf "%s\\n" "$@" > "$ARG_LOG"; return "$MOCK_EXIT"; }\n'
+    capture = tmp_path / "arguments.txt"
+    result = subprocess.run([bash, "--noprofile", "--norc", "-c", wrapper + script], cwd=tmp_path,
+        env=dict(os.environ, ARG_LOG=str(capture), MOCK_EXIT=str(exit_code)), capture_output=True, text=True)
+    assert result.returncode == exit_code, result.stderr
+    assert int((tmp_path / "output/w5-ci/runner-exit-code.txt").read_text()) == exit_code
+    args = capture.read_text().splitlines()
+    assert "scripts/deploy_w5.sh" in args and "--reference-suite" in args
+    assert args[args.index("--total-timeout") + 1] == "16500"
+
+
+@pytest.mark.parametrize("cpus,ram,disk,passed", [
+    (4, 10, 10, True), (8, 16, 30, True),
+    (3, 16, 30, False), (4, 9, 30, False), (4, 16, 9, False)])
+def test_w5_resource_shortfall_fails_before_generation(tmp_path, monkeypatch, cpus, ram, disk, passed):
+    (tmp_path / "output/w5-ci").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _: set(range(cpus)))
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: SimpleNamespace(free=disk * 1024**3))
+    real_read = Path.read_text
+    def memory(path, *args, **kwargs):
+        if path.as_posix() == "/proc/meminfo":
+            return f"MemTotal: 16777216 kB\\nMemAvailable: {ram * 1024**2} kB\\n".replace("\\n", "\n")
+        return real_read(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", memory)
+    code = python_body("Require four CPUs and capacity for 24 retained logits")
+    if passed:
+        exec(compile(code, "w5-resource-preflight", "exec"), {})
+    else:
+        with pytest.raises(SystemExit, match="generation NOT RUN"):
+            exec(compile(code, "w5-resource-preflight", "exec"), {})
+    row = json.loads((tmp_path / "output/w5-ci/resource-preflight.json").read_text())
+    assert row["passed"] is passed and row["available_cpus"] == cpus
+
+
+@pytest.mark.parametrize("unit,full,w5,requested,expected", [
+    ("success", "skipped", "success", "true", True),
+    ("success", "skipped", "skipped", "false", True),
+    ("success", "skipped", "skipped", "true", False),
+    ("success", "skipped", "failure", "true", False),
+    ("success", "skipped", "cancelled", "true", False),
+    ("success", "skipped", "", "true", False),
+    ("failure", "skipped", "success", "true", False),
+    ("cancelled", "skipped", "success", "true", False),
+    ("skipped", "skipped", "success", "true", False),
+    ("success", "success", "success", "true", False),
+    ("success", "skipped", "success", "false", False),
+])
+def test_w5_summary_cannot_promote_skip_or_duplicate_full_execution(
+        tmp_path, unit, full, w5, requested, expected):
+    (tmp_path / "output/w4-status").mkdir(parents=True)
+    env = dict(os.environ, UNIT_RESULT=unit, FULL_NUMERIC_RESULT=full, W5_GENERATION_RESULT=w5,
+               FULL_REQUESTED="false", W5_REQUESTED=requested, SELECTED_CASE="full_seed_0",
+               GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1",
+               GITHUB_STEP_SUMMARY=str(tmp_path / "summary.md"))
+    result = subprocess.run([sys.executable, "-c", python_body("Record W4 CI result without promoting skipped gates")],
+                            cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert (result.returncode == 0) is expected, result.stderr
+    row = json.loads((tmp_path / "output/w4-status/status.json").read_text())
+    assert row["w5_generation_accepted"] is (expected and requested == "true")
+    assert row["full_numeric_accepted"] is False
+
+
+@pytest.mark.parametrize("event,w5,w3,w4,passed", [
+    ("workflow_dispatch", True, False, False, True),
+    ("workflow_dispatch", True, True, False, False),
+    ("workflow_dispatch", True, False, True, False),
+    ("workflow_dispatch", True, True, True, False),
+    ("workflow_dispatch", False, True, True, True),
+    ("pull_request", False, False, False, True),
+    ("schedule", False, False, False, True),
+    ("schedule", True, False, False, False),
+])
+def test_registered_entry_rejects_conflicts_before_any_expensive_job(tmp_path, event, w5, w3, w4, passed):
+    data = workflow(LLM_PATH)
+    choice = data["on"]["workflow_dispatch"]["inputs"]["run_w5_validation"]
+    assert choice["type"] == "boolean" and choice["default"] == "false"
+    caller = data["jobs"]["w5-validation"]
+    assert caller["uses"] == "./.github/workflows/w4-full-numeric.yml"
+    assert caller["with"] == {"run_w5": "true"}
+    for name in ("w5-validation", "w3-validation", "w4-validation", "llm-deploy",
+                 "full-qwen3-onnx", "full-qwen3-frontend"):
+        assert data["jobs"][name]["needs"] == "validation-selection"
+    for name in ("llm-deploy", "full-qwen3-onnx", "full-qwen3-frontend", "w2-acceptance"):
+        assert "!inputs.run_w5_validation" in data["jobs"][name]["if"]
+    result = subprocess.run([sys.executable, "-c", python_body("Reject conflicting W5 and legacy full selections", LLM_PATH)],
+        cwd=tmp_path, env=dict(os.environ, GITHUB_EVENT_NAME=event, W5_REQUESTED=str(w5).lower(),
+                             W3_REQUESTED=str(w3).lower(), W4_REQUESTED=str(w4).lower()),
+        capture_output=True, text=True)
+    assert (result.returncode == 0) is passed, result.stderr
+
+
+@pytest.mark.parametrize("event,mode,legacy,w5,allowed", [
+    ("workflow_dispatch", "", False, True, True),
+    ("workflow_dispatch", "small", False, False, True),
+    ("workflow_dispatch", "w5-generation", False, False, True),
+    ("workflow_dispatch", "", True, False, True),
+    ("schedule", "", True, False, True),
+    ("workflow_dispatch", "", True, True, False),
+    ("workflow_dispatch", "w4-forward", False, True, False),
+    ("workflow_dispatch", "w5-generation", True, False, False),
+    ("pull_request", "", False, True, False),
+    ("schedule", "", False, True, False),
+])
+def test_reusable_w5_input_is_manual_and_mutually_exclusive(tmp_path, event, mode, legacy, w5, allowed):
+    data = workflow()
+    option = data["on"]["workflow_call"]["inputs"]["run_w5"]
+    assert option["type"] == "boolean" and option["default"] == "false"
+    unit = data["jobs"]["unit"]
+    first = unit["steps"][0]
+    assert first["name"] == "Reject conflicting or nonmanual full-generation selections"
+    result = subprocess.run([sys.executable, "-c", python_body(first["name"])], cwd=tmp_path,
+        env=dict(os.environ, GITHUB_EVENT_NAME=event, RUN_MODE=mode,
+                 W5_REQUESTED=str(w5).lower(), W4_REQUESTED=str(legacy).lower()),
+        capture_output=True, text=True)
+    assert (result.returncode == 0) is allowed, result.stderr
+    w4_enabled = _full_enabled(data["jobs"]["full-numeric"]["if"], event, mode, legacy, w5)
+    w5_enabled = _full_enabled(data["jobs"]["w5-generation"]["if"], event, mode, legacy, w5)
+    assert not (w4_enabled and w5_enabled)
+    if w5 and allowed:
+        assert w5_enabled and not w4_enabled
+    if not allowed:
+        assert not w5_enabled and not w4_enabled
+
+
+@pytest.mark.parametrize("selection,result,legacy,requested,expected", [
+    ("success", "success", "skipped", "true", "PASS"),
+    ("success", "skipped", "skipped", "true", "FAIL"),
+    ("success", "cancelled", "skipped", "true", "FAIL"),
+    ("success", "failure", "skipped", "true", "FAIL"),
+    ("failure", "skipped", "skipped", "true", "FAIL"),
+    ("cancelled", "skipped", "skipped", "true", "FAIL"),
+    ("success", "success", "success", "true", "FAIL"),
+    ("success", "success", "failure", "true", "FAIL"),
+    ("success", "success", "cancelled", "true", "FAIL"),
+    ("success", "skipped", "success", "false", "NOT RUN"),
+    ("success", "success", "skipped", "false", "FAIL"),
+])
+def test_w5_entry_summary_requires_success_and_no_legacy_execution(
+        tmp_path, selection, result, legacy, requested, expected):
+    job = workflow(LLM_PATH)["jobs"]["w5-execution-summary"]
+    assert job["if"] == "always()"
+    results = {name: {"result": legacy} for name in job["needs"]}
+    results["validation-selection"] = {"result": selection}
+    results["w5-validation"] = {"result": result}
+    summary = tmp_path / "summary.md"
+    completed = subprocess.run([sys.executable, "-c", python_body("Require the requested W5-only execution", LLM_PATH)],
+        cwd=tmp_path, env=dict(os.environ, GITHUB_EVENT_NAME="workflow_dispatch", W5_REQUESTED=requested,
+                             W5_JOB_RESULTS=json.dumps(results), GITHUB_STEP_SUMMARY=str(summary)),
+        capture_output=True, text=True)
+    assert (completed.returncode == 0) is (expected != "FAIL"), completed.stderr
+    assert f"**{expected}**" in summary.read_text()
+
+
+@pytest.mark.parametrize("suffix", ["None", "Give brief answers."])
+@pytest.mark.parametrize("outcome", ["pass", "skipped", "failure", "error", "missing", "duplicate"])
+def test_w5_only_template_gate_uses_existing_image_and_rejects_missing_execution(tmp_path, suffix, outcome):
+    import xml.etree.ElementTree as ET
+    item = step("Require the official three-round template in the clean W5 image")
+    command = item["run"]
+    assert "docker run --rm --init" in command and '"$SCRATCHV_W5_IMAGE"' in command
+    assert "SCRATCHV_QWEN3_TOKENIZER_DIR=/assets/tokenizer" in command
+    assert "dst=/tmp/test_conversation.py,readonly" in command
+    assert "--reference-suite" not in command and "scripts/run_inference.py" not in command
+    assert "pip install" not in command and "docker build" not in command
+    job = workflow()["jobs"]["w5-generation"]
+    assert job["steps"].index(step("Acquire only the fixed W5 ONNX and tokenizer assets")) < job["steps"].index(item)
+    assert job["steps"].index(item) < job["steps"].index(step("Run the frozen W5 suite through the deployment script"))
+    suite = ET.Element("testsuite")
+    for current in ("None", "Give brief answers."):
+        if current == suffix and outcome == "missing":
+            continue
+        name = f"test_official_three_round_rendering_matches_transformers[{current}]"
+        row = ET.SubElement(suite, "testcase", name=name)
+        if current == suffix:
+            if outcome in ("skipped", "failure", "error"):
+                ET.SubElement(row, outcome)
+            elif outcome == "duplicate":
+                ET.SubElement(suite, "testcase", name=name)
+    target = tmp_path / "output/w5-ci/multiturn-tests.xml"
+    target.parent.mkdir(parents=True)
+    ET.ElementTree(suite).write(target)
+    result = subprocess.run([sys.executable, "-c", python_body(item["name"])], cwd=tmp_path,
+                            capture_output=True, text=True)
+    assert (result.returncode == 0) is (outcome == "pass"), result.stderr

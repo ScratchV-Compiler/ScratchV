@@ -1,8 +1,35 @@
-name: W4 full RV64 numeric
+name: W4 and W5 RV64 validation
 
 on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Small regressions by default; full modes are mutually exclusive
+        type: choice
+        default: small
+        options:
+          - small
+          - w4-forward
+          - w5-generation
+      case:
+        description: W4-only case; ignored by the frozen W5 three-prompt suite
+        type: choice
+        default: full_seed_0
+        options:
+          - full_seed_0
+          - full_seed_42
+          - one_token
+          - short_17
+          - short_255
+          - changed_future
+          - changed_padding
   workflow_call:
     inputs:
+      run_w5:
+        description: Explicit manual W5-only generation from an existing dispatch entry
+        type: boolean
+        required: false
+        default: false
       run_full:
         description: Explicitly execute one complete QEMU forward; false runs only unit and small QEMU regressions
         type: boolean
@@ -18,7 +45,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: w4-full-numeric-${{ github.ref }}-${{ inputs.run_full && 'full' || 'unit' }}-${{ inputs.case || 'full_seed_0' }}
+  group: w4-full-numeric-${{ github.ref }}-${{ inputs.run_full && 'full' || 'unit' }}-${{ inputs.case || 'full_seed_0' }}-${{ inputs.run_w5 && 'w5' || inputs.mode || 'call' }}
   cancel-in-progress: false
 
 env:
@@ -33,6 +60,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
+      - name: Reject conflicting or nonmanual full-generation selections
+        env:
+          W5_REQUESTED: ${{ inputs.run_w5 }}
+          W4_REQUESTED: ${{ inputs.run_full }}
+          RUN_MODE: ${{ inputs.mode }}
+        run: |
+          python3 - <<'PY'
+          import os
+          w5 = os.environ.get("W5_REQUESTED", "").casefold() == "true" or os.environ.get("RUN_MODE") == "w5-generation"
+          w4 = os.environ.get("W4_REQUESTED", "").casefold() == "true" or os.environ.get("RUN_MODE") == "w4-forward"
+          if w5 and (w4 or os.environ["GITHUB_EVENT_NAME"] != "workflow_dispatch"):
+              raise SystemExit("W5 must be explicitly manual and cannot share a run with W4 full inference")
+          PY
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -79,6 +119,8 @@ jobs:
             tests/test_w4_fma_conformance.py tests/test_w4_fma_cross_backend.py \
             tests/test_riscv_process_cleanup.py \
             tests/test_riscv_weight_transport.py \
+            tests/test_qemu_generation.py::test_real_qemu_multitoken_reuse_numerics_timeout_and_cancel \
+            tests/test_riscv_mean_policy.py tests/test_riscv_nonlinear_policy.py \
             tests/test_w4_workflows.py tests/test_w4_ci_summary.py \
             -q -p no:cacheprovider --basetemp output/w4-unit/pytest \
             --junitxml output/w4-unit/tests.xml
@@ -96,7 +138,19 @@ jobs:
                       "test_post_execution_transport_corruption_fails_and_retains_copies",
                       "test_success_copy_cleanup_failure_is_not_a_pass",
                       "test_actual_shared_library_executes_kernel_calls_and_unloads[sequential]",
-                      "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]")
+                      "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]",
+                      "test_real_qemu_multitoken_reuse_numerics_timeout_and_cancel[1]",
+                      "test_real_qemu_multitoken_reuse_numerics_timeout_and_cancel[4]",
+                      "test_explicit_mean_order_rv64_and_context_reuse[13-1]",
+                      "test_explicit_mean_order_rv64_and_context_reuse[13-4]",
+                      "test_explicit_mean_order_rv64_and_context_reuse[128-1]",
+                      "test_explicit_mean_order_rv64_and_context_reuse[128-4]",
+                      "test_explicit_mean_order_rv64_and_context_reuse[1024-1]",
+                      "test_explicit_mean_order_rv64_and_context_reuse[1024-4]",
+                      "test_explicit_mean_overflow_propagates_and_build_remains_reusable[1]",
+                      "test_explicit_mean_overflow_propagates_and_build_remains_reusable[4]",
+                      "test_reference_nonlinear_rv64_contexts_and_error_recovery[1]",
+                      "test_reference_nonlinear_rv64_contexts_and_error_recovery[4]")
           for name in required:
               real = [node for node in root.iter("testcase") if node.get("name") == name]
               if len(real) != 1 or any(real[0].find(tag) is not None for tag in ("skipped", "error", "failure")):
@@ -128,8 +182,8 @@ jobs:
   full-numeric:
     name: One complete Qwen3 RV64 forward
     needs: unit
-    # Caller event alone never enables the expensive full-model forward.
-    if: ${{ inputs.run_full }}
+    # Keep old reusable callers; a direct manual dispatch chooses only one full mode.
+    if: ${{ !inputs.run_w5 && inputs.mode != 'w5-generation' && (inputs.run_full || (github.event_name == 'workflow_dispatch' && inputs.mode == 'w4-forward')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     env:
@@ -393,16 +447,197 @@ jobs:
             output/w4-ci/**/input.npy
             output/w4-ci/evidence-retention.json
 
+  w5-generation:
+    name: Manual W5 three-prompt generation in a clean container
+    needs: unit
+    # Never automatic, and never paired with the W4 complete forward.
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.run_w5 || inputs.mode == 'w5-generation') && !inputs.run_full && inputs.mode != 'w4-forward' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      SCRATCHV_W5_IMAGE: scratchv-w5:${{ github.run_id }}-${{ github.run_attempt }}
+      SCRATCHV_W5_ASSETS: ${{ github.workspace }}/output/w5-assets
+      SCRATCHV_W5_OUTPUT: ${{ github.workspace }}/output/w5-ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          lfs: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Record W5 runner resources before installation
+        run: |
+          set -euo pipefail
+          mkdir -p output/w5-ci
+          {
+            printf 'commit=%s\nrun_id=%s\nattempt=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            cat /etc/os-release
+            uname -a
+            lscpu
+            free -b
+            df -B1 .
+            docker version
+          } > output/w5-ci/runner-resources.txt
+      - name: Build the clean W5 deployment image
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          docker build --file deployment/w5/Dockerfile \
+            --build-arg BASE_IMAGE=ubuntu:24.04 --tag "$SCRATCHV_W5_IMAGE" .
+          docker image inspect "$SCRATCHV_W5_IMAGE" > output/w5-ci/container-image.json
+          docker run --rm --entrypoint python "$SCRATCHV_W5_IMAGE" -m pip freeze \
+            > output/w5-ci/dependencies.txt
+          docker run --rm --entrypoint qemu-system-riscv64 "$SCRATCHV_W5_IMAGE" --version \
+            >> output/w5-ci/runner-resources.txt
+      - name: Acquire only the fixed W5 ONNX and tokenizer assets
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          git lfs install --local
+          git lfs pull --include="assets/qwen3-0.6b/tokenizer/*" --exclude=""
+          python - <<'PY'
+          import json, shutil
+          from pathlib import Path
+          from probes.w1_qwen3_export.run import acquire_model
+          assets = Path("output/w5-assets")
+          result = acquire_model(assets / "onnx")
+          shutil.copytree("assets/qwen3-0.6b/tokenizer", assets / "tokenizer")
+          Path("output/w5-ci/acquisition.json").write_text(json.dumps(result, indent=2) + "\n")
+          PY
+      - name: Require the official three-round template in the clean W5 image
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker run --rm --init --user "$(id -u):$(id -g)" --env HOME=/tmp \
+            --env SCRATCHV_QWEN3_TOKENIZER_DIR=/assets/tokenizer \
+            --mount "type=bind,src=$SCRATCHV_W5_ASSETS,dst=/assets,readonly" \
+            --mount "type=bind,src=$SCRATCHV_W5_OUTPUT,dst=/output" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/tests/test_conversation.py,dst=/tmp/test_conversation.py,readonly" \
+            --entrypoint python "$SCRATCHV_W5_IMAGE" \
+            -m pytest -q -c /dev/null -p no:cacheprovider \
+            /tmp/test_conversation.py::test_official_three_round_rendering_matches_transformers \
+            --junitxml /output/multiturn-tests.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("output/w5-ci/multiturn-tests.xml").getroot()
+          for suffix in ("None", "Give brief answers."):
+              name = f"test_official_three_round_rendering_matches_transformers[{suffix}]"
+              rows = [node for node in root.iter("testcase") if node.get("name") == name]
+              if len(rows) != 1 or any(rows[0].find(tag) is not None for tag in ("skipped", "error", "failure")):
+                  raise SystemExit(f"Official three-round template must execute and pass: {name}")
+          PY
+      - name: Require four CPUs and capacity for 24 retained logits
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          mem = {line.split(":")[0]: int(line.split()[1]) * 1024
+                 for line in Path("/proc/meminfo").read_text().splitlines()
+                 if line.startswith(("MemTotal:", "MemAvailable:"))}
+          evidence = {"stage": "after_image_and_assets",
+                      "available_cpus": len(os.sched_getaffinity(0)), "memory": mem,
+                      "disk_free_bytes": shutil.disk_usage(".").free,
+                      "minimum_available_cpus": 4,
+                      "minimum_available_memory_bytes": 10 * 1024**3,
+                      "minimum_disk_free_bytes": 10 * 1024**3,
+                      "estimated_remaining_payload_bytes": 2 * 2384319432 + 24 * 256 * 151936 * 4,
+                      "estimate_scope": "Bundle plus one temporary transport copy and all 24 logits, excluding build/cache/log overhead; image/assets already exist."}
+          evidence["passed"] = (evidence["available_cpus"] >= evidence["minimum_available_cpus"]
+                                and mem.get("MemAvailable", 0) >= evidence["minimum_available_memory_bytes"]
+                                and evidence["disk_free_bytes"] >= evidence["minimum_disk_free_bytes"])
+          Path("output/w5-ci/resource-preflight.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          if not evidence["passed"]:
+              raise SystemExit("Insufficient W5 CPU/RAM/disk; generation NOT RUN. See resource-preflight.json")
+          PY
+      - name: Run the frozen W5 suite through the deployment script
+        id: generation
+        timeout-minutes: 285
+        run: |
+          set -euo pipefail
+          # Image preparation above owns dependency installation. The original
+          # deploy entry verifies its build using the same now-cached image.
+          set +e
+          timeout --signal=INT --kill-after=30s 280m \
+            /usr/bin/time -v -o output/w5-ci/process-time.txt \
+            bash scripts/deploy_w5.sh \
+              --model /assets/onnx/model.onnx --tokenizer-dir /assets/tokenizer \
+              --reference-suite --verify-onnx /assets/onnx/model.onnx \
+              --harts 4 --matmul-policy blocked_fma --matmul-tile 2x4 \
+              --matmul-rhs-layout column-panel \
+              --mean-policy two-four-lane-last-axis --nonlinear-policy fp32-reference \
+              --timeout 1800 --total-timeout 16500 \
+              2>&1 | tee output/w5-ci/runner.log
+          status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$status" > output/w5-ci/runner-exit-code.txt
+          exit "$status"
+      - name: Reap any container left by an interrupted Docker client
+        if: always()
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          # This tag belongs only to this run/attempt; never stop unrelated containers.
+          containers=$(docker ps --quiet --filter "ancestor=$SCRATCHV_W5_IMAGE")
+          for container in $containers; do
+            docker stop --time 30 "$container"
+          done
+          test -z "$(docker ps --quiet --filter "ancestor=$SCRATCHV_W5_IMAGE")"
+      - name: Require complete W5 generation evidence
+        id: w5_gate
+        if: always()
+        run: |
+          python -B -X utf8 scripts/check_w5_ci.py \
+            --report output/w5-ci/run/report.json \
+            --exit-code-file output/w5-ci/runner-exit-code.txt \
+            --output output/w5-ci/ci-gate.json
+      - name: Record final W5 resource and retention scope
+        if: always()
+        run: |
+          mkdir -p output/w5-ci
+          { free -b; df -B1 .; } > output/w5-ci/final-resources.txt
+          cat > output/w5-ci/evidence-retention.json <<'JSON'
+          {
+            "reports_retention_days": 30,
+            "raw_logits_uploaded": false,
+            "weights_uploaded": false,
+            "scope": "Three frozen raw-completion prompts, eight greedy tokens each; one ELF/bundle, 4 hart, explicit Mean and nonlinear reference policies, padding off.",
+            "container_scope": "The original deployment script exit, CLI gate and workflow job together establish container acceptance. CLI container_reproduction=NOT_ASSERTED is preserved.",
+            "timing_scope": "GNU time measures the Docker client, not container CPU/RSS; per-forward QEMU elapsed/RSS evidence is in run.json. This CI run is not a calibrated speedup benchmark.",
+            "failure_scope": "Normal failures retain reports. Runner loss, hard job timeout or cancellation can prevent cleanup and artifact upload.",
+            "defaults_changed": false
+          }
+          JSON
+      - name: Upload W5 reports and failure diagnostics only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w5-generation-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            output/w5-ci/**/*.xml
+            output/w5-ci/**/*.json
+            output/w5-ci/**/*.txt
+            output/w5-ci/**/*.log
+            output/w5-ci/**/*.stderr
+            output/w5-ci/**/*.stdout
+            !output/w5-ci/.zig-cache/**
+
   ci-status:
-    name: Summarize W4 gates, including failed or skipped dependencies
+    name: Summarize W4/W5 gates, including failed or skipped dependencies
     if: ${{ always() }}
-    needs: [unit, full-numeric]
+    needs: [unit, full-numeric, w5-generation]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       UNIT_RESULT: ${{ needs.unit.result }}
       FULL_NUMERIC_RESULT: ${{ needs.full-numeric.result }}
-      FULL_REQUESTED: ${{ inputs.run_full }}
+      FULL_REQUESTED: ${{ !inputs.run_w5 && inputs.mode != 'w5-generation' && (inputs.run_full || (github.event_name == 'workflow_dispatch' && inputs.mode == 'w4-forward')) }}
+      W5_GENERATION_RESULT: ${{ needs.w5-generation.result }}
+      W5_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && (inputs.run_w5 || inputs.mode == 'w5-generation') && !inputs.run_full && inputs.mode != 'w4-forward' }}
       SELECTED_CASE: ${{ inputs.case || 'full_seed_0' }}
     steps:
       - name: Record W4 CI result without promoting skipped gates
@@ -413,29 +648,37 @@ jobs:
           import json, os
           from pathlib import Path
           requested = os.environ.get("FULL_REQUESTED", "").casefold() == "true"
-          unit, full = os.environ["UNIT_RESULT"], os.environ["FULL_NUMERIC_RESULT"]
-          passed = unit == "success" and full == ("success" if requested else "skipped")
+          w5_requested = os.environ.get("W5_REQUESTED", "").casefold() == "true"
+          unit, full, w5 = (os.environ[key] for key in ("UNIT_RESULT", "FULL_NUMERIC_RESULT", "W5_GENERATION_RESULT"))
+          passed = (not (requested and w5_requested) and unit == "success"
+                    and full == ("success" if requested else "skipped")
+                    and w5 == ("success" if w5_requested else "skipped"))
           row = {"schema_version": 1, "passed": passed, "status": "PASS" if passed else "FAIL",
-                 "scope": "One complete RV64 case plus retained-array audit" if requested else "Unit and small-graph regressions only",
+                 "scope": ("Three frozen W5 cases and 24 complete QEMU forwards in the deployment container"
+                           if w5_requested else "One complete RV64 case plus retained-array audit"
+                           if requested else "Unit and small-graph regressions only"),
                  "commit": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"], "case": os.environ["SELECTED_CASE"] if requested else None,
                  "full_numeric_requested": requested,
-                 "job_results": {"unit": unit, "full-numeric": full},
+                 "w5_generation_requested": w5_requested,
+                 "w5_generation_accepted": w5_requested and passed,
+                 "job_results": {"unit": unit, "full-numeric": full, "w5-generation": w5},
                  "full_numeric_accepted": requested and passed, "team_accepted": False,
                  "independent_reproduction": False, "seven_case_coverage": False}
           Path("output/w4-status/status.json").write_text(json.dumps(row, indent=2) + "\n")
           labels = {"success": "PASS", "failure": "FAIL", "cancelled": "CANCELLED", "skipped": "NOT RUN (未运行)"}
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
-              stream.write(f"## W4 CI {row['status']}\n\nCommit: `{row['commit']}`. {row['scope']}.\n\n"
+              stream.write(f"## W4/W5 CI {row['status']}\n\nCommit: `{row['commit']}`. {row['scope']}.\n\n"
                            "| 检查 | 本次结果 |\n| --- | --- |\n"
                            f"| 单测与真实小图 QEMU | {labels.get(unit, 'UNKNOWN')} |\n"
-                           f"| 完整 28 层 QEMU 与数组审计 | {labels.get(full, 'UNKNOWN')} |\n\n"
+                           f"| W4 完整 28 层 QEMU 与数组审计 | {labels.get(full, 'UNKNOWN')} |\n"
+                           f"| W5 容器三例 24 步生成 | {labels.get(w5, 'UNKNOWN')} |\n\n"
                            "数值和耗时见已执行任务的验收摘要；未运行项目没有本次数值结果。\n\n"
                            "<details><summary>验收范围</summary>\n\n"
                            "PR 默认只执行单测与小图，完整前向通过手动工作流运行。"
                            "This does not approve team acceptance or independent reproduction.\n\n</details>\n")
           if not passed:
-              raise SystemExit("Required W4 jobs failed, were cancelled, or did not run")
+              raise SystemExit("Required W4/W5 jobs failed, were cancelled, or did not run")
           PY
       - name: Upload W4 CI status even on gate failure
         if: always()

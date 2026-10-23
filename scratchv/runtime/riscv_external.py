@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import select
+import selectors
 import signal
 import socket
 import stat
@@ -176,6 +177,12 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
     harts = resolve_harts(harts)
     if artifact.constant_storage != "external":
         raise ValueError("External runtime requires external code generation")
+    mean_policy = getattr(artifact, "mean_policy", "sequential")
+    if not isinstance(mean_policy, str) or mean_policy not in ("sequential", "two-four-lane-last-axis"):
+        raise ValueError("Unsupported external Mean policy")
+    nonlinear_policy = getattr(artifact, "nonlinear_policy", "libm")
+    if not isinstance(nonlinear_policy, str) or nonlinear_policy not in ("libm", "fp32-reference"):
+        raise ValueError("Unsupported external nonlinear policy")
     manifest = validate_weight_bundle(bundle_dir, artifact.external_weights)
     _, input_bytes = input_layout(artifact.inputs)
     layout = plan_guest_memory(workspace_bytes=artifact.workspace_bytes,
@@ -233,6 +240,7 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
         raise RuntimeError(result.stderr.decode(errors="replace")[-12000:])
     evidence = validate_external_elf(build_dir / "model.elf", layout)
     evidence.update(compile_seconds=time.perf_counter() - start, command=command, harts=harts,
+                    mean_policy=mean_policy, nonlinear_policy=nonlinear_policy,
                     matmul_tile=artifact.matmul_tile,
                     matmul_rhs_layout=artifact.matmul_rhs_layout,
                     matmul_rhs_panels=list(artifact.matmul_rhs_panels),
@@ -248,9 +256,17 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
                               toolchain, evidence, harts)
 
 
+def _check_cancelled(cancelled):
+    if cancelled is not None and cancelled():
+        from .generation import GenerationCancelledError
+        raise GenerationCancelledError("generation cancelled")
+
+
 class QMP:
     """A bounded localhost QMP client that ignores asynchronous events."""
-    def __init__(self, port, deadline):
+    def __init__(self, port, deadline, *, cancelled=None):
+        self.cancelled = cancelled
+        self.receive_buffer = bytearray()
         self.deadline = deadline
         self.serial = 0
         self.socket = socket.create_connection(("127.0.0.1", port), timeout=self.remaining())
@@ -268,12 +284,15 @@ class QMP:
             raise
 
     def remaining(self):
+        _check_cancelled(getattr(self, "cancelled", None))
         value = self.deadline - time.monotonic()
         if value <= 0:
             raise TimeoutError("QMP deadline exceeded")
         return min(value, 30.0)
 
     def read(self):
+        if getattr(self, "cancelled", None) is not None:
+            return self._read_cancellable()
         self.socket.settimeout(self.remaining())
         line = self.stream.readline(1024 * 1024)
         if not line:
@@ -281,6 +300,34 @@ class QMP:
         if len(line) >= 1024 * 1024 or not line.endswith(b"\n"):
             raise RuntimeError("Truncated/oversized QMP response")
         return json.loads(line)
+
+    def _read_cancellable(self):
+        # A timed-out makefile.readline cannot safely be resumed. Keep partial
+        # lines ourselves and use readiness notifications with bounded abort
+        # checkpoints; no successful frame is delayed by the checkpoint period.
+        limit = 1024 * 1024
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.socket, selectors.EVENT_READ)
+            while True:
+                remaining = self.remaining()
+                newline = self.receive_buffer.find(b"\n")
+                if newline >= 0:
+                    if newline + 1 >= limit:
+                        raise RuntimeError("Truncated/oversized QMP response")
+                    line = bytes(self.receive_buffer[:newline + 1])
+                    del self.receive_buffer[:newline + 1]
+                    return json.loads(line)
+                if len(self.receive_buffer) >= limit:
+                    raise RuntimeError("Truncated/oversized QMP response")
+                if not selector.select(min(remaining, 0.05)):
+                    continue
+                self.socket.settimeout(remaining)
+                chunk = self.socket.recv(min(65536, limit - len(self.receive_buffer)))
+                if not chunk:
+                    if self.receive_buffer:
+                        raise RuntimeError("Truncated/oversized QMP response")
+                    raise EOFError("QMP connection closed before response")
+                self.receive_buffer.extend(chunk)
 
     def command(self, name, arguments=None):
         self.serial += 1
@@ -446,8 +493,9 @@ class _UartCompletionWaiter:
             if mask & (0x400 | 0x800 | 0x8000):
                 raise RuntimeError("UART completion watch lost its directory")
 
-    def wait(self, process, deadline, timeout):
+    def wait(self, process, deadline, timeout, *, cancelled=None):
         while True:
+            _check_cancelled(cancelled)
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"RV64 forward exceeded {timeout}s")
             # Inspect before checking exit: a valid final write may accompany exit.
@@ -483,6 +531,8 @@ class _UartCompletionWaiter:
             poller.register(self.fd, select.POLLIN)
             poller.register(self.pidfd, select.POLLIN)
             timeout_ms = min(2_147_483_647, max(0, deadline - time.monotonic()) * 1000)
+            if cancelled is not None:
+                timeout_ms = min(timeout_ms, 50)
             for fd, events in poller.poll(timeout_ms):
                 if events & select.POLLNVAL:
                     raise OSError(errno.EBADF, "UART completion wait descriptor is invalid")
@@ -550,12 +600,26 @@ class _QemuMemoryMonitor:
         }
 
 
-def run_external(executable, inputs, run_dir, *, timeout=3600.0):
-    """Run a fresh guest, require completion, stop, dump exact output, then quit."""
+def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None):
+    """Run a fresh guest, require completion, stop, dump exact output, then quit.
+
+    An optional cancellation callback is observed during UART/QMP waits and
+    between transport stages. Raising or returning true unwinds process cleanup.
+    Existing event timing remains unchanged without a cancellation callback.
+    """
+    if cancelled is not None and not callable(cancelled):
+        raise TypeError("cancelled must be callable or None")
+    _check_cancelled(cancelled)
     if not np.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be positive and finite")
     harts = validate_harts(getattr(executable, "harts", 1))
     built_harts = validate_harts(executable.evidence.get("harts", 1))
+    mean_policy = executable.evidence.get("mean_policy", "sequential")
+    if not isinstance(mean_policy, str) or mean_policy not in ("sequential", "two-four-lane-last-axis"):
+        raise ValueError("Unsupported executable Mean policy")
+    nonlinear_policy = executable.evidence.get("nonlinear_policy", "libm")
+    if not isinstance(nonlinear_policy, str) or nonlinear_policy not in ("libm", "fp32-reference"):
+        raise ValueError("Unsupported executable nonlinear policy")
     if harts != built_harts or executable.layout["regions"]["stack"]["nbytes"] != harts * MIB:
         raise ValueError("Executable hart count disagrees with its build or stack layout")
     if sha256_file(executable.elf_path) != executable.evidence["sha256"]:
@@ -582,7 +646,7 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
         options["start_new_session"] = True
     started = time.perf_counter()
     report = {"passed": False, "status": "FAIL", "command": command, "timeout_s": timeout,
-              "harts": harts,
+              "harts": harts, "mean_policy": mean_policy, "nonlinear_policy": nonlinear_policy,
               "qemu_workspace_layout": executable.evidence.get("qemu_workspace_layout", "none"),
               "transport": "QMP physical memory dump after guest completion", "guest_completed": False}
     transport_dir = run_dir / "weight-transport"
@@ -604,6 +668,7 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
             path = str(transport_dir / row["file"]).replace(",", ",,")
             command += ["-device", f"loader,file={path},addr=0x{layout['weights_base'] + row['offset']:x},force-raw=on"]
         # Empty bundles intentionally emit no raw loader: QEMU rejects 0-byte files.
+        _check_cancelled(cancelled)
         report["stage"] = "qemu"
         deadline = time.monotonic() + timeout
         completion = _UartCompletionWaiter(run_dir, executable.output.nbytes)
@@ -611,12 +676,17 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
             qemu_started = time.perf_counter()
             process = subprocess.Popen(command, cwd=run_dir, stdout=stdout, stderr=stderr, **options)
             job = _windows_job(process)
+            report["qemu_pid"] = process.pid
             monitor = _QemuMemoryMonitor(process)
             monitor.start()
-            completion.wait(process, deadline, timeout)
+            if cancelled is None:
+                completion.wait(process, deadline, timeout)
+            else:
+                completion.wait(process, deadline, timeout, cancelled=cancelled)
             report.update(guest_completed=True, forward_wall_s=time.perf_counter() - qemu_started,
                           forward_wall_scope="QEMU launch through host validation of the UART completion frame")
-            qmp = QMP(port, deadline)
+            qmp = (QMP(port, deadline) if cancelled is None else
+                   QMP(port, deadline, cancelled=cancelled))
             qmp.command("stop")
             # A fast event must not hide bytes appended after the first valid frame.
             decode_completion((run_dir / "uart.bin").read_bytes(), executable.output.nbytes)
@@ -633,7 +703,19 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
                 raise ValueError("Output dump size mismatch")
             report["output_dump_s"] = time.perf_counter() - dump_started
             report["qmp_quit_reply_received"] = qmp.command("quit") is not None
-            process.wait(timeout=min(10, max(0.1, deadline - time.monotonic())))
+            if cancelled is None:
+                process.wait(timeout=min(10, max(0.1, deadline - time.monotonic())))
+            else:
+                while True:
+                    _check_cancelled(cancelled)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("QEMU shutdown deadline exceeded")
+                    try:
+                        process.wait(timeout=min(0.05, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
             qemu_exited = time.perf_counter()
             if process.returncode:
                 raise RuntimeError(f"QEMU shutdown failed ({process.returncode})")
@@ -645,9 +727,11 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
                     raise ValueError("Nonfinite RV64 output")
             if validate_weight_bundle(executable.bundle_dir, executable.weights) != manifest:
                 raise ValueError("Weight bundle changed during execution")
+            _check_cancelled(cancelled)
             report["stage"] = "weight_transport_postcheck"
             report["weight_transport"]["post_validation_elapsed_s"] = validate_transport(
                 transport_dir, report["weight_transport"])
+            _check_cancelled(cancelled)
             report.update(passed=True, status="PASS", exit_code=process.returncode,
                           output_sha256=sha256_file(output_path), elf_sha256=executable.evidence["sha256"],
                           weight_sha256=manifest["sha256"], input_sha256=sha256_file(run_dir / "inputs.bin"))
@@ -697,6 +781,7 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0):
                     cleanup("process.wait fallback", lambda: process.wait(timeout=5))
             if process.returncode is not None and qemu_exited is None:
                 qemu_exited = time.perf_counter()
+        report["qemu_reaped"] = process is not None and process.returncode is not None
         report["qemu_wall_s"] = (qemu_exited - qemu_started
                                  if qemu_exited is not None and qemu_started is not None else None)
         if job is not None:
