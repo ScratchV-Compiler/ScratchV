@@ -14,11 +14,19 @@ W5 的生成合同、Host 循环、QEMU 适配/命令行、三用例验收入口
 [完整模型实跑报告](qemu-generation.md)。本轮干净容器的默认 1 hart、手动 4 hart、
 auto 小图和真实超时/取消、Docker 构建取消检查已通过；完整 28 层 France 单 token
 容器部署也已通过，实际输出 ` Paris`，完整 logits 最大误差为 **0.000172138214**。
-**W5 本地功能出口已满足**；W5 CI 已接入既有流程并通过本地相关检查，远端运行 **NOT_RUN**；
-WSL 配置未改，所有 W5 改动仍未提交、未推送。
+**W5 本地功能出口已满足**；代码、测试和报告已发布到 [PR115](https://github.com/ScratchV-Compiler/ScratchV/pull/115)，
+已有数值实跑和普通 PR CI 对应功能基线 `8ad347477f7f5ba15b2da7c91178b3c6668456cc`；
+本次后续变更仅包含审查超时处理、相关测试和交接/进度文档，不改变生成实现。完整 W5
+专项因 fork 仓库 Actions 拒绝创建运行，仍为 **BLOCKED / NOT_RUN**。第二人独立复现
+说明已准备，尚待实际执行和签收；WSL 配置未改，PR 未合并。
 
 使用入口：[QEMU 生成与本轮报告](qemu-generation.md)、[三轮历史](chat.md)、
 [干净容器部署](deployment.md)。
+
+PR115 第二人验收使用[独立复现交接说明](independent-reproduction.md)：固定提交
+`8ad347477f7f5ba15b2da7c91178b3c6668456cc`、基础镜像和数值配置，提供从新 clone 到
+三例 24 步验收、失败清理及报告回传的完整命令。文档准备不代表第二人复现已完成，
+须由独立执行人回传结果后签收。
 
 ## 固定生成合同
 
@@ -143,16 +151,24 @@ Mean `sequential` 和非线性 `libm` 均未改变，不能把新策略的验收
 
 ## 阶段与验收状态
 
-| 阶段/门槛 | 本轮状态与后续要求 |
-|---|---|
-| P0：合同与 3 条参考 | **PASS（本地）**；合同冻结，3/3 真实 ORT/Host 参考与独立 oracle 通过，参考 IDs/text/停止原因冻结 |
-| P1：Host token 循环 | **PASS（本地）**；核心 55 项及下述直接相关验证通过 |
-| P2：QEMU 生成适配/CLI | **PASS（本地小图）**；构建一次，同一 ELF/bundle 跨 token 和跨命令复用；1/4 hart 数值与中断清理通过 |
-| `e2e:qemu-paris` | **PASS（本地、显式新策略 4 hart）**；France 完整 8 token 的数值、IDs、文本和停止原因通过，输出包含 Paris。历史旧配置首步 FAIL 的 `max_abs=0.003272057` 保留于实跑报告 |
-| `e2e:qemu-prompts` | **PASS（本地、显式新策略 4 hart）**；3/3 用例、24/24 完整 QEMU 前向及逐步数值通过，IDs/text/停止原因与冻结参考一致。历史旧配置初始轮仅检查 3/24 步且均 FAIL，余下 21 步当时未执行 |
-| `unit:multiturn` | **PASS（本地）**；40 项会话测试含官方模板/IDs 六份对照；raw 与显式 chat 分开，失败不提交历史 |
-| `deploy:script` | **PASS（本地真实容器）**；默认 1/手动 4/auto 小图、真实 QEMU 超时/取消复用与 Docker 构建取消通过；完整 28 层 France 单 token 实际生成 ` Paris`，数值与进程清理通过，不重复宿主三例套件 |
-| W5 CI 接入 | **本地实现与检查 PASS；远端 NOT_RUN**；提交前 811 项相关检查通过，最终 11 项重叠边界复查通过；14 个真实必跑节点复用既有证据，本轮未重新执行模型；未提交/推送 |
+以下状态核对于 2026-10-23，作者本地实跑、远端 CI 和第二人签收分别记录。
+
+| 阶段/门槛 | 当前证据与状态 | 剩余事项 |
+|---|---|---|
+| P0：合同与 3 条参考 | **PASS**；合同冻结，3/3 真实 ORT/Host 参考与独立 oracle 通过，IDs/text/停止原因冻结 | 无实现缺项 |
+| P1：Host token 循环 | **PASS**；核心 55 项及相关边界验证通过 | 无实现缺项 |
+| P2：QEMU 生成适配/CLI | **PASS**；同一 ELF/bundle 跨 token 和命令复用；1/4 hart 数值与中断清理通过 | 无实现缺项 |
+| 默认/手动/auto hart | **PASS（小图）**；默认单核、手动 4、auto→4 的真实容器 CLI 通过，padding 关闭 | 不将小图或显式策略通过推广为默认算术完整模型通过 |
+| `e2e:qemu-paris` | **PASS（作者本地、显式新策略 4 hart）**；France 完整 8 token 的数值、IDs、文本和停止原因通过，输出包含 Paris | 远端完整专项及第二人复现 |
+| `e2e:qemu-prompts` | **PASS（作者本地、显式新策略 4 hart）**；3/3 用例、24/24 完整 QEMU 前向及逐步数值通过，与冻结参考一致 | 远端完整专项及第二人复现 |
+| `unit:multiturn` | **PASS**；40 项会话测试，官方模板/IDs 六份对照；远端官方三轮模板 2/2 通过 | 不宣称已做完整模型三轮对话生成 |
+| `deploy:script` | **PASS（作者真实容器）**；小图、超时/取消和清理通过；完整 28 层 France 单 token 实际生成 ` Paris` | 容器三例 24 步尚未执行，不能用单 token 代替 |
+| 普通 PR CI | **PASS**；[39919353111](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/39919353111) 为 14 成功、7 个按路由跳过；W5 真实小图 12/12、模板 2/2 通过 | 不替代完整生成专项 |
+| W5 完整专项 CI | **BLOCKED / NOT_RUN**；工作流已接入，fork Actions 以 HTTP 422 拒绝 dispatch，未创建 run | 恢复平台执行能力后运行容器三例 24 步 |
+| 第二人独立复现 | **说明已准备，执行待办**；固定提交、环境、命令、验收和回传清单见[交接说明](independent-reproduction.md) | 同事独立构建、实跑并回传签收，作者或 CI 不能替代 |
+
+旧算术配置的历史失败保留于实跑报告：初始轮三例均在首步失败（仅执行 3/24 步），
+France 的 `max_abs=0.003272057`。显式新策略的 PASS 不改写该历史结果。
 
 W4 完整单次前向的已有证据不替代 W5 token 循环；本页 W5 结果来自上述独立完整生成验收。
 W4 独立复现、Nightly 和团队签收仍按 [W4 验收说明](../W4/validation.md)分别确认。
@@ -162,8 +178,8 @@ W4 独立复现、Nightly 和团队签收仍按 [W4 验收说明](../W4/validati
 gate 失败状态、旧 W4 构建审计传递、逐步验收证据及取消清理已补强。
 本地功能出口已有完整证据：宿主三例 24 步、宿主独立前向，以及干净容器镜像、
 小图、中断清理和完整 Paris 单 token 均已通过，见 [部署记录](deployment.md)。
-容器此次只补一次完整前向，不将其写成容器三例套件；CI 已完成本地接入和相关检查，远端
-**NOT_RUN**，本地功能完成不等于已经取得远端 Actions 或发布验收记录。
+容器此次只补一次完整前向，不将其写成容器三例套件；普通 PR CI 已通过，完整专项仍
+**BLOCKED / NOT_RUN**。本地功能完成不等于远端完整验收或第二人签收完成。
 不把候选 token 一致或静态部署检查写成实跑 PASS。当前每 token 启动 QEMU，但复用构建；
 持久 guest、权重驻留、KV cache 等不属于 W5 v1 必需实现。
 
@@ -191,10 +207,11 @@ GitHub 要求手动工作流存在于默认分支，见
 审查时远端 main 的 `w4-full-numeric.yml` 尚无 `workflow_dispatch`，因此不能把新文件的
 直接手动入口当作仅推送 W5 分支后必然可用；不要为了建立入口先合并未验收的 W5。
 
-下列命令仅供后续获得提交、推送和远端验证授权后使用，本轮没有执行；还需要仓库写权限：
+下列入口已获授权并尝试调用；fork 仓库的 Actions 目前在 dispatch 阶段返回 HTTP 422，
+未创建运行。解除该限制后才可重试；执行仍需仓库写权限：
 
 ```bash
-gh workflow run llm-deploy.yml --ref codex/w5-generation \
+gh workflow run llm-deploy.yml --repo yuki-328/ScratchV --ref codex/w5-generation \
   -f run_w5_validation=true -f run_w3_validation=false -f run_w4_validation=false
 ```
 
@@ -202,7 +219,7 @@ gh workflow run llm-deploy.yml --ref codex/w5-generation \
 W5 完整 job/步骤/CLI 总预算分别为
 **350 / 285 / 275 分钟**；镜像和固定资产落盘后才检查 **至少 4 CPU、10 GiB 可用 RAM、
 10 GiB 剩余磁盘**，不足即明确失败，不通过缩小模型或跳过 token 凑齐门槛。
-远端 runner 是否实际满足资源和时限，仍须授权提交/推送后实跑确认。
+远端 runner 是否实际满足资源和时限，仍须在专项能够创建运行后实跑确认。
 
 W4 unit 增加 **12 个真实 QEMU 必跑节点**（生成与取消 2、Mean 8、非线性 2）；
 [llm-deploy.yml](../../../.github/workflows/llm-deploy.yml) 在现有 tokenizer 环境补 **2 个
@@ -219,9 +236,12 @@ JUnit 缺失/skip/fail、资源短缺、退出码与汇总；其中严格报告 
 `output/w5-followup-20261023/qemu-reference-4hart/run/report.json` 离线检查通过。
 本地 CI 检查记录为 `output/w5-ci-integration-20261023/validation.json`，
 同目录保存测试日志、14 个收集节点 ID 以及 98 段内嵌 shell 的语法检查结果。
-这些都是本地实现/证据检查，**远端 W5 CI 仍为 NOT_RUN**，未提交、未推送。
+上述记录来自提交前的本地实现/证据检查，当时未提交、未推送；其后的普通 PR CI
+已通过，完整专项仍为 **BLOCKED / NOT_RUN**，详见页末发布记录。
 
 ## 提交前检查与收尾（2026-10-23）
+
+本节保留提交前检查时点；后续提交、普通 CI 和专项阻塞状态见页末发布记录。
 
 已核对 W5 全部待提交改动：生成合同与冻结参考、Host/会话循环、QEMU 适配与 CLI、
 显式数值策略、运行器清理、容器打包、第三方声明、CI 路由和报告。
@@ -256,8 +276,9 @@ Docker 本轮未启动，WSL 配置未改。
 
 剩余事项按性质区分：
 
-1. **合入/发布前仍须取得远端 CI 证据**：后续获准推送后，使用上节 W5-only 入口；
-   runner 资源不足、失败或取消必须明确失败，不能用本地 PASS 替代。
+1. **当时仍待远端 CI 证据**：提交前计划获准推送后使用上节 W5-only 入口；
+   后续普通 CI 已通过，完整专项被 Actions 平台阻塞。runner 资源不足、失败或取消
+   必须明确失败，不能用本地 PASS 替代。
 2. **数值验收配置限制**：完整模型 PASS 仅属于已记录的显式参考算术组合；
    原默认 Mean sequential/nonlinear libm 的历史完整 logits 超差仍保留，不能宣称默认路径也通过。
    本轮没有修改算术，因此未重复完整模型。
@@ -281,14 +302,43 @@ PR 路由未选择，汇总明确为 w5_generation_accepted=false。
 显式指定 tokenizer 目录时仍必须有效，真正损坏的 JSON 不隐藏为 skip。
 专用 CI 的两项模板必跑门槛保持不变。修复的直接验证为会话/部署 63 passed、
 W3 工作流 54 passed、相关 W4/W5 入口边界 28 passed；均未运行完整模型。
-修复推送后的最终 CI 状态以 PR 验证摘要为准，不把首次失败改写为成功。
+修复提交 `8ad347477f7f5ba15b2da7c91178b3c6668456cc` 推送后，
+[普通 PR CI 39919353111](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/39919353111)
+已 **SUCCESS**：14 个 job 成功、7 个按路由跳过；通用测试 6107 passed、93 skipped，
+模拟器 7 passed；W4 unit 1762 passed、4 skipped；W5 必跑小图 12/12 和官方模板
+2/2 均通过。此轮测试的是 PR 临时合并提交 `ce9bd0e438e361ca070fad95a95c4fe412ec751b`，
+不把首次失败改写为成功，也不把未选择的完整生成 job 计作通过。
 
-W5-only 专项在 fork 调度时被 GitHub 以
-HTTP 422: Actions has been disabled for this repository 拒绝，未创建 run。
-仓库设置显示 Actions enabled=true、workflow active，重新启用指定 workflow 后仅重试
-一次仍失败。该外部阻塞尚未解除；详见
-[GitHub 官方说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository)。
-需要仓库所有者向 GitHub Support 核查，不能通过本地 PASS 或普通 PR CI 替代完整专项。
+完整 W5 专项在 fork `yuki-328/ScratchV` 的 dispatch 返回
+`HTTP 422: Actions has been disabled for this repository.`，尚未创建运行。
+已核对仓库 Actions `enabled=true`、工作流 `active`；重新应用相同启用设置返回
+HTTP 204，随后 dispatch 仍为 422。现有证据只能确认平台拒绝创建运行，不能认定是
+模型、runner 资源或工作流中的测试失败；需仓库所有者处理 GitHub 侧限制，恢复后再验收。
+
+另一个自动 AI Code Review 的 `review (1)`、`review (2)` 两个批次失败：
+分别有 2、5 份文件各两次请求均出现 `TimeoutError`。这是外部 API 请求超时导致的
+审查覆盖不完整，不是上述数值或单测失败；检查时后续批次仍在运行/排队。
+本地[审查脚本](../../../scripts/ai_code_review.py)已补有界缓解：新计划改为每批
+5 个文件、180 秒 socket 超时，仍最多两次尝试；旧 10 文件计划保留 90 秒窗口和
+原分组。新增逐次脱敏耗时/结果记录，失败仍使门禁失败。
+[相关测试](../../../tests/test_ai_code_review.py) **71 passed**；未调用外部 AI API。
+180 秒不是整个请求的墙钟硬上限，最终仍受 40 分钟 job 限制。
+
+这部分修复与本轮文档更新作为 PR115 后续变更一起交付；尚未部署到可信主干。
+工作流通过 `pull_request_target` 使用可信 base 的脚本，不能改为携密钥执行 PR head。
+生效顺序是：维护者完成正常审批，将修复通过正常合并纳入 `main`；此后新发生的
+PR 事件才会使用新脚本。仅推送 PR 分支或重新运行仍固定旧 base 的历史 run，
+不应当作修复已经部署。当前失败记录保留，不改写为成功；本轮不合并，也不手动
+追加或重跑 AI 审查。现有日志尚不能区分服务排队、生成慢或网络等待，
+不能声明外部服务已恢复。
+
+第二人[独立复现说明](independent-reproduction.md)已准备，实际执行和签收仍待同事完成。
+当前证据位于 `output/w5-publish-20261023/publication.json`、`actions-recovery.json` 及
+`ci-final-artifacts/`；报告与代码已发布，PR 未合并。
+
+[GitHub 官方说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository)
+指出，仓库/账号可能处于独立的平台停用状态，修改普通开关无法恢复，需要联系
+GitHub Support。当前平台未说明具体原因；普通 PR CI 或本地 PASS 不替代完整专项。
 没有改 WSL、默认 hart/padding 或模型数值策略，也没有重复本地完整模型。
 用户已接受仓库自动审查，没有额外手动发起审查。
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,8 @@ import urllib.error
 import urllib.request
 
 API_URL = "https://token.sensenova.cn/v1/chat/completions"
-BATCH_SIZE = 10
+BATCH_SIZE = 5
+REQUEST_TIMEOUT_SECONDS = 180
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
@@ -35,6 +37,14 @@ def patch_problem(file: dict) -> str | None:
     return None
 
 
+def plan_batch_size(plan: dict) -> int:
+    # Persisted ten-file plans must retain their original file-to-batch mapping.
+    size = plan.get("batch_size", BATCH_SIZE)
+    if type(size) is not int or size not in (BATCH_SIZE, 10):
+        raise ValueError("Invalid review batch size; expected 5 or legacy 10.")
+    return size
+
+
 def make_plan(raw: dict) -> dict:
     files = raw.get("files", [])
     errors = list(raw.get("errors", []))
@@ -51,9 +61,14 @@ def make_plan(raw: dict) -> dict:
         errors.append("Fetched file count differs from PR changed_files (including the API 3000-file limit).")
     if not raw.get("head") or raw.get("head") != raw.get("head_after"):
         errors.append("PR head changed while fetching files, or its identity is missing.")
-    batches = max(1, (len(files) + BATCH_SIZE - 1) // BATCH_SIZE)
+    try:
+        batch_size = plan_batch_size(raw)
+    except ValueError as exc:
+        errors.append(str(exc))
+        batch_size = BATCH_SIZE
+    batches = max(1, (len(files) + batch_size - 1) // batch_size)
     if batches > 256:
-        errors.append("PR exceeds the 256-job matrix limit at 10 files per batch; review requires a separately sized run.")
+        errors.append(f"PR exceeds the 256-job matrix limit at {batch_size} files per batch; review requires a separately sized run.")
         batches = 1  # Keep the failed plan valid for artifact publication; review jobs are skipped.
     return {
         "repository": raw.get("repository"),
@@ -62,12 +77,12 @@ def make_plan(raw: dict) -> dict:
         "changed_files": raw.get("changed_files"),
         "files": files,
         "errors": errors,
-        "batch_size": BATCH_SIZE,
+        "batch_size": batch_size,
         "batches": batches,
     }
 
 
-def request_review(payload: dict, key: str) -> tuple[str, int, str]:
+def request_review(payload: dict, key: str, *, timeout_seconds: int = REQUEST_TIMEOUT_SECONDS) -> tuple[str, int, str]:
     """Return content, HTTP status and Retry-After without logging secret-bearing data."""
     req = urllib.request.Request(
         API_URL, json.dumps(payload).encode(),
@@ -75,7 +90,7 @@ def request_review(payload: dict, key: str) -> tuple[str, int, str]:
         method="POST",
     )
     try:
-        response = urllib.request.urlopen(req, timeout=90)
+        response = urllib.request.urlopen(req, timeout=timeout_seconds)
     except urllib.error.HTTPError as exc:
         return "", exc.code, exc.headers.get("Retry-After", "")
     with response:
@@ -95,7 +110,7 @@ def request_review(payload: dict, key: str) -> tuple[str, int, str]:
 
 
 def review_file(file: dict, prompt: str, key: str, request=request_review, sleep=time.sleep) -> dict:
-    record = {"filename": file["filename"], "status": "pending", "attempts": 0}
+    record = {"filename": file["filename"], "status": "pending", "attempts": 0, "request_attempts": []}
     problem = patch_problem(file)
     if problem:
         record.update(status="unreviewable", reason=problem)
@@ -118,9 +133,13 @@ def review_file(file: dict, prompt: str, key: str, request=request_review, sleep
         record["attempts"] = attempt
         retry = True
         delay = 5
+        started = time.monotonic()
+        outcome = "interrupted"
         try:
             content, status, retry_after = request(payload, key)
+            outcome = f"HTTP {status}"
             if status == 200:
+                record.pop("reason", None)
                 record.update(status="reviewed", review=content)
                 return record
             record["reason"] = f"HTTP {status}"
@@ -131,7 +150,14 @@ def review_file(file: dict, prompt: str, key: str, request=request_review, sleep
                 pass
         except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
             # Exception text or HTTP response bodies may echo credentials; record only the class.
-            record["reason"] = f"No usable API result ({type(exc).__name__})."
+            outcome = type(exc).__name__
+            record["reason"] = f"No usable API result ({outcome})."
+        finally:
+            # Record only timing/status, never request/response bodies or exception text.
+            record["request_attempts"].append({
+                "attempt": attempt, "outcome": outcome,
+                "elapsed_seconds": round(time.monotonic() - started, 6),
+            })
         if attempt == 2 or not retry:
             break
         sleep(delay)
@@ -145,7 +171,12 @@ def run_batch(plan: dict, batch: int, prompt: str, output: Path, key: str,
         raise ValueError("Cannot review an invalid or stale plan.")
     if not 0 <= batch < plan["batches"]:
         raise ValueError("Invalid batch index.")
-    files = plan["files"][batch * BATCH_SIZE:(batch + 1) * BATCH_SIZE]
+    batch_size = plan_batch_size(plan)
+    if request is request_review:
+        # Legacy ten-file plans keep their original window and batch time budget.
+        timeout_seconds = REQUEST_TIMEOUT_SECONDS if batch_size == BATCH_SIZE else 90
+        request = partial(request_review, timeout_seconds=timeout_seconds)
+    files = plan["files"][batch * batch_size:(batch + 1) * batch_size]
     result = {
         "head": plan["head"], "batch": batch,
         "files": [{"filename": file["filename"], "status": "pending", "attempts": 0} for file in files],
@@ -165,6 +196,12 @@ def summarize(plan: dict, batches: list[dict], current_head: str | None = None) 
     if current_head is not None and current_head != plan.get("head"):
         errors.append("PR head changed after planning; results are stale.")
     expected = [file["filename"] for file in plan["files"]]
+    try:
+        batch_size = plan_batch_size(plan)
+    except ValueError as exc:
+        errors.append(str(exc))
+        batches = []
+        batch_size = BATCH_SIZE
     records: dict[str, dict] = {}
     for batch in batches:
         if not isinstance(batch, dict) or not isinstance(batch.get("files"), list):
@@ -177,7 +214,7 @@ def summarize(plan: dict, batches: list[dict], current_head: str | None = None) 
         if type(number) is not int or not 0 <= number < plan["batches"]:
             errors.append("Invalid batch identity.")
             continue
-        allowed = set(expected[number * BATCH_SIZE:(number + 1) * BATCH_SIZE])
+        allowed = set(expected[number * batch_size:(number + 1) * batch_size])
         for record in batch.get("files", []):
             name = record.get("filename") if isinstance(record, dict) else None
             if not isinstance(name, str) or name not in allowed:
