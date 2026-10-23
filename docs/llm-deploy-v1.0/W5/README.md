@@ -264,6 +264,34 @@ Docker 本轮未启动，WSL 配置未改。
 3. **已知运行边界**：同步构建、传输和 ORT 调用按阶段检查预算，不承诺硬中断任意 ORT 调用。
    KV cache、持久 guest/权重驻留、RVV 和量化属于后续阶段，不属于 W5 v1 未完成的出口项。
 
+## 发布与首次远端 CI 反馈（2026-10-23）
+
+代码、测试和报告已作为独立 [PR #115](https://github.com/ScratchV-Compiler/ScratchV/pull/115)
+提交，初始实现提交为 259fc8e。四份报告链接已经验证可访问；没有合并。
+
+首次 [PR CI](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/39917939519)
+实际执行并通过 12 个 W5 相关 QEMU 小图必跑节点及 2 个官方三轮模板节点。
+W4 unit JUnit 为 1762 passed、4 skipped，四个跳过为三种未提供模型资产的优化器对照及
+Linux 上的 Windows junction 专用测试，不涉及上述 12 个必跑节点。完整 W5 门槛按普通
+PR 路由未选择，汇总明确为 w5_generation_accepted=false。
+
+通用测试发现 8 个失败：6 个来自旧 W3 测试求值器不支持新增 W5 互斥表达式；
+另 2 个来自通用 checkout 未下载 tokenizer 的 Git LFS 内容，测试误把指针当作 JSON。
+修复仅涉及测试：补齐 W3/W5 选择矩阵；默认可选资产缺失或为 LFS 指针时明确 skip，
+显式指定 tokenizer 目录时仍必须有效，真正损坏的 JSON 不隐藏为 skip。
+专用 CI 的两项模板必跑门槛保持不变。修复的直接验证为会话/部署 63 passed、
+W3 工作流 54 passed、相关 W4/W5 入口边界 28 passed；均未运行完整模型。
+修复推送后的最终 CI 状态以 PR 验证摘要为准，不把首次失败改写为成功。
+
+W5-only 专项在 fork 调度时被 GitHub 以
+HTTP 422: Actions has been disabled for this repository 拒绝，未创建 run。
+仓库设置显示 Actions enabled=true、workflow active，重新启用指定 workflow 后仅重试
+一次仍失败。该外部阻塞尚未解除；详见
+[GitHub 官方说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository)。
+需要仓库所有者向 GitHub Support 核查，不能通过本地 PASS 或普通 PR CI 替代完整专项。
+没有改 WSL、默认 hart/padding 或模型数值策略，也没有重复本地完整模型。
+用户已接受仓库自动审查，没有额外手动发起审查。
+
 ## P0/P1 已有验证（2026-10-23，未重复执行）
 
 | 验证 | 结果 | 覆盖边界 |

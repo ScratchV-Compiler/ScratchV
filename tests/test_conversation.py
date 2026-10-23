@@ -239,14 +239,44 @@ def test_from_directory_rejects_missing_or_ambiguous_template(tmp_path, config):
         Conversation.from_directory(tmp_path)
 
 
+def _require_official_tokenizer(root, *, required):
+    source = root / "tokenizer.json"
+    unavailable = not source.is_file()
+    if not unavailable:
+        with source.open("rb") as stream:
+            unavailable = stream.read(128).startswith(b"version https://git-lfs.github.com/spec/")
+    if unavailable:
+        message = "official local Qwen3 tokenizer assets are missing or still Git LFS pointers"
+        if required:
+            pytest.fail(message)
+        pytest.skip(message)
+
+
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize("content", [None, b"version https://git-lfs.github.com/spec/v1\n"])
+def test_official_tokenizer_missing_assets_skip_only_when_optional(tmp_path, required, content):
+    if content is not None:
+        (tmp_path / "tokenizer.json").write_bytes(content)
+    expected = pytest.fail.Exception if required else pytest.skip.Exception
+    with pytest.raises(expected, match="missing or still Git LFS"):
+        _require_official_tokenizer(tmp_path, required=required)
+
+
+@pytest.mark.parametrize("content", [b'{"version": "1.0"}', b"corrupt json"])
+def test_official_tokenizer_nonpointer_contents_are_left_to_parser(tmp_path, content):
+    source = tmp_path / "tokenizer.json"
+    source.write_bytes(content)
+    _require_official_tokenizer(tmp_path, required=False)
+    assert source.read_bytes() == content
+
+
 @pytest.mark.parametrize("system_prompt", [None, "Give brief answers."])
 def test_official_three_round_rendering_matches_transformers(monkeypatch, system_prompt):
-    """Runs when local assets exist; does not load weights or execute a model."""
+    """Optional in generic tests; explicit assets and dedicated CI remain mandatory."""
     pytest.importorskip("tokenizers")
     transformers = pytest.importorskip("transformers")
     root = Path(os.environ.get("SCRATCHV_QWEN3_TOKENIZER_DIR", Path(__file__).resolve().parents[1] / "assets/qwen3-0.6b/tokenizer"))
-    if not (root / "tokenizer.json").is_file():
-        pytest.skip("official local Qwen3 tokenizer assets are not installed")
+    _require_official_tokenizer(root, required="SCRATCHV_QWEN3_TOKENIZER_DIR" in os.environ)
     official = transformers.AutoTokenizer.from_pretrained(str(root), local_files_only=True)
     chat = Conversation.from_directory(root, system_prompt=system_prompt)
     replies = iter(("Paris", "Berlin", "Tokyo"))
