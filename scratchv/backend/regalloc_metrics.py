@@ -34,8 +34,8 @@ def count_spill_reload_sites(assembly: str) -> tuple[int, int]:
     reload_loads = 0
     for line in assembly.splitlines():
         content = line.strip()
-        if content.startswith("sw ") and "[regalloc:spill]" in content:
+        if content.startswith(("sw ", "fsw ", "fsd ")) and "[regalloc:spill]" in content:
             spill_stores += 1
-        if content.startswith("lw ") and "[regalloc:reload]" in content:
+        if content.startswith(("lw ", "flw ", "fld ")) and "[regalloc:reload]" in content:
             reload_loads += 1
     return spill_stores, reload_loads

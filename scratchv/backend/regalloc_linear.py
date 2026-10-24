@@ -22,7 +22,10 @@ from scratchv.backend.machine_semantics import (
     linear_scan_operands,
     virtual_register_defs_uses,
 )
-from scratchv.backend.machine_types import ALL_REGS, ARG_REGS
+from scratchv.backend.machine_types import ALL_REGS, ARG_REGS, FP_TEMP_REGS, RegisterClass, MachineInstr
+from scratchv.backend.allocation import (
+    AllocationResult, RegisterType, SpillLayout, collect_register_types, validate_allocated,
+)
 from scratchv.backend.regalloc_metrics import (
     count_spill_reload_sites,
     peak_live_intervals,
@@ -120,6 +123,7 @@ class LsInstruction:
     uses: set[str] = field(default_factory=set)
     comment: str = ""
     target: Optional[str] = None
+    machine_instr: MachineInstr | None = None
 
     def __repr__(self) -> str:
         return (f"LsInstruction({self.id}, {self.opcode}, "
@@ -132,6 +136,29 @@ class LsInstruction:
             if not label:
                 raise ValueError("machine label must have a name")
             return f"{label}:"
+
+        if self.machine_instr is not None and (
+            self.machine_instr.op.value in {"lw", "sw"}
+            or any(
+                operand is not None and operand.reg_class is RegisterClass.FPR
+                for operand in (self.machine_instr.dst, self.machine_instr.src1, self.machine_instr.src2)
+            )
+        ):
+            from scratchv.backend.asm_emit import AsmEmitter
+            from scratchv.backend.machine_types import MachineInstr, MachineOperand
+
+            operands = []
+            for operand in (self.machine_instr.dst, self.machine_instr.src1, self.machine_instr.src2):
+                if operand is not None and operand.kind == "vreg":
+                    operand = MachineOperand.reg(
+                        (rename or {}).get(str(operand.value), str(operand.value)),
+                        operand.reg_class, operand.bit_width,
+                    )
+                operands.append(operand)
+            return AsmEmitter([])._format_instr(MachineInstr(
+                self.machine_instr.op, *operands, self.machine_instr.comment,
+                self.machine_instr.target, self.machine_instr.rounding_mode,
+            ))
 
         ops = self.operands[:]
         if rename:
@@ -168,6 +195,8 @@ class LiveInterval:
     start: int
     end: int
     uses: set[int] = field(default_factory=set)
+    reg_class: RegisterClass = RegisterClass.GPR
+    bit_width: int = 32
 
     def overlaps(self, other: "LiveInterval") -> bool:
         """Check if two intervals overlap."""
@@ -235,6 +264,25 @@ class LinearScanAllocator:
         self.spill_store_count: int = 0
         self.reload_load_count: int = 0
         self.cfg: MachineCFG = MachineCFG([], {}, {})
+        self._vreg_types: dict[str, RegisterType] = {}
+        self._spill_layout = SpillLayout()
+        self._allocated_instructions: list[MachineInstr] = []
+
+    def registers_for(self, vreg: str) -> list[str]:
+        return (FP_TEMP_REGS if self._vreg_types.get(vreg, RegisterType()).reg_class
+                is RegisterClass.FPR else self.phys_regs)
+
+    def allocate_result(self, instructions: list) -> AllocationResult:
+        self.emit(block_from_machine_instrs(instructions))
+        return self.allocation_result
+
+    @property
+    def allocation_result(self) -> AllocationResult:
+        validate_allocated(self._allocated_instructions)
+        return AllocationResult(
+            self._allocated_instructions, dict(self.alloc_map),
+            dict(self._spill_layout.slots), self._spill_layout.size,
+        )
 
     @property
     def spill_slot_count(self) -> int:
@@ -261,6 +309,9 @@ class LinearScanAllocator:
         List of LiveInterval objects sorted by start position.
         """
         # Collect all virtual register names
+        self._vreg_types = collect_register_types([
+            inst.machine_instr for inst in block if inst.machine_instr is not None
+        ])
         vregs: set[str] = set()
         for inst in block:
             vregs |= inst.defines
@@ -269,6 +320,7 @@ class LinearScanAllocator:
         intervals: list[LiveInterval] = []
 
         for vreg in vregs:
+            value_type = self._vreg_types.setdefault(vreg, RegisterType())
             start = -1
             end = -1
             uses = set()
@@ -295,6 +347,7 @@ class LinearScanAllocator:
 
             intervals.append(LiveInterval(
                 vreg=vreg, start=start, end=end, uses=uses,
+                reg_class=value_type.reg_class, bit_width=value_type.bit_width,
             ))
 
         self.cfg = analyze_control_flow(block)
@@ -323,6 +376,9 @@ class LinearScanAllocator:
         self._spilled.clear()
         self._evictions.clear()
         self.stack_slot = 0
+        self._spill_layout = SpillLayout()
+        for interval in intervals:
+            self._vreg_types[interval.vreg] = RegisterType(interval.reg_class, interval.bit_width)
         self._intervals = intervals
         self._vreg_interval = {iv.vreg: iv for iv in intervals}
         self.peak_active = 0
@@ -330,14 +386,23 @@ class LinearScanAllocator:
         self.pressure_excess_peak = max(
             0, self.pressure_peak - len(self.phys_regs)
         )
+        if any(interval.reg_class is RegisterClass.FPR for interval in intervals):
+            self.pressure_excess_peak = max(
+                max(0, peak_live_intervals([iv for iv in intervals if iv.reg_class is kind])
+                    - len(self.phys_regs if kind is RegisterClass.GPR else FP_TEMP_REGS))
+                for kind in RegisterClass
+            )
         self.spill_store_count = 0
         self.reload_load_count = 0
 
         # Active list: (interval, phys_reg) sorted by increasing end
-        active: list[tuple[LiveInterval, str]] = []
-        free_regs: list[str] = list(self.phys_regs)
+        active_by_class: dict[RegisterClass, list] = {kind: [] for kind in RegisterClass}
+        free_by_class = {RegisterClass.GPR: list(self.phys_regs),
+                         RegisterClass.FPR: list(FP_TEMP_REGS)}
 
         for interval in intervals:
+            active = active_by_class[interval.reg_class]
+            free_regs = free_by_class[interval.reg_class]
             # Expire old intervals
             self._expire_old_intervals(active, interval.start, free_regs)
 
@@ -353,12 +418,12 @@ class LinearScanAllocator:
                     # Spill freed a register
                     reg = (
                         free_regs.pop(0) if free_regs
-                        else self.phys_regs[0]
+                        else self.registers_for(interval.vreg)[0]
                     )
                     self.alloc_map[interval.vreg] = reg
                     active.append((interval, reg))
 
-            self.peak_active = max(self.peak_active, len(active))
+            self.peak_active = max(self.peak_active, sum(map(len, active_by_class.values())))
 
         return dict(self.alloc_map)
 
@@ -425,7 +490,7 @@ class LinearScanAllocator:
         # Otherwise, spill the current interval
         slot = self._get_spill_slot(current.vreg)
         # Assign a temporary register for the definition instruction
-        temp_reg = self.phys_regs[0]
+        temp_reg = self.registers_for(current.vreg)[0]
         self.alloc_map[current.vreg] = temp_reg
         self._spilled.add(current.vreg)
         self.spill_code.setdefault(current.start, []).append(
@@ -440,8 +505,9 @@ class LinearScanAllocator:
     def _get_spill_slot(self, vreg: str) -> int:
         """Get or allocate a stack slot for a virtual register."""
         if vreg not in self._spill_slots:
-            self.stack_slot -= 4
-            self._spill_slots[vreg] = self.stack_slot
+            slot = self._spill_layout.reserve(vreg, self._vreg_types.get(vreg, RegisterType()))
+            self._spill_slots[vreg] = slot.offset
+            self.stack_slot = -self._spill_layout.size
         return self._spill_slots[vreg]
 
     # ------------------------------------------------------------------
@@ -641,6 +707,7 @@ def block_from_machine_instrs(
             result.append(LsInstruction(
                 id=i, opcode=".label", operands=[label_name],
                 comment=mi.comment, target=label_name,
+                machine_instr=mi,
             ))
         else:
             result.append(LsInstruction(
@@ -650,6 +717,7 @@ def block_from_machine_instrs(
                 defines=defines,
                 uses=uses,
                 comment=comment, target=mi.target,
+                machine_instr=mi,
             ))
 
     return result
@@ -672,7 +740,9 @@ def machine_instrs_from_block(
     -------
     List of MachineInstr objects.
     """
-    from scratchv.backend.machine_types import MachineInstr, MachineOp, MachineOperand
+    from scratchv.backend.machine_types import (
+        MachineInstr, MachineOp, MachineOperand, physical_register_class,
+    )
 
     result = []
     for inst in block:
@@ -680,6 +750,7 @@ def machine_instrs_from_block(
             label = inst.operands[0] if inst.operands else inst.comment
             result.append(MachineInstr(
                 MachineOp.LABEL, comment=label, target=inst.target or label,
+                label_role=inst.machine_instr.label_role if inst.machine_instr is not None else None,
             ))
             continue
 
@@ -698,7 +769,17 @@ def machine_instrs_from_block(
                 comment = operand_strings.pop()
 
         # Build register/immediate operands.
-        def _to_mop(s: str) -> MachineOperand:
+        def _to_mop(s: str, position: int) -> MachineOperand:
+            original = inst.machine_instr
+            template = (original.dst, original.src1, original.src2)[position] if original is not None else None
+            if template is not None and s == str(template.value):
+                return MachineOperand(template.kind, template.value, template.reg_class, template.bit_width)
+            if template is not None and template.kind in {"reg", "vreg"}:
+                try:
+                    physical_register_class(s)
+                except ValueError:
+                    return MachineOperand.vreg(s, template.reg_class, template.bit_width)
+                return MachineOperand.reg(s, template.reg_class, template.bit_width)
             if s in _REG_NUMS:
                 return MachineOperand.reg(s)
             try:
@@ -709,7 +790,7 @@ def machine_instrs_from_block(
         dst = None
         src1 = None
         src2 = None
-        ops = [_to_mop(o) for o in operand_strings]
+        ops = [_to_mop(o, position) for position, o in enumerate(operand_strings)]
         if len(ops) >= 1:
             dst = ops[0]
         if len(ops) >= 2:
@@ -717,6 +798,9 @@ def machine_instrs_from_block(
         if len(ops) >= 3:
             src2 = ops[2]
 
-        result.append(MachineInstr(mop, dst, src1, src2, comment, inst.target))
+        result.append(MachineInstr(
+            mop, dst, src1, src2, comment, inst.target,
+            inst.machine_instr.rounding_mode if inst.machine_instr is not None else None,
+        ))
 
     return result

@@ -28,9 +28,13 @@ RV32IM_MACHINE_PSEUDOS = {
 STRUCTURAL_MACHINE_PSEUDOS = {MachineOp.LABEL}
 EXTERNAL_EXTENSION_PSEUDOS = {
     MachineOp.FABS_D,
+    MachineOp.FABS_S,
     MachineOp.FNEG_D,
     MachineOp.LI_D,
+    MachineOp.LA,
+    MachineOp.FNEG_S,
     MachineOp.FMV_S,
+    MachineOp.FMV_D,
 }
 
 
@@ -227,6 +231,7 @@ def test_label_full_pipeline_is_zero_bytes_and_execution_continues(
     "opcode, operands, extension",
     [
         (MachineOp.FABS_D, ("result", "source"), "D"),
+        (MachineOp.FABS_S, ("result", "source"), "F"),
         (MachineOp.FNEG_D, ("result", "source"), "D"),
         (MachineOp.LI_D, ("result", 1), "D"),
         (MachineOp.FMV_S, ("result", "source"), "F"),
@@ -235,14 +240,21 @@ def test_label_full_pipeline_is_zero_bytes_and_execution_continues(
 def test_external_extension_pseudo_is_explicitly_rejected_by_rv32im_encoder(
     opcode, operands, extension
 ):
-    dst = MachineOperand.vreg(operands[0])
+    from scratchv.backend.machine_types import RegisterClass
+
+    width = 64 if extension == "D" else 32
+    dst = MachineOperand.vreg(operands[0], RegisterClass.FPR, width)
     src = (
         MachineOperand.immediate(operands[1])
         if isinstance(operands[1], int)
-        else MachineOperand.vreg(operands[1])
+        else MachineOperand.vreg(operands[1], RegisterClass.FPR, width)
     )
     instruction = MachineInstr(opcode, dst, src)
     block = regalloc_linear.block_from_machine_instrs([instruction])
+    if opcode is MachineOp.LI_D:
+        with pytest.raises(ValueError, match="not a standard RISC-V instruction"):
+            regalloc_linear.LinearScanAllocator(["t0", "t1"]).emit(block)
+        return
     assembly = regalloc_linear.LinearScanAllocator(["t0", "t1"]).emit(block)
 
     with pytest.raises(

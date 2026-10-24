@@ -323,6 +323,7 @@ class RISCVAEncoder:
         # assembly that this encoder and its TinyFive path cannot execute.
         extension_pseudos = {
             "fabs.d": "D",
+            "fabs.s": "F",
             "fneg.d": "D",
             "li.d": "D",
             "fmv.s": "F",
@@ -443,6 +444,13 @@ class RISCVAEncoder:
 
         op = tokens[0].lower()
         operands = tokens[1:]
+
+        if op.startswith("f") and op not in {"fence", "fence.i"}:
+            extension = "D" if op.endswith(".d") or ".d." in op or op in {"fld", "fsd"} else "F"
+            raise ValueError(
+                f"{op} requires the RISC-V {extension} extension; "
+                "RISCVAEncoder currently supports RV32IM only"
+            )
 
         fixup = None
 
@@ -573,10 +581,10 @@ class RISCVAEncoder:
             rd = _reg_num(operands[0])
             imm = self._parse_imm(operands[1])
             word = _u_type(rd, imm)
-        elif op == "slt":
+        elif op in ("slt", "slti"):
             rd = _reg_num(operands[0])
             rs1 = _reg_num(operands[1])
-            if operands[2].startswith("%") or operands[2] in REG_MAP:
+            if op == "slt" and (operands[2].startswith("%") or operands[2] in REG_MAP):
                 rs2 = _reg_num(operands[2])
                 word = _r_type(rd, rs1, rs2, F3_SLT, 0b0000000)
             else:

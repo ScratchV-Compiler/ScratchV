@@ -186,6 +186,15 @@ def _same_literal(left, right):
             and math.isnan(left) and math.isnan(right))
 
 
+def _audit_float_encoding(bits, data, context):
+    if bits is not None:
+        expected = int.from_bytes(
+            data.astype(data.dtype.newbyteorder("<"), copy=False).tobytes(), "little",
+        )
+        _require(data.dtype.kind == "f" and type(bits) is int and bits == expected,
+                 f"{context}: scalar bit pattern mismatch")
+
+
 def _audit_scalar_load(instruction, data, dtype, context):
     """Cover auxiliary LOAD_CONST results which have no ONNX value-map entry."""
     destination = instruction.dest
@@ -194,9 +203,11 @@ def _audit_scalar_load(instruction, data, dtype, context):
              and destination.dtype == dtype and destination.shape == ()
              and destination.is_constant is True
              and _same_literal(destination.const_value, data.item())
-             and set(instruction.attrs) == {"value"}
+             and set(instruction.attrs) in ({"value"}, {"value", "bit_pattern"})
              and _same_literal(instruction.attrs.get("value"), data.item()),
              f"{context}: scalar instruction metadata mismatch")
+    for bits in (destination.bit_pattern, instruction.attrs.get("bit_pattern")):
+        _audit_float_encoding(bits, data, context)
 
 
 def _expected_lowering(node, parser, read_control):
@@ -334,6 +345,7 @@ def audit_parsed_model(model, parser, program, model_dir):
         _require(value.is_constant == (len(shape) == 0), f"{name}: scalar metadata mismatch")
         if len(shape) == 0:
             _require(_same_literal(value.const_value, array.item()), f"{name}: scalar value mismatch")
+            _audit_float_encoding(value.bit_pattern, array, name)
         actual_sha = _array_hash(array)
         _require(actual_sha == expected_sha, f"{name}: bound tensor content SHA256 mismatch")
         tensor_rows.append({"name": name, "source": source, "shape": list(shape),

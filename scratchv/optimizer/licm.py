@@ -11,7 +11,7 @@ from dataclasses import replace
 from scratchv.analysis.adapters import IRCFGAdapter
 from scratchv.analysis.cfg import build_cfg, compute_dominators
 from scratchv.analysis.ir_verifier import verify_ir
-from scratchv.ir.types import BasicBlock, Function, Instruction, OpCode, Program
+from scratchv.ir.types import BasicBlock, DataType, Function, Instruction, OpCode, Program
 from scratchv.optimizer.hoist_safety import HoistSafety
 from scratchv.pass_interface import OptimizationPass
 
@@ -20,6 +20,9 @@ class LICM(OptimizationPass):
     """Hoist only operations proved safe on every input allowed by the IR."""
 
     name = "licm"
+
+    def __init__(self, *, preserve_float_semantics: bool = False):
+        self.preserve_float_semantics = preserve_float_semantics
 
     def optimize(self, program: Program) -> int:
         # Undefined values and broken CFGs cannot establish availability proofs.
@@ -70,6 +73,14 @@ class LICM(OptimizationPass):
                     safe_to_speculate
                     or (guaranteed_prefix and safety.can_hoist_when_guaranteed(instr))
                 )
+                if self.preserve_float_semantics and instr.opcode.is_arith() and any(
+                    v.dtype in (DataType.FLOAT32, DataType.FLOAT64)
+                    for v in [*instr.operands, *([instr.dest] if instr.dest else [])]
+                ):
+                    # A hardware FP operation may set fflags even when its
+                    # result is finite. Preserve its execution inside the loop.
+                    can_move = False
+                    safe_to_speculate = False
                 if can_move:
                     hoisted.append(instr)
                     available.add(instr.dest.name)

@@ -167,6 +167,6 @@ jobs:
           path: review-summary/
           if-no-files-found: error
           overwrite: true
-      - name: Require complete review coverage
+      - name: Fail on systemic review failures
         if: always()
         run: python3 scripts/ai_code_review.py gate --summary review-summary/summary.json

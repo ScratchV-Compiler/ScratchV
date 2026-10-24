@@ -56,11 +56,14 @@ class CompilerConfig:
         dump_ir:        Print IR dumps during compilation.
         verify:         Run ONNX Runtime / numpy verification.
         verify_ir:      Validate shared IR at parse/pass/codegen boundaries.
+        target_isa:     RISC-V ISA string used by extended selection.
+        target_abi:     RISC-V ABI paired with target_isa.
         rtol:           Relative tolerance for verification.
         atol:           Absolute tolerance for verification.
         use_logger:     Use structured logger instead of print().
         log_level:      Log level (DEBUG, INFO, WARNING, ERROR).
         use_dag_isel:   Use DAG-based instruction selection.
+        use_extended_isel: Use the extended linear instruction selector.
         beautify_asm:   Run assembly beautifier on output.
         peephole_asm:   Run assembly-level peephole optimiser.
         const_merge:    Run constant-load merge pass.
@@ -81,6 +84,7 @@ class CompilerConfig:
     use_logger: bool = False
     log_level: str = "INFO"
     use_dag_isel: bool = False
+    use_extended_isel: bool = False
     beautify_asm: bool = False
     peephole_asm: bool = False
     const_merge: bool = False
@@ -95,6 +99,8 @@ class CompilerConfig:
     passes: tuple[str, ...] | None = None
     disabled_passes: tuple[str, ...] = ()
     verify_ir: bool = False
+    target_isa: str = "rv32im"
+    target_abi: str = "ilp32"
     max_tensor_workspace_bytes: int = 256 * 1024 * 1024
 
 
@@ -166,6 +172,7 @@ class CompilerDriver:
     def __init__(self, config: CompilerConfig | None = None):
         self.config = config or CompilerConfig()
         self._last_register_map: dict[str, str] = {}
+        self._last_allocation_stats: dict[str, int] = {}
         self._assembly_report = OptimizationReport("assembly", (), 0, 0.0)
         self.initializers: dict[str, Any] = {}
         self.tensor_artifact = None
@@ -210,6 +217,7 @@ class CompilerDriver:
         """
         warnings: list[str] = []
         self._last_register_map = {}
+        self._last_allocation_stats = {}
         self._assembly_report = OptimizationReport("assembly", (), 0, 0.0)
         self.initializers = {}
         self.tensor_artifact = None
@@ -234,6 +242,16 @@ class CompilerDriver:
         if self.config.schedule and self.config.backend != "riscv":
             return CompileResult(
                 success=False, errors=["--schedule requires the RISC-V backend"]
+            )
+        if self.config.use_extended_isel and self.config.backend != "riscv":
+            return CompileResult(
+                success=False,
+                errors=["--extended-isel requires the RISC-V backend"],
+            )
+        if self.config.use_extended_isel and self.config.use_dag_isel:
+            return CompileResult(
+                success=False,
+                errors=["--extended-isel and --dag-isel are mutually exclusive"],
             )
         if (
             self.config.schedule_strict or self.config.schedule_report
@@ -276,7 +294,10 @@ class CompilerDriver:
             program = self._parse(input_path, dsl_source)
         except Exception as e:
             if use_dsl:
-                from scratchv.frontend.dsl_errors import DSLSyntaxError
+                from scratchv.frontend.dsl_errors import (
+                    DSLParseError,
+                    DSLSyntaxError,
+                )
 
                 if isinstance(e, DSLSyntaxError):
                     return CompileResult(
@@ -284,11 +305,56 @@ class CompilerDriver:
                         errors=[str(e)],
                         diagnostics=[e],
                     )
+                if isinstance(e, DSLParseError):
+                    return CompileResult(
+                        success=False,
+                        errors=[f"Parse error: {e}"],
+                    )
                 raise
             return CompileResult(
                 success=False,
                 errors=[f"Parse error: {e}"],
             )
+
+        if self.config.use_extended_isel:
+            from scratchv.backend.inst_select_ext import validate_extended_types
+
+            try:
+                validate_extended_types(program)
+            except ValueError as exc:
+                return CompileResult(success=False, errors=[f"Codegen input error: {exc}"])
+        elif self.config.backend == "riscv":
+            from scratchv.ir.types import OpCode
+
+            extended_ops = {
+                OpCode.REM, OpCode.MIN, OpCode.MAX, OpCode.ABS, OpCode.SQRT,
+            }
+            used_extended_ops = sorted({
+                instruction.opcode.value
+                for function in program.functions
+                for block in function.blocks
+                for instruction in block.instructions
+                if instruction.opcode in extended_ops
+            })
+            if used_extended_ops:
+                return CompileResult(
+                    success=False,
+                    errors=[
+                        "--extended-isel is required for operations: "
+                        + ", ".join(used_extended_ops)
+                    ],
+                )
+
+        if self.config.backend == "llvm":
+            from scratchv.backend.llvm_codegen import validate_llvm_types
+
+            # Check before optimization can fold away unsupported operations.
+            try:
+                validate_llvm_types(program)
+            except ValueError as exc:
+                return CompileResult(
+                    success=False, errors=[f"Codegen input error: {exc}"],
+                )
 
         if self.config.verify_ir or self.config.backend == "tensor-c":
             self._check_ir(program, "after-parse")
@@ -408,6 +474,7 @@ class CompilerDriver:
                 "opt_message": opt_message,
                 "cycle_report": cycle_report,
                 "register_map": dict(self._last_register_map),
+                "allocation": dict(self._last_allocation_stats),
                 "assembly": self._pass_stats(self._assembly_report),
                 **schedule_stats,
             },
@@ -435,7 +502,7 @@ class CompilerDriver:
             from scratchv.frontend.onnx_parser import ONNXParser
 
             parser = ONNXParser()
-            program = parser.parse(input_path)
+            program = parser.parse(input_path, scalar_initializers=self.config.use_extended_isel)
             # Tensor values in Program describe shape/type, not their payload.
             # Keep the parser-owned arrays alive through backend generation.
             self.initializers = parser.initializers
@@ -463,6 +530,24 @@ class CompilerDriver:
             passes=self.config.passes,
             disabled_passes=self.config.disabled_passes,
         )
+        if self.config.use_extended_isel or self.config.backend == "llvm":
+            from scratchv.optimizer.constant_folding import ConstantFolder
+            from scratchv.optimizer.dead_code import DeadCodeEliminator
+            from scratchv.optimizer.licm import LICM
+            from scratchv.optimizer.muladd_fusion import MulAddFusion
+            from scratchv.optimizer.peephole import IRPeepholeOptimizer
+
+            # Presets and explicit --passes pipelines share the same guard.
+            # Folding/peephole/DCE/LICM need the target IEEE rounding/fflags policy.
+            # LLVM also evaluates typed FP operations: host folding must not
+            # bypass binary32 operand rounding or change encoded constants.
+            # Fusion is now a registered no-op until a valid IR/lowering
+            # exists. Never relax verification to accept the old pseudo.
+            for pass_ in manager.passes:
+                if isinstance(pass_, (ConstantFolder, DeadCodeEliminator, IRPeepholeOptimizer, MulAddFusion, LICM)):
+                    pass_.preserve_float_semantics = True
+                if isinstance(pass_, ConstantFolder):
+                    pass_.rv32_integer_semantics = self.config.use_extended_isel
         manager.data_type = Program
         if self.config.verify_ir or self.config.backend == "tensor-c":
             manager.before_pass = lambda pass_, data: self._check_ir(data, f"before:{pass_.name}")
@@ -524,7 +609,9 @@ class CompilerDriver:
                     values.extend(instruction.operands)
                     if instruction.dest is not None:
                         values.append(instruction.dest)
-        if any(value.shape for value in values):
+        # Extended selection validates and lowers singleton shapes as scalars;
+        # the legacy selectors still have no tensor-buffer representation.
+        if not self.config.use_extended_isel and any(value.shape for value in values):
             raise ValueError(
                 "Legacy riscv/llvm backends cannot lower tensor buffers; "
                 "use --backend tensor-c and the RISC-V tensor runtime"
@@ -542,11 +629,29 @@ class CompilerDriver:
     def _generate_riscv_linear(self, program) -> str:
         """Standard RISC-V pipeline."""
         from scratchv.backend.asm_emit import AsmEmitter
-        from scratchv.backend.instruction_select import InstructionSelector
         from scratchv.backend.register_alloc import RegisterAllocator
 
-        selector = InstructionSelector(program)
+        constant_pool = ()
+        if self.config.use_extended_isel:
+            from scratchv.backend.target_features import TargetFeatures
+            from scratchv.backend.inst_select_ext import (
+                ExtendedInstructionSelector,
+            )
+
+            features = TargetFeatures(
+                isa=self.config.target_isa,
+                abi=self.config.target_abi,
+            )
+            selector = ExtendedInstructionSelector(
+                program, features=features,
+            )
+        else:
+            from scratchv.backend.instruction_select import InstructionSelector
+
+            selector = InstructionSelector(program)
         machine_instrs = selector.run()
+        if self.config.use_extended_isel:
+            constant_pool = selector.constant_pool
 
         # Linear-scan path: allocate on *unallocated* MachineInstrs.
         # (Previously RegisterAllocator ran first with mode="linear", which
@@ -559,11 +664,20 @@ class CompilerDriver:
 
             ls_insts = block_from_machine_instrs(machine_instrs)
             lsa = LinearScanAllocator()
-            assembly = lsa.emit(ls_insts)
+            if self.config.use_extended_isel:
+                allocation = lsa.allocate_result(machine_instrs)
+            else:
+                lsa.emit(ls_insts)
+                allocation = lsa.allocation_result
+            assembly = AsmEmitter(allocation.instructions, constant_pool).emit()
             self._last_register_map = dict(lsa.alloc_map)
+            if self.config.use_extended_isel:
+                allocation.local_slots = dict(selector.local_slots)
+                allocation.local_bytes = selector.local_bytes
             from scratchv.backend.abi_frame import apply_abi_frames
 
-            return apply_abi_frames(assembly, lsa.spill_slot_count)
+            self._record_allocation_stats(allocation, machine_instrs)
+            return apply_abi_frames(assembly, allocation)
 
         mode = (
             self.config.reg_alloc
@@ -575,13 +689,34 @@ class CompilerDriver:
             else "greedy"
         )
         alloc = RegisterAllocator(machine_instrs, mode=mode)
-        allocated = alloc.run()
+        allocation = alloc.allocate_result()
+        if self.config.use_extended_isel:
+            allocation.local_slots = dict(selector.local_slots)
+            allocation.local_bytes = selector.local_bytes
+        allocated = allocation.instructions
         self._last_register_map = alloc.register_map
-        emitter = AsmEmitter(allocated)
+        emitter = AsmEmitter(allocated, constant_pool=constant_pool)
         assembly = emitter.emit()
         from scratchv.backend.abi_frame import apply_abi_frames
 
-        return apply_abi_frames(assembly, alloc.spill_slot_count)
+        self._record_allocation_stats(allocation, machine_instrs)
+        return apply_abi_frames(assembly, allocation)
+
+    def _record_allocation_stats(self, allocation, selected_instructions) -> None:
+        from scratchv.backend.asm_emit import AsmEmitter
+        from scratchv.backend.machine_types import MachineOp
+        from scratchv.backend.regalloc_metrics import count_spill_reload_sites
+
+        text = AsmEmitter(allocation.instructions).emit()
+        stores, loads = count_spill_reload_sites(text)
+        self._last_allocation_stats = {
+            "selected_instructions": sum(inst.op is not MachineOp.LABEL for inst in selected_instructions),
+            "allocated_instructions": sum(inst.op is not MachineOp.LABEL for inst in allocation.instructions),
+            "spill_bytes": allocation.spill_bytes,
+            "spill_slots": len(allocation.spill_slots),
+            "spill_stores": stores,
+            "reload_loads": loads,
+        }
 
     def _generate_riscv_dag(self, program) -> str:
         """DAG-based instruction selection pipeline."""
@@ -610,7 +745,8 @@ class CompilerDriver:
             self._last_register_map = dict(lsa.alloc_map)
             from scratchv.backend.abi_frame import apply_abi_frames
 
-            return apply_abi_frames(assembly, lsa.spill_slot_count)
+            self._record_allocation_stats(lsa.allocation_result, machine_instrs)
+            return apply_abi_frames(assembly, lsa.allocation_result)
 
         mode = (
             self.config.reg_alloc
@@ -622,14 +758,16 @@ class CompilerDriver:
             else "greedy"
         )
         alloc = RegisterAllocator(machine_instrs, mode=mode)
-        allocated = alloc.run()
+        allocation = alloc.allocate_result()
+        allocated = allocation.instructions
         self._last_register_map = alloc.register_map
 
         emitter = AsmEmitter(allocated)
         assembly = emitter.emit()
         from scratchv.backend.abi_frame import apply_abi_frames
 
-        return apply_abi_frames(assembly, alloc.spill_slot_count)
+        self._record_allocation_stats(allocation, machine_instrs)
+        return apply_abi_frames(assembly, allocation)
 
     # ── Internal: post-codegen passes ───────────────────────────────────────
 

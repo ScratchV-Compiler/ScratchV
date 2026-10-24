@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,8 @@ class ONNXParser:
     def __init__(self):
         self.builder = IRBuilder()
         self._value_map: dict[str, Value] = {}
+        self._value_shapes: dict[str, tuple[int, ...]] = {}
+        self._scalar_initializers = False
         # Pass these arrays to IRInterpreter.run(initializers=...). Program
         # keeps typed global definitions; the execution API binds their data.
         self.initializers: dict[str, np.ndarray] = {}
@@ -37,7 +40,8 @@ class ONNXParser:
         self._mmap_external_data = False
         self._opsets: dict[str, int] = {}
 
-    def parse(self, model_path: str, *, mmap_external_data: bool = False) -> Program:
+    def parse(self, model_path: str, *, mmap_external_data: bool = False,
+              scalar_initializers: bool = False) -> Program:
         """Parse ONNX, optionally mapping external weights as read-only arrays.
 
         The default loader is unchanged. The explicit mmap mode avoids
@@ -46,12 +50,16 @@ class ONNXParser:
         the tensor shape and dtype. The caller must keep those files unchanged
         while this parser's initializer arrays are in use. Mapping is not an
         integrity check; model/weight hashes must be validated separately.
+        ``scalar_initializers`` lets the scalar RV32 backend materialize
+        one-element tensors as constants while retaining their declared shape.
         Runtime inputs require explicit static shapes after ONNX inference;
         symbolic dimensions or unknown rank are rejected, not treated as zero.
         Inputs also listed as initializers use the initializer's fixed shape.
         """
         if not isinstance(mmap_external_data, bool):
             raise ONNXParseError("mmap_external_data must be boolean")
+        if not isinstance(scalar_initializers, bool):
+            raise ONNXParseError("scalar_initializers must be boolean")
         try:
             import onnx
         except ImportError:
@@ -68,10 +76,24 @@ class ONNXParser:
         self._constant_cache = {}
         self._base_dir = str(Path(model_path).resolve().parent)
         self._mmap_external_data = mmap_external_data
+        self._scalar_initializers = scalar_initializers
         # Inspect/infer the graph before materializing external weights. This
         # avoids serializing a >2 GiB protobuf just to infer tensor shapes.
         model = onnx.load(model_path, load_external_data=False)
         self._opsets = {item.domain: item.version for item in model.opset_import}
+        self._value_shapes = {
+            value.name: self._shape(value)
+            for value in [*model.graph.input, *model.graph.value_info, *model.graph.output]
+            if self._scalar_initializers or self._has_concrete_shape(value.type.tensor_type)
+        }
+        typed_bits = {}
+        if any(init.data_type in (onnx.TensorProto.FLOAT, onnx.TensorProto.DOUBLE)
+               and math.prod(init.dims) == 1 and not init.HasField("raw_data")
+               and not onnx.external_data_helper.uses_external_data(init)
+               for init in model.graph.initializer):
+            from scratchv.frontend.onnx_bits import typed_initializer_bits
+
+            typed_bits = typed_initializer_bits(model_path, onnx)
         domains = sorted({node.domain for node in model.graph.node
                           if node.domain not in ("", "ai.onnx")})
         if domains:
@@ -119,11 +141,10 @@ class ONNXParser:
         names = {value.name for value in [*graph.input, *graph.initializer,
                                           *graph.value_info, *graph.output]}
         names.update(name for node in graph.node for name in [*node.input, *node.output])
-        self.builder._name_counter = max(
-            (int(name[2:]) for name in names
-             if name.startswith("v_") and name[2:].isascii() and name[2:].isdecimal()),
-            default=0,
-        )
+        self.builder.reserve_names(name for name in names if name)
+        for value in [*graph.input, *graph.value_info, *graph.output]:
+            if self._scalar_initializers or self._has_concrete_shape(value.type.tensor_type):
+                self._value_shapes.setdefault(value.name, self._shape(value))
 
         # Create IR function from ONNX graph
         func_name = graph.name or "main"
@@ -136,15 +157,13 @@ class ONNXParser:
                 arr = self._map_external_initializer(init)
             else:
                 arr = onnx.numpy_helper.to_array(init, base_dir=self._base_dir)
-            self._bind_constant(init.name, arr)
+            self._bind_constant(init.name, arr, bit_pattern=typed_bits.get((init.name, init.data_type)))
 
         # Map graph inputs to function params
         for inp in graph.input:
             if inp.name in self._value_map:
                 continue  # already defined as initializer
-            dtype = DataType.FLOAT32
-            if inp.type.tensor_type.elem_type:
-                dtype = self._dtype(inp.type.tensor_type.elem_type)
+            dtype = self._dtype(inp.type.tensor_type.elem_type)
             val = self.builder.make_value(name=inp.name, dtype=dtype)
             val.shape = input_shapes[inp.name]
             func.params.append(val)
@@ -160,7 +179,12 @@ class ONNXParser:
         # Add return if we have outputs
         for o in graph.output:
             if o.name in self._value_map:
-                self.builder.ret(self._value_map[o.name])
+                value = self._value_map[o.name]
+                if o.name in self._value_shapes and value.shape != self._value_shapes[o.name]:
+                    # Preserve the declaration even for direct global returns,
+                    # but do not overwrite the source's actual storage shape.
+                    value = replace(value, shape=self._value_shapes[o.name])
+                self.builder.ret(value)
                 break
         else:
             self.builder.ret()
@@ -227,6 +251,26 @@ class ONNXParser:
         except (OSError, ValueError, OverflowError) as exc:
             raise ONNXParseError(f"Cannot map external tensor {tensor.name}: {exc}") from exc
 
+    @staticmethod
+    def _has_concrete_shape(tensor_type) -> bool:
+        """Only concrete ONNX dimensions are exact tensor execution sizes.
+
+        Unknown dimensions use zero sentinels only at the scalar backend's
+        rejection boundary. They must not become zero-sized tensor contracts.
+        """
+        return tensor_type.HasField("shape") and all(
+            dimension.HasField("dim_value") for dimension in tensor_type.shape.dim
+        )
+
+    @staticmethod
+    def _shape(value_info) -> tuple[int, ...]:
+        """Keep declared shapes, including unknown dimensions/rank, in IR."""
+        tensor_type = value_info.type.tensor_type
+        if not tensor_type.HasField("shape"):
+            return (0,)  # Unknown rank is not evidence of a scalar.
+        return tuple(d.dim_value if d.HasField("dim_value") else 0
+                     for d in tensor_type.shape.dim)
+
     def _translate_node(self, node, output_names: set[str]) -> None:
         """Translate a single ONNX node to IR instructions."""
         op_type = node.op_type
@@ -250,7 +294,7 @@ class ONNXParser:
                 value = self._value_map[name]
                 if info.elem_type:
                     value.dtype = self._dtype(info.elem_type)
-                if all(dim.HasField("dim_value") for dim in info.shape.dim):
+                if self._has_concrete_shape(info):
                     value.shape = tuple(dim.dim_value for dim in info.shape.dim)
 
     def _get_value(self, name: str) -> Value:
@@ -264,6 +308,14 @@ class ONNXParser:
         if value is None:
             value = self.builder.make_value()
         for name in outputs:
+            if name in self._value_shapes:
+                shape = self._value_shapes[name]
+                if value.shape != shape and any(v is value for v in self._value_map.values()):
+                    # Single-input Min/Max can alias an initializer/parameter.
+                    # Its output annotation must not conceal an array source.
+                    value = replace(value, shape=shape)
+                else:
+                    value.shape = shape
             self._value_map[name] = value
         return value
 
@@ -278,18 +330,25 @@ class ONNXParser:
             raise ONNXParseError(f"Unsupported ONNX element type: {elem_type}")
         return DataType.from_onnx(elem_type)
 
-    def _bind_constant(self, name: str, data) -> Value:
+    def _bind_constant(self, name: str, data, *, bit_pattern: int | None = None) -> Value:
         from onnx import helper
         dtype = self._dtype(helper.np_dtype_to_tensor_dtype(data.dtype))
+        scalar = data.ndim == 0 or (self._scalar_initializers and data.size == 1)
         value = self.builder.make_value(name=name, dtype=dtype,
-                                        is_constant=data.ndim == 0,
-                                        const_value=data.item() if data.ndim == 0 else None)
+                                        is_constant=scalar,
+                                        const_value=data.item() if scalar else None)
+        if scalar and dtype in (DataType.FLOAT32, DataType.FLOAT64):
+            if bit_pattern is None:
+                bit_pattern = int.from_bytes(data.astype(
+                    "<f4" if dtype is DataType.FLOAT32 else "<f8", copy=False
+                ).tobytes(), "little")
+            value.bit_pattern = bit_pattern
         value.shape = tuple(data.shape)
         self.builder.program.global_values.append(value)
         self.initializers[name] = data
         self._value_map[name] = value
-        if data.ndim == 0:
-            self.builder.load_const(data.item(), dtype)
+        if scalar:
+            self.builder.load_const(data.item(), dtype, bit_pattern=bit_pattern)
         return value
 
     def _constant_array(self, value: Value):
@@ -471,6 +530,36 @@ class ONNXParser:
         result = self.builder.exp(inputs[0])
         self._define_outputs(outputs, result)
 
+    def _handle_sqrt(self, node, inputs: list[Value],
+                     outputs: list[str]) -> None:
+        result = self.builder.sqrt(inputs[0])
+        self._define_outputs(outputs, result)
+
+    def _handle_min(self, node, inputs: list[Value],
+                    outputs: list[str]) -> None:
+        self._reduce_min_max(inputs, outputs, "min")
+
+    def _handle_max(self, node, inputs: list[Value],
+                    outputs: list[str]) -> None:
+        self._reduce_min_max(inputs, outputs, "max")
+
+    def _reduce_min_max(self, inputs: list[Value], outputs: list[str],
+                        operator: str) -> None:
+        """Lower every variadic operand; a single input is the identity."""
+        if not inputs:
+            raise ONNXParseError(
+                f"ONNX {operator.title()} requires at least one input"
+            )
+        result = inputs[0]
+        reduce_pair = getattr(self.builder, operator)
+        for value in inputs[1:]:
+            result = reduce_pair(
+                result, value,
+                propagate_nan=result.dtype in (DataType.FLOAT32, DataType.FLOAT64),
+            )
+        self._define_outputs(outputs, result)
+
+
     def _handle_conv(self, node, inputs: list[Value],
                      outputs: list[str]) -> None:
         x, w, b = inputs[0], inputs[1], inputs[2]
@@ -521,8 +610,6 @@ class ONNXParser:
         axis = self._attributes(node).get("axis", 0)
         self._define_outputs(outputs, self.builder.gather(inputs[0], inputs[1], axis))
 
-    def _handle_sqrt(self, node, inputs, outputs):
-        self._define_outputs(outputs, self.builder.sqrt(inputs[0]))
 
     def _handle_reducemean(self, node, inputs, outputs):
         attrs = self._attributes(node)

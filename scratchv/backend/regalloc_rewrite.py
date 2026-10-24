@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from scratchv.backend.machine_semantics import get_machine_semantics
-from scratchv.backend.machine_types import MachineOp
+from scratchv.backend.machine_types import FP_TEMP_REGS, MachineInstr, MachineOperand, MachineOp, canonical_register_name
+from scratchv.backend.allocation import RegisterType
 
 
 def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
@@ -18,6 +19,9 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
     CFG boundaries, and invalidates ABI-clobbered registers across calls.
     """
 
+    # Every rewrite owns a new output list, even for empty input. Rebinding
+    # also preserves instruction lists already returned to callers.
+    allocator._allocated_instructions = []
     if not instructions:
         return ""
     if not allocator.phys_regs:
@@ -36,15 +40,61 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
     block_first = {block.start: block for block in cfg.blocks}
     block_last = {block.end - 1: block for block in cfg.blocks}
 
+    for inst in instructions:
+        try:
+            semantics = get_machine_semantics(MachineOp(inst.opcode))
+        except ValueError:
+            continue
+        if semantics.is_terminator and inst.defines:
+            # A definition made by the jump cannot be stored before the
+            # instruction, and a store after it is unreachable. Like greedy,
+            # reject this unsupported edge-result contract instead of reading
+            # an uninitialized canonical slot in the successor.
+            raise RuntimeError(
+                "linear regalloc does not support a terminator defining a virtual register"
+            )
+
+    def physical_constraints(inst: Any) -> tuple[set[str], set[str]]:
+        """Find fixed register operands without confusing named virtuals."""
+        try:
+            semantics = get_machine_semantics(MachineOp(inst.opcode))
+        except ValueError:
+            return set(), set()
+        original = getattr(inst, "machine_instr", None)
+
+        def collect(positions: tuple[int, ...], virtuals: set[str]) -> set[str]:
+            registers: set[str] = set()
+            for position in positions:
+                if position >= len(inst.operands):
+                    continue
+                if original is not None:
+                    operand = (original.dst, original.src1, original.src2)[position]
+                    if operand is None or operand.kind != "reg":
+                        continue
+                elif inst.operands[position] in virtuals:
+                    continue
+                register = canonical_register_name(inst.operands[position])
+                if register in allocator.phys_regs or register in FP_TEMP_REGS:
+                    registers.add(register)
+            return registers
+
+        return collect(semantics.uses, inst.uses), collect(semantics.defs, inst.defines)
+
+    fixed_operands = {inst.id: physical_constraints(inst) for inst in instructions}
     all_defines = set().union(*(inst.defines for inst in instructions))
     # Once allocation contains a split/spilled interval, reloads can evict a
     # nominally register-resident value on only one predecessor.  Canonicalize
     # every edge-live value through its stack slot in that case so all incoming
-    # paths agree at joins.  The set is fixed before emission; deriving it from
-    # mutable rewrite state would make correctness depend on textual block
-    # order.
+    # paths agree at joins.  Explicit physical definitions can cause the same
+    # dynamic eviction even without pressure or CALL.  Fixed physical uses
+    # can also relocate a destination away from its preferred register.
+    # Plan for both before emission: deriving this set from mutable rewrite
+    # state would make correctness depend on textual block order.
     canonical_vregs: set[str] = set()
-    if allocator._spilled:
+    if allocator._spilled or any(
+        inst.opcode == MachineOp.CALL.value or any(fixed_operands[inst.id])
+        for inst in instructions
+    ):
         canonical_vregs = set().union(
             *(block.live_out for block in cfg.blocks)
         )
@@ -53,6 +103,35 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
     stack_current: set[str] = set()
     rename: dict[str, str] = {}
     lines: list[str] = []
+
+    def bank_for(vreg: str) -> list[str]:
+        return allocator.registers_for(vreg) if hasattr(allocator, "registers_for") else allocator.phys_regs
+
+    def transfer(vreg: str, reg: str, slot: int, comment: str, *, load: bool = False) -> None:
+        value_type = getattr(allocator, "_vreg_types", {}).get(vreg, RegisterType())
+        op = value_type.load_op if load else value_type.store_op
+        lines.append(f"  {op.value} {reg}, {slot}(sp)  # {comment}")
+        allocator._allocated_instructions.append(MachineInstr(
+            op, MachineOperand.reg(reg, value_type.reg_class, value_type.bit_width),
+            MachineOperand.reg(f"{slot}(sp)"), comment=comment,
+        ))
+
+    def append_instruction(inst: Any) -> None:
+        original = getattr(inst, "machine_instr", None)
+        if original is None:
+            lines.append(inst.to_asm(rename))
+            return
+        operands = []
+        for operand in (original.dst, original.src1, original.src2):
+            if operand is not None and operand.kind == "vreg":
+                operand = MachineOperand.reg(rename[str(operand.value)], operand.reg_class, operand.bit_width)
+            operands.append(operand)
+        allocated = MachineInstr(original.op, *operands, original.comment,
+                                 original.target, original.rounding_mode, original.label_role)
+        allocator._allocated_instructions.append(allocated)
+        # The legacy string API stays stable for GPR-only clients. Production
+        # typed emission consumes the structured instructions via AsmEmitter.
+        lines.append(inst.to_asm(rename))
 
     def has_later_use(vreg: str, position: int, block: Any) -> bool:
         interval = allocator._vreg_interval.get(vreg)
@@ -74,9 +153,7 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
             return
         slot = allocator._get_spill_slot(owner)
         allocator._spilled.add(owner)
-        lines.append(
-            f"  sw {reg}, {slot}(sp)  # {reason} {owner} [regalloc:spill]"
-        )
+        transfer(owner, reg, slot, f"{reason} {owner} [regalloc:spill]")
         stack_current.add(owner)
 
     def claim_register(vreg: str, reg: str) -> None:
@@ -98,9 +175,10 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
         preferred: str | None = None,
     ) -> str:
         candidates = []
-        if preferred in allocator.phys_regs:
+        bank = bank_for(vreg)
+        if preferred in bank:
             candidates.append(preferred)
-        candidates.extend(reg for reg in allocator.phys_regs if reg not in candidates)
+        candidates.extend(reg for reg in bank if reg not in candidates)
 
         # Keep the allocator's global assignment stable across CFG edges.
         # Even if another register is currently dead, silently choosing it
@@ -145,7 +223,7 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
             # the same location on every edge.  Only split/spilled values need
             # the canonical stack hand-off between basic blocks.
             if vreg not in canonical_vregs \
-                    and allocator.alloc_map.get(vreg) in allocator.phys_regs \
+                    and allocator.alloc_map.get(vreg) in bank_for(vreg) \
                     and vreg not in allocator._spilled:
                 continue
             reg = locations.get(vreg)
@@ -153,10 +231,7 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
                 continue
             slot = allocator._get_spill_slot(vreg)
             allocator._spilled.add(vreg)
-            lines.append(
-                f"  sw {reg}, {slot}(sp)  # spill {vreg} at block boundary "
-                "[regalloc:spill]"
-            )
+            transfer(vreg, reg, slot, f"spill {vreg} at block boundary [regalloc:spill]")
             stack_current.add(vreg)
 
     for inst in instructions:
@@ -172,7 +247,7 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
             # cross an edge through their canonical stack slot instead.
             for vreg in sorted(block.live_in):
                 preferred = allocator.alloc_map.get(vreg)
-                if preferred in allocator.phys_regs \
+                if preferred in bank_for(vreg) \
                         and vreg not in canonical_vregs \
                         and vreg not in allocator._spilled \
                         and preferred not in reg_owner:
@@ -187,21 +262,9 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
         # Physical operands are fixed constraints, not values available to
         # the allocator.  Preserve a live virtual value currently occupying
         # an explicitly-written register before that instruction clobbers it.
-        physical_uses: set[str] = set()
-        physical_defs: set[str] = set()
-        if semantics is not None:
-            for position in semantics.uses:
-                if position < len(inst.operands):
-                    operand = inst.operands[position]
-                    if operand in allocator.phys_regs:
-                        physical_uses.add(operand)
-            for position in semantics.defs:
-                if position < len(inst.operands):
-                    operand = inst.operands[position]
-                    if operand in allocator.phys_regs:
-                        physical_defs.add(operand)
-            for reg in physical_defs:
-                store_owner(reg, inst.id, block, "spill before physical clobber")
+        physical_uses, physical_defs = fixed_operands[inst.id]
+        for reg in physical_defs:
+            store_owner(reg, inst.id, block, "spill before physical clobber")
 
         ordered_uses: list[str] = []
         for operand in inst.operands:
@@ -242,10 +305,7 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
                 preferred = allocator.alloc_map.get(vreg)
                 reg = choose_register(vreg, inst.id, block, protected, preferred)
                 slot = allocator._get_spill_slot(vreg)
-                lines.append(
-                    f"  lw {reg}, {slot}(sp)  # reload {vreg} "
-                    "[regalloc:reload]"
-                )
+                transfer(vreg, reg, slot, f"reload {vreg} [regalloc:reload]", load=True)
             claim_register(vreg, reg)
             protected.add(reg)
 
@@ -287,7 +347,7 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
                 if reg in semantics.clobbers:
                     store_owner(reg, inst.id, block, "spill")
 
-        lines.append(inst.to_asm(rename))
+        append_instruction(inst)
 
         # The instruction has now overwritten its explicit physical
         # destinations; any old virtual ownership is stale.
@@ -305,10 +365,7 @@ def rewrite_with_spills(allocator: Any, instructions: list[Any]) -> str:
                 continue
             reg = locations[vreg]
             slot = allocator._get_spill_slot(vreg)
-            lines.append(
-                f"  sw {reg}, {slot}(sp)  # store redefined {vreg} "
-                "[regalloc:spill]"
-            )
+            transfer(vreg, reg, slot, f"store redefined {vreg} [regalloc:spill]")
             stack_current.add(vreg)
             forget_register(reg)
 

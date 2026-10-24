@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 from scratchv.frontend.dsl_errors import ErrorCollector
+from scratchv.frontend.dsl_lexical import (
+    CONDITION as _CONDITION, NUMBER as _NUMBER,
+    parse_i32_constant,
+)
 
 
 @dataclass(frozen=True)
@@ -39,10 +43,17 @@ class OpSignature:
 
 
 OP_SIGNATURES: dict[str, OpSignature] = {
+    "const": OpSignature(1, frozenset({"dtype"})),
     "add": OpSignature(2),
     "sub": OpSignature(2),
     "mul": OpSignature(2),
     "div": OpSignature(2),
+    "rem": OpSignature(2),
+    "mod": OpSignature(2),
+    "min": OpSignature(2),
+    "max": OpSignature(2),
+    "abs": OpSignature(1),
+    "sqrt": OpSignature(1),
     "neg": OpSignature(1),
     "exp": OpSignature(1),
     "relu": OpSignature(1),
@@ -63,13 +74,6 @@ _ASSIGNMENT = re.compile(
 _FOR = re.compile(
     r"^for\s+(?P<var>[^\s=]+)\s*=\s*(?P<start>\d+)\s*,\s*"
     r"(?P<end>\d+)\s*$",
-)
-_NUMBER = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$")
-_CONDITION_ATOM = r"(?:[^\W\d]\w*|[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
-_CONDITION = re.compile(
-    rf"^(?P<kind>if|while)\s*\(\s*{_CONDITION_ATOM}\s*"
-    rf"(?:==|!=|<=|>=|<|>)\s*{_CONDITION_ATOM}\s*\)\s*:?\s*$",
-    re.UNICODE,
 )
 
 
@@ -259,6 +263,27 @@ class DSLValidator:
         if missing:
             name = sorted(missing)[0]
             self._add(collector, line, args_col, raw, "E202", f"missing keyword argument '{name}'")
+            return
+        if op == "const":
+            if not positional or _NUMBER.fullmatch(positional[0]) is None:
+                self._add(
+                    collector, line, args_col, raw, "E203",
+                    "constant value must be numeric",
+                )
+                return
+            dtype = kwargs.get("dtype", "f32")
+            if dtype not in {"i32", "f32", "f64"}:
+                dtype_col = raw.find(dtype, args_col - 1) + 1
+                self._add(
+                    collector, line, dtype_col, raw, "E203",
+                    "'dtype' must be one of i32, f32, f64",
+                )
+            elif dtype == "i32":
+                try:
+                    parse_i32_constant(positional[0])
+                except ValueError as exc:
+                    value_col = raw.find(positional[0], args_col - 1) + 1
+                    self._add(collector, line, value_col, raw, "E203", str(exc))
 
     def _close_block(
         self, closer: str, line: int, col: int, raw: str,

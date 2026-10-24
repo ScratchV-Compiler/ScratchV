@@ -153,7 +153,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--extended-isel",
         action="store_true",
-        help="Use extended instruction selector with fp64/sqrt/min/max/abs support (Topic 28)",
+        help="Use the extended instruction selector with fp64/sqrt/min/max/abs support",
+    )
+    parser.add_argument(
+        "--target-isa",
+        choices=["rv32im", "rv32imf", "rv32imfd"],
+        default="rv32im",
+        help="RISC-V ISA for extended selection (default: rv32im)",
+    )
+    parser.add_argument(
+        "--target-abi",
+        choices=["ilp32", "ilp32f", "ilp32d"],
+        default="ilp32",
+        help="RISC-V ABI for extended selection (default: ilp32)",
     )
 
     # ── Cycle estimation ──────────────────────────────────────────────
@@ -205,6 +217,9 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         use_logger=args.log_level is not None,
         log_level=args.log_level or "INFO",
         use_dag_isel=args.dag_isel,
+        use_extended_isel=args.extended_isel,
+        target_isa=args.target_isa,
+        target_abi=args.target_abi,
         beautify_asm=args.beautify,
         peephole_asm=args.peephole_asm,
         const_merge=args.const_merge,

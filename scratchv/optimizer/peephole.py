@@ -18,6 +18,9 @@ class IRPeepholeOptimizer(OptimizationPass):
 
     name = "ir-peephole"
 
+    def __init__(self, *, preserve_float_semantics: bool = False):
+        self.preserve_float_semantics = preserve_float_semantics
+
     def optimize(self, program: Program) -> int:
         changes = 0
         for function in program.functions:
@@ -52,12 +55,16 @@ class IRPeepholeOptimizer(OptimizationPass):
             function.returns = [resolve(value) for value in function.returns]
         return changes
 
-    @staticmethod
-    def _is_safe_identity(instr, safety, counters):
+    def _is_safe_identity(self, instr, safety, counters):
         if (instr.opcode not in (OpCode.ADD, OpCode.MUL) or instr.dest is None
                 or len(instr.operands) != 2 or instr.attrs):
             return False
         source, constant = instr.operands
+        if self.preserve_float_semantics and any(
+            value.dtype in (DataType.FLOAT32, DataType.FLOAT64)
+            for value in [source, constant, instr.dest]
+        ):
+            return False
         if (source.name == instr.dest.name or source.name in counters
                 or source.dtype != instr.dest.dtype or constant.dtype != source.dtype
                 or (instr.dest.shape and instr.dest.shape != source.shape)):

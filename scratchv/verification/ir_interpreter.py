@@ -25,6 +25,7 @@ from scratchv.verification.ir_numpy_ops import (
     check_instruction,
     compute,
     integer,
+    load_const,
 )
 
 
@@ -391,6 +392,13 @@ class IRInterpreter:
 
         for name, value in params.items():
             values[name] = checked_array(value, inputs[name], copy=True)
+
+        def literal_array(value):
+            attrs = {"value": value.const_value}
+            if value.bit_pattern is not None:
+                attrs["bit_pattern"] = value.bit_pattern
+            return load_const([], attrs, DTYPES[value.dtype])
+
         referenced = {
             v.name
             for b in function.blocks
@@ -407,7 +415,7 @@ class IRInterpreter:
                     data = data.view()
                     data.setflags(write=False)
                 if value.is_constant:
-                    literal = np.asarray(value.const_value, dtype=DTYPES[value.dtype])
+                    literal = literal_array(value)
                     if data.shape != () or not np.array_equal(data, literal):
                         raise error(
                             "BindingError",
@@ -416,7 +424,7 @@ class IRInterpreter:
                         )
                 values[name] = data
             elif value.is_constant:
-                values[name] = np.asarray(value.const_value, dtype=DTYPES[value.dtype])
+                values[name] = literal_array(value)
             else:
                 raise error(
                     "BindingError", "global tensor data missing", value_name=name
@@ -456,7 +464,7 @@ class IRInterpreter:
             if value.name in values:
                 return values[value.name]
             if value.is_constant:
-                return np.asarray(value.const_value, dtype=DTYPES[value.dtype])
+                return literal_array(value)
             raise OpError(
                 "UndefinedValue", f"value not defined on this path: {value.name}"
             )

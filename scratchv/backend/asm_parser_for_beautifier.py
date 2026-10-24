@@ -113,6 +113,17 @@ INSTRUCTION_SPECS: dict[str, InstructionSpec] = {
     ),
 }
 
+# F/D arithmetic may append a static rounding mode. Symbol operations and
+# comparisons do not; keeping these specs separate prevents false warnings.
+for _suffix in ("s", "d"):
+    for _opcode in ("fadd", "fsub", "fmul", "fdiv"):
+        INSTRUCTION_SPECS[f"{_opcode}.{_suffix}"] = InstructionSpec(3, 4, ("rd", "rs1", "rs2", "rm"))
+    INSTRUCTION_SPECS[f"fsqrt.{_suffix}"] = InstructionSpec(2, 3, ("rd", "rs1", "rm"))
+    for _opcode in ("fmin", "fmax", "feq", "flt", "fle"):
+        INSTRUCTION_SPECS[f"{_opcode}.{_suffix}"] = InstructionSpec(3, 3, ("rd", "rs1", "rs2"))
+    for _opcode in ("fabs", "fneg", "fmv"):
+        INSTRUCTION_SPECS[f"{_opcode}.{_suffix}"] = InstructionSpec(2, 2, ("rd", "rs"))
+
 # 汇编器指示不属于 CPU 指令，不进行操作数数量校验。
 DIRECTIVES = frozenset(
     """

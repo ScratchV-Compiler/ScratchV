@@ -1,4 +1,5 @@
 # Nested for loops
+acc = add(0, 0)
 for i = 0, 4
   for j = 0, 2
     t1 = mul(x, y)
