@@ -194,11 +194,11 @@ def test_interrupted_batch_keeps_completed_and_pending_records(tmp_path):
 
 
 def test_missing_job_and_pending_record_fail_accounting():
-    p = plan(11)
-    batch = reviewed_batch(names=tuple(f"{i}.py" for i in range(9)))
-    batch["files"].append({"filename": "9.py", "status": "pending"})
+    p = plan(6)
+    batch = reviewed_batch(names=tuple(f"{i}.py" for i in range(4)))
+    batch["files"].append({"filename": "4.py", "status": "pending"})
     summary = review.summarize(p, [batch])
-    assert summary["counts"] == {"reviewed": 9, "failed": 2, "unreviewable": 0}
+    assert summary["counts"] == {"reviewed": 4, "failed": 2, "unreviewable": 0}
     assert not summary["complete"]
 
 
@@ -265,9 +265,10 @@ def test_failed_fetch_still_writes_plan_and_matrix(tmp_path, monkeypatch):
     assert json.loads(output.read_text().split("=", 1)[1]) == {"include": [{"batch": 0}]}
 
 def test_large_pr_reports_matrix_limit_without_generating_invalid_matrix():
-    p = plan(2561)
+    assert plan(1280)["batches"] == 256
+    p = plan(1281)
     assert p["errors"] and p["batches"] == 1
-    assert "256-job" in p["errors"][0]
+    assert "256-job" in p["errors"][0] and "5 files per batch" in p["errors"][0]
 
 
 @pytest.mark.parametrize("invalid", [[], None, {"head": "abc", "batch": 0, "files": [None]},
@@ -310,6 +311,119 @@ def test_one_failed_file_does_not_abandon_remaining_batch(tmp_path):
     summary = review.summarize(plan(2), [result])
     assert summary["counts"] == {"failed": 1, "reviewed": 1, "unreviewable": 0}
     assert not summary["complete"]
+
+
+def test_longer_request_window_uses_smaller_batches_with_job_margin(monkeypatch):
+    calls = []
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_): return None
+        def read(self, _):
+            return b'{"choices":[{"finish_reason":"stop","message":{"content":"No issue."}}]}'
+    def urlopen(request, *, timeout):
+        calls.append(timeout)
+        return Response()
+    monkeypatch.setattr(review.urllib.request, "urlopen", urlopen)
+    assert review.request_review({}, "test-key") == ("No issue.", 200, "")
+    assert calls == [180]
+    p = plan(47)
+    assert p["batch_size"] == 5 and p["batches"] == 10
+    # Nominal socket timeout windows plus maximal backoff leave setup/upload margin.
+    nominal_seconds = p["batch_size"] * (2 * calls[0] + 30) + p["batch_size"] - 1
+    job_seconds = int(workflow()["jobs"]["review"]["timeout-minutes"]) * 60
+    assert nominal_seconds <= job_seconds - 300
+
+
+@pytest.mark.parametrize("first", [(429, "3"), (503, ""), ConnectionResetError("private API key/body")])
+def test_each_request_records_sanitized_duration_and_outcome(first):
+    ticks = iter((0.0, 10.0, 12.25, 30.0, 33.5))
+    calls = []
+    def request(*_):
+        calls.append(1)
+        if len(calls) == 1:
+            if isinstance(first, Exception):
+                raise first
+            return "private API body", *first
+        return ok()
+    record = review.review_file(file(), "private prompt", "private-key", request=request,
+                                sleep=lambda _: None, clock=ticks.__next__)
+    outcome = type(first).__name__ if isinstance(first, Exception) else f"HTTP {first[0]}"
+    assert record["request_attempts"] == [
+        {"attempt": 1, "outcome": outcome, "elapsed_seconds": 2.25},
+        {"attempt": 2, "outcome": "HTTP 200", "elapsed_seconds": 3.5},
+    ]
+    assert record["status"] == "reviewed" and "reason" not in record
+    assert record["elapsed"] == 33.5
+    assert "private" not in json.dumps(record)
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_terminal_timeout_records_one_sanitized_attempt_without_retry(wrapped):
+    ticks = iter((0.0, 0.0, 180.0))
+    def request(*_):
+        error = TimeoutError("private API key/body")
+        raise urllib.error.URLError(error) if wrapped else error
+    record = review.review_file(file(), "prompt", "test-key", request=request,
+                                sleep=lambda _: pytest.fail("timeout must not retry"),
+                                clock=ticks.__next__)
+    assert record["status"] == "failed" and record["attempts"] == 1
+    assert record["request_attempts"] == [
+        {"attempt": 1, "outcome": "URLError" if wrapped else "TimeoutError", "elapsed_seconds": 180.0},
+    ]
+    assert record["elapsed"] == 180.0
+    assert "private" not in json.dumps(record)
+
+
+def test_saved_ten_file_plan_keeps_run_and_cli_summary_boundaries(tmp_path):
+    old = plan(11)
+    old.update(batch_size=10, batches=2)
+    download = tmp_path / "download"
+    review.write_json(download / "plan.json", old)
+    batches = [review.run_batch(old, number, "prompt", download / f"batch-{number}.json", "test-key",
+                               request=ok, sleep=lambda _: None) for number in range(2)]
+    assert [[r["filename"] for r in batch["files"]] for batch in batches] == [
+        [f"{i}.py" for i in range(10)], ["10.py"],
+    ]
+    assert review.summarize(old, batches)["complete"]
+    out = tmp_path / "summary"
+    assert review.main(["summarize", "--directory", str(download), "--output", str(out),
+                        "--run-url", "https://example.test/run"]) == 0
+    result = json.loads((out / "summary.json").read_text())
+    assert result["complete"] and result["counts"] == {"reviewed": 11, "failed": 0, "unreviewable": 0}
+    assert review.main(["gate", "--summary", str(out / "summary.json")]) == 0
+
+
+@pytest.mark.parametrize("invalid", [0, -1, 6, 11, True, "10", None])
+def test_invalid_saved_batch_size_fails_closed(tmp_path, invalid):
+    saved = plan(1)
+    saved["batch_size"] = invalid
+    with pytest.raises(ValueError, match="batch size"):
+        review.run_batch(saved, 0, "prompt", tmp_path / "batch.json", "test-key", request=ok)
+    summary = review.summarize(saved, [reviewed_batch()])
+    assert not summary["complete"] and summary["counts"]["failed"] == 1
+    rebuilt = review.make_plan({**saved, "head_after": saved["head"]})
+    assert rebuilt["errors"] and not review.summarize(rebuilt, [reviewed_batch()])["complete"]
+
+
+@pytest.mark.parametrize("batch_size,timeout_seconds", [(5, 180), (10, 90)])
+def test_real_adapter_keeps_each_plan_timeout_budget(tmp_path, monkeypatch, batch_size, timeout_seconds):
+    calls = []
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_): return None
+        def read(self, _):
+            return b'{"choices":[{"finish_reason":"stop","message":{"content":"No issue."}}]}'
+    def urlopen(request, *, timeout):
+        calls.append(timeout)
+        return Response()
+    monkeypatch.setattr(review.urllib.request, "urlopen", urlopen)
+    saved = plan(1)
+    saved["batch_size"] = batch_size
+    result = review.run_batch(saved, 0, "prompt", tmp_path / "batch.json", "test-key")
+    assert result["files"][0]["status"] == "reviewed"
+    assert calls == [timeout_seconds]
 
 
 def write_review_inputs(tmp_path, p, prompt="prompt"):
@@ -357,7 +471,7 @@ def test_non_timeout_transport_error_retries_once():
 
 def test_elapsed_is_recorded_with_injected_clock():
     result = review.review_file(file(), "prompt", "test-key", request=ok, sleep=lambda _: None,
-                                clock=iter([0.0, 12.5]).__next__)
+                                clock=iter([0.0, 0.0, 12.5]).__next__)
     assert result["status"] == "reviewed" and result["elapsed"] == 12.5
     skipped = review.review_file(file(patch=None, additions=0, deletions=0), "prompt", "test-key",
                                  request=ok, sleep=lambda _: None, clock=iter([5.0, 5.0]).__next__)
@@ -405,29 +519,34 @@ def test_batch_with_no_success_emits_error_and_still_exits_zero(tmp_path, monkey
     assert out.count("::warning title=AI review incomplete::") == 2
 
 
-def test_slow_successful_file_warns(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("batch_size,timeout_seconds", [(5, 180), (10, 90)])
+def test_slow_successful_file_warns_with_plan_budget(tmp_path, monkeypatch, capsys, batch_size, timeout_seconds):
     monkeypatch.setattr(review, "review_file", lambda item, *_a, **_k: {
         "filename": item["filename"], "status": "reviewed", "attempts": 1,
         "review": "ok", "elapsed": 61.0})
-    plan_path, prompt_path = write_review_inputs(tmp_path, plan(1))
+    saved = plan(1)
+    saved["batch_size"] = batch_size
+    plan_path, prompt_path = write_review_inputs(tmp_path, saved)
     assert review.main(["review", "--plan", str(plan_path), "--batch", "0",
                         "--prompt", str(prompt_path), "--output", str(tmp_path / "batch.json")]) == 0
-    assert "::warning title=AI review slow::" in capsys.readouterr().out
+    warning = capsys.readouterr().out
+    assert "::warning title=AI review slow::" in warning
+    assert f"{timeout_seconds}s budget" in warning
 
 
 def test_summarize_tracks_batch_visibility_and_slowest():
-    p = plan(11)
-    batch = reviewed_batch(names=tuple(f"{i}.py" for i in range(10)))
+    p = plan(6)
+    batch = reviewed_batch(names=tuple(f"{i}.py" for i in range(5)))
     for index, record in enumerate(batch["files"]):
         record["elapsed"] = float(index)
     summary = review.summarize(p, [batch])
     assert summary["batches_planned"] == 2 and summary["batches_seen"] == 1
-    assert summary["slowest"] == 9.0
+    assert summary["slowest"] == 4.0
 
 
 def test_gate_warns_when_batch_artifacts_are_missing(tmp_path, capsys):
-    p = plan(11)
-    summary = review.summarize(p, [reviewed_batch(names=tuple(f"{i}.py" for i in range(10)))])
+    p = plan(6)
+    summary = review.summarize(p, [reviewed_batch(names=tuple(f"{i}.py" for i in range(5)))])
     path = tmp_path / "summary.json"
     review.write_json(path, summary)
     assert review.main(["gate", "--summary", str(path)]) == 0

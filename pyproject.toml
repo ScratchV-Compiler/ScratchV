@@ -35,7 +35,7 @@ classifiers = [
 riscv = ["tinyfive"]
 llvm = ["llvmlite"]      # optional: LLVM IR JIT execution
 verify = ["onnxruntime"] # optional: ONNX Runtime comparison
-llm = ["tokenizers>=0.21,<0.22"] # optional: local Qwen3 text tokenizer; no Torch
+llm = ["tokenizers>=0.21,<0.22", "jinja2>=3.1.6,<4"] # optional: local Qwen3 text tokenizer; no Torch
 # Pinned deployment environment: Ubuntu 24.04 x86_64 / CPython 3.12.
 # Use the official CPU wheel so one install does not pull CUDA dependencies.
 llm-deploy = [
@@ -50,6 +50,7 @@ llm-deploy = [
     "safetensors==0.5.3",
     "protobuf==5.29.5",
     "tokenizers==0.21.4",
+    "jinja2==3.1.6",
     "pytest==9.1.1",
     "ziglang==0.14.1",
     "PyYAML==6.0.3",
