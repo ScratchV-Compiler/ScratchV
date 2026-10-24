@@ -1,4 +1,5 @@
 """Bounded AI review coverage and failure accounting; no external API calls."""
+import http.client
 import importlib.util
 import json
 from pathlib import Path
@@ -66,6 +67,7 @@ def test_workflow_keeps_failed_batch_artifacts_and_checks_staleness():
     assert "github.paginate(github.rest.issues.listComments" in post
     assert "pr.head.sha !== summary.head" in post
     assert "summary.complete = false" in post
+    assert "summary.errors.push('PR head changed" in post
     assert summary["steps"][-1]["run"].endswith("gate --summary review-summary/summary.json")
 
 
@@ -117,7 +119,7 @@ def test_filename_quotes_and_newlines_are_data():
     assert json.loads(calls[0]["messages"][1]["content"].split("\n", 1)[1])["filename"] == named["filename"]
 
 
-@pytest.mark.parametrize("first", [(429, "999"), (503, ""), TimeoutError("secret must not appear")])
+@pytest.mark.parametrize("first", [(429, "999"), (503, "")])
 def test_transient_failure_retries_once_and_records_attempts(first):
     requests, sleeps = [], []
     def request(*_):
@@ -144,7 +146,7 @@ def test_timeout_is_accounted_without_leaking_exception_text():
     def request(*_):
         raise TimeoutError("the-secret-key")
     result = review.review_file(file(), "prompt", "test-key", request=request, sleep=lambda _: None)
-    assert result["status"] == "failed" and result["attempts"] == 2
+    assert result["status"] == "failed" and result["attempts"] == 1
     assert "the-secret-key" not in json.dumps(result)
 
 
@@ -234,7 +236,7 @@ def test_comment_is_bounded_and_full_report_is_not_truncated():
     assert "failed/missing: **100**" in comment
 
 
-def test_cli_preserves_failure_report_before_gate(tmp_path):
+def test_cli_publishes_partial_coverage_without_failing_gate(tmp_path):
     download = tmp_path / "download"
     review.write_json(download / "plan.json", plan(2))
     review.write_json(download / "batch-0.json", reviewed_batch())
@@ -242,15 +244,17 @@ def test_cli_preserves_failure_report_before_gate(tmp_path):
     assert review.main(["summarize", "--directory", str(download), "--output", str(out),
                         "--run-url", "https://example.test/run"]) == 0
     assert (out / "review_output.md").exists() and (out / "review_comment.md").exists()
-    assert review.main(["gate", "--summary", str(out / "summary.json")]) == 1
+    assert review.main(["gate", "--summary", str(out / "summary.json")]) == 0
 
 
-def test_cli_missing_plan_is_reported(tmp_path):
+def test_cli_missing_plan_is_reported(tmp_path, capsys):
     out = tmp_path / "summary"
     assert review.main(["summarize", "--directory", str(tmp_path / "missing"),
                         "--output", str(out), "--run-url", "https://example.test/run"]) == 0
     summary = json.loads((out / "summary.json").read_text())
     assert not summary["complete"] and summary["errors"]
+    assert review.main(["gate", "--summary", str(out / "summary.json")]) == 1
+    assert "::error title=AI review gate::" in capsys.readouterr().out
 
 
 def test_failed_fetch_still_writes_plan_and_matrix(tmp_path, monkeypatch):
@@ -306,3 +310,160 @@ def test_one_failed_file_does_not_abandon_remaining_batch(tmp_path):
     summary = review.summarize(plan(2), [result])
     assert summary["counts"] == {"failed": 1, "reviewed": 1, "unreviewable": 0}
     assert not summary["complete"]
+
+
+def write_review_inputs(tmp_path, p, prompt="prompt"):
+    plan_path = tmp_path / "plan.json"
+    prompt_path = tmp_path / "prompt.md"
+    review.write_json(plan_path, p)
+    prompt_path.write_text(prompt)
+    return plan_path, prompt_path
+
+
+def test_review_payload_uses_glm_without_reasoning():
+    payloads = []
+    def request(payload, _key):
+        payloads.append(payload)
+        return ok()
+    assert review.review_file(file(), "prompt", "test-key", request=request)["status"] == "reviewed"
+    assert payloads[0]["model"] == "glm-5.2" and payloads[0]["reasoning_effort"] == "none"
+
+
+def test_truncated_response_is_a_file_failure_not_a_crash():
+    def request(*_):
+        raise http.client.IncompleteRead(b"partial", 10)
+    result = review.review_file(file(), "prompt", "test-key", request=request, sleep=lambda _: None)
+    assert result["status"] == "failed" and result["attempts"] == 2
+    assert "IncompleteRead" in result["reason"]
+
+
+def test_urlerror_wrapped_timeout_is_not_retried():
+    def request(*_):
+        raise urllib.error.URLError(TimeoutError("connect timed out"))
+    result = review.review_file(file(), "prompt", "test-key", request=request, sleep=lambda _: None)
+    assert result["status"] == "failed" and result["attempts"] == 1
+
+
+def test_non_timeout_transport_error_retries_once():
+    calls = []
+    def request(*_):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionResetError("reset")
+        return ok()
+    result = review.review_file(file(), "prompt", "test-key", request=request, sleep=lambda _: None)
+    assert result["status"] == "reviewed" and result["attempts"] == 2
+
+
+def test_elapsed_is_recorded_with_injected_clock():
+    result = review.review_file(file(), "prompt", "test-key", request=ok, sleep=lambda _: None,
+                                clock=iter([0.0, 12.5]).__next__)
+    assert result["status"] == "reviewed" and result["elapsed"] == 12.5
+    skipped = review.review_file(file(patch=None, additions=0, deletions=0), "prompt", "test-key",
+                                 request=ok, sleep=lambda _: None, clock=iter([5.0, 5.0]).__next__)
+    assert skipped["status"] == "unreviewable" and skipped["elapsed"] == 0.0
+
+
+def test_missing_key_warns_only_for_reviewable_files(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("SENSENOVA_API_KEY", raising=False)
+    p = review.make_plan({"repository": "owner/repo", "pr_number": 1, "head": "abc", "head_after": "abc",
+                          "changed_files": 3,
+                          "files": [file("a.py"), file("b.py"),
+                                    file("weights.bin", patch=None, additions=0, deletions=0)]})
+    plan_path, prompt_path = write_review_inputs(tmp_path, p)
+    assert review.main(["review", "--plan", str(plan_path), "--batch", "0",
+                        "--prompt", str(prompt_path), "--output", str(tmp_path / "batch.json")]) == 0
+    out = capsys.readouterr().out
+    assert out.count("::warning title=AI review incomplete::") == 2
+    assert "weights.bin" not in out
+
+
+def test_annotation_escapes_untrusted_filename(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("SENSENOVA_API_KEY", raising=False)
+    name = "100%\r\nodd.py"
+    p = review.make_plan({"repository": "owner/repo", "pr_number": 1, "head": "abc", "head_after": "abc",
+                          "changed_files": 1, "files": [file(name)]})
+    plan_path, prompt_path = write_review_inputs(tmp_path, p)
+    assert review.main(["review", "--plan", str(plan_path), "--batch", "0",
+                        "--prompt", str(prompt_path), "--output", str(tmp_path / "batch.json")]) == 0
+    out = capsys.readouterr().out
+    warning = next(line for line in out.splitlines() if "AI review incomplete" in line)
+    assert "%25" in warning and "%0D" in warning and "%0A" in warning
+    assert "\r" not in out and all(line.startswith("::") for line in out.splitlines())
+
+
+def test_batch_with_no_success_emits_error_and_still_exits_zero(tmp_path, monkeypatch, capsys):
+    def failing(item, *_args, **_kwargs):
+        return {"filename": item["filename"], "status": "failed", "attempts": 1,
+                "reason": "HTTP 401", "elapsed": 1.0}
+    monkeypatch.setattr(review, "review_file", failing)
+    plan_path, prompt_path = write_review_inputs(tmp_path, plan(2))
+    assert review.main(["review", "--plan", str(plan_path), "--batch", "0",
+                        "--prompt", str(prompt_path), "--output", str(tmp_path / "batch.json")]) == 0
+    out = capsys.readouterr().out
+    assert "::error title=AI review batch failed::" in out
+    assert out.count("::warning title=AI review incomplete::") == 2
+
+
+def test_slow_successful_file_warns(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(review, "review_file", lambda item, *_a, **_k: {
+        "filename": item["filename"], "status": "reviewed", "attempts": 1,
+        "review": "ok", "elapsed": 61.0})
+    plan_path, prompt_path = write_review_inputs(tmp_path, plan(1))
+    assert review.main(["review", "--plan", str(plan_path), "--batch", "0",
+                        "--prompt", str(prompt_path), "--output", str(tmp_path / "batch.json")]) == 0
+    assert "::warning title=AI review slow::" in capsys.readouterr().out
+
+
+def test_summarize_tracks_batch_visibility_and_slowest():
+    p = plan(11)
+    batch = reviewed_batch(names=tuple(f"{i}.py" for i in range(10)))
+    for index, record in enumerate(batch["files"]):
+        record["elapsed"] = float(index)
+    summary = review.summarize(p, [batch])
+    assert summary["batches_planned"] == 2 and summary["batches_seen"] == 1
+    assert summary["slowest"] == 9.0
+
+
+def test_gate_warns_when_batch_artifacts_are_missing(tmp_path, capsys):
+    p = plan(11)
+    summary = review.summarize(p, [reviewed_batch(names=tuple(f"{i}.py" for i in range(10)))])
+    path = tmp_path / "summary.json"
+    review.write_json(path, summary)
+    assert review.main(["gate", "--summary", str(path)]) == 0
+    assert "::warning title=AI review incomplete::" in capsys.readouterr().out
+
+
+def test_gate_failure_only_reacts_to_systemic_problems():
+    assert review.gate_failure(review.summarize(plan(2), [reviewed_batch()])) is None
+    assert review.gate_failure(review.summarize(plan(), []))
+    assert review.gate_failure({"errors": ["boom"], "counts": {"reviewed": 1, "unreviewable": 0},
+                                "expected_files": 1})
+    unreviewable = review.make_plan({"repository": "owner/repo", "pr_number": 1, "head": "abc",
+                                     "head_after": "abc", "changed_files": 1,
+                                     "files": [file(patch=None, additions=0, deletions=0)]})
+    batch = {"head": "abc", "batch": 0,
+             "files": [{"filename": "a.py", "status": "unreviewable", "elapsed": 0.0}]}
+    assert review.gate_failure(review.summarize(unreviewable, [batch])) is None
+    assert review.gate_failure({}) and review.gate_failure({"errors": None})
+
+
+def test_gate_fails_closed_when_summary_is_unreadable(tmp_path, capsys):
+    (tmp_path / "bad.json").write_text("not json")
+    for name in ("missing.json", "bad.json"):
+        assert review.main(["gate", "--summary", str(tmp_path / name)]) == 1
+    assert capsys.readouterr().out.count("::error title=AI review gate::") == 2
+
+
+def test_partial_coverage_comment_explains_green_is_not_full_coverage():
+    _, comment = review.render_report(review.summarize(plan(2), [reviewed_batch()]),
+                                      "https://example.test/run")
+    assert "Coverage: **INCOMPLETE**" in comment and "not full coverage" in comment
+
+
+def test_review_refuses_a_plan_with_systemic_errors(tmp_path):
+    plan_path, prompt_path = write_review_inputs(
+        tmp_path, review.make_plan({"errors": ["PR head changed while fetching files."]}))
+    with pytest.raises(ValueError):
+        review.main(["review", "--plan", str(plan_path), "--batch", "0",
+                     "--prompt", str(prompt_path), "--output", str(tmp_path / "batch.json")])
