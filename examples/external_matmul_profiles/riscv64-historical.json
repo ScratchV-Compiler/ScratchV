@@ -1,0 +1,263 @@
+{
+  "purpose": "Historical measurement example; not a portable performance guarantee.",
+  "use": "Display by default. Explicit opt-in is required to construct a profile with current library paths. Remeasure before using it to choose performance on another environment.",
+  "provider_contract": {
+    "name": "nmsis-dsp",
+    "symbol": "sv_nmsis_matmul_f32_v1",
+    "targets": [
+      "riscv64"
+    ],
+    "max_dimension": 65535,
+    "alignment": 4,
+    "numerics": "provider_fp32",
+    "parallel_rows": true
+  },
+  "profile": {
+    "target": "riscv64",
+    "environment": "{\"harts\": 4, \"qemu\": \"tcg,thread=multi\", \"statistic\": \"minimum builtin vs maximum external measured forward_wall_s; minimum_gain=0.1\", \"timer\": \"Original forward_wall_s: pre-Popen through UART completion validation; includes startup, JIT, guest input/output checks and subgraph work\", \"toolchain\": {\"compiler\": \"0.14.1\", \"math_library\": \"Zig-bundled musl\", \"qemu\": \"QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)\", \"target\": \"riscv64 / RV64GC / LP64D / QEMU virt / bare metal\"}}",
+    "harts": 4,
+    "measurements": [
+      {
+        "left_shape": [
+          1,
+          64,
+          1
+        ],
+        "right_shape": [
+          1,
+          1,
+          256
+        ],
+        "rhs_kind": "dynamic",
+        "builtin_rhs_layout": "original",
+        "builtin_seconds": 0.020631441999285016,
+        "external_seconds": 0.027902029003598727
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          1024
+        ],
+        "right_shape": [
+          1024,
+          2048
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 1.0345352810036275,
+        "external_seconds": 12.343820342997788
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          1024
+        ],
+        "right_shape": [
+          1024,
+          1024
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 0.5253207519999705,
+        "external_seconds": 6.154059643005894
+      },
+      {
+        "left_shape": [
+          1,
+          16,
+          256,
+          128
+        ],
+        "right_shape": [
+          1,
+          16,
+          128,
+          256
+        ],
+        "rhs_kind": "dynamic",
+        "builtin_rhs_layout": "original",
+        "builtin_seconds": 0.3179648220029776,
+        "external_seconds": 0.5816694520035526
+      },
+      {
+        "left_shape": [
+          1,
+          16,
+          256,
+          256
+        ],
+        "right_shape": [
+          1,
+          16,
+          256,
+          128
+        ],
+        "rhs_kind": "dynamic",
+        "builtin_rhs_layout": "original",
+        "builtin_seconds": 0.2754781199982972,
+        "external_seconds": 0.5399175650018151
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          2048
+        ],
+        "right_shape": [
+          2048,
+          1024
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 0.9419016989995725,
+        "external_seconds": 11.974265992997971
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          1024
+        ],
+        "right_shape": [
+          1024,
+          3072
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 1.4969930989973363,
+        "external_seconds": 18.86057109599642
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          3072
+        ],
+        "right_shape": [
+          3072,
+          1024
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 1.4562069879975752,
+        "external_seconds": 18.13231674800045
+      }
+    ],
+    "matmul_policy": "blocked_fma",
+    "matmul_tile": "2x4",
+    "matmul_rhs_layout": "column-panel",
+    "kernel_calls": true,
+    "qemu_workspace_layout": "none",
+    "minimum_gain": 0.1
+  },
+  "measurement_names": [
+    "position",
+    "q_projection",
+    "kv_projection",
+    "qk_dynamic",
+    "av_dynamic",
+    "output_projection",
+    "mlp_up",
+    "mlp_down"
+  ],
+  "measurement_method": {
+    "formal_trials_per_implementation": 3,
+    "builtin_seconds": "minimum of the three formal trials",
+    "external_seconds": "maximum of the three formal trials",
+    "scope": "Original QEMU forward_wall_s from before process launch through validated UART completion, including startup/JIT and graph checks; excludes output dump.",
+    "limitations": [
+      "The environment label is a caller declaration, not automatic hardware, compiler or library validation.",
+      "Actual weight layout and full operand rank/broadcast shapes must match each record.",
+      "Historical single-environment results do not predict speed on another computer."
+    ],
+    "library": "NMSIS 1.6.0 DSP scalar RV64GC/LP64D; parallel_rows=True, 4 harts"
+  },
+  "historical_full_model": {
+    "case": "full_seed_0",
+    "layers": 28,
+    "selection_counts": {
+      "builtin": 254,
+      "external": 0
+    },
+    "shape_groups": [
+      {
+        "name": "position",
+        "nodes": 1,
+        "historical_implementation": "builtin",
+        "measurement_available": true
+      },
+      {
+        "name": "q_projection",
+        "nodes": 28,
+        "historical_implementation": "builtin",
+        "measurement_available": true
+      },
+      {
+        "name": "kv_projection",
+        "nodes": 56,
+        "historical_implementation": "builtin",
+        "measurement_available": true
+      },
+      {
+        "name": "qk_dynamic",
+        "nodes": 28,
+        "historical_implementation": "builtin",
+        "measurement_available": true
+      },
+      {
+        "name": "av_dynamic",
+        "nodes": 28,
+        "historical_implementation": "builtin",
+        "measurement_available": true
+      },
+      {
+        "name": "output_projection",
+        "nodes": 28,
+        "historical_implementation": "builtin",
+        "measurement_available": true
+      },
+      {
+        "name": "mlp_up",
+        "nodes": 56,
+        "historical_implementation": "builtin",
+        "measurement_available": true
+      },
+      {
+        "name": "mlp_down",
+        "nodes": 28,
+        "historical_implementation": "builtin",
+        "measurement_available": true
+      },
+      {
+        "name": "lm_head",
+        "nodes": 1,
+        "historical_implementation": "builtin",
+        "measurement_available": false
+      }
+    ],
+    "numeric": {
+      "passed": true,
+      "atol": 0.001,
+      "rtol": 0.0,
+      "criterion": "strict max_abs < atol across every output element",
+      "max_abs": 8.58306884765625e-05,
+      "worst_index": [
+        0,
+        0,
+        8974
+      ],
+      "elements_at_or_above_atol": 0,
+      "rmse": 5.391918773554923e-06,
+      "elements_compared": 38895616
+    },
+    "outputs_finite": true,
+    "note": "All 254 MatMuls stay builtin. The 8 measured shapes did not meet the gain threshold; LM-head N=151936 exceeds NMSIS's 65535 limit."
+  },
+  "historical_evidence_labels": [
+    "issue109-full-measured/profiles/riscv.json",
+    "issue109-full-measured/riscv/result.json",
+    "issue109-real-matmul-shapes/riscv/report.json"
+  ]
+}

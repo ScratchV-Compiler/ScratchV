@@ -45,6 +45,7 @@
 | [optimization_guide.md](reference/optimization_guide.md) | 优化指南：从哪里入手、怎么验证 |
 | [verification.md](reference/verification.md) | 验证方法：如何确认编译结果正确 |
 | [CODING_STANDARDS.md](reference/CODING_STANDARDS.md) | 代码风格规范 |
+| [外部 MatMul 调用](external-matmul.md) | 外部 C 函数接口、构建接入与定向验证 |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | 贡献指南 |
 
 ---

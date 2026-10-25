@@ -27,7 +27,7 @@ import numpy as np
 
 from .riscv_tensor import (
     STARTUP_ASSEMBLY, LINKER_SCRIPT, RiscVToolchain, _creation_flags,
-    _run_process, _save_process_logs, _spec_layout, _stop_process_tree,
+    _external_matmul_build_args, _run_process, _save_process_logs, _spec_layout, _stop_process_tree,
     _terminate_invocation, _windows_job, input_layout, pack_inputs, toolchain_versions,
 )
 from .weight_bundle import MIB, plan_guest_memory, validate_weight_bundle
@@ -172,8 +172,12 @@ void sv_main(void) {{
 '''
 
 
-def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0, harts=1):
+def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0, harts=1,
+                   extra_sources=(), extra_cflags=(), extra_ldflags=()):
     harts = resolve_harts(harts)
+    extra_sources, extra_cflags, extra_ldflags, strict_flags = _external_matmul_build_args(
+        artifact, "riscv64", extra_sources=extra_sources,
+        extra_cflags=extra_cflags, extra_ldflags=extra_ldflags, harts=harts)
     if artifact.constant_storage != "external":
         raise ValueError("External runtime requires external code generation")
     manifest = validate_weight_bundle(bundle_dir, artifact.external_weights)
@@ -208,10 +212,10 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
                "-fno-stack-protector", "-fno-pie", "-fPIC" if toolchain.is_zig else "-fno-pic",
                "-fno-fast-math", "-ffp-contract=off", "-fno-strict-aliasing",
                "-ffunction-sections", "-fdata-sections", *artifact.compile_flags,
-               f"-DSCRATCHV_HARTS={harts}",
-               "model.c", "guest.c", "start.S", "-Wl,-T,link.ld", "-Wl,-e,sv_boot",
-               "-Wl,--gc-sections", "-Wl,--build-id=none", *(["-lm"] if toolchain.is_zig else []),
-               "-o", "model.elf"]
+               f"-DSCRATCHV_HARTS={harts}", *extra_cflags,
+               "model.c", "guest.c", "start.S", *extra_sources, "-Wl,-T,link.ld", "-Wl,-e,sv_boot",
+               "-Wl,--gc-sections", "-Wl,--build-id=none", *extra_ldflags,
+               *(["-lm"] if toolchain.is_zig else []), *strict_flags, "-o", "model.elf"]
     env = dict(os.environ)
     temporary = build_dir / "tmp"
     temporary.mkdir()

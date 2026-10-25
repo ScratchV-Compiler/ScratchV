@@ -1,0 +1,281 @@
+{
+  "purpose": "Historical measurement example; not a portable performance guarantee.",
+  "use": "Display by default. Explicit opt-in is required to construct a profile with current library paths. Remeasure before using it to choose performance on another environment.",
+  "provider_contract": {
+    "name": "openblas",
+    "symbol": "sv_openblas_matmul_f32_v1",
+    "targets": [
+      "host"
+    ],
+    "max_dimension": 2147483647,
+    "alignment": 4,
+    "numerics": "provider_fp32",
+    "parallel_rows": false
+  },
+  "profile": {
+    "target": "host",
+    "environment": "OpenBLAS 0.3.26 NO_LAPACKE DYNAMIC_ARCH NO_AFFINITY Cooperlake MAX_THREADS=64; threads=1; compiler=0.14.1; affinity=[0, 1, 2, 3]; full rank single-op graph incl layout/check costs; builtin=min/external=max of 3; constants use actual first-layer model weights; dynamic RHS are independent seeded runtime inputs; LM head shared-consumer probe excluded; LM head separately measured without unrelated Gather, actual original layout",
+    "harts": 1,
+    "measurements": [
+      {
+        "left_shape": [
+          1,
+          64,
+          1
+        ],
+        "right_shape": [
+          1,
+          1,
+          256
+        ],
+        "rhs_kind": "dynamic",
+        "builtin_rhs_layout": "original",
+        "builtin_seconds": 9.478e-06,
+        "external_seconds": 1.3245e-05
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          1024
+        ],
+        "right_shape": [
+          1024,
+          2048
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 0.045488742,
+        "external_seconds": 0.021654874
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          1024
+        ],
+        "right_shape": [
+          1024,
+          1024
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 0.022655682,
+        "external_seconds": 0.009025949
+      },
+      {
+        "left_shape": [
+          1,
+          16,
+          256,
+          128
+        ],
+        "right_shape": [
+          1,
+          16,
+          128,
+          256
+        ],
+        "rhs_kind": "dynamic",
+        "builtin_rhs_layout": "original",
+        "builtin_seconds": 0.013283168,
+        "external_seconds": 0.003052794
+      },
+      {
+        "left_shape": [
+          1,
+          16,
+          256,
+          256
+        ],
+        "right_shape": [
+          1,
+          16,
+          256,
+          128
+        ],
+        "rhs_kind": "dynamic",
+        "builtin_rhs_layout": "original",
+        "builtin_seconds": 0.011323879,
+        "external_seconds": 0.0031513
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          2048
+        ],
+        "right_shape": [
+          2048,
+          1024
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 0.046358233,
+        "external_seconds": 0.021456849
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          1024
+        ],
+        "right_shape": [
+          1024,
+          3072
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 0.080982187,
+        "external_seconds": 0.026450003
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          3072
+        ],
+        "right_shape": [
+          3072,
+          1024
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "column-panel",
+        "builtin_seconds": 0.07329065,
+        "external_seconds": 0.030067169
+      },
+      {
+        "left_shape": [
+          1,
+          256,
+          1024
+        ],
+        "right_shape": [
+          1024,
+          151936
+        ],
+        "rhs_kind": "transposed_constant",
+        "builtin_rhs_layout": "original",
+        "builtin_seconds": 8.219771168,
+        "external_seconds": 2.311773838
+      }
+    ],
+    "matmul_policy": "blocked_fma",
+    "matmul_tile": "2x4",
+    "matmul_rhs_layout": "column-panel",
+    "kernel_calls": true,
+    "qemu_workspace_layout": "none",
+    "minimum_gain": 0.1
+  },
+  "measurement_names": [
+    "position",
+    "q_projection",
+    "kv_projection",
+    "qk_dynamic",
+    "av_dynamic",
+    "output_projection",
+    "mlp_up",
+    "mlp_down",
+    "lm_head"
+  ],
+  "measurement_method": {
+    "formal_trials_per_implementation": 3,
+    "builtin_seconds": "minimum of the three formal trials",
+    "external_seconds": "maximum of the three formal trials",
+    "scope": "One generated operation and required layout/validation work; Host C-call timing. No unrelated Gather cost is included in the isolated LM-head measurement.",
+    "limitations": [
+      "The environment label is a caller declaration, not automatic hardware, compiler or library validation.",
+      "Actual weight layout and full operand rank/broadcast shapes must match each record.",
+      "Historical single-environment results do not predict speed on another computer."
+    ],
+    "library": "OpenBLAS 0.3.26 LP64; queried one thread",
+    "lm_head_layout": "Original RHS: the full model shares the initializer with embedding Gather; the measured isolated Transpose + MatMul pins original layout."
+  },
+  "historical_full_model": {
+    "case": "full_seed_0",
+    "layers": 28,
+    "selection_counts": {
+      "builtin": 1,
+      "external": 253
+    },
+    "shape_groups": [
+      {
+        "name": "position",
+        "nodes": 1,
+        "historical_implementation": "builtin",
+        "measurement_available": true
+      },
+      {
+        "name": "q_projection",
+        "nodes": 28,
+        "historical_implementation": "external",
+        "measurement_available": true
+      },
+      {
+        "name": "kv_projection",
+        "nodes": 56,
+        "historical_implementation": "external",
+        "measurement_available": true
+      },
+      {
+        "name": "qk_dynamic",
+        "nodes": 28,
+        "historical_implementation": "external",
+        "measurement_available": true
+      },
+      {
+        "name": "av_dynamic",
+        "nodes": 28,
+        "historical_implementation": "external",
+        "measurement_available": true
+      },
+      {
+        "name": "output_projection",
+        "nodes": 28,
+        "historical_implementation": "external",
+        "measurement_available": true
+      },
+      {
+        "name": "mlp_up",
+        "nodes": 56,
+        "historical_implementation": "external",
+        "measurement_available": true
+      },
+      {
+        "name": "mlp_down",
+        "nodes": 28,
+        "historical_implementation": "external",
+        "measurement_available": true
+      },
+      {
+        "name": "lm_head",
+        "nodes": 1,
+        "historical_implementation": "external",
+        "measurement_available": true
+      }
+    ],
+    "numeric": {
+      "passed": true,
+      "atol": 0.001,
+      "rtol": 0.0,
+      "criterion": "strict max_abs < atol across every output element",
+      "max_abs": 8.678436279296875e-05,
+      "worst_index": [
+        0,
+        0,
+        36958
+      ],
+      "elements_at_or_above_atol": 0,
+      "rmse": 6.101037650925549e-06,
+      "elements_compared": 38895616
+    },
+    "outputs_finite": true,
+    "note": "The position MatMul stays builtin; the other 253 use single-thread OpenBLAS."
+  },
+  "historical_evidence_labels": [
+    "issue109-full-measured/profiles/host.json",
+    "issue109-full-measured/host/result.json",
+    "issue109-real-matmul-shapes/host/report.json",
+    "issue109-real-matmul-shapes/host-lm-head-isolated/report.json"
+  ]
+}

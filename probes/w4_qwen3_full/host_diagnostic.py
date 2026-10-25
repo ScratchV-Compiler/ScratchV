@@ -25,7 +25,9 @@ from probes.w3_qwen3_full.cases import CASE_NAMES, input_cases
 from probes.w4_qwen3_full.run import compare_logits, ort_reference
 from scratchv.backend.tensor_c_codegen import TensorCCodegen
 from scratchv.frontend.onnx_parser import ONNXParser
-from scratchv.runtime.riscv_tensor import _run_process, _save_process_logs
+from scratchv.runtime.riscv_tensor import (
+    _external_matmul_build_args, _run_process, _save_process_logs,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,7 +108,11 @@ def read_worker_report(path):
     return report
 
 
-def build_library(artifact, directory, compiler, timeout=900.0, *, supervised=False):
+def build_library(artifact, directory, compiler, timeout=900.0, *, supervised=False,
+                  extra_sources=(), extra_cflags=(), extra_ldflags=()):
+    extra_sources, extra_cflags, extra_ldflags, strict_flags = _external_matmul_build_args(
+        artifact, "host", extra_sources=extra_sources,
+        extra_cflags=extra_cflags, extra_ldflags=extra_ldflags)
     if artifact.constant_storage != "external":
         raise ValueError("Host diagnostic requires the external tensor ABI")
     directory = Path(directory).resolve()
@@ -116,10 +122,14 @@ def build_library(artifact, directory, compiler, timeout=900.0, *, supervised=Fa
     library = directory / ("model.dll" if os.name == "nt" else "model.so")
     flags = list(dict.fromkeys(["-fno-fast-math", "-ffp-contract=off", "-fno-strict-aliasing",
                               *artifact.compile_flags]))
-    command = [*compiler, "-shared", "-O2", "-std=c11", *flags]
+    command = [*compiler, "-shared", "-O2", "-std=c11", *flags, *extra_cflags]
     if os.name != "nt":
         command.append("-fPIC")
-    command += [str(source), "-o", str(library), "-lm"]
+    command += [str(source), *extra_sources, *extra_ldflags]
+    if getattr(artifact, "external_matmul", None) is not None and os.name != "nt":
+        # ELF shared libraries otherwise permit a missing provider until load.
+        command.append("-Wl,-undefined,error" if sys.platform == "darwin" else "-Wl,--no-undefined")
+    command += [*strict_flags, "-o", str(library), "-lm"]
     environment = dict(os.environ)
     environment["ZIG_GLOBAL_CACHE_DIR"] = str(ROOT / "output/zig-global-cache")
     environment["ZIG_LOCAL_CACHE_DIR"] = str(directory / "zig-cache")
@@ -140,11 +150,20 @@ def build_library(artifact, directory, compiler, timeout=900.0, *, supervised=Fa
                            inherit_process_group=supervised)
     if version.returncode:
         raise RuntimeError("Could not record the host compiler version")
-    return library, {"command": command, "compiler_version": version.stdout.decode(errors="replace").strip(),
-                     "library_sha256": sha256_file(library), "library_bytes": library.stat().st_size,
-                     "source_sha256": sha256_file(source), "compile_flags": flags,
-                     "implicit_fma_contraction": False, "kernel_calls": artifact.kernel_calls,
-                     "matmul_policy": artifact.matmul_policy}
+    evidence = {"command": command, "compiler_version": version.stdout.decode(errors="replace").strip(),
+                "library_sha256": sha256_file(library), "library_bytes": library.stat().st_size,
+                "source_sha256": sha256_file(source), "compile_flags": flags,
+                "implicit_fma_contraction": False, "kernel_calls": artifact.kernel_calls,
+                "matmul_policy": artifact.matmul_policy}
+    provider = getattr(artifact, "external_matmul", None)
+    if provider is not None:
+        # Source flags and builtin policy do not describe an optimized library's
+        # precompiled arithmetic. Preserve the actual provider contract as well.
+        evidence["external_matmul"] = {
+            "name": provider.name, "numerics": provider.numerics,
+            "permission": artifact.external_matmul_numerics,
+        }
+    return library, evidence
 
 
 def _aligned_bytes(nbytes):

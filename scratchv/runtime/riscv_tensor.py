@@ -13,6 +13,7 @@ import hashlib
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import struct
@@ -587,6 +588,75 @@ def validate_riscv_elf(path: Path) -> None:
         raise ValueError("RISC-V ELF must use the LP64D floating-point ABI")
 
 
+def _external_matmul_build_args(
+    artifact, target, *, extra_sources=(), extra_cflags=(), extra_ldflags=(), harts=1,
+):
+    """Resolve optional MatMul dependencies before entering a build directory."""
+    performance = getattr(artifact, "matmul_performance", None)
+    if performance is not None:
+        # Keep this check even when every measured choice retained builtin and
+        # the generated artifact therefore has no external library dependency.
+        if performance.target != target:
+            raise ValueError("MatMul performance target does not match build target")
+        if type(harts) is not int or harts != performance.harts:
+            raise ValueError("MatMul performance harts do not match build harts")
+        # A caller flag must not silently override the count checked above.
+        # The standard builders add their own definition after this helper.
+        if any("SCRATCHV_HARTS" in str(flag) for flag in (*extra_cflags, *extra_ldflags)):
+            raise ValueError("Measured MatMul builds must set harts through the build argument")
+    provider = getattr(artifact, "external_matmul", None)
+    sources = list(extra_sources)
+    cflags = list(extra_cflags)
+    ldflags = list(extra_ldflags)
+    strict_flags = []
+    if provider is not None:
+        if getattr(artifact, "matmul_target", None) != target or target not in provider.targets:
+            raise ValueError(f"External MatMul provider {provider.name!r} does not match build target {target}")
+        # Linking into a multi-hart graph alone keeps external calls serial.
+        # Code generation only dispatches rows for an explicit parallel_rows
+        # provider contract, joining all workers before consuming the output.
+        sources = [*provider.sources, *sources]
+        cflags = [*[f"-I{Path(path).resolve()}" for path in provider.include_dirs], *cflags]
+        ldflags = [*provider.link_flags, *ldflags]
+        # Library options must not undo the model's floating-point contract.
+        # Providers use the build's C flags; private optimization flags are not
+        # supported by this first implementation.
+        for flag in ldflags:
+            if str(flag).startswith(("-f", "-O", "-m", "-std", "-target", "--target",
+                                     "-Xclang", "-x", "-D", "-U", "-include", "@")):
+                raise ValueError(f"External MatMul link flags contain a compiler option: {flag}")
+        strict_flags = ["-fno-fast-math", "-ffp-contract=off", "-fno-strict-aliasing"]
+    # Static archives must follow every source/object that can refer to them.
+    archives = [path for path in sources if Path(path).suffix.lower() in (".a", ".lib")]
+    sources = [path for path in sources if Path(path).suffix.lower() not in (".a", ".lib")]
+    resolved_ldflags = [str(Path(path).resolve()) for path in archives]
+    library_directory = False
+    for flag in ldflags:
+        flag = str(flag)
+        if library_directory:
+            resolved_ldflags.append(str(Path(flag).resolve()))
+            library_directory = False
+        elif flag == "-L":
+            resolved_ldflags.append(flag)
+            library_directory = True
+        elif flag.startswith("-L") and len(flag) > 2:
+            resolved_ldflags.append("-L" + str(Path(flag[2:]).resolve()))
+        elif not flag.startswith("-") and Path(flag).suffix.lower() in (".o", ".obj"):
+            sources.append(flag)
+        elif not flag.startswith("-") and (
+            Path(flag).suffix.lower() in (".a", ".lib", ".so", ".dylib")
+            or re.search(r"\.so(?:\.[0-9]+)+$", Path(flag).name.lower())
+        ):
+            # Keep versioned shared-library paths relative to the caller too.
+            resolved_ldflags.append(str(Path(flag).resolve()))
+        else:
+            resolved_ldflags.append(flag)
+    if library_directory:
+        raise ValueError("Library directory option -L requires a path")
+    return ([str(Path(path).resolve()) for path in sources], cflags,
+            resolved_ldflags, strict_flags)
+
+
 def build_riscv_tensor(
     artifact: Any, build_dir: str | os.PathLike[str], toolchain: RiscVToolchain,
     *, extra_sources: Sequence[str | os.PathLike[str]] = (),
@@ -594,6 +664,9 @@ def build_riscv_tensor(
     timeout: float = 180.0,
 ) -> RiscVTensorExecutable:
     """Compile one ELF, reusable for all matching inputs through raw loading."""
+    extra_sources, extra_cflags, extra_ldflags, strict_flags = _external_matmul_build_args(
+        artifact, "riscv64", extra_sources=extra_sources,
+        extra_cflags=extra_cflags, extra_ldflags=extra_ldflags)
     build_dir = Path(build_dir).resolve()
     build_dir.mkdir(parents=True, exist_ok=True)
     elf = build_dir / "model.elf"
@@ -618,9 +691,9 @@ def build_riscv_tensor(
                *(["-fPIC"] if toolchain.is_zig else ["-fno-pic"]), "-fno-fast-math",
                "-ffp-contract=off", "-fno-strict-aliasing", "-ffunction-sections", "-fdata-sections",
                *getattr(artifact, "compile_flags", ()), *extra_cflags,
-               "model.c", "guest.c", "start.S", *[str(Path(p).resolve()) for p in extra_sources],
+               "model.c", "guest.c", "start.S", *extra_sources,
                "-Wl,-T,link.ld", "-Wl,-e,sv_boot", "-Wl,--gc-sections", "-Wl,--build-id=none",
-               *extra_ldflags, *(["-lm"] if toolchain.is_zig else []), "-o", "model.elf"]
+               *extra_ldflags, *(["-lm"] if toolchain.is_zig else []), *strict_flags, "-o", "model.elf"]
     started = time.perf_counter()
     environment = os.environ.copy()
     if toolchain.is_zig:

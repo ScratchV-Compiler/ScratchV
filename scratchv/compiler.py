@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from scratchv.backend.external_matmul import ExternalMatMul, MatMulPerformance
 from scratchv.ir.types import Program
 from scratchv.pass_interface import (
     OptimizationPassError,
@@ -47,6 +48,17 @@ class CompilerConfig:
     """All compiler options in one place.
 
     Attributes:
+        tensor_constant_storage: Tensor-C inline or external-weight ABI (explicit).
+        tensor_kernel_calls: Bound external-weight C optimizer units per operator.
+        tensor_matmul_policy: Original sequential or blocked_fma arithmetic.
+        tensor_matmul_tile: Builtin blocked MatMul output tile.
+        tensor_matmul_rhs_layout: Original or eligible constant column-panel storage.
+        tensor_qemu_workspace_layout: Explicit experimental workspace placement.
+        tensor_matmul_implementation: Tensor-C builtin/prefer_external/require_external/measured.
+        tensor_matmul_performance: Explicit same-environment measurements for measured mode.
+        tensor_external_matmul: Explicit external FP32 MatMul build description.
+        tensor_matmul_target: "host" or ScratchV's freestanding "riscv64" runtime.
+        tensor_external_matmul_numerics: "strict" or explicit "allow_provider_fp32".
         backend:        ``"riscv"``, ``"llvm"``, ``"ir"``, or ``"tensor-c"``. The tensor
                         backend emits static FP32 C kernels for cross-compilation.
         optimize_level: ``"none"``, ``"basic"``, or ``"all"``.
@@ -102,6 +114,17 @@ class CompilerConfig:
     target_isa: str = "rv32im"
     target_abi: str = "ilp32"
     max_tensor_workspace_bytes: int = 256 * 1024 * 1024
+    tensor_constant_storage: str = "inline"
+    tensor_kernel_calls: bool = False
+    tensor_matmul_policy: str = "sequential"
+    tensor_matmul_tile: str = "1x4"
+    tensor_matmul_rhs_layout: str = "original"
+    tensor_qemu_workspace_layout: str = "none"
+    tensor_matmul_implementation: str = "builtin"
+    tensor_external_matmul: ExternalMatMul | None = None
+    tensor_matmul_target: str = "host"
+    tensor_external_matmul_numerics: str = "strict"
+    tensor_matmul_performance: MatMulPerformance | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -596,6 +619,17 @@ class CompilerDriver:
             self.tensor_artifact = TensorCCodegen(
                 program, self.initializers,
                 max_workspace_bytes=self.config.max_tensor_workspace_bytes,
+                constant_storage=self.config.tensor_constant_storage,
+                kernel_calls=self.config.tensor_kernel_calls,
+                matmul_policy=self.config.tensor_matmul_policy,
+                matmul_tile=self.config.tensor_matmul_tile,
+                matmul_rhs_layout=self.config.tensor_matmul_rhs_layout,
+                qemu_workspace_layout=self.config.tensor_qemu_workspace_layout,
+                matmul_implementation=self.config.tensor_matmul_implementation,
+                external_matmul=self.config.tensor_external_matmul,
+                matmul_target=self.config.tensor_matmul_target,
+                external_matmul_numerics=self.config.tensor_external_matmul_numerics,
+                matmul_performance=self.config.tensor_matmul_performance,
             ).generate()
             return self.tensor_artifact.source
 

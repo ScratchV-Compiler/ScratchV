@@ -30,6 +30,7 @@ from typing import Mapping
 
 import numpy as np
 
+from scratchv.backend.external_matmul import ExternalMatMul, MatMulPerformance, MatMulSelection
 from scratchv.ir.types import DataType, OpCode, Program, Value
 from scratchv.verification.ir_numpy_ops import OpError, check_instruction
 
@@ -82,6 +83,11 @@ class TensorCArtifact:
     matmul_rhs_panels: tuple[dict[str, object], ...] = ()
     qemu_workspace_layout: str = "none"
     qemu_workspace_buffers: tuple[tuple[int, int], ...] = ()
+    external_matmul: ExternalMatMul | None = None
+    matmul_target: str = "host"
+    external_matmul_numerics: str = "strict"
+    matmul_selections: tuple[MatMulSelection, ...] = ()
+    matmul_performance: MatMulPerformance | None = None
 
 
 def _shape(shape):
@@ -202,7 +208,9 @@ class TensorCCodegen:
                  *, max_workspace_bytes=256 * 1024 * 1024,
                  max_constant_bytes=256 * 1024 * 1024, constant_storage="inline",
                  kernel_calls=False, matmul_policy="sequential", matmul_tile="1x4",
-                 qemu_workspace_layout="none", matmul_rhs_layout="original"):
+                 qemu_workspace_layout="none", matmul_rhs_layout="original",
+                 matmul_implementation="builtin", external_matmul=None, matmul_target="host",
+                 external_matmul_numerics="strict", matmul_performance=None):
         self.program = program
         self.initializers = {} if initializers is None else dict(initializers)
         self.max_workspace_bytes = max_workspace_bytes
@@ -213,9 +221,33 @@ class TensorCCodegen:
         self.matmul_tile = matmul_tile
         self.matmul_rhs_layout = matmul_rhs_layout
         self.qemu_workspace_layout = qemu_workspace_layout
+        self.matmul_implementation = matmul_implementation
+        self.external_matmul = external_matmul
+        self.matmul_target = matmul_target
+        self.external_matmul_numerics = external_matmul_numerics
+        self.matmul_performance = matmul_performance
 
     def generate(self) -> TensorCArtifact:
         program, initializers = self.program, self.initializers
+        if self.matmul_implementation not in ("builtin", "prefer_external", "require_external", "measured"):
+            raise TensorCCodegenError("Unknown matmul_implementation")
+        if self.external_matmul is not None and not isinstance(self.external_matmul, ExternalMatMul):
+            raise TensorCCodegenError("external_matmul must be an ExternalMatMul description")
+        if self.matmul_target not in ("host", "riscv64"):
+            raise TensorCCodegenError("matmul_target must be host or riscv64")
+        if self.external_matmul_numerics not in ("strict", "allow_provider_fp32"):
+            raise TensorCCodegenError(
+                "external_matmul_numerics must be strict or allow_provider_fp32")
+        if self.matmul_performance is not None and not isinstance(self.matmul_performance, MatMulPerformance):
+            raise TensorCCodegenError("matmul_performance must be a MatMulPerformance profile")
+        if self.matmul_performance is not None and self.matmul_implementation != "measured":
+            raise TensorCCodegenError("matmul_performance requires the explicit measured mode")
+        if self.matmul_implementation == "measured" and self.constant_storage != "external":
+            raise TensorCCodegenError("Measured MatMul selection requires external constant storage")
+        self.matmul_selections = []
+        self._uses_external_matmul = False
+        self._measured_plan = {}
+        self._effective_matmul_performance = None
         if self.constant_storage not in ("inline", "external"):
             raise TensorCCodegenError("constant_storage must be 'inline' or 'external'")
         if not isinstance(self.kernel_calls, bool):
@@ -260,6 +292,8 @@ class TensorCCodegen:
             if (isinstance(bound, bool) or not isinstance(bound, int)
                     or not 0 <= bound <= _UINT64_MAX):
                 raise TensorCCodegenError("Memory limits must be nonnegative 64-bit integers")
+        if self.matmul_implementation == "measured":
+            self._measured_plan = self._plan_measured_matmuls(program, initializers)
         program, initializers, self._rhs_panel_sources = self._panel_inputs(program, initializers)
         func = program.functions[0]
         instructions = func.blocks[0].instructions
@@ -413,8 +447,29 @@ class TensorCCodegen:
         self.body += ["if (!output) return 1;",
                       f"for (size_t i=0; i<{output.size}ULL; ++i) (({ctype} *)output)[i] = {self.names[output.name]}[i];",
                       "return 0;"]
+        external_declaration = ""
+        if self._uses_external_matmul:
+            external_declaration = (
+                f"\n/* External MatMul numerics: {self.external_matmul.numerics}; "
+                "failure maps to graph status 4. */\n"
+                f"extern int {self.external_matmul.symbol}(const float *, const float *, "
+                "float *, uint64_t, uint64_t, uint64_t);\n")
+        matmul_metadata = dict(
+            external_matmul=self.external_matmul if self._uses_external_matmul else None,
+            matmul_target=self.matmul_target,
+            external_matmul_numerics=self.external_matmul_numerics,
+            matmul_selections=tuple(self.matmul_selections),
+            matmul_performance=self._effective_matmul_performance,
+        )
+        performance_guard = ""
+        if self._effective_matmul_performance is not None:
+            performance_guard = (
+                "\n#ifndef SCRATCHV_HARTS\n#define SCRATCHV_HARTS 1\n#endif\n"
+                f"#if SCRATCHV_HARTS != {self._effective_matmul_performance.harts}\n"
+                '#error "Measured MatMul hart count does not match compilation"\n'
+                "#endif\n")
         if self.constant_storage == "external":
-            source = (_PRELUDE + _EXTERNAL_PRELUDE + "".join(self.kernels)
+            source = (_PRELUDE + _EXTERNAL_PRELUDE + performance_guard + external_declaration + "".join(self.kernels)
                       + "#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
                       + "int scratchv_run_external(const void *const inputs[], "
                       "const void *const weights[], void *workspace, size_t workspace_bytes, "
@@ -433,13 +488,225 @@ class TensorCCodegen:
                 matmul_rhs_panels=tuple(self.matmul_rhs_panels),
                 qemu_workspace_layout=self.qemu_workspace_layout,
                 qemu_workspace_buffers=qemu_workspace_buffers,
+                **matmul_metadata,
             )
-        source = (_PRELUDE + "\n" + "\n".join(self.constants)
+        source = (_PRELUDE + external_declaration + "\n" + "\n".join(self.constants)
                   + f"\nstatic union {{ uint64_t align; unsigned char bytes[{max(high, 8)}]; }} sv_arena;\n"
                   + "#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
                   + "int scratchv_run(const void *const inputs[], void *output) {\n  "
                   + "\n  ".join(self.body) + "\n}\n")
-        return TensorCArtifact(source, inputs, output, high, self.constant_bytes)
+        return TensorCArtifact(source, inputs, output, high, self.constant_bytes, **matmul_metadata)
+
+    def _external_matmul_reason(self, output, m, n, k, rhs_layout):
+        """Compatibility remains mandatory before any performance preference."""
+        provider = self.external_matmul
+        if not output.size:
+            return "empty output; no external call"
+        if k == 0:
+            return "zero K; builtin writes positive zero"
+        if provider is None:
+            return "no external MatMul configured"
+        if self.matmul_target not in provider.targets:
+            return f"provider does not support target {self.matmul_target}"
+        if (provider.numerics == "provider_fp32"
+                and self.external_matmul_numerics != "allow_provider_fp32"):
+            return "provider_fp32 requires explicit allow_provider_fp32 permission"
+        if provider.numerics == "sequential" and self.matmul_policy != "sequential":
+            return "external MatMul requires sequential floating-point arithmetic"
+        if rhs_layout != "original":
+            return "external MatMul requires original row-major storage"
+        if provider.alignment > 4:
+            return "provider alignment exceeds the guaranteed 4-byte input alignment"
+        if max(m, n, k) > provider.max_dimension:
+            return "matrix dimensions exceed the provider limit"
+        return ""
+
+    def _external_matmul_call(self, output, names, batch, m, n, k, left, right):
+        """Select once per operation; never retry a failed external computation."""
+        provider = self.external_matmul
+        measured = self._measured_plan.get(output.name)
+        if self.matmul_implementation == "measured":
+            if measured is None:
+                raise TensorCCodegenError(f"Missing measured MatMul plan for {output.name}")
+            if measured.implementation == "builtin":
+                self.matmul_selections.append(measured)
+                return False
+            # Measured external nodes were excluded from RHS packing before
+            # storage was materialized; their ABI is always original row-major.
+            reason = self._external_matmul_reason(output, m, n, k, "original")
+        elif self.matmul_implementation == "builtin":
+            reason = "builtin requested"
+        else:
+            reason = self._external_matmul_reason(output, m, n, k, self.matmul_rhs_layout)
+        if reason:
+            self.matmul_selections.append(MatMulSelection(output.name, "builtin", reason))
+            if self.matmul_implementation == "require_external" and output.size and k:
+                raise TensorCCodegenError(f"MatMul {output.name}: {reason}")
+            return False
+        self.matmul_selections.append(measured or MatMulSelection(output.name, "external", provider.name))
+        self._uses_external_matmul = True
+        dst = self.names[output.name]
+        # Each batch joins before the next one. Only explicitly opted-in
+        # providers may run concurrently on disjoint output rows; K stays whole.
+        serial = [
+            f"for (size_t batch=0; batch<{math.prod(batch)}ULL; ++batch) {{",
+            f"  if ({provider.symbol}({names[0]}+({left})*{m*k}ULL, "
+            f"{names[1]}+({right})*{k*n}ULL, {dst}+batch*{m*n}ULL, "
+            f"{m}ULL, {n}ULL, {k}ULL) != 0) return 4;",
+            "}",
+        ]
+        # Reuse the builtin work floor and avoid idle workers. Small matrices,
+        # insufficient rows, inline storage and default descriptors stay serial.
+        if (provider.parallel_rows and self.constant_storage == "external"
+                and m >= 2 and m * n * k >= 32768):
+            condition = ("defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1 "
+                         f"&& SCRATCHV_HARTS <= {m}")
+            context = f"sv_external_matmul_{dst}"
+            self.kernels.append(
+                f"\n#if {condition}\n"
+                f"struct {context} {{ const float *left, *right; float *output; int status; }};\n"
+                f"static void {context}_range(void *opaque, size_t begin, size_t end) {{\n"
+                f"  struct {context} *context=opaque;\n"
+                f"  if ({provider.symbol}(context->left+begin*{k}ULL, context->right, "
+                f"context->output+begin*{n}ULL, end-begin, {n}ULL, {k}ULL) != 0)\n"
+                "    __atomic_store_n(&context->status, 4, __ATOMIC_RELAXED);\n"
+                "}\n#endif\n"
+            )
+            self.body.append(
+                serial[0] + f"\n#if {condition}\n"
+                f"struct {context} context_{dst}={{{names[0]}+({left})*{m*k}ULL, "
+                f"{names[1]}+({right})*{k*n}ULL, {dst}+batch*{m*n}ULL, 0}};\n"
+                f"sv_parallel_for({m}ULL, {context}_range, &context_{dst});\n"
+                # The worker team joins before reporting failure, checking
+                # output values, or reusing this operation's workspace.
+                f"if (__atomic_load_n(&context_{dst}.status, __ATOMIC_RELAXED)) return 4;\n"
+                f"#else\n{serial[1]}\n#endif\n" + serial[2]
+            )
+        else:
+            self.body.extend(serial)
+        return True
+
+    def _plan_measured_matmuls(self, program, initializers):
+        """Infer logical shapes and choose before packing any immutable RHS.
+
+        This pass uses the same shape inference as emission, without rewriting
+        Value shapes or the caller's IR. It deliberately does not run kernels,
+        discover hardware, extrapolate timings, or create a tuning cache.
+        """
+        func = program.functions[0]
+        instructions = func.blocks[0].instructions
+        self.specs = {}
+        for value in [*program.global_values, *func.params]:
+            if value.name in self.specs:
+                raise TensorCCodegenError(f"Duplicate definition {value.name}")
+            if value.dtype not in _TYPES:
+                raise TensorCCodegenError(f"Unsupported dtype {value.dtype}")
+            self.specs[value.name] = TensorSpec(value.name, value.dtype, _shape(value.shape))
+        operations = []
+        definitions = {}
+        consumers = {}
+        for index, instruction in enumerate(instructions[:-1]):
+            value = instruction.dest
+            if value is None or value.name in self.specs:
+                raise TensorCCodegenError(f"Instruction {index}: missing or duplicate SSA destination")
+            if value.dtype not in _TYPES:
+                raise TensorCCodegenError(f"Unsupported dtype {value.dtype}")
+            if instruction.target:
+                raise TensorCCodegenError("Tensor instructions cannot have control-flow targets")
+            for operand in instruction.operands:
+                consumers.setdefault(operand.name, []).append(instruction)
+                if operand.name not in self.specs:
+                    if not operand.is_constant:
+                        raise TensorCCodegenError(f"Undefined operand {operand.name}")
+                    if operand.dtype not in _TYPES:
+                        raise TensorCCodegenError(f"Unsupported dtype {operand.dtype}")
+                    self.specs[operand.name] = TensorSpec(operand.name, operand.dtype, _shape(operand.shape))
+                if operand.dtype != self.specs[operand.name].dtype:
+                    raise TensorCCodegenError(f"Inconsistent operand dtype: {operand.name}")
+            try:
+                check_instruction(instruction)
+                shape, details = self._infer(instruction)
+            except (OpError, ValueError, TypeError, IndexError) as exc:
+                raise TensorCCodegenError(f"{index}:{instruction.opcode.value}: {exc}") from exc
+            shape = _shape(shape)
+            if value.shape and _shape(value.shape) != shape:
+                raise TensorCCodegenError(f"{value.name}: declared shape {value.shape} != inferred {shape}")
+            output = TensorSpec(value.name, value.dtype, shape)
+            self.specs[value.name] = output
+            definitions[value.name] = instruction
+            if instruction.opcode == OpCode.MATMUL:
+                operations.append((instruction, output, details))
+
+        # Ask the existing planner which weights the all-builtin baseline can
+        # actually pack. This copies IR containers at most, never weight data.
+        _, _, baseline_panels = self._panel_inputs(program, initializers)
+        globals_by_name = {value.name: value for value in program.global_values}
+        profile = self.matmul_performance
+        mismatch = []
+        if profile is not None:
+            if profile.provider != self.external_matmul:
+                mismatch.append("provider")
+            if profile.target != self.matmul_target:
+                mismatch.append("target")
+            for field in ("matmul_policy", "matmul_tile", "matmul_rhs_layout",
+                          "kernel_calls", "qemu_workspace_layout"):
+                if getattr(profile, field) != getattr(self, field):
+                    mismatch.append(field)
+        # A mismatched profile supplies no executable measurement evidence.
+        # Preserve its rejection in selections, not stale runtime constraints.
+        self._effective_matmul_performance = profile if not mismatch else None
+        measurements = {} if profile is None else {row.key: row for row in profile.measurements}
+        plan = {}
+        for instruction, output, details in operations:
+            left, right = (self.specs[value.name] for value in instruction.operands)
+            m, k, n = details["a"][-2], details["a"][-1], details["b"][-1]
+            rhs = instruction.operands[1].name
+            layout = "column-panel" if rhs in baseline_panels else "original"
+            if rhs in globals_by_name:
+                kind = "batched_constant" if len(right.shape) > 2 else "constant"
+            else:
+                definition = definitions.get(rhs)
+                kind = "dynamic"
+                if (definition is not None and definition.opcode == OpCode.TRANSPOSE
+                        and len(definition.operands) == 1
+                        and definition.operands[0].name in globals_by_name
+                        and len(right.shape) == 2
+                        and tuple(definition.attrs.get("perm", (1, 0))) == (1, 0)):
+                    kind = "transposed_constant"
+            reason = self._external_matmul_reason(output, m, n, k, "original")
+            implementation = "builtin"
+            if reason:
+                pass
+            elif "m" in instruction.attrs and (left.shape != details["a"] or right.shape != details["b"]):
+                # Legacy flattened buffers can have identical physical shapes
+                # but different explicit M/N/K. Shape-only timing records do
+                # not describe this reinterpretation, so never reuse them.
+                reason = "explicit flattened MatMul dimensions lack matching measurement evidence; retain builtin"
+            elif profile is None:
+                reason = "no performance measurements configured; retain builtin"
+            elif mismatch:
+                reason = "performance profile mismatch: " + ", ".join(mismatch) + "; retain builtin"
+            elif layout == "column-panel" and len(consumers.get(rhs, ())) > 1:
+                # Mixing would unpack a weight used by other builtin nodes.
+                # Independent-operation timings do not measure that group cost.
+                reason = "shared RHS retains builtin column-panel; no compatible mixed-layout evidence"
+            else:
+                row = measurements.get((left.shape, right.shape, kind, layout))
+                if row is None:
+                    reason = (f"no measured match for shapes {left.shape} @ {right.shape}, "
+                              f"RHS {kind}/{layout}; retain builtin")
+                elif (row.external_seconds < row.builtin_seconds
+                      and row.external_seconds <= row.builtin_seconds * (1 - profile.minimum_gain)):
+                    implementation = "external"
+                    reason = (f"measured {self.external_matmul.name}: external={row.external_seconds:g}s "
+                              f"vs builtin={row.builtin_seconds:g}s ({kind}/{layout}), "
+                              f"minimum gain={profile.minimum_gain:g}; environment={profile.environment}")
+                else:
+                    reason = (f"measured external gain below {profile.minimum_gain:g}: "
+                              f"external={row.external_seconds:g}s vs builtin={row.builtin_seconds:g}s "
+                              f"({kind}/{layout}); retain builtin")
+            plan[output.name] = MatMulSelection(output.name, implementation, reason)
+        return plan
 
     def _panel_inputs(self, program, initializers):
         """Select immutable 2D RHS storage; copy only IR containers we change.
@@ -475,6 +742,8 @@ class TensorCCodegen:
                     and all(index > after and position == 1
                             and instruction.opcode == OpCode.MATMUL
                             and len(instruction.operands) == 2
+                            and (not self._measured_plan or self._measured_plan.get(
+                                instruction.dest.name, MatMulSelection("", "builtin", "")).implementation == "builtin")
                             for index, position, instruction in consumers))
 
         def eligible(value):
@@ -821,6 +1090,9 @@ class TensorCCodegen:
             self.body.append(f"for (size_t j=0; j<{xs[1].size}ULL; ++j) if ({names[1]}[j]<-{dimension}LL "
                              f"|| {names[1]}[j]>={dimension}LL) return 3;")
         if not size:
+            if op == OpCode.MATMUL:
+                self.matmul_selections.append(MatMulSelection(
+                    output.name, "builtin", "empty output; no external call"))
             return
         if op == OpCode.LOAD_CONST:
             self.body.append(f"{dst}[0] = {_literal(attrs['value'], dtype)};")
@@ -913,6 +1185,8 @@ class TensorCCodegen:
             m, k, n = a[-2], a[-1], b[-1]
             left = _broadcast_offset(batch, a[:-2], "batch")
             right = _broadcast_offset(batch, b[:-2], "batch")
+            if self._external_matmul_call(output, names, batch, m, n, k, left, right):
+                return
             if self.matmul_policy == "blocked_fma":
                 # Each output retains increasing K order, fused FP32 products,
                 # and a separate FP32 addition after each 128-element K block.
