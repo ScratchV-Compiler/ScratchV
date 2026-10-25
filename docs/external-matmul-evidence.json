@@ -1,6 +1,6 @@
 {
   "description": "Shareable transcription of saved local Issue 109 acceptance evidence; raw outputs, logs, models and archives are not embedded here.",
-  "updated_date": "2026-10-24",
+  "updated_date": "2026-10-25",
   "issue": "https://github.com/ScratchV-Compiler/ScratchV/issues/109",
   "source_context": {
     "historical_issue109_test_base_commit": "61bded3",
@@ -8,17 +8,56 @@
     "current_synced_base_commit": "735dd00",
     "complete_models_rerun_after_sync": false,
     "historical_w4_baseline_note": "The 2026-10-22 original builtin baseline retains its own historical source/build records.",
-    "post_sync_targeted_checks": "See post_sync_checks and the three new NMSIS profile/loopunroll stages. These are directed checks, not repeated complete models."
+    "post_sync_targeted_checks": "See post_sync_checks and the later NMSIS/Q-projection stages; these are directed checks, not repeated complete models. Published CI for c424cdc is recorded separately in published_ci."
   },
   "delivery_status": {
     "scope": "Historical pre-publication snapshot; not the current delivery state",
     "snapshot_date": "2026-10-24",
-    "current_status_note": "Current publication and remote CI status are recorded on the pull request associated with Issue #109.",
+    "current_status_note": "See published_ci for the 2026-10-25 publication and CI snapshot; subsequent status is on PR #118.",
     "issue109_implementation_committed": false,
     "pushed": false,
     "pull_request_created": false,
     "remote_ci_run": false,
     "remote_issue_updated": false
+  },
+  "published_ci": {
+    "date": "2026-10-25",
+    "pull_request": "https://github.com/ScratchV-Compiler/ScratchV/pull/118",
+    "head_commit": "c424cdccb6d2e08d4e05ece3ed7f243f65f137b0",
+    "merge_checkout_commit": "4af247fa5e77f47bd1add0e795f51cb04a5a5551",
+    "run_url": "https://github.com/ScratchV-Compiler/ScratchV/actions/runs/40167904744",
+    "conclusion": "success",
+    "main_tests": {
+      "total": 7999,
+      "passed": 7886,
+      "skipped": 113,
+      "failures": 0,
+      "errors": 0
+    },
+    "w4_external_abi_and_small_qemu": {
+      "total": 1748,
+      "passed": 1744,
+      "skipped": 4,
+      "failures": 0,
+      "errors": 0
+    },
+    "required_real_host_qemu_cases": {
+      "count": 19,
+      "all_passed": true
+    },
+    "complete_model_executed": false,
+    "local_sources": [
+      "output/issue109-pr-prep/ci-40167904744/summary.json",
+      "output/issue109-pr-prep/ci-40167904744/ci-run.json",
+      "output/issue109-pr-prep/ci-40167904744/ci-jobs.json",
+      "output/issue109-pr-prep/ci-40167904744/test-reports/test_results.xml",
+      "output/issue109-pr-prep/ci-40167904744/w4-unit-40167904744-1-full_seed_0/tests.xml"
+    ],
+    "limits": [
+      "This records the published c424cdc PR merge checkout, not a new complete-model run or a rerun after subsequent documentation edits.",
+      "The main and W4 suites overlap; do not add their counts as unique tests.",
+      "The local_sources files remain local evidence and are not shipped in a fresh checkout."
+    ]
   },
   "initial_acceptance": {
     "scope": "The original seven items require directed small tests, not complete models, seven model cases or real hardware.",
@@ -57,7 +96,8 @@
         "item": 7,
         "requirement": "Readable documentation and reuse of existing CI",
         "local_status": "documented_and_ci_wired_locally",
-        "remote_ci_status": "not_run"
+        "remote_ci_status": "passed",
+        "remote_ci_evidence": "published_ci"
       }
     ]
   },
@@ -96,7 +136,7 @@
       ],
       "limits": [
         "Counts are historical stage totals; later stages overlap and must not be added as unique tests.",
-        "Remote CI has not executed for these unpushed changes."
+        "Remote CI had not run at this historical local stage; the later c424cdc CI result is recorded in published_ci."
       ]
     },
     "original_full_host": {
@@ -116,6 +156,7 @@
         "elements_compared": 38895616
       },
       "forward_seconds": 7.725460228000884,
+      "forward_seconds_source": "stages_seconds.forward",
       "forward_is_estimate": false,
       "validation_total_seconds": 144.26313457499782,
       "timer_scope": "Host library load, native call/status and close; not directly comparable to QEMU.",
@@ -316,6 +357,11 @@
         "elements_compared": 38895616
       },
       "forward_seconds": 7.611627877995488,
+      "forward_seconds_source": "stages_seconds.native_load_forward_close",
+      "legacy_comparison_forward_seconds": 7.611619172006613,
+      "legacy_comparison_forward_seconds_source": "native_timing.legacy_load_plus_forward_s",
+      "pure_native_forward_seconds": 7.611246063999715,
+      "pure_native_forward_seconds_source": "native_timing.forward_wall_s",
       "forward_is_estimate": false,
       "validation_total_seconds": 140.60270347099868,
       "timer_scope": "Host library load, native call/status and close; not directly comparable to QEMU.",
