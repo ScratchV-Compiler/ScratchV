@@ -318,8 +318,21 @@ def test_unified_html_contains_three_independent_benchmark_sections():
     assert rendered.count("14个微型规则案例") == 1
     assert rendered.count("23个 DSL 案例") == 1
     assert rendered.count("cnn.onnx standalone A/B") == 1
-    for value in (31, 22, 306, 305, 889, 865):
+    # Codegen may add required constant materialization. The renderer must
+    # display this run's actual measurements, not a historical instruction
+    # count that also accepted illegal register/immediate assembly.
+    values = (
+        micro["summary"]["before_instructions"],
+        micro["summary"]["after_instructions"],
+        dsl.total_before, dsl.total_after,
+        cnn["instructions"]["baseline"], cnn["instructions"]["optimized"],
+    )
+    for value in values:
         assert f">{value:,}<" in rendered
+    assert dsl.total_before == sum(case.before_total for case in dsl.cases)
+    assert dsl.total_after == sum(case.after_total for case in dsl.cases)
+    assert dsl.total_saved == sum(case.saved for case in dsl.cases)
+    assert dsl.total_before - dsl.total_after == dsl.total_saved > 0
     assert "Commit:" not in rendered
     assert "类别" not in rendered
     assert "输入摘要" not in rendered
@@ -356,7 +369,11 @@ def test_unified_summary_contains_dynamic_sections_and_case_details():
 
     assert summary.startswith("## Topic 13 Peephole Benchmark")
     assert "| 微型汇编案例 | 14 | 31 | 22 | 9 | 29.032% |" in summary
-    assert "| DSL 案例 | 23 | 306 | 305 | 1 |" in summary
+    assert (
+        f"| DSL 案例 | {len(dsl.cases)} | {dsl.total_before} | "
+        f"{dsl.total_after} | {dsl.total_saved} | "
+        f"{100.0 * dsl.total_saved / dsl.total_before:.3f}% |"
+    ) in summary
     assert "| CNN standalone | 1 | 889 | 865 | 24 |" in summary
     assert "| CNN 代码大小 | 3556 B | 3460 B | 96 B |" in summary
     assert summary.count("<details>") == 3

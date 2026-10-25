@@ -12,6 +12,32 @@ import math
 import numpy as np
 from typing import Any
 
+from scratchv.verification.fp_reference import maximum_number, minimum_number
+from scratchv.verification.division_reference import divide
+
+
+def _riscv_i32_rem(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    """Return RV32 REM results, including divide-by-zero edge semantics."""
+    left, right = np.broadcast_arrays(
+        np.asarray(lhs, dtype=np.int32),
+        np.asarray(rhs, dtype=np.int32),
+    )
+
+    def scalar_rem(a, b):
+        dividend = int(a)
+        divisor = int(b)
+        if divisor == 0:
+            return dividend
+        if dividend == -(1 << 31) and divisor == -1:
+            return 0
+        quotient = abs(dividend) // abs(divisor)
+        if (dividend < 0) != (divisor < 0):
+            quotient = -quotient
+        return dividend - quotient * divisor
+
+    result = np.vectorize(scalar_rem, otypes=[np.int64])(left, right)
+    return np.asarray(result, dtype=np.int32)
+
 
 # ---------------------------------------------------------------------------
 # ONNX Runtime adapter
@@ -140,7 +166,8 @@ def _numpy_maxpool(inputs: list[np.ndarray], **attrs) -> np.ndarray:
 class DSLInterpreter:
     """Evaluate a DSL program on concrete input values.
 
-    This provides a ground-truth reference for verification.
+    This is a value-only numpy reference, not binary execution evidence. It
+    does not model fflags or target rounding modes.
     """
 
     def __init__(self):
@@ -199,7 +226,7 @@ class DSLInterpreter:
             return np.array(val)
         except ValueError:
             pass
-        return np.array(0.0)
+        raise ValueError(f"Undefined DSL value: {name}")
 
     def _dispatch(self, op: str, args: list[str]) -> np.ndarray:
         plain = []
@@ -216,11 +243,28 @@ class DSLInterpreter:
 
         resolved = [self._resolve(a) for a in plain]
 
+        if op == "const":
+            dtype = kwargs.get("dtype", "f32")
+            numpy_dtype = {
+                "i32": np.int32,
+                "f32": np.float32,
+                "f64": np.float64,
+            }.get(dtype)
+            if numpy_dtype is None:
+                raise ValueError(f"Unsupported const dtype: {dtype}")
+            return np.asarray(plain[0], dtype=numpy_dtype)
+
         op_map = {
             "add": lambda: resolved[0] + resolved[1],
             "sub": lambda: resolved[0] - resolved[1],
             "mul": lambda: resolved[0] * resolved[1],
-            "div": lambda: resolved[0] / resolved[1],
+            "div": lambda: divide(resolved[0], resolved[1]),
+            "rem": lambda: _riscv_i32_rem(resolved[0], resolved[1]),
+            "mod": lambda: _riscv_i32_rem(resolved[0], resolved[1]),
+            "min": lambda: minimum_number(resolved[0], resolved[1]),
+            "max": lambda: maximum_number(resolved[0], resolved[1]),
+            "abs": lambda: np.abs(resolved[0]),
+            "sqrt": lambda: np.sqrt(resolved[0]),
             "neg": lambda: -resolved[0],
             "exp": lambda: np.exp(resolved[0]),
             "relu": lambda: np.maximum(resolved[0], 0.0),

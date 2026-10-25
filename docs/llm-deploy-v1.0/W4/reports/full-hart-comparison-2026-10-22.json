@@ -1,0 +1,399 @@
+{
+  "status": "PASS",
+  "passed": true,
+  "scope": "One ordered pair of complete full_seed_0 runs, harts 4 then 1. No old timing-anomaly baseline; not a repeated-run median or stability estimate.",
+  "baseline": "1 hart, blocked_fma, 2x4, column-panel, padding none",
+  "candidate": "4 harts, otherwise identical policy and fixed input",
+  "identity_checks": [
+    "1 hart retained QEMU report",
+    "1 hart audit case",
+    "1 hart audit numeric",
+    "1 hart FMA actual tools",
+    "1 hart codegen/build panels",
+    "1 hart affinity unchanged",
+    "1 hart measured forward wall",
+    "1 hart runtime weights",
+    "4 hart retained QEMU report",
+    "4 hart audit case",
+    "4 hart audit numeric",
+    "4 hart FMA actual tools",
+    "4 hart codegen/build panels",
+    "4 hart affinity unchanged",
+    "4 hart measured forward wall",
+    "4 hart runtime weights",
+    "model_files",
+    "source_sha256",
+    "execution_tools",
+    "execution_tool_binary_sha256",
+    "weight_sha256",
+    "matmul_policy",
+    "generated model.c identity",
+    "codegen.source_bytes",
+    "codegen.constant_bytes",
+    "codegen.workspace_bytes",
+    "codegen.weights",
+    "codegen.kernel_calls",
+    "codegen.matmul_tile",
+    "codegen.matmul_rhs_layout",
+    "codegen.matmul_rhs_panels",
+    "codegen.output",
+    "QEMU.input_sha256",
+    "QEMU.weight_sha256",
+    "QEMU.forward_wall_scope",
+    "QEMU.qemu_rss_scope",
+    "ORT reference identity",
+    "measurement.affinity",
+    "measurement.clocksource",
+    "measurement.sample_interval_s",
+    "measurement.git_head",
+    "measurement.merge_head",
+    "whole QEMU CPU scope",
+    "numeric evidence for identical QEMU outputs"
+  ],
+  "runs": {
+    "1": {
+      "raw": {
+        "report": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/run/report.json",
+        "resources": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/resources.json",
+        "metadata": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/metadata.json",
+        "audit": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/audit/report.json",
+        "qemu_run": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/run/full_seed_0/qemu/run.json",
+        "output": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/run/full_seed_0/qemu/output.bin",
+        "ort_output": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/run/full_seed_0/ort.npy",
+        "samples": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/samples.jsonl",
+        "build": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/run/build/build.json"
+      },
+      "forward_wall_s": 1384.654777156,
+      "forward_wall_scope": "QEMU launch through host validation of the UART completion frame",
+      "qemu_wall_s": 1385.9661927140005,
+      "qemu_process_cpu_s": 1385.7966580000002,
+      "qemu_process_cpu_scope": "RUSAGE_CHILDREN user+system delta around the complete model run_external call; includes launch/dump/shutdown, excludes build/FMA/ORT",
+      "qemu_process_cpu_percent": 99.98776775978436,
+      "cpu_percent_definition": "100% is one logical CPU; complete QEMU process CPU / QEMU wall.",
+      "sampled_peak_qemu_rss_bytes": 5793579008,
+      "qemu_rss": {
+        "sampled_peak_qemu_rss_bytes": 5793579008,
+        "qemu_rss_observed_samples": 6916,
+        "qemu_rss_availability": "partial",
+        "qemu_rss_sample_interval_s": 0.2,
+        "qemu_rss_sample_errors": 3,
+        "qemu_rss_last_error": "OSError: QEMU resident memory is unavailable",
+        "qemu_rss_scope": "QEMU process RSS; distinct from guest layout and not a hard limit"
+      },
+      "guest_memory": {
+        "ram_base": 2147483648,
+        "ram_end": 5791285248,
+        "ram_bytes": 3643801600,
+        "memory_mib": 3475,
+        "alignment": 64,
+        "used_bytes": 3469471240,
+        "margin_bytes": 174330360,
+        "regions": {
+          "code": {
+            "base": 2147483648,
+            "end": 2280652800,
+            "nbytes": 133169152
+          },
+          "stack": {
+            "base": 2280652800,
+            "end": 2281701376,
+            "nbytes": 1048576
+          },
+          "inputs": {
+            "base": 2281701376,
+            "end": 2281965568,
+            "nbytes": 264192
+          },
+          "outputs": {
+            "base": 2281965568,
+            "end": 2437548032,
+            "nbytes": 155582464
+          },
+          "workspace": {
+            "base": 2437548032,
+            "end": 3232635408,
+            "nbytes": 795087376
+          },
+          "weights": {
+            "base": 3232635456,
+            "end": 5616954888,
+            "nbytes": 2384319432
+          }
+        },
+        "code_base": 2147483648,
+        "code_capacity": 134217728,
+        "code_limit": 2280652800,
+        "stack_bottom": 2280652800,
+        "stack_top": 2281701376,
+        "input_base": 2281701376,
+        "output_base": 2281965568,
+        "workspace_base": 2437548032,
+        "weights_base": 3232635456
+      },
+      "numeric_vs_ort": {
+        "passed": true,
+        "atol": 0.001,
+        "rtol": 0.0,
+        "criterion": "strict max_abs < atol across every output element",
+        "max_abs": 8.58306884765625e-05,
+        "worst_index": [
+          0,
+          0,
+          8974
+        ],
+        "elements_at_or_above_atol": 0,
+        "rmse": 5.391918773554923e-06,
+        "elements_compared": 38895616
+      },
+      "clock_summary": {
+        "perf_elapsed_s": 1539.6815298679994,
+        "raw_elapsed_s": 1539.6816356809995,
+        "utc_elapsed_s": 1539.6815309524536,
+        "max_abs_perf_minus_raw_s": 0.00012387900096655358,
+        "max_abs_utc_minus_perf_s": 3.2865049433894455e-05
+      },
+      "clock_start": {
+        "perf": 12820.50088381,
+        "raw": 12820.423082783,
+        "utc_epoch": 1792643057.5072613
+      },
+      "clocksource": "tsc",
+      "affinity": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "measurement_sample_interval_s": 0.5,
+      "measurement_samples": 3073,
+      "measurement_sampling_errors": 1,
+      "sampled_forward_cpu_s": 1384.82,
+      "sampled_forward_cpu_percent": 100.01193242147616,
+      "cpu_sample_scope": "first observed completion-frame sample; otherwise last live process sample; target 0.5s sampling interval; boundary uncertainty depends on actual sample gaps and scheduling",
+      "cpu_sample_source": "completion sample",
+      "observed_vcpu_threads": {}
+    },
+    "4": {
+      "raw": {
+        "report": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/run/report.json",
+        "resources": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/resources.json",
+        "metadata": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/metadata.json",
+        "audit": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/audit/report.json",
+        "qemu_run": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/run/full_seed_0/qemu/run.json",
+        "output": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/run/full_seed_0/qemu/output.bin",
+        "ort_output": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/run/full_seed_0/ort.npy",
+        "samples": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/samples.jsonl",
+        "build": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/run/build/build.json"
+      },
+      "forward_wall_s": 410.53025533899927,
+      "forward_wall_scope": "QEMU launch through host validation of the UART completion frame",
+      "qemu_wall_s": 410.94432049499846,
+      "qemu_process_cpu_s": 1461.396256,
+      "qemu_process_cpu_scope": "RUSAGE_CHILDREN user+system delta around the complete model run_external call; includes launch/dump/shutdown, excludes build/FMA/ORT",
+      "qemu_process_cpu_percent": 355.6190420735566,
+      "cpu_percent_definition": "100% is one logical CPU; complete QEMU process CPU / QEMU wall.",
+      "sampled_peak_qemu_rss_bytes": 5787783168,
+      "qemu_rss": {
+        "sampled_peak_qemu_rss_bytes": 5787783168,
+        "qemu_rss_observed_samples": 2048,
+        "qemu_rss_availability": "partial",
+        "qemu_rss_sample_interval_s": 0.2,
+        "qemu_rss_sample_errors": 1,
+        "qemu_rss_last_error": "OSError: QEMU resident memory is unavailable",
+        "qemu_rss_scope": "QEMU process RSS; distinct from guest layout and not a hard limit"
+      },
+      "guest_memory": {
+        "ram_base": 2147483648,
+        "ram_end": 5791285248,
+        "ram_bytes": 3643801600,
+        "memory_mib": 3475,
+        "alignment": 64,
+        "used_bytes": 3469471240,
+        "margin_bytes": 174330360,
+        "regions": {
+          "code": {
+            "base": 2147483648,
+            "end": 2277507072,
+            "nbytes": 130023424
+          },
+          "stack": {
+            "base": 2277507072,
+            "end": 2281701376,
+            "nbytes": 4194304
+          },
+          "inputs": {
+            "base": 2281701376,
+            "end": 2281965568,
+            "nbytes": 264192
+          },
+          "outputs": {
+            "base": 2281965568,
+            "end": 2437548032,
+            "nbytes": 155582464
+          },
+          "workspace": {
+            "base": 2437548032,
+            "end": 3232635408,
+            "nbytes": 795087376
+          },
+          "weights": {
+            "base": 3232635456,
+            "end": 5616954888,
+            "nbytes": 2384319432
+          }
+        },
+        "code_base": 2147483648,
+        "code_capacity": 134217728,
+        "code_limit": 2277507072,
+        "stack_bottom": 2277507072,
+        "stack_top": 2281701376,
+        "input_base": 2281701376,
+        "output_base": 2281965568,
+        "workspace_base": 2437548032,
+        "weights_base": 3232635456
+      },
+      "numeric_vs_ort": {
+        "passed": true,
+        "atol": 0.001,
+        "rtol": 0.0,
+        "criterion": "strict max_abs < atol across every output element",
+        "max_abs": 8.58306884765625e-05,
+        "worst_index": [
+          0,
+          0,
+          8974
+        ],
+        "elements_at_or_above_atol": 0,
+        "rmse": 5.391918773554923e-06,
+        "elements_compared": 38895616
+      },
+      "clock_summary": {
+        "perf_elapsed_s": 527.7288563040001,
+        "raw_elapsed_s": 527.7288925129997,
+        "utc_elapsed_s": 527.7288579940796,
+        "max_abs_perf_minus_raw_s": 0.0022692250004183734,
+        "max_abs_utc_minus_perf_s": 0.0022627602447755635
+      },
+      "clock_start": {
+        "perf": 11818.660389643,
+        "raw": 11818.582520517,
+        "utc_epoch": 1792642055.6667662
+      },
+      "clocksource": "tsc",
+      "affinity": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "measurement_sample_interval_s": 0.5,
+      "measurement_samples": 1051,
+      "measurement_sampling_errors": 1,
+      "sampled_forward_cpu_s": 1460.94,
+      "sampled_forward_cpu_percent": 355.86658498375834,
+      "cpu_sample_scope": "first observed completion-frame sample; otherwise last live process sample; target 0.5s sampling interval; boundary uncertainty depends on actual sample gaps and scheduling",
+      "cpu_sample_source": "last live sample",
+      "observed_vcpu_threads": {}
+    }
+  },
+  "errors": [],
+  "comparison": {
+    "forward_speedup_1_over_4": 3.3728446543181283,
+    "forward_time_reduction_percent": 70.35143617658949,
+    "qemu_wall_speedup_1_over_4": 3.372637419698489,
+    "cpu_cost_ratio_4_over_1": 1.0545531680738112,
+    "cpu_cost_increase_percent": 5.4553168073811165,
+    "sampled_peak_rss_difference_bytes_4_minus_1": -5795840,
+    "sampled_peak_rss_ratio_4_over_1": 0.9989996097417508
+  },
+  "output_comparison": {
+    "elements_compared": 38895616,
+    "bytes_per_output": 155582464,
+    "bitwise_equal": true,
+    "differing_binary32_elements": 0,
+    "first_difference": null,
+    "max_abs": 0.0
+  },
+  "limitations": [
+    "One pair, ordered 4 harts then 1 hart; no repeatability/confidence estimate. Host load, temperature and filesystem-cache state were not held identically fixed.",
+    "Forward wall is QEMU launch through validated UART completion, not guest-only kernel time.",
+    "Whole-process CPU includes launch, dump and shutdown; compare against QEMU wall, not the forward wall or the approximate 0.5-second CPU sample.",
+    "RSS is a sampled QEMU process peak, separate from guest reserved RAM/workspace. Partial availability, sample counts and errors are retained for both runs.",
+    "Clock summaries span each entire wrapper. Raw/monotonic/UTC sampling skew or clock-frequency discipline is not automatically evidence of a time jump.",
+    "ELFs, hart compiler definitions, per-hart stack reservations and parallel runtime can differ by design. Dynamic output paths, TCP ports and run timestamps are not identities.",
+    "Generic Linux QEMU thread names cannot reliably identify individual hart threads.",
+    "Existing report identities and freshly completed audit records are reused; no new hashes."
+  ],
+  "publication": {
+    "kind": "Publication copy of retained full-hart comparison; not a new model run",
+    "date": "2026-10-22",
+    "source_result": "output/w4-harts-short-20261021/optimization-completion-20261022/full-hart-comparison/result.json",
+    "paths": "Paths under output/ are local retained-artifact indexes relative to the ScratchV development root, not files included in Git.",
+    "transformation": "Project absolute-path prefix removed from existing path strings. Original measurements, errors, limits and comparison values unchanged.",
+    "source_identity_note": "Both runs used a dirty candidate worktree on the recorded Git base. This is not a full-model rerun of the current PR head. Existing snapshot digests are reused for identity; no hashes were computed for publication.",
+    "host": {
+      "logical_cpus_available": 4,
+      "clocksource": "tsc"
+    },
+    "run_identity": {
+      "1": {
+        "report": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-1hart/run/report.json",
+        "git": {
+          "head": "af5768cbe49976896f88f10f8f0cc6ec08160f30",
+          "dirty": true,
+          "status_scope": "source/docs; excludes LFS model binaries"
+        },
+        "source_snapshot": {
+          "file": "source-snapshot.zip",
+          "sha256": "baffbd45525beb19c47b0aa39037ea72f343668a6969e6b40f0730a6666b1acd",
+          "scope": "Hashed production/probe/script sources and fixed requirements/manifests; restore over recorded Git base, not a complete standalone repository"
+        },
+        "execution_tools": {
+          "compiler": "0.14.1",
+          "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+          "target": "riscv64 / RV64GC / LP64D / QEMU virt / bare metal",
+          "math_library": "Zig-bundled musl"
+        },
+        "python": "3.12.3",
+        "platform": "Linux-6.18.40.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+        "dependency_versions": {
+          "numpy": "2.2.6",
+          "onnx": "1.18.0",
+          "onnxruntime": "1.22.1",
+          "torch": "2.7.1+cpu",
+          "transformers": "4.51.3",
+          "safetensors": "0.5.3"
+        }
+      },
+      "4": {
+        "report": "output/w4-harts-short-20261021/optimization-completion-20261022/integration-full-4hart/run/report.json",
+        "git": {
+          "head": "af5768cbe49976896f88f10f8f0cc6ec08160f30",
+          "dirty": true,
+          "status_scope": "source/docs; excludes LFS model binaries"
+        },
+        "source_snapshot": {
+          "file": "source-snapshot.zip",
+          "sha256": "1e54c8bd41102ed59af818fec3bcd039d0389f425b42a70eb1325a6739e3720c",
+          "scope": "Hashed production/probe/script sources and fixed requirements/manifests; restore over recorded Git base, not a complete standalone repository"
+        },
+        "execution_tools": {
+          "compiler": "0.14.1",
+          "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+          "target": "riscv64 / RV64GC / LP64D / QEMU virt / bare metal",
+          "math_library": "Zig-bundled musl"
+        },
+        "python": "3.12.3",
+        "platform": "Linux-6.18.40.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+        "dependency_versions": {
+          "numpy": "2.2.6",
+          "onnx": "1.18.0",
+          "onnxruntime": "1.22.1",
+          "torch": "2.7.1+cpu",
+          "transformers": "4.51.3",
+          "safetensors": "0.5.3"
+        }
+      }
+    }
+  }
+}

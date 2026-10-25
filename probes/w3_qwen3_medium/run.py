@@ -381,7 +381,7 @@ def main(argv=None):
     cli.add_argument("--output-dir", type=Path, default=ROOT / "output/w3-medium")
     cli.add_argument("--model-seed", type=int, default=0)
     args = cli.parse_args(argv)
-    from probes.w3_common import new_output_dir
+    from probes.w3_common import new_output_dir, recheck_sources
     try:
         out = new_output_dir(args.output_dir)
     except FileExistsError:
@@ -393,6 +393,10 @@ def main(argv=None):
     started = time.perf_counter()
     try:
         run_probe(out, report, args.model_seed)
+        if report["passed"]:
+            report["stage"] = "source_recheck"
+            recheck_sources(report, provenance_key="provenance")
+            report["stage"] = "complete"
     except Exception as exc:
         report.update(passed=False, error=f"{type(exc).__name__}: {exc}")
         traceback.print_exc()

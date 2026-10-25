@@ -17,7 +17,7 @@ from typing import Callable
 
 import numpy as np
 
-from scratchv.ir.types import DataType, Instruction, OpCode
+from scratchv.ir.types import DataType, Instruction, OpCode, valid_float_bit_pattern
 
 DTYPES = {
     DataType.FLOAT32: np.dtype("float32"),
@@ -92,6 +92,9 @@ def check_instruction(instr: Instruction):
         raise OpError(
             "UnsupportedAttribute", f"unsupported attributes: {sorted(unknown)}"
         )
+    if instr.opcode == OpCode.LOAD_CONST and "bit_pattern" in instr.attrs:
+        if not valid_float_bit_pattern(instr.dest.dtype, instr.attrs["bit_pattern"]):
+            raise OpError("AttributeError", "bit_pattern requires a valid f32/f64 encoding")
     required = {
         OpCode.RESHAPE: ("shape",),
         OpCode.CONCAT: ("axis",),
@@ -198,8 +201,12 @@ def compute(instr, operands, *, fp32_mode="native"):
     return result
 
 
-@kernel(OpCode.LOAD_CONST, "value")
+@kernel(OpCode.LOAD_CONST, "value", "bit_pattern")
 def load_const(xs, attrs, dtype):
+    if "bit_pattern" in attrs:
+        bits = attrs["bit_pattern"]
+        storage = np.dtype("uint32" if dtype.itemsize == 4 else "uint64")
+        return np.asarray(bits, dtype=storage).view(dtype)
     return np.asarray(attrs["value"], dtype=dtype)
 
 

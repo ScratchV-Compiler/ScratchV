@@ -25,6 +25,7 @@ from scratchv.verification.ir_numpy_ops import (
     check_instruction,
     compute,
     integer,
+    load_const,
 )
 
 
@@ -195,6 +196,12 @@ class IRInterpreter:
     ) -> ExecutionResult:
         """Run verified IR with strict bindings.
 
+        Parameters and bound initializers require their exact declared static
+        shape, including ``()`` for scalars. Builder intermediate values may
+        retain the default ``()`` until the operation infers its result shape.
+        An optional ``Function.returns`` signature is also exact; omitting it
+        preserves the actual returned tensor's inferred shape and dtype.
+
         ``copy_initializers=False`` borrows only read-only NumPy arrays. The
         caller must not mutate their backing storage for the duration of this
         synchronous call. ``memory_mode='last_use'`` releases bindings after
@@ -338,6 +345,29 @@ class IRInterpreter:
                 f"invalid initializer bindings: {sorted(extra | (set(initializers) & set(params)))}",
             )
 
+        def checked_shape(value, actual_shape, position=None, instr=None):
+            # Boundary declarations describe actual tensors: () is a scalar,
+            # not an unspecified shape. Builder intermediates are inferred
+            # separately and do not enter this check unless explicitly shaped.
+            if not isinstance(value.shape, (tuple, list)) or any(
+                isinstance(d, (bool, np.bool_))
+                or not isinstance(d, (int, np.integer)) or d < 0
+                for d in value.shape
+            ):
+                raise error(
+                    "ShapeError", "tensor boundary requires a static nonnegative shape",
+                    position, instr,
+                    value_name=value.name,
+                )
+            shape = tuple(int(d) for d in value.shape)
+            if actual_shape != shape:
+                raise error(
+                    "ShapeError",
+                    f"expected {shape}, got {actual_shape}",
+                    position, instr,
+                    value_name=value.name,
+                )
+
         def checked_array(value, data, *, copy=False):
             if not isinstance(data, np.ndarray):
                 raise error(
@@ -349,16 +379,7 @@ class IRInterpreter:
                     f"expected {DTYPES[value.dtype]}, got {data.dtype}",
                     value_name=value.name,
                 )
-            if (
-                value.shape
-                and all(isinstance(d, int) and d >= 0 for d in value.shape)
-                and data.shape != value.shape
-            ):
-                raise error(
-                    "ShapeError",
-                    f"expected {value.shape}, got {data.shape}",
-                    value_name=value.name,
-                )
+            checked_shape(value, data.shape)
             if np.issubdtype(data.dtype, np.floating) and (
                 np.isnan(data).any() or np.isposinf(data).any()
             ):
@@ -371,6 +392,13 @@ class IRInterpreter:
 
         for name, value in params.items():
             values[name] = checked_array(value, inputs[name], copy=True)
+
+        def literal_array(value):
+            attrs = {"value": value.const_value}
+            if value.bit_pattern is not None:
+                attrs["bit_pattern"] = value.bit_pattern
+            return load_const([], attrs, DTYPES[value.dtype])
+
         referenced = {
             v.name
             for b in function.blocks
@@ -387,7 +415,7 @@ class IRInterpreter:
                     data = data.view()
                     data.setflags(write=False)
                 if value.is_constant:
-                    literal = np.asarray(value.const_value, dtype=DTYPES[value.dtype])
+                    literal = literal_array(value)
                     if data.shape != () or not np.array_equal(data, literal):
                         raise error(
                             "BindingError",
@@ -396,7 +424,7 @@ class IRInterpreter:
                         )
                 values[name] = data
             elif value.is_constant:
-                values[name] = np.asarray(value.const_value, dtype=DTYPES[value.dtype])
+                values[name] = literal_array(value)
             else:
                 raise error(
                     "BindingError", "global tensor data missing", value_name=name
@@ -436,7 +464,7 @@ class IRInterpreter:
             if value.name in values:
                 return values[value.name]
             if value.is_constant:
-                return np.asarray(value.const_value, dtype=DTYPES[value.dtype])
+                return literal_array(value)
             raise OpError(
                 "UndefinedValue", f"value not defined on this path: {value.name}"
             )
@@ -500,6 +528,13 @@ class IRInterpreter:
                     value = operands[0]
                     if not isinstance(value, np.ndarray):
                         raise OpError("MemoryError", "cannot return memory reference")
+                    reference = instr.operands[0]
+                    inferred_return = isinstance(reference.shape, (tuple, list)) and len(reference.shape) == 0
+                    if not inferred_return or reference.name in params or reference.name in globals_:
+                        checked_shape(reference, value.shape, position, instr)
+                    if function.returns:
+                        # verify_ir already checks declaration count and dtype.
+                        checked_shape(function.returns[0], value.shape, position, instr)
                     if (
                         np.issubdtype(value.dtype, np.floating)
                         and not np.isfinite(value).all()

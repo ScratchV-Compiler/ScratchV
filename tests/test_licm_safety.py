@@ -199,9 +199,12 @@ def test_mean_checks_empty_dimensions_and_intermediate_sum_overflow():
     assert not before_for(b, unbounded) and not before_for(b, empty_mean)
 
 
-def test_unknown_shapes_and_runtime_indices_do_not_establish_proofs():
-    x = Value("x", D.INT32)
-    y = Value("y", D.INT32)
+@pytest.mark.parametrize("xshape,yshape", [((), ()), ((2,), (3,))])
+def test_unproven_shapes_and_runtime_indices_do_not_establish_proofs(xshape, yshape):
+    # HoistSafety conservatively treats () as unproven. Execution still binds
+    # a real scalar; the second case preserves the incompatible-vector hazard.
+    x = Value("x", D.INT32, shape=xshape)
+    y = Value("y", D.INT32, shape=yshape)
     data = Value("data", D.INT32, shape=(2,))
     index = Value("index", D.INT64)
     b = builder(x, y, data, index)
@@ -213,8 +216,8 @@ def test_unknown_shapes_and_runtime_indices_do_not_establish_proofs():
     compare(
         b,
         {
-            "x": np.ones(2, dtype="int32"),
-            "y": np.ones(3, dtype="int32"),
+            "x": np.ones(xshape, dtype="int32"),
+            "y": np.ones(yshape, dtype="int32"),
             "data": np.ones(2, dtype="int32"),
             "index": np.array(5, dtype="int64"),
         },

@@ -13,6 +13,7 @@ import platform
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -155,6 +156,20 @@ def source_evidence():
         "source_sha256": {p.relative_to(ROOT).as_posix(): sha256_file(p) for p in sources},
     }
 
+def recheck_sources(report, *, provenance_key=None):
+    """Reject mixed-source runs while retaining the changed file identities."""
+    recorded = report if provenance_key is None else report.get(provenance_key, {})
+    before = recorded.get("source_sha256")
+    if not isinstance(before, dict) or not before:
+        raise ValueError("Missing execution source fingerprints")
+    after = source_evidence()["source_sha256"]
+    changed = {name: {"before_sha256": before.get(name), "after_sha256": after.get(name)}
+               for name in sorted(before.keys() | after.keys()) if before.get(name) != after.get(name)}
+    report["source_recheck"] = {"passed": not changed, "changed": changed}
+    if changed:
+        raise ValueError("Production sources changed during numerical execution")
+
+
 def process_peak_rss_bytes():
     """Peak resident memory of this process, not IR workspace or an interval peak."""
     if os.name == "nt":
@@ -185,15 +200,38 @@ def process_peak_rss_bytes():
 def atomic_text(path, text):
     path = Path(path)
     fd, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    primary_error = None
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, path)
+        # File scanners/readers can briefly deny replacement of a closed report
+        # on Windows. Retry only these OS errors, with a bounded total delay;
+        # permanent permission failures must still fail report publication.
+        delays = (0.01, 0.03, 0.1, 0.3)
+        for attempt in range(len(delays) + 1):
+            try:
+                os.replace(name, path)
+                break
+            except PermissionError as exc:
+                if (sys.platform != "win32" or getattr(exc, "winerror", None) not in (5, 32, 33)
+                        or attempt == len(delays)):
+                    raise
+                time.sleep(delays[attempt])
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        if os.path.exists(name):
+        try:
             os.unlink(name)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            if primary_error is None:
+                raise
+            if hasattr(primary_error, "add_note"):
+                primary_error.add_note(f"Could not remove pending report: {type(exc).__name__}: {exc}")
 
 def write_reports(out, report):
     """Publish required views before JSON. A write failure can never report PASS."""

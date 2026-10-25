@@ -2,8 +2,9 @@
 
 import pytest
 from scratchv.backend.inst_select_ext import ExtendedInstructionSelector
+from scratchv.backend.target_features import TargetFeatures
 from scratchv.ir.builder import IRBuilder
-from scratchv.ir.types import Value, DataType  # noqa: F401
+from scratchv.ir.types import DataType, Instruction, OpCode
 from scratchv.backend.register_alloc import MachineOp
 
 
@@ -14,29 +15,30 @@ class TestExtendedSelectorBasic:
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
-        a = builder.make_value(name="a")
-        b = builder.make_value(name="b")
+        a = builder.make_value(name="a", dtype=DataType.INT32)
+        b = builder.make_value(name="b", dtype=DataType.INT32)
         c = builder.add(a, b)
         builder.ret(c)
 
         selector = ExtendedInstructionSelector(builder.program)
-        assert selector.enable_fp64 is True
-        assert selector.use_hardware_sqrt is False
+        assert selector.features == TargetFeatures("rv32imfd", "ilp32d")
 
-    def test_creation_fp64_disabled(self):
+    def test_f_target_rejects_double_precision(self):
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
+        builder.ret(builder.load_const(1.0, DataType.FLOAT64))
         selector = ExtendedInstructionSelector(
-            builder.program, enable_fp64=False)
-        assert selector.enable_fp64 is False
+            builder.program, features=TargetFeatures("rv32imf", "ilp32f"))
+        with pytest.raises(ValueError, match="requires the RISC-V D extension"):
+            selector.run()
 
     def test_run_basic(self):
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
-        a = builder.make_value(name="a")
-        b = builder.make_value(name="b")
+        a = builder.make_value(name="a", dtype=DataType.INT32)
+        b = builder.make_value(name="b", dtype=DataType.INT32)
         c = builder.add(a, b)
         builder.ret(c)
 
@@ -50,7 +52,7 @@ class TestExtendedSelectorBasic:
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
-        a = builder.make_value(name="a")
+        a = builder.make_value(name="a", dtype=DataType.INT32)
         c = builder.relu(a)
         builder.ret(c)
 
@@ -63,8 +65,8 @@ class TestExtendedSelectorBasic:
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
-        a = builder.make_value(name="a")
-        b = builder.make_value(name="b")
+        a = builder.make_value(name="a", dtype=DataType.INT32)
+        b = builder.make_value(name="b", dtype=DataType.INT32)
         c = builder.sub(a, b)
         builder.ret(c)
 
@@ -85,17 +87,6 @@ class TestExtendedSelectorBasic:
         assert "max" in ops
         assert "abs" in ops
 
-    def test_supported_ops_no_fp64(self):
-        builder = IRBuilder()
-        builder.new_function("test")
-        builder.new_block("entry")
-        selector = ExtendedInstructionSelector(
-            builder.program, enable_fp64=False)
-        ops = selector.supported_ops
-        assert "add" in ops
-        # fp64 ops should still be in unsupported list
-        # (they're always defined, just not enabled)
-
 
 class TestExtendedSelectorNeg:
     """Tests for neg instruction handling."""
@@ -104,7 +95,7 @@ class TestExtendedSelectorNeg:
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
-        a = builder.make_value(name="a")
+        a = builder.make_value(name="a", dtype=DataType.INT32)
         c = builder.neg(a)
         builder.ret(c)
 
@@ -114,48 +105,54 @@ class TestExtendedSelectorNeg:
         assert MachineOp.SUB in ops
 
 
-class TestTypeDetection:
-    """Tests for float64 type detection."""
-
-    def test_is_fp64_int32(self):
-        from scratchv.ir.types import Instruction, OpCode
-
-        v = Value(name="x", dtype=DataType.INT32)
-        instr = Instruction(opcode=OpCode.ADD, operands=[v],
-                            dest=Value(name="y", dtype=DataType.INT32))
-
+class TestExtendedSelectorNumericOps:
+    @pytest.mark.parametrize(
+        ("method", "dtype", "expected"),
+        [
+            ("min", DataType.FLOAT32, MachineOp.FMIN_S),
+            ("min", DataType.FLOAT64, MachineOp.FMIN_D),
+            ("max", DataType.FLOAT32, MachineOp.FMAX_S),
+            ("max", DataType.FLOAT64, MachineOp.FMAX_D),
+            ("abs", DataType.FLOAT32, MachineOp.FABS_S),
+            ("abs", DataType.FLOAT64, MachineOp.FABS_D),
+        ],
+    )
+    def test_float_min_max_abs_select_typed_instruction(
+        self, method, dtype, expected,
+    ):
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
-        selector = ExtendedInstructionSelector(builder.program)
-        assert not selector._is_fp64(instr)
+        lhs = builder.load_const(4.0, dtype)
+        rhs = builder.load_const(2.0, dtype)
+        args = (lhs,) if method == "abs" else (lhs, rhs)
+        result = getattr(builder, method)(*args)
+        builder.ret(result)
 
-    def test_is_fp64_float64(self):
-        from scratchv.ir.types import Instruction, OpCode
+        instructions = ExtendedInstructionSelector(builder.program).run()
 
-        v = Value(name="x", dtype=DataType.FLOAT64)
-        instr = Instruction(opcode=OpCode.ADD, operands=[v],
-                            dest=Value(name="y", dtype=DataType.FLOAT64))
+        selected = next(item for item in instructions if item.op is expected)
+        assert selected.dst.value == result.name
+        assert selected.src1.value == lhs.name
+        if method != "abs":
+            assert selected.src2.value == rhs.name
 
+    def test_rem_rejects_non_i32_ir_even_without_verifier(self):
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
-        selector = ExtendedInstructionSelector(builder.program)
-        assert selector._is_fp64(instr)
+        lhs = builder.make_value(name="lhs", dtype=DataType.FLOAT32)
+        rhs = builder.make_value(name="rhs", dtype=DataType.FLOAT32)
+        builder.current_block.add(
+            Instruction(
+                OpCode.REM,
+                builder.make_value(name="result", dtype=DataType.FLOAT32),
+                [lhs, rhs],
+            )
+        )
 
-    def test_is_fp64_fp64_disabled(self):
-        from scratchv.ir.types import Instruction, OpCode
-
-        v = Value(name="x", dtype=DataType.FLOAT64)
-        instr = Instruction(opcode=OpCode.ADD, operands=[v],
-                            dest=Value(name="y", dtype=DataType.FLOAT64))
-
-        builder = IRBuilder()
-        builder.new_function("test")
-        builder.new_block("entry")
-        selector = ExtendedInstructionSelector(
-            builder.program, enable_fp64=False)
-        assert not selector._is_fp64(instr)
+        with pytest.raises(ValueError, match="rem does not support f32"):
+            ExtendedInstructionSelector(builder.program).run()
 
 
 class TestLoadConst:
@@ -165,7 +162,7 @@ class TestLoadConst:
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
-        c = builder.load_const(42)
+        c = builder.load_const(42, dtype=DataType.INT32)
         builder.ret(c)
 
         selector = ExtendedInstructionSelector(builder.program)
@@ -182,16 +179,16 @@ class TestAllBaseOps:
         builder = IRBuilder()
         builder.new_function("test")
         builder.new_block("entry")
-        ptr = builder.make_value(name="ptr")
+        ptr = builder.make_value(name="ptr", dtype=DataType.FLOAT32)
         loaded = builder.load(ptr)
-        builder.store(loaded, ptr)
+        builder.store(ptr, loaded)
         builder.ret(loaded)
 
         selector = ExtendedInstructionSelector(builder.program)
         instrs = selector.run()
         ops = [i.op for i in instrs if i.op != MachineOp.LABEL]
-        assert MachineOp.LW in ops
-        assert MachineOp.SW in ops
+        assert MachineOp.FLW in ops
+        assert MachineOp.FSW in ops
 
 
 if __name__ == "__main__":

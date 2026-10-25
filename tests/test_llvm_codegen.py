@@ -115,7 +115,7 @@ return 0
     def test_emit_multiple_blocks(self):
         dsl = """
 for i = 0, 2
-    y = add(x, i)
+    y = add(a, b)
 endfor
 return y
 """

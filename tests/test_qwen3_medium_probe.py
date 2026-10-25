@@ -155,9 +155,14 @@ def test_missing_or_duplicated_coverage_cannot_pass(omission):
 
 def test_success_status_and_existing_empty_directory_contract(tmp_path, monkeypatch):
     import json
+    from probes import w3_common
+
+    sources = {"source_sha256": {"scratchv/example.py": "a" * 64}}
+    monkeypatch.setattr(w3_common, "source_evidence", lambda: sources)
 
     def succeed(out, report, seed):
         report.update(complete_numeric_report())
+        report["provenance"] = sources
         probe.finalize_numeric_report(report)
 
     monkeypatch.setattr(probe, "run_probe", succeed)
@@ -172,3 +177,4 @@ def test_success_status_and_existing_empty_directory_contract(tmp_path, monkeypa
     report = json.loads((out / "report.json").read_text(encoding="utf-8"))
     assert report["status"] == "PASS" and report["passed"] is True
     assert report["coverage_complete"] is True
+    assert report["source_recheck"] == {"passed": True, "changed": {}}

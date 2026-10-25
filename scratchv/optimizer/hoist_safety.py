@@ -77,7 +77,17 @@ class HoistSafety:
         definition = self.definitions.get(name, value)
         if isinstance(definition, Value):
             if definition.is_constant and name not in self.parameters:
-                result = self._constant(definition.const_value, definition.dtype)
+                if definition.bit_pattern is None:
+                    result = self._constant(definition.const_value, definition.dtype)
+                else:
+                    literal = Instruction(OpCode.LOAD_CONST, definition, attrs={
+                        "value": definition.const_value, "bit_pattern": definition.bit_pattern,
+                    })
+                    try:
+                        check_instruction(literal)
+                        result = self._constant(compute(literal, []), definition.dtype)
+                    except (OpError, ValueError, TypeError, OverflowError, FloatingPointError):
+                        result = Facts(tensor=False)
             else:
                 result = Facts(
                     shape=definition.shape or None,

@@ -451,6 +451,10 @@ print(program.dump())
             t1 = time.perf_counter()
             output = self._simulate_dsl(dsl_source, program)
             result.sim_time_s = time.perf_counter() - t1
+            if output.startswith("## SIM ERROR:"):
+                result.output = output.strip()
+                result.error = output[len("## SIM ERROR:"):].strip()
+                return result
 
             result.compile_time_s = (time.perf_counter() - t_start) - result.sim_time_s
 

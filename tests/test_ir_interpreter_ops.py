@@ -20,7 +20,8 @@ def operation(op, arrays, attrs=None, result_dtype=None):
         "int32": D.INT32,
         "int64": D.INT64,
     }
-    params = [Value(f"x{i}", dtype_map[str(x.dtype)]) for i, x in enumerate(arrays)]
+    params = [Value(f"x{i}", dtype_map[str(x.dtype)], shape=x.shape)
+              for i, x in enumerate(arrays)]
     b = builder(*params)
     result = Value("result", result_dtype or params[0].dtype)
     b.current_block.add(Instruction(op, result, params, attrs or {}))
@@ -289,7 +290,7 @@ def test_gather_static_types_and_builder_precision():
         result_dtype=D.FLOAT64,
     )
     assert not verify_ir(p)[0]
-    x = Value("x", D.FLOAT64)
+    x = Value("x", D.FLOAT64, shape=(2,))
     b = builder(x)
     result = b.sqrt(b.reduce_mean(b.mul(x, x), (0,), False))
     b.ret(result)

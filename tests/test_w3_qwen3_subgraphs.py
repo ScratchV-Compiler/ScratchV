@@ -230,7 +230,11 @@ def test_formal_gate_contract_is_immutable():
 
 @pytest.mark.parametrize("length,status,passed,code", [(256, "PASS", True, 0), (4, "PARTIAL", False, 2)])
 def test_debug_lengths_never_claim_formal_pass(tmp_path, monkeypatch, length, status, passed, code):
+    from probes import w3_common
+    sources = {"source_sha256": {"scratchv/example.py": "a" * 64}}
+    monkeypatch.setattr(w3_common, "source_evidence", lambda: sources)
     def simulated_complete(source, out, report, seq_len):
+        report.update(sources)
         report["cases"] = [{"name": name, "passed": True} for name in run.CASE_NAMES]
         report["invariants"] = [{"passed": True} for _ in range(10)]
         run.finalize_report(report, seq_len)

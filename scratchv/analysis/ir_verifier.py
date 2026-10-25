@@ -15,7 +15,7 @@ from scratchv.analysis.adapters import IRCFGAdapter
 from scratchv.analysis.cfg import build_cfg, compute_dominators
 from scratchv.analysis.cfg_validation import verify_cfg
 from scratchv.analysis.ir_diagnostics import IRContextLine, capture_ir_context, ir_fix_hint
-from scratchv.ir.types import DataType, OpCode, Program
+from scratchv.ir.types import DataType, OpCode, Program, valid_float_bit_pattern
 
 
 class ErrorLevel(enum.Enum):
@@ -54,7 +54,9 @@ class OpcodeSpec:
     family: Optional[str] = None
 
 
-# T: identical numeric types; F: identical floating point types.
+# T: identical numeric types; F: identical floating point types;
+# N: identical MIN/MAX types (i32/f32/f64);
+# I32: all operands and the result are i32.
 OPCODE_SPECS = {}
 for _ops, _count, _family in (
     ((OpCode.ADD, OpCode.SUB, OpCode.MUL, OpCode.DIV, OpCode.MATMUL, OpCode.DOT), 2, "T"),
@@ -64,9 +66,11 @@ for _ops, _count, _family in (
       OpCode.SQRT, OpCode.REDUCE_MEAN, OpCode.COS, OpCode.SIN,
       OpCode.RECIPROCAL), 1, "F"),
     ((OpCode.CONV, OpCode.GEMM), 3, "T"),
+    ((OpCode.MIN, OpCode.MAX), 2, "N"),
 ):
     for _op in _ops:
         OPCODE_SPECS[_op] = OpcodeSpec(_count, _count, True, _family)
+OPCODE_SPECS[OpCode.REM] = OpcodeSpec(2, 2, True, "I32")
 OPCODE_SPECS.update({
     OpCode.CONCAT: OpcodeSpec(1, None, True, "T"),
     OpCode.GATHER: OpcodeSpec(2, 2, True),
@@ -88,6 +92,11 @@ _RULES = {name: i for i, name in enumerate((
 ))}
 _FLOATS = (DataType.FLOAT32, DataType.FLOAT64)
 _INTS = (DataType.INT32, DataType.INT64)
+_MIN_MAX_TYPES = frozenset({
+    DataType.INT32,
+    DataType.FLOAT32,
+    DataType.FLOAT64,
+})
 
 
 def _valid_constant(value, dtype):
@@ -155,6 +164,10 @@ class IRVerifier:
             self._emit("type-consistency", "invalid-dtype", f"invalid dtype: {value.dtype!r}", loc, value.name)
         elif value.is_constant and not _valid_constant(value.const_value, value.dtype):
             self._emit("type-consistency", "invalid-constant", "constant metadata is incompatible with dtype", loc, value.name)
+        if value.bit_pattern is not None and (
+                not value.is_constant or not valid_float_bit_pattern(value.dtype, value.bit_pattern)):
+            self._emit("type-consistency", "invalid-bit-pattern",
+                       "constant bit_pattern is incompatible with dtype", loc, value.name)
 
     def _define(self, definitions, ambiguous, value, loc, instruction=None):
         if value.name in definitions:
@@ -369,9 +382,18 @@ class IRVerifier:
         values = inst.operands + ([inst.dest] if inst.dest is not None else [])
         if spec.family and values and all(isinstance(v.dtype, DataType) for v in values):
             types = [v.dtype for v in values]
-            if len(set(types)) != 1 or (spec.family == "F" and types[0] not in _FLOATS):
+            if (len(set(types)) != 1
+                    or (spec.family == "F" and types[0] not in _FLOATS)
+                    or (spec.family == "N" and types[0] not in _MIN_MAX_TYPES)
+                    or (spec.family == "I32" and types[0] != DataType.INT32)):
                 error("signature-types", "incompatible types: " + ", ".join(t.value for t in types))
         if inst.opcode == OpCode.LOAD_CONST and inst.dest is not None and isinstance(inst.dest.dtype, DataType):
+            bits = inst.attrs.get("bit_pattern")
+            if bits is not None:
+                if not valid_float_bit_pattern(inst.dest.dtype, bits):
+                    error("load-bit-pattern", "LOAD_CONST bit_pattern is incompatible with result dtype")
+                elif inst.dest.bit_pattern is not None and bits != inst.dest.bit_pattern:
+                    error("bit-pattern-disagreement", "LOAD_CONST bit_pattern differs from result metadata")
             value = inst.attrs.get("value")
             if not _valid_constant(value, inst.dest.dtype):
                 error("load-constant", "LOAD_CONST value is missing or incompatible with result dtype")

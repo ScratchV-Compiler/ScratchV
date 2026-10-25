@@ -246,6 +246,8 @@ def _parse_asm_for_pipeline(asm_text: str) -> list[PipelineInst]:
         code = stripped.split("#")[0].strip()
         if not code:
             continue
+        if code.startswith("."):
+            continue
 
         m = _LINE_RE.match(stripped)
         if m is None:
@@ -254,7 +256,7 @@ def _parse_asm_for_pipeline(asm_text: str) -> list[PipelineInst]:
         opcode = m.group("opcode")
         if opcode is None:
             continue
-        opcode = opcode.lower().lstrip(".")
+        opcode = opcode.lower()
 
         # Skip assembler directives
         if opcode.startswith(".") or opcode in (
@@ -346,6 +348,8 @@ def _looks_like_reg(s: str) -> bool:
     if _re.match(r'^[ats]([0-9]|1[01])$', s):
         return True
     if _re.match(r'^f([0-9]|[12][0-9]|3[01])$', s):
+        return True
+    if _re.fullmatch(r'f(?:t(?:[0-9]|1[01])|a[0-7]|s(?:[0-9]|1[01]))', s):
         return True
     return False
 

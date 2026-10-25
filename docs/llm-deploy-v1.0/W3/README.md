@@ -1,6 +1,6 @@
 # W3 完整 Qwen3 IR 验证与交付
 
-对外复现统一使用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)，并在同一个 Bash 会话、仓库根目录执行以下命令；`SCRATCHV_PYTHON`、`SCRATCHV_CC`、`SCRATCHV_QEMU` 由该指南设置。
+对外复现统一使用 **Ubuntu 24.04 x86_64、Bash、Python 3.12**。先完成 [Linux 统一环境与资产准备](../LINUX_REPRODUCTION.md)，并在同一个 Bash 会话、仓库根目录执行以下命令；`python` 指已安装固定依赖的当前解释器，Zig 和 QEMU 由运行入口自动发现。
 
 本目录汇总完整 Qwen3 IR 数值验证、准备探测、诊断与复现交付，代码见 [PR #96](https://github.com/ScratchV-Compiler/ScratchV/pull/96)。完整模型通过结果按实际执行提交登记；PR 后续修改及普通 CI 通过不自动成为完整模型重新执行的证据。复现时固定并记录实际完整 SHA，不能只记录分支名或旧基线。
 
@@ -46,10 +46,9 @@ medium 候选配置为 6 层、hidden64、FFN192、Q4/KV2、head_dim16、vocab12
 set -euo pipefail
 W3_SOURCE=/absolute/path/to/qwen3-source/c1899de289a04d12100db370d81485cdf75e47ca
 W3_MODEL=/absolute/path/to/qwen3-0.6b-onnx
-"$SCRATCHV_PYTHON" -B -X utf8 scripts/run_w3_preparation.py \
+python -B -X utf8 scripts/run_w3_preparation.py \
   --source-dir "$W3_SOURCE" --model-dir "$W3_MODEL" \
-  --output-dir output/w3-team-preparation-new \
-  --cc "$SCRATCHV_CC" --qemu "$SCRATCHV_QEMU"
+  --output-dir output/w3-team-preparation-new
 ~~~
 
 五项都实际执行并通过、源码指纹一致、必需报告/产物齐全时，才返回 preparation:w3 的 PASS/0。它不是 numeric:ir-full-qwen3 的通过。失败保留子日志和 FAIL 报告，后续复跑必须换新目录。

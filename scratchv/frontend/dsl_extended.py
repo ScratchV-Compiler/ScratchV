@@ -22,14 +22,16 @@ via IRBuilder.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from typing import Optional
 
 # moved import above
 from scratchv.frontend.dsl_parser import DSLParser, DSLParseError
 from scratchv.frontend.dsl_errors import ErrorCollector
 from scratchv.frontend.dsl_validator import DSLValidator
+from scratchv.frontend.dsl_lexical import CONDITION, NUMBER
 from scratchv.ir.builder import IRBuilder
-from scratchv.ir.types import OpCode, Program, Value
+from scratchv.ir.types import DataType, OpCode, Program, Value
 
 
 # ---------------------------------------------------------------------------
@@ -48,20 +50,20 @@ class CondExpr:
         self.op = op.strip()
         self.rhs = rhs.strip()
 
-    def resolve(self, parser: ExtendedDSLParser) -> tuple[Value, str]:
+    def resolve(self, parser: ExtendedDSLParser) -> tuple[Value, str, Value]:
         """Resolve operands and return (lhs_val, operator, rhs_val)."""
-        lhs_number = _numeric_literal(self.lhs)
-        rhs_number = _numeric_literal(self.rhs)
-        if lhs_number is not None and rhs_number is None:
+        lhs_is_number = NUMBER.fullmatch(self.lhs) is not None
+        rhs_is_number = NUMBER.fullmatch(self.rhs) is not None
+        if lhs_is_number and not rhs_is_number:
             rhs_val = parser._resolve(self.rhs)
             lhs_val = parser.builder.load_const(
-                lhs_number, dtype=rhs_val.dtype,
+                _numeric_literal(self.lhs, rhs_val.dtype), dtype=rhs_val.dtype,
             )
         else:
             lhs_val = parser._resolve(self.lhs)
-            if rhs_number is not None:
+            if rhs_is_number:
                 rhs_val = parser.builder.load_const(
-                    rhs_number, dtype=lhs_val.dtype,
+                    _numeric_literal(self.rhs, lhs_val.dtype), dtype=lhs_val.dtype,
                 )
             else:
                 rhs_val = parser._resolve(self.rhs)
@@ -71,11 +73,18 @@ class CondExpr:
         return f"CondExpr({self.lhs} {self.op} {self.rhs})"
 
 
-def _numeric_literal(text: str) -> float | None:
-    try:
-        return float(text)
-    except ValueError:
-        return None
+def _numeric_literal(text: str, dtype: DataType = DataType.FLOAT32) -> float | int:
+    """Parse a guard literal in its peer's type without float-to-int truncation."""
+    if dtype is DataType.INT32:
+        # Decimal checks the exact source spelling, including exponents. Using
+        # int(float(text)) would silently truncate fractions or lose precision.
+        number = Decimal(text)
+        if not number.is_finite() or number != number.to_integral_value():
+            raise DSLParseError(f"Invalid i32 condition literal: {text}")
+        if not -(1 << 31) <= number <= (1 << 31) - 1:
+            raise DSLParseError(f"i32 condition literal outside signed 32-bit range: {text}")
+        return int(number)
+    return float(text)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +116,7 @@ class ExtendedDSLParser(DSLParser):
         self._while_stack: list[dict[str, str]] = []
         self._slots: dict[str, Value] = {}
         self._initialized_slots: set[str] = set()
+        self._slot_types = {}
 
     # -----------------------------------------------------------------------
     # Label generation
@@ -169,6 +179,7 @@ class ExtendedDSLParser(DSLParser):
         self._while_stack = []
         self._slots = {}
         self._initialized_slots = set()
+        self._slot_types = {}
 
         self.builder.new_function("main")
         self.builder.new_block("entry")
@@ -369,12 +380,7 @@ class ExtendedDSLParser(DSLParser):
     # Condition parsing
     # -----------------------------------------------------------------------
 
-    _ATOM = r"(?:[^\W\d]\w*|[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
-    _COND_PATTERN = re.compile(
-        rf"^(?:if|while)\s*\(\s*({_ATOM})\s*"
-        rf"(==|!=|<=|>=|<|>)\s*({_ATOM})\s*\)\s*:?\s*$",
-        re.UNICODE,
-    )
+    _COND_PATTERN = CONDITION
 
     def _parse_condition(self, line: str) -> Optional[CondExpr]:
         """Attempt to parse a condition from if/while line.
@@ -384,7 +390,7 @@ class ExtendedDSLParser(DSLParser):
         m = self._COND_PATTERN.match(line)
         if not m:
             return None
-        return CondExpr(lhs=m.group(1), op=m.group(2), rhs=m.group(3))
+        return CondExpr(lhs=m.group("lhs"), op=m.group("op"), rhs=m.group("rhs"))
 
     # -----------------------------------------------------------------------
     # Comparison IR generation
@@ -430,6 +436,10 @@ class ExtendedDSLParser(DSLParser):
             slot = self._slots.get(name)
             value = self._vars.get(name)
             if slot is not None and value is not None:
+                previous = self._slot_types.setdefault(name, value.dtype)
+                if previous != value.dtype:
+                    raise DSLParseError(f"mutable variable {name} cannot change dtype")
+                slot.dtype = value.dtype
                 self.builder.store(slot, value)
                 self._initialized_slots.add(name)
 

@@ -32,5 +32,33 @@
     "tests/test_numeric_summary.py",
     ".github/workflows/llm-deploy.yml"
   ],
-  "w4": []
+  "w4": [
+    ".github/workflows/w4-full-numeric.yml",
+    ".github/workflows/w4-nightly.yml",
+    "scratchv/**",
+    "export_qwen3_onnx.py",
+    "probes/w1_qwen3_export/**",
+    "probes/w2_runtime/**",
+    "probes/w3_common.py",
+    "probes/w3_qwen3_full/**",
+    "probes/w3_layer_diff/**",
+    "probes/w4_qwen3_full/**",
+    "scripts/summarize_w4_ci.py",
+    "tests/test_w1_qwen3_export.py",
+    "tests/test_llm_inputs.py",
+    "tests/test_w2_runtime_metadata.py",
+    "tests/test_licm_safety.py",
+    "tests/test_optimizer_numeric_semantics.py",
+    "tests/test_w3_full_gate.py",
+    "tests/test_w3_atomic_text.py",
+    "tests/test_weight_bundle.py",
+    "tests/test_tensor_c_external.py",
+    "tests/test_tensor_boundary_contracts.py",
+    "tests/test_tensor_return_contract.py",
+    "tests/test_w4*.py",
+    "tests/test_riscv_external*.py",
+    "tests/test_riscv_process_cleanup.py",
+    "tests/test_riscv_weight_transport.py",
+    "requirements/qwen3-small-probe.txt"
+  ]
 }

@@ -4,6 +4,12 @@ DSL syntax (one operation per line):
   # comment
   name = add(a, b)
   name = mul(a, b)
+  name = const(1, dtype:i32)
+  name = rem(a, b)  # mod(a, b) is an alias
+  name = min(a, b)
+  name = max(a, b)
+  name = abs(a)
+  name = sqrt(a)
   name = relu(x)
   name = matmul(a, b, rows:m, cols:n, inner:k)
   name = dot(a, b, len:N)
@@ -21,9 +27,10 @@ from __future__ import annotations
 
 import re
 from scratchv.ir.builder import IRBuilder
-from scratchv.ir.types import Value, Program
+from scratchv.ir.types import DataType, Value, Program
 from scratchv.frontend.dsl_errors import DSLParseError, ErrorCollector
 from scratchv.frontend.dsl_validator import DSLValidator
+from scratchv.frontend.dsl_lexical import parse_i32_constant
 
 
 class DSLParser:
@@ -45,8 +52,9 @@ class DSLParser:
     @staticmethod
     def supported_operations() -> set[str]:
         return {
-            "add", "sub", "mul", "div", "neg", "exp", "relu", "gelu",
-            "dot", "matmul", "softmax", "maxpool",
+            "const", "add", "sub", "mul", "div", "rem", "mod", "min",
+            "max", "abs", "neg", "exp", "relu", "gelu", "dot", "matmul",
+            "sqrt", "softmax", "maxpool",
         }
 
     def parse(self, text: str, *, filename: str | None = None) -> Program:
@@ -110,7 +118,12 @@ class DSLParser:
         args_text = m.group(3)
         args = [a.strip() for a in args_text.split(",") if a.strip()]
 
-        result = self._dispatch_op(op_name, args)
+        try:
+            result = self._dispatch_op(op_name, args)
+        except DSLParseError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DSLParseError(str(exc)) from exc
         self._vars[dest_name] = result
 
     def _resolve(self, name: str) -> Value:
@@ -152,13 +165,40 @@ class DSLParser:
 
     def _dispatch_op(self, op: str, args: list[str]) -> Value:
         plain, kwargs = self._parse_kwargs(args)
+
+        if op == "const":
+            dtype_name = kwargs.get("dtype", "f32")
+            dtype = {
+                "i32": DataType.INT32,
+                "f32": DataType.FLOAT32,
+                "f64": DataType.FLOAT64,
+            }[dtype_name]
+            try:
+                value = (
+                    parse_i32_constant(plain[0])
+                    if dtype is DataType.INT32
+                    else float(plain[0])
+                )
+            except ValueError as exc:
+                raise DSLParseError(
+                    f"Invalid {dtype.value} constant: {exc} ({plain[0]})"
+                ) from exc
+            return self.builder.load_const(value, dtype=dtype)
+
         resolved = [self._resolve(a) for a in plain]
 
         handlers = {
+            "const": lambda: self.builder.load_const(0.0),  # handled above
             "add": lambda: self.builder.add(resolved[0], resolved[1]),
             "sub": lambda: self.builder.sub(resolved[0], resolved[1]),
             "mul": lambda: self.builder.mul(resolved[0], resolved[1]),
             "div": lambda: self.builder.div(resolved[0], resolved[1]),
+            "rem": lambda: self.builder.rem(resolved[0], resolved[1]),
+            "mod": lambda: self.builder.rem(resolved[0], resolved[1]),
+            "min": lambda: self.builder.min(resolved[0], resolved[1]),
+            "max": lambda: self.builder.max(resolved[0], resolved[1]),
+            "abs": lambda: self.builder.abs(resolved[0]),
+            "sqrt": lambda: self.builder.sqrt(resolved[0]),
             "neg": lambda: self.builder.neg(resolved[0]),
             "exp": lambda: self.builder.exp(resolved[0]),
             "relu": lambda: self.builder.relu(resolved[0]),

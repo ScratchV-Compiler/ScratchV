@@ -10,6 +10,33 @@ from __future__ import annotations
 import struct
 import numpy as np
 
+from scratchv.ir.types import DataType, valid_float_bit_pattern
+from scratchv.verification.fp_reference import maximum_number, minimum_number
+from scratchv.verification.division_reference import divide
+
+
+def _riscv_i32_rem(lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+    """Return RV32 REM results, including divide-by-zero edge semantics."""
+    left, right = np.broadcast_arrays(
+        np.asarray(lhs, dtype=np.int32),
+        np.asarray(rhs, dtype=np.int32),
+    )
+
+    def scalar_rem(a, b):
+        dividend = int(a)
+        divisor = int(b)
+        if divisor == 0:
+            return dividend
+        if dividend == -(1 << 31) and divisor == -1:
+            return 0
+        quotient = abs(dividend) // abs(divisor)
+        if (dividend < 0) != (divisor < 0):
+            quotient = -quotient
+        return dividend - quotient * divisor
+
+    result = np.vectorize(scalar_rem, otypes=[np.int64])(left, right)
+    return np.asarray(result, dtype=np.int32)
+
 
 # ── Register file ─────────────────────────────────────────────────────
 
@@ -249,6 +276,8 @@ class RV32Emulator:
             return
 
         opcode = instr & 0x7F
+        if opcode in {0x07, 0x27, 0x43, 0x47, 0x4B, 0x4F, 0x53}:
+            raise ValueError("instruction requires the RISC-V F/D extension; RV32Emulator supports RV32IM only")
         self.pc += 4
 
         # ── OP / OP-IMM ──────────────────────────────────────────────────
@@ -265,10 +294,34 @@ class RV32Emulator:
             elif f3 == 0b000 and f7 == 0b0000001:  # MUL
                 self.regs[d["rd"]] = (rs1_v * rs2_v) & 0xFFFFFFFF
             elif f3 == 0b100 and f7 == 0b0000001:  # DIV
-                if rs2_v != 0:
-                    self.regs[d["rd"]] = (rs1_v // rs2_v) & 0xFFFFFFFF
-                else:
+                dividend = _sext(rs1_v, 32)
+                divisor = _sext(rs2_v, 32)
+                if divisor == 0:
                     self.regs[d["rd"]] = 0xFFFFFFFF
+                elif dividend == -(1 << 31) and divisor == -1:
+                    self.regs[d["rd"]] = 0x80000000
+                else:
+                    quotient = abs(dividend) // abs(divisor)
+                    if (dividend < 0) != (divisor < 0):
+                        quotient = -quotient
+                    self.regs[d["rd"]] = quotient & 0xFFFFFFFF
+            elif f3 == 0b110 and f7 == 0b0000001:  # REM
+                dividend = _sext(rs1_v, 32)
+                divisor = _sext(rs2_v, 32)
+                if divisor == 0:
+                    remainder = dividend
+                elif dividend == -(1 << 31) and divisor == -1:
+                    remainder = 0
+                else:
+                    quotient = abs(dividend) // abs(divisor)
+                    if (dividend < 0) != (divisor < 0):
+                        quotient = -quotient
+                    remainder = dividend - quotient * divisor
+                self.regs[d["rd"]] = remainder & 0xFFFFFFFF
+            elif f3 == 0b010 and f7 == 0b0000000:  # SLT
+                self.regs[d["rd"]] = int(
+                    _sext(rs1_v, 32) < _sext(rs2_v, 32)
+                )
             elif f3 == 0b111 and f7 == 0b0000000:  # AND
                 self.regs[d["rd"]] = rs1_v & rs2_v
             elif f3 == 0b110 and f7 == 0b0000000:  # OR
@@ -283,12 +336,22 @@ class RV32Emulator:
 
             if f3 == 0b000:  # ADDI
                 self.regs[d["rd"]] = (rs1_v + d["imm"]) & 0xFFFFFFFF
+            elif f3 == 0b010:  # SLTI
+                self.regs[d["rd"]] = int(_sext(rs1_v, 32) < d["imm"])
             elif f3 == 0b111:  # ANDI
                 self.regs[d["rd"]] = rs1_v & d["imm"]
             elif f3 == 0b110:  # ORI
                 self.regs[d["rd"]] = rs1_v | d["imm"]
             elif f3 == 0b100:  # XORI
                 self.regs[d["rd"]] = rs1_v ^ d["imm"]
+            elif (
+                f3 == 0b101
+                and (instr >> 25) & 0x7F == 0b0100000
+            ):  # SRAI
+                shamt = (instr >> 20) & 0x1F
+                self.regs[d["rd"]] = (
+                    _sext(rs1_v, 32) >> shamt
+                ) & 0xFFFFFFFF
 
         # ── LOAD ──────────────────────────────────────────────────────────
         elif opcode == 0b0000011:
@@ -368,14 +431,29 @@ class RV32Emulator:
         self.regs[0] = 0
 
 
+def _constant_array(value, dtype: DataType, bit_pattern=None) -> np.ndarray:
+    """Interpret explicit storage bits without a host floating-point conversion."""
+    numpy_type = {
+        DataType.INT32: np.int32,
+        DataType.FLOAT32: np.float32,
+        DataType.FLOAT64: np.float64,
+    }.get(dtype, np.float32)
+    if bit_pattern is None:
+        return np.array(value, dtype=numpy_type)
+    if not valid_float_bit_pattern(dtype, bit_pattern):
+        raise ValueError(f"invalid constant bit_pattern for {dtype.value}")
+    storage_type = np.uint32 if dtype is DataType.FLOAT32 else np.uint64
+    return np.array(bit_pattern, dtype=storage_type).view(numpy_type)
+
+
 # ── Trace executor (IR-based, for accurate verification) ──────────────
 
 class IRTraceExecutor:
     """Execute a ScratchV IR program directly using numpy.
 
     Walks the IR instructions in order and computes results with numpy.
-    This provides the ground-truth output of the compiler pipeline without
-    needing to go through RISC-V binary execution.
+    This is a straight-line, value-only reference, not a RISC-V execution
+    oracle: it does not model floating-point fflags or target rounding modes.
     """
 
     def __init__(
@@ -383,18 +461,23 @@ class IRTraceExecutor:
             initializers: dict[str, np.ndarray] | None = None):
         self.program = program
         self._values: dict[str, np.ndarray] = {}
+        # Preserve instruction-only encodings when resolving constant operands.
+        self._constant_bits: dict[str, int] = {}
         self._attrs: dict[str, dict] = {}
         self._initializers = initializers or {}
 
     def run(self, inputs: dict[str, np.ndarray]) -> np.ndarray:
         """Execute the program with given inputs. Returns the return value."""
         self._values = dict(inputs)
+        self._constant_bits = {}
 
         for init_name, init_arr in self._initializers.items():
             self._values[init_name] = init_arr
 
         output = None
         for func in self.program.functions:
+            # LOAD_CONST definitions belong to this function's value namespace.
+            self._constant_bits = {}
             for block in func.blocks:
                 for instr in block.instructions:
                     output = self._exec_instr(instr)
@@ -405,14 +488,16 @@ class IRTraceExecutor:
         handler = getattr(self, f"_op_{op}", None)
         if handler is not None:
             return handler(instr)
-        return None
+        raise ValueError(f"Unsupported op in IR trace executor: {op}")
 
     def _resolve(self, val) -> np.ndarray:
-        if val.is_constant and val.const_value is not None:
-            return np.array(float(val.const_value), dtype=np.float32)
+        if val.is_constant:
+            bits = self._constant_bits.get(val.name, val.bit_pattern)
+            if bits is not None or val.const_value is not None:
+                return _constant_array(val.const_value, val.dtype, bits)
         if val.name in self._values:
             return self._values[val.name]
-        return np.array(0.0, dtype=np.float32)
+        raise ValueError(f"Undefined IR value: {val.name}")
 
     def _get_operands(self, instr) -> list[np.ndarray]:
         return [self._resolve(op) for op in instr.operands]
@@ -440,7 +525,49 @@ class IRTraceExecutor:
 
     def _op_div(self, instr):
         ops = self._get_operands(instr)
-        result = ops[0] / (ops[1] + 1e-8)
+        result = divide(ops[0], ops[1])
+        if instr.dest:
+            self._values[instr.dest.name] = result
+        return result
+
+    def _op_rem(self, instr):
+        ops = self._get_operands(instr)
+        result = _riscv_i32_rem(ops[0], ops[1])
+        if instr.dest:
+            self._values[instr.dest.name] = result
+        return result
+
+    def _op_min(self, instr):
+        ops = self._get_operands(instr)
+        result = minimum_number(ops[0], ops[1])
+        if instr.attrs.get("propagate_nan", False):
+            result = np.where(np.isnan(ops[0]) | np.isnan(ops[1]),
+                              np.asarray(np.nan, dtype=result.dtype), result)
+        if instr.dest:
+            self._values[instr.dest.name] = result
+        return result
+
+    def _op_max(self, instr):
+        ops = self._get_operands(instr)
+        result = maximum_number(ops[0], ops[1])
+        if instr.attrs.get("propagate_nan", False):
+            result = np.where(np.isnan(ops[0]) | np.isnan(ops[1]),
+                              np.asarray(np.nan, dtype=result.dtype), result)
+        if instr.dest:
+            self._values[instr.dest.name] = result
+        return result
+
+    def _op_abs(self, instr):
+        ops = self._get_operands(instr)
+        result = np.abs(ops[0])
+        if instr.dest:
+            self._values[instr.dest.name] = result
+        return result
+
+    def _op_sqrt(self, instr):
+        ops = self._get_operands(instr)
+        with np.errstate(invalid="ignore"):
+            result = np.sqrt(ops[0])
         if instr.dest:
             self._values[instr.dest.name] = result
         return result
@@ -474,26 +601,34 @@ class IRTraceExecutor:
         return result
 
     def _op_load_const(self, instr):
-        val = instr.attrs.get("value", 0)
-        result = np.array(float(val), dtype=np.float32)
+        bits = instr.attrs.get("bit_pattern")
+        value_bits = instr.dest.bit_pattern if instr.dest else None
+        if bits is not None and value_bits is not None and bits != value_bits:
+            raise ValueError("constant bit_pattern differs from result metadata")
+        if bits is None:
+            bits = value_bits
+        dtype = instr.dest.dtype if instr.dest else DataType.FLOAT32
+        result = _constant_array(instr.attrs.get("value", 0), dtype, bits)
         if instr.dest:
             self._values[instr.dest.name] = result
+            if bits is not None:
+                self._constant_bits[instr.dest.name] = bits
+            else:
+                self._constant_bits.pop(instr.dest.name, None)
         return result
 
     def _op_reshape(self, instr):
         ops = self._get_operands(instr)
-        result = ops[0]
-        # Reshape to flatten: typically from (N,C,H,W) to (N, C*H*W)
-        # If the second operand is an initializer with shape info
-        if len(ops) > 1 and hasattr(ops[1], 'shape') and ops[1].size > 0:
-            target_shape = tuple(int(v) for v in ops[1].flatten() if v > 0)
-            if len(target_shape) > 0:
-                try:
-                    result = ops[0].reshape(target_shape)
-                except (ValueError, RuntimeError):
-                    # Fallback: flatten to 2D
-                    result = ops[0].reshape(ops[0].shape[0], -1)
-        if result is ops[0]:
+        target_shape = tuple(int(v) for v in instr.attrs.get("shape", ()))
+        if target_shape:
+            # ONNX Reshape uses 0 to copy the corresponding input dimension.
+            resolved_shape = tuple(
+                ops[0].shape[index] if dim == 0 else dim
+                for index, dim in enumerate(target_shape)
+            )
+            result = ops[0].reshape(resolved_shape)
+        else:
+            # Preserve the historical fallback for IR without shape metadata.
             result = ops[0].reshape(ops[0].shape[0], -1)
         if instr.dest:
             self._values[instr.dest.name] = result
@@ -542,8 +677,8 @@ class IRTraceExecutor:
             for j in range(K):
                 patch = x[:, :, i:i + H_out * stride:stride,
                           j:j + W_out * stride:stride]
-                cols[(i * K + j) * C_in:(i * K + j + 1) * C_in, :] = \
-                    patch.reshape(N * C_in, H_out * W_out)
+                cols[i * K + j::K * K, :] = \
+                    patch.transpose(1, 0, 2, 3).reshape(C_in, -1)
 
         # Weight: (C_out, C_in, K, K) → (C_out, C_in*K*K)
         w_mat = w.reshape(C_out, -1)
@@ -648,10 +783,10 @@ class IRTraceExecutor:
         return None
 
     def _op_br(self, instr):
-        return None
+        raise ValueError("Unsupported control flow in straight-line IR trace executor: br")
 
     def _op_br_if(self, instr):
-        return None
+        raise ValueError("Unsupported control flow in straight-line IR trace executor: br_if")
 
     def _op_label(self, instr):
         return None

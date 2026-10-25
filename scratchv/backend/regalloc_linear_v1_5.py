@@ -779,6 +779,11 @@ def block_from_machine_instrs(
     -------
     List of LsInstruction objects ready for linear scan allocator.
     """
+    from scratchv.backend.machine_types import RegisterClass
+
+    if any(operand is not None and operand.reg_class is RegisterClass.FPR
+           for instr in instrs for operand in (instr.dst, instr.src1, instr.src2)):
+        raise ValueError("experimental regalloc_linear_v1_5 is GPR-only; use regalloc_linear for FPR allocation")
     result = []
     for i, mi in enumerate(instrs):
         defines, uses = virtual_register_defs_uses(mi)

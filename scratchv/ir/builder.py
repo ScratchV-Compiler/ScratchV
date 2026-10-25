@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Iterable
+
 from scratchv.ir.types import (
     OpCode,
     DataType,
@@ -10,7 +12,16 @@ from scratchv.ir.types import (
     BasicBlock,
     Function,
     Program,
+    valid_float_bit_pattern,
 )
+
+
+_MIN_MAX_TYPES = frozenset({
+    DataType.INT32,
+    DataType.FLOAT32,
+    DataType.FLOAT64,
+})
+_FLOAT_TYPES = frozenset({DataType.FLOAT32, DataType.FLOAT64})
 
 
 class IRBuilder:
@@ -21,10 +32,19 @@ class IRBuilder:
         self.current_func: Function | None = None
         self.current_block: BasicBlock | None = None
         self._name_counter = 0
+        self._reserved_names: set[str] = set()
+
+    def reserve_names(self, names: Iterable[str]) -> None:
+        """Reserve external names before generating any internal values."""
+        self._reserved_names.update(names)
 
     def _fresh(self, prefix: str = "v") -> str:
-        self._name_counter += 1
-        return f"{prefix}_{self._name_counter}"
+        while True:
+            self._name_counter += 1
+            name = f"{prefix}_{self._name_counter}"
+            if name not in self._reserved_names:
+                self._reserved_names.add(name)
+                return name
 
     def _emit(self, opcode: OpCode, dest: Value | None = None,
               operands: list[Value] | None = None,
@@ -36,6 +56,9 @@ class IRBuilder:
             operands=operands or [], attrs=attrs,
             target=target,
         )
+        self.reserve_names(value.name for value in instr.operands)
+        if dest is not None:
+            self.reserve_names([dest.name])
         if self.current_block is not None:
             self.current_block.add(instr)
         return instr
@@ -47,6 +70,7 @@ class IRBuilder:
             params: list[Value] | None = None,
     ) -> Function:
         func = Function(name=name, params=params or [])
+        self.reserve_names(value.name for value in func.params)
         self.program.add_function(func)
         self.current_func = func
         return func
@@ -63,7 +87,9 @@ class IRBuilder:
                    dtype: DataType = DataType.FLOAT32,
                    is_constant: bool = False,
                    const_value: float | int | None = None) -> Value:
-        return Value(name=name or self._fresh(), dtype=dtype,
+        name = name or self._fresh()
+        self.reserve_names([name])
+        return Value(name=name, dtype=dtype,
                      is_constant=is_constant, const_value=const_value)
 
     def make_const(
@@ -76,41 +102,84 @@ class IRBuilder:
 
     # --- Instructions ---
 
-    def add(self, lhs: Value, rhs: Value) -> Value:
+    def _binary_arith(
+            self, opcode: OpCode, lhs: Value, rhs: Value,
+            supported_types: frozenset[DataType] | None = None,
+            **attrs,
+    ) -> Value:
+        if lhs.dtype != rhs.dtype:
+            raise ValueError(
+                f"{opcode.value} operands must have the same type"
+            )
+        if supported_types is not None and lhs.dtype not in supported_types:
+            raise ValueError(
+                f"{opcode.value} does not support {lhs.dtype.value}"
+            )
+        self.reserve_names([lhs.name, rhs.name])
         dest = self.make_value(dtype=lhs.dtype)
-        self._emit(OpCode.ADD, dest, [lhs, rhs])
+        self._emit(opcode, dest, [lhs, rhs], **attrs)
         return dest
+
+    def _unary_arith(
+            self, opcode: OpCode, val: Value,
+            supported_types: frozenset[DataType] | None = None,
+    ) -> Value:
+        if supported_types is not None and val.dtype not in supported_types:
+            raise ValueError(
+                f"{opcode.value} does not support {val.dtype.value}"
+            )
+        self.reserve_names([val.name])
+        dest = self.make_value(dtype=val.dtype)
+        self._emit(opcode, dest, [val])
+        return dest
+
+    def add(self, lhs: Value, rhs: Value) -> Value:
+        return self._binary_arith(OpCode.ADD, lhs, rhs)
 
     def sub(self, lhs: Value, rhs: Value) -> Value:
-        dest = self.make_value(dtype=lhs.dtype)
-        self._emit(OpCode.SUB, dest, [lhs, rhs])
-        return dest
+        return self._binary_arith(OpCode.SUB, lhs, rhs)
 
     def mul(self, lhs: Value, rhs: Value) -> Value:
-        dest = self.make_value(dtype=lhs.dtype)
-        self._emit(OpCode.MUL, dest, [lhs, rhs])
-        return dest
+        return self._binary_arith(OpCode.MUL, lhs, rhs)
 
     def div(self, lhs: Value, rhs: Value) -> Value:
-        dest = self.make_value(dtype=lhs.dtype)
-        self._emit(OpCode.DIV, dest, [lhs, rhs])
-        return dest
+        return self._binary_arith(OpCode.DIV, lhs, rhs)
+
+    def rem(self, lhs: Value, rhs: Value) -> Value:
+        return self._binary_arith(
+            OpCode.REM, lhs, rhs, frozenset({DataType.INT32}),
+        )
+
+    def min(self, lhs: Value, rhs: Value, *, propagate_nan: bool = False) -> Value:
+        """Minimum; ONNX requests NaN propagation, DSL selects the number."""
+        return self._binary_arith(
+            OpCode.MIN, lhs, rhs, _MIN_MAX_TYPES,
+            **({"propagate_nan": True} if propagate_nan else {}),
+        )
+
+    def max(self, lhs: Value, rhs: Value, *, propagate_nan: bool = False) -> Value:
+        """Maximum; ONNX requests NaN propagation, DSL selects the number."""
+        return self._binary_arith(
+            OpCode.MAX, lhs, rhs, _MIN_MAX_TYPES,
+            **({"propagate_nan": True} if propagate_nan else {}),
+        )
 
     def neg(self, val: Value) -> Value:
-        dest = self.make_value(dtype=val.dtype)
-        self._emit(OpCode.NEG, dest, [val])
-        return dest
-
-    def exp(self, val: Value) -> Value:
-        dest = self.make_value(dtype=val.dtype)
-        self._emit(OpCode.EXP, dest, [val])
-        return dest
+        return self._unary_arith(OpCode.NEG, val)
 
     def abs(self, val: Value) -> Value:
-        dest = self.make_value(dtype=val.dtype)
+        dest = self._unary_arith(OpCode.ABS, val)
         dest.shape = val.shape
-        self._emit(OpCode.ABS, dest, [val])
         return dest
+
+    def sqrt(self, val: Value) -> Value:
+        return self._unary_arith(OpCode.SQRT, val, _FLOAT_TYPES)
+
+    def exp(self, val: Value) -> Value:
+        return self._unary_arith(
+            OpCode.EXP, val,
+            _FLOAT_TYPES,
+        )
 
     def cos(self, val: Value) -> Value:
         dest = self.make_value(dtype=val.dtype)
@@ -148,13 +217,28 @@ class IRBuilder:
     def load_const(
             self, val: float | int,
             dtype: DataType = DataType.FLOAT32,
+            *, bit_pattern: int | None = None,
     ) -> Value:
+        if bit_pattern is not None and not valid_float_bit_pattern(dtype, bit_pattern):
+            raise ValueError("bit_pattern requires a valid f32/f64 encoding")
         dest = self.make_value(dtype=dtype, is_constant=True, const_value=val)
-        self._emit(OpCode.LOAD_CONST, dest, value=val)
+        dest.bit_pattern = bit_pattern
+        attrs = {"value": val}
+        if bit_pattern is not None:
+            attrs["bit_pattern"] = bit_pattern
+        self._emit(OpCode.LOAD_CONST, dest, **attrs)
         return dest
 
-    def load(self, ptr: Value) -> Value:
-        dest = self.make_value(dtype=ptr.dtype)
+    def load(
+            self, ptr: Value, dtype: DataType | None = None,
+    ) -> Value:
+        """Load a value, explicitly preserving its element dtype.
+
+        The current IR has no pointer type, so an omitted dtype inherits the
+        element dtype carried by the address-producing value.
+        """
+        self.reserve_names([ptr.name])
+        dest = self.make_value(dtype=dtype or ptr.dtype)
         self._emit(OpCode.LOAD, dest, [ptr])
         return dest
 
@@ -256,10 +340,16 @@ class IRBuilder:
         return dest
 
     def gemm(self, a: Value, w: Value, b: Value,
-             trans_a: bool = False, trans_b: bool = False) -> Value:
+             trans_a: bool = False, trans_b: bool = False, *,
+             alpha: float = 1.0, beta: float = 1.0) -> Value:
         dest = self.make_value(dtype=a.dtype)
+        scales = {}
+        if alpha != 1:
+            scales["alpha"] = alpha
+        if beta != 1:
+            scales["beta"] = beta
         self._emit(OpCode.GEMM, dest, [a, w, b],
-                   trans_a=trans_a, trans_b=trans_b)
+                   trans_a=trans_a, trans_b=trans_b, **scales)
         return dest
 
     def sigmoid(self, val: Value) -> Value:
@@ -270,11 +360,6 @@ class IRBuilder:
     def reshape(self, val: Value, shape: tuple) -> Value:
         dest = self.make_value(dtype=val.dtype)
         self._emit(OpCode.RESHAPE, dest, [val], shape=shape)
-        return dest
-
-    def sqrt(self, val: Value) -> Value:
-        dest = self.make_value(dtype=val.dtype)
-        self._emit(OpCode.SQRT, dest, [val])
         return dest
 
     def reduce_mean(self, val: Value, axes: tuple[int, ...] | None = None,

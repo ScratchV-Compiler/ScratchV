@@ -7,7 +7,7 @@ Removes instructions whose result is never used.
 from __future__ import annotations
 
 from scratchv.ir.types import (
-    OpCode, Instruction, BasicBlock, Function, Program,
+    DataType, OpCode, Instruction, BasicBlock, Function, Program,
 )
 from scratchv.pass_interface import OptimizationPass
 
@@ -16,6 +16,9 @@ class DeadCodeEliminator(OptimizationPass):
     """Remove unused instructions from an IR Program."""
 
     name = "dead-code-elim"
+
+    def __init__(self, *, preserve_float_semantics: bool = False):
+        self.preserve_float_semantics = preserve_float_semantics
 
     def optimize(self, program: Program) -> int:
         """Run dead code elimination.
@@ -50,9 +53,14 @@ class DeadCodeEliminator(OptimizationPass):
         block.instructions = new_instrs
         return changes
 
-    @staticmethod
-    def _is_side_effect(instr: Instruction) -> bool:
+    def _is_side_effect(self, instr: Instruction) -> bool:
         """Check if an instruction has side effects and must be kept."""
+        if self.preserve_float_semantics and instr.opcode.is_arith():
+            values = [*instr.operands, *([instr.dest] if instr.dest else [])]
+            if any(value.dtype in (DataType.FLOAT32, DataType.FLOAT64) for value in values):
+                # Even an unused result may set fflags. Keep FP arithmetic
+                # conservatively; this does not make LOAD_CONST effectful.
+                return True
         return instr.opcode in (
             OpCode.STORE,
             OpCode.RETURN,
