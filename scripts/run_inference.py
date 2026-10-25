@@ -214,6 +214,7 @@ def main(argv=None):
     started = time.perf_counter()
     adapter = None
     previous = {}
+    exit_code = 1
 
     def interrupted(signum, frame):
         raise KeyboardInterrupt(f"generation interrupted by signal {signum}")
@@ -242,126 +243,142 @@ def main(argv=None):
         report["build"] = exe.evidence
         if args.build_only:
             report.update(status="BUILD_ONLY", stage="build_complete")
-            return 0
-        report["stage"] = "fma_preflight"
-        fma = run_fma_probe(out / "fma-conformance", cc=exe.toolchain.cc,
-                            qemu=exe.toolchain.qemu, timeout=min(args.build_timeout, 120))
-        report["fma_conformance"] = fma
-        if not fma.get("passed") or fma.get("status") != "PASS":
-            raise ValueError("Actual RV64 execution toolchain failed FMA conformance")
-        fixture = None
-        if args.reference_suite:
-            report["stage"] = "reference_contract"
-            fixture = json.loads((ROOT / "probes/w5_generation/references.json").read_text(encoding="utf-8"))
-            meta = {"pad_token_id": tokenizer.pad_token_id,
-                    "generation_eos_token_ids": list(tokenizer.generation_eos_token_ids),
-                    "model_vocab_size": tokenizer.model_vocab_size,
-                    "tokenizer_vocab_size": tokenizer.tokenizer_vocab_size}
-            if fixture["status"] != "frozen" or fixture["tokenizer"] != meta or len(fixture["cases"]) != 3:
-                raise ValueError("Reference suite/tokenizer differs from the frozen contract")
-            cases = fixture["cases"]
         else:
-            texts = args.chat_turn or [args.prompt]
-            cases = [{"name": f"turn-{i}", "prompt": text,
-                      "max_new_tokens": 8 if args.max_new_tokens is None else args.max_new_tokens}
-                     for i, text in enumerate(texts)]
-        report["stage"] = "oracle_prepare"
-        session = (reference_session(args.verify_onnx, fixture) if fixture is not None else
-                   oracle_session(args.verify_onnx) if args.verify_onnx else None)
-        conversation = None
-        if args.mode == "chat":
-            report["stage"] = "conversation_prepare"
-            from scratchv.runtime.conversation import Conversation
-            conversation = Conversation.from_directory(args.tokenizer_dir, system_prompt=args.system_prompt)
-        deadline = time.monotonic() + args.total_timeout
-        adapter.deadline = deadline
-        report["stage"] = "generation"
-        if fixture is not None:
-            report["full_model_gate"] = "RUNNING"
-            save()
-
-        def forward(prepared):
-            step = len(report["numeric_steps"]) - numeric_start
-            if fixture is not None:
-                if step >= len(case["generated_token_ids"]):
-                    raise ValueError("Host called forward after the frozen reference ended")
-                feed = checked_inputs(reference_history, prepared, tokenizer.pad_token_id)
+            report["stage"] = "fma_preflight"
+            fma = run_fma_probe(out / "fma-conformance", cc=exe.toolchain.cc,
+                                qemu=exe.toolchain.qemu, timeout=min(args.build_timeout, 120))
+            report["fma_conformance"] = fma
+            if not fma.get("passed") or fma.get("status") != "PASS":
+                raise ValueError("Actual RV64 execution toolchain failed FMA conformance")
+            fixture = None
+            if args.reference_suite:
+                report["stage"] = "reference_contract"
+                fixture = json.loads((ROOT / "probes/w5_generation/references.json").read_text(encoding="utf-8"))
+                meta = {"pad_token_id": tokenizer.pad_token_id,
+                        "generation_eos_token_ids": list(tokenizer.generation_eos_token_ids),
+                        "model_vocab_size": tokenizer.model_vocab_size,
+                        "tokenizer_vocab_size": tokenizer.tokenizer_vocab_size}
+                if fixture["status"] != "frozen" or fixture["tokenizer"] != meta or len(fixture["cases"]) != 3:
+                    raise ValueError("Reference suite/tokenizer differs from the frozen contract")
+                cases = fixture["cases"]
             else:
-                feed = prepared.as_feed()
-            expected = session.run(["logits"], feed)[0] if session is not None else None
-            actual = adapter(prepared)
-            if expected is not None:
-                comparison = compare_step(actual, expected, prepared.valid_length, adapter.vocab_size)
-                comparison.update(case=case["name"], step=step, valid_length=prepared.valid_length)
-                if fixture is not None:
-                    # Select independently from frozen history, never from a
-                    # caller-declared row or the generation sampling helper.
-                    position = len(reference_history) - 1
-                    qemu_id = int(np.argmax(actual[0, position]))
-                    ort_id = int(np.argmax(expected[0, position]))
-                    frozen_id = case["generated_token_ids"][step]
-                    comparison["reference_token_id"] = frozen_id
-                    comparison["selected_row_passed"] = (
-                        comparison["selected_row_passed"] and comparison["qemu_token_id"] == qemu_id
-                        and comparison["ort_token_id"] == ort_id)
-                    comparison["reference_token_passed"] = qemu_id == ort_id == frozen_id
-                    comparison["passed"] = (comparison["passed"]
-                        and comparison["selected_row_passed"] and comparison["reference_token_passed"])
-                report["numeric_steps"].append(comparison)
-                if not comparison["passed"]:
-                    save()
-                    raise ValueError("QEMU/ORT full logits, selected row or frozen token differ; see numeric_steps")
-                if fixture is not None:
-                    reference_history.append(frozen_id)
-            return actual
-
-        for case in cases:
-            numeric_start, run_start = len(report["numeric_steps"]), len(adapter.runs)
-            reference_history = list(case["prompt_token_ids"]) if fixture is not None else None
-            remaining = max(0.0, deadline - time.monotonic())
-            kwargs = {"forward": forward, "max_new_tokens": case["max_new_tokens"],
-                      "timeout_seconds": remaining}
-            result = (conversation.turn(case["prompt"], **kwargs) if conversation else
-                      generate(case["prompt"], tokenizer=tokenizer, **kwargs))
-            row = {"name": case["name"], "prompt": case["prompt"],
-                   "max_new_tokens": case["max_new_tokens"], **asdict(result)}
+                texts = args.chat_turn or [args.prompt]
+                cases = [{"name": f"turn-{i}", "prompt": text,
+                          "max_new_tokens": 8 if args.max_new_tokens is None else args.max_new_tokens}
+                         for i, text in enumerate(texts)]
+            report["stage"] = "oracle_prepare"
+            session = (reference_session(args.verify_onnx, fixture) if fixture is not None else
+                       oracle_session(args.verify_onnx) if args.verify_onnx else None)
+            conversation = None
+            if args.mode == "chat":
+                report["stage"] = "conversation_prepare"
+                from scratchv.runtime.conversation import Conversation
+                conversation = Conversation.from_directory(args.tokenizer_dir, system_prompt=args.system_prompt)
+            deadline = time.monotonic() + args.total_timeout
+            adapter.deadline = deadline
+            report["stage"] = "generation"
             if fixture is not None:
-                row["numeric_step_count"] = len(report["numeric_steps"]) - numeric_start
-                row["forward_count"] = len(adapter.runs) - run_start
-                row["reference_passed"] = (
-                    row["numeric_step_count"] == row["forward_count"] == len(case["generated_token_ids"])
-                    and list(result.prompt_token_ids) == case["prompt_token_ids"]
-                    and list(result.generated_token_ids) == case["generated_token_ids"]
-                    and result.generated_text == case["generated_text"]
-                    and result.stop_reason == case["stop_reason"]
-                    and case["required_substring"] in result.generated_text)
-            report["cases"].append(row)
-            save()
-            if fixture is not None and not row["reference_passed"]:
-                raise ValueError(f"Frozen reference mismatch: {case['name']}")
-            print(result.generated_text, flush=True)
-        if conversation:
-            report["history"] = [asdict(message) for message in conversation.history]
-        if fixture is not None:
-            report["full_model_gate"] = "PASS"
-        report.update(passed=True, status="PASS", stage="complete")
-        return 0
-    except (GenerationCancelledError, KeyboardInterrupt) as exc:
+                report["full_model_gate"] = "RUNNING"
+                save()
+
+            def forward(prepared):
+                step = len(report["numeric_steps"]) - numeric_start
+                if fixture is not None:
+                    if step >= len(case["generated_token_ids"]):
+                        raise ValueError("Host called forward after the frozen reference ended")
+                    feed = checked_inputs(reference_history, prepared, tokenizer.pad_token_id)
+                else:
+                    feed = prepared.as_feed()
+                expected = session.run(["logits"], feed)[0] if session is not None else None
+                actual = adapter(prepared)
+                if expected is not None:
+                    comparison = compare_step(actual, expected, prepared.valid_length, adapter.vocab_size)
+                    comparison.update(case=case["name"], step=step, valid_length=prepared.valid_length)
+                    if fixture is not None:
+                        # Select independently from frozen history, never from a
+                        # caller-declared row or the generation sampling helper.
+                        position = len(reference_history) - 1
+                        qemu_id = int(np.argmax(actual[0, position]))
+                        ort_id = int(np.argmax(expected[0, position]))
+                        frozen_id = case["generated_token_ids"][step]
+                        comparison["reference_token_id"] = frozen_id
+                        comparison["selected_row_passed"] = (
+                            comparison["selected_row_passed"] and comparison["qemu_token_id"] == qemu_id
+                            and comparison["ort_token_id"] == ort_id)
+                        comparison["reference_token_passed"] = qemu_id == ort_id == frozen_id
+                        comparison["passed"] = (comparison["passed"]
+                            and comparison["selected_row_passed"] and comparison["reference_token_passed"])
+                    report["numeric_steps"].append(comparison)
+                    if not comparison["passed"]:
+                        # The outer handler saves the failure after preserving its cause.
+                        raise ValueError("QEMU/ORT full logits, selected row or frozen token differ; see numeric_steps")
+                    if fixture is not None:
+                        reference_history.append(frozen_id)
+                return actual
+
+            for case in cases:
+                numeric_start, run_start = len(report["numeric_steps"]), len(adapter.runs)
+                reference_history = list(case["prompt_token_ids"]) if fixture is not None else None
+                remaining = max(0.0, deadline - time.monotonic())
+                kwargs = {"forward": forward, "max_new_tokens": case["max_new_tokens"],
+                          "timeout_seconds": remaining}
+                result = (conversation.turn(case["prompt"], **kwargs) if conversation else
+                          generate(case["prompt"], tokenizer=tokenizer, **kwargs))
+                row = {"name": case["name"], "prompt": case["prompt"],
+                       "max_new_tokens": case["max_new_tokens"], **asdict(result)}
+                if fixture is not None:
+                    row["numeric_step_count"] = len(report["numeric_steps"]) - numeric_start
+                    row["forward_count"] = len(adapter.runs) - run_start
+                    row["reference_passed"] = (
+                        row["numeric_step_count"] == row["forward_count"] == len(case["generated_token_ids"])
+                        and list(result.prompt_token_ids) == case["prompt_token_ids"]
+                        and list(result.generated_token_ids) == case["generated_token_ids"]
+                        and result.generated_text == case["generated_text"]
+                        and result.stop_reason == case["stop_reason"]
+                        and case["required_substring"] in result.generated_text)
+                report["cases"].append(row)
+                if fixture is not None and not row["reference_passed"]:
+                    raise ValueError(f"Frozen reference mismatch: {case['name']}")
+                save()
+                print(result.generated_text, flush=True)
+            if conversation:
+                report["history"] = [asdict(message) for message in conversation.history]
+            if fixture is not None:
+                report["full_model_gate"] = "PASS"
+            report.update(passed=True, status="PASS", stage="complete")
+        exit_code = 0
+    except (GenerationCancelledError, KeyboardInterrupt, SystemExit) as exc:
+        # The runner's temporary signal handler exits with 128 + signal.
+        # Other SystemExit exceptions retain their original propagation.
+        if isinstance(exc, SystemExit) and exc.code not in (130, 143):
+            raise
         report.update(status="CANCELLED", error=f"{type(exc).__name__}: {exc}")
         if report["full_model_gate"] == "RUNNING":
             report["full_model_gate"] = "CANCELLED"
-        return 130
+        exit_code = exc.code if isinstance(exc, SystemExit) else 130
+        print(report["error"], file=sys.stderr, flush=True)
     except Exception as exc:
         report.update(error=f"{type(exc).__name__}: {exc}")
         if report["full_model_gate"] == "RUNNING":
             report["full_model_gate"] = "FAIL"
-        return 1
+        print(report["error"], file=sys.stderr, flush=True)
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
-        save()
-        gc.collect()
-        print(f"{report['status']}: {out / 'report.json'}", flush=True)
+        try:
+            save()
+        except Exception as exc:
+            # A secondary persistence error must not hide generation/cancellation.
+            # Even successful generation or build-only needs a usable final report.
+            exit_code = exit_code or 1
+            print(f"Report save failed: {type(exc).__name__}: {exc}; "
+                  f"{out / 'report.json'} was not updated and may be missing or stale.",
+                  file=sys.stderr, flush=True)
+        else:
+            print(f"{report['status']}: {out / 'report.json'}", flush=True)
+        finally:
+            gc.collect()
+    return exit_code
 
 
 if __name__ == "__main__":

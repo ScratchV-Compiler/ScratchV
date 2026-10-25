@@ -1,357 +1,486 @@
-# W5：Host 生成合同与端到端验收
+# W5：端到端文本生成
 
-合同版本：`w5-generation-v1`，冻结日期：2026-10-23。W5 从 PR104 已合入的
-`main`（`61bded377097900f4c61323269fd6aed41f333d5`）开始，独立分支为
-`codex/w5-generation`。阶段目标和责任分工沿用[开发计划](../开发计划.md)。
+## 本分支增加了什么
 
-W5 的生成合同、Host 循环、QEMU 适配/命令行、三用例验收入口、三轮历史和容器部署文件
-现已实现。P0/P1 的冻结 ORT 参考与上轮 1/4 hart 小图记录保留。初始旧算术配置的
-4 hart 完整模型三例均在首步完整 logits 检查失败，这些历史结果仍完整保留。
-后续显式启用 Mean 与非线性参考策略后，Host 三例预检与正式 4 hart QEMU 套件均已
-**24/24 步、3/3 用例通过**。QEMU 每步完整 logits、冻结 token IDs、最终文本和停止
-原因均通过，全部步骤最大绝对误差为 **0.000303983688**，保持严格 `<1e-3` 门槛。
-通过结果限定于下述显式配置，未将默认算术路径标为通过，详见
-[完整模型实跑报告](qemu-generation.md)。本轮干净容器的默认 1 hart、手动 4 hart、
-auto 小图和真实超时/取消、Docker 构建取消检查已通过；完整 28 层 France 单 token
-容器部署也已通过，实际输出 ` Paris`，完整 logits 最大误差为 **0.000172138214**。
-**W5 本地功能出口已满足**；代码、测试和报告已发布到 [PR115](https://github.com/ScratchV-Compiler/ScratchV/pull/115)，
-已有数值实跑和普通 PR CI 对应功能基线 `8ad347477f7f5ba15b2da7c91178b3c6668456cc`；
-本次后续变更仅包含审查超时处理、相关测试和交接/进度文档，不改变生成实现。完整 W5
-专项因 fork 仓库 Actions 拒绝创建运行，仍为 **BLOCKED / NOT_RUN**。第二人独立复现
-说明已准备，尚待实际执行和签收；WSL 配置未改，PR 未合并。
+W5 将 W4 的单次 QEMU 前向接成文本生成：Host 负责 tokenizer、逐 token 输入更新、
+greedy 选择与停止，QEMU 执行前向。命令行支持原始文本补全、三条固定参考用例和
+多轮文本对话，Linux 一键部署脚本复用同一个入口。
 
-使用入口：[QEMU 生成与本轮报告](qemu-generation.md)、[三轮历史](chat.md)、
-[干净容器部署](deployment.md)。
+- [Host 生成循环](../../../scratchv/runtime/generation.py)规定输入、输出和停止行为，
+  每步只接收一个新 token，保留异常、超时和取消信息。
+- [QEMU 适配器](../../../scratchv/runtime/qemu_generation.py)跨 token、跨 prompt
+  复用同一 ELF 和权重 bundle，也支持已有构建的显式复用。
+- [多轮对话](../../../scratchv/runtime/conversation.py)使用本地官方聊天模板，
+  成功后一起保存 user/assistant 消息，失败时保持原历史。
+- [命令行](../../../scripts/run_inference.py)输出逐步数值与进程记录；
+  [部署脚本](../../../scripts/deploy_w5.sh)和
+  [Dockerfile](../../../deployment/w5/Dockerfile)提供干净 Linux 容器运行方式。
 
-PR115 第二人验收使用[独立复现交接说明](independent-reproduction.md)：固定提交
-`8ad347477f7f5ba15b2da7c91178b3c6668456cc`、基础镜像和数值配置，提供从新 clone 到
-三例 24 步验收、失败清理及报告回传的完整命令。文档准备不代表第二人复现已完成，
-须由独立执行人回传结果后签收。
+**默认配置保持不变**：单 hart、MatMul `sequential / 1x4 / original`、Mean `sequential`、
+非线性 `libm`、padding `none`。可手动指定 `--harts 1/2/4` 或 `--harts auto`；
+auto 按进程可用 CPU 在构建或启动时选择 1/2/4，上限 4，不在 token 间动态调整。
+完整模型通过的记录使用下文显式参考策略，不代表默认算术策略也通过同一数值要求。
+W5 没有 `--qemu-workspace-layout` 参数，padding 始终关闭。
 
-## 固定生成合同
+## 整体怎么实现
 
-| 项目 | v1 约定 |
+**生成接口与数值行为。** `generate(prompt, *, tokenizer, forward, max_new_tokens,
+cancelled=None, timeout_seconds=None)` 返回不可变的 `GenerationResult`，包含 prompt
+IDs、新生成 IDs、文本和 `stop_reason`。固定模型是 FP32 `Qwen/Qwen3-0.6B`，
+batch=1、序列容量 256，无 KV cache。
+
+| 项目 | 行为 |
 |---|---|
-| 模型 | `Qwen/Qwen3-0.6B`，revision `c1899de289a04d12100db370d81485cdf75e47ca` |
-| 资产身份 | 沿用 [W1 manifest](../../../probes/w1_qwen3_export/manifest.json) 中固定 ONNX、权重和 tokenizer；不另建校验体系 |
-| 计算范围 | FP32、batch=1、固定序列容量 256、无 KV cache；每个新 token 重新执行完整前向 |
-| 输入模式 | raw completion：使用 prompt 原文，不插入 BOS/EOS、系统提示或 chat 模板；tokenizer 按既有 NFC 规范化 |
-| 输入张量 | INT64 `input_ids[1,256]`，右侧使用固定 `pad_token_id` 补齐；FP32 `attention_mask[1,1,256,256]`，沿用 W2 causal/key-padding 语义 |
-| 有效长度 | 由实际 token 数确定；prompt 中出现 pad/EOS ID 不改变长度，不据此停止 |
-| 前向输出 | 完整 FP32 `logits[1,256,151936]`；包括未使用 padding 行在内，所有值都必须有限 |
-| 选择规则 | 取 `valid_length - 1` 行，直接 greedy argmax；平局选较小 ID，不额外计算 Softmax |
-| 可解码范围 | 选中 ID 必须属于固定 tokenizer 的真实 ID 集合；不能仅以小于模型词表宽度为准 |
-| 追加规则 | 每次前向最多追加一个合法 token；不可解码 ID 报错，不屏蔽、不替换、不重采样 |
-| 停止顺序 | 新生成 EOS → 总长度达到 256 → 已生成数量达到 `max_new_tokens` |
-| EOS | 使用固定 tokenizer 的 `generation_eos_token_ids`：`151645` 和 `151643`；只有新生成 token 触发 EOS |
-| 输出文本 | 仅解码新生成 IDs，`skip_special_tokens=True`、`clean_up_tokenization_spaces=False`；完整新生成 IDs 是验证依据，EOS ID 保留在其中 |
-| 返回数据 | prompt IDs、新生成 IDs、生成文本和停止原因组成不可变结果；无隐式会话历史 |
+| 原始文本模式 | 直接编码 prompt，不自动插入 BOS、EOS 或聊天模板；沿用 tokenizer 的 NFC 归一化 |
+| 输入 | INT64 `input_ids[1,256]`；FP32 `attention_mask[1,1,256,256]`，包含 causal 与 padding mask |
+| 输出 | FP32 `logits[1,256,151936]`；全部元素必须有限，包括补齐行 |
+| 选词 | 取 `valid_length-1` 行的 greedy argmax，同值选较小 ID；不额外做 Softmax |
+| 有效词表 | tokenizer 为 151669，模型输出宽度为 151936；选中不可解码 ID 时失败，不过滤后重选 |
+| 停止 | 对新 token 按 EOS、容量、预算顺序判断；EOS IDs 为 `151645`、`151643` |
+| 输入与预算 | prompt 非空且不超过 256，不隐式截断；零预算或初始上下文已满时不调用 backend |
+| 异常与中断 | 不返回看似成功的部分生成；QEMU 适配器负责运行中的超时、取消和进程回收 |
 
-生成核心复用 [W2 输入与 greedy 辅助函数](../../../scratchv/runtime/llm_inputs.py)
-和[本地 tokenizer](../../../scratchv/runtime/qwen3_tokenizer.py)。模型词表为 151936，
-固定 tokenizer 实际包含 151669 个 ID；这两者不能混用。主循环不调整数值误差门槛，
-也不会只检查用于 argmax 的那一行而漏掉其他输出中的 NaN/Inf。
+每步准备当前 token 输入和 mask、运行前向并取下一个 token。复用的是构建产物；
+每 token 仍启动一个 QEMU 进程并装载权重。编译、FMA 预检和 ORT session 初始化
+不按 token 重做；完成后沿用 UART 完成帧及 QMP stop、dump、quit。已有构建元数据
+检查继续约束 ELF/bundle 身份与所选配置。
 
-`max_new_tokens` 是上限，不预留或扩展容量。prompt 非空且不超过 256 个 token；
-空 prompt、超长 prompt、非法 token、负数/布尔预算明确报错，不静默截断。
-0 预算不会调用前向；初始长度已为 256 时也不调用前向，按容量原因返回。
-若一次追加同时触发 EOS、容量和预算，按上表顺序报告原因。生成 EOS 仍计入预算。
+`--verify-onnx` 为相同输入运行 ORT 并比较完整输出，不以 ORT 替代 QEMU 生成。
+要求所有值有限、`max_abs < 1e-3`、`rtol=0`、greedy ID 相同，并记录 top-2 margin。
+`--reference-suite` 进一步比较冻结 prompt IDs、逐 token IDs、文本与停止原因；
+它不会自动选择算术策略，也不接受另传 `--max-new-tokens`。完整三例显式配置为：
 
-## Host 调用及失败语义
-
-[Host 核心](../../../scratchv/runtime/generation.py) 的公开入口为：
-
-```python
-generate(prompt, *, tokenizer, forward, max_new_tokens,
-         cancelled=None, timeout_seconds=None) -> GenerationResult
+```text
+--harts 4 --matmul-policy blocked_fma --matmul-tile 2x4
+--matmul-rhs-layout column-panel
+--mean-policy two-four-lane-last-axis --nonlinear-policy fp32-reference
 ```
 
-它接受一个 `PreparedInputs -> np.ndarray` 的同步 `forward` 回调。
-回调可接 ORT 或已实现的 `QemuForward` 适配器；核心不编译模型、不管理 QEMU，也不为每个
-新 token 重建 tokenizer。每一步从本次生成的 token 历史重新准备输入，复用后端输出
-缓冲区不会改变已经选出的 token；不同调用不共享生成状态。
+**多轮文本。** `Conversation.from_directory(tokenizer_directory, system_prompt=None)`
+加载同一快照的 `tokenizer_config.json` 官方 `chat_template`，通过 Jinja2 不可变沙箱
+渲染，固定 `add_generation_prompt=True`、`enable_thinking=False`。生产路径使用
+tokenizers/Jinja2，不依赖 Transformers/Torch。仅支持文本 system/user/assistant，
+system 只在构造时提供；每轮重新渲染完整历史并编码，不截断旧消息，不缓存 KV。
 
-失败行为属于合同：
+`turn(...)` 只有成功且至少生成一个 token，才同时保存 user 和 assistant；异常、取消、
+超时、零预算或没有生成空间时历史不变。EOS-only 可以保存合法的空 assistant 回复。
+`history` 是不可变快照，`reset()` 清除已完成轮次但保留初始 system。历史保存文本，
+不承诺下一轮 token IDs 直接拼接；超过 256-token 容量会在前向前失败。单个会话拒绝
+并发或重入 turn/reset。原始三例不使用聊天模板。
 
-- 后端原始异常向调用方传播；非法形状、dtype、非有限输出及不可解码 ID 都使本次生成失败。
-- 取消抛 `GenerationCancelledError`（`RuntimeError` 子类），超时抛 `TimeoutError`，不返回看似成功的部分结果。下一次调用从新的 prompt 开始，不能继承失败调用的 token。
-- `cancelled` 是可选取消检查回调；检查发生在同步前向前后及返回前。它不强制中断正在阻塞的前向。
-- `timeout_seconds` 是可选有限非负秒数，布尔值不合法；0 表示立即超时，即使 token 预算为 0。
-- 超时从输入与配置验证完成后开始，以单调时钟作协作式检查；取消与超时同时触发时先报告取消。正在运行的同步后端由后端自身负责限时、取消和进程清理；Host 合同不声称能终止任意阻塞回调。
+**部署与报告。** 容器只打包运行所需源码和依赖，资产只读挂载到 `/assets`，构建及报告
+写入 `/output`，以调用者 UID/GID 运行。默认镜像 `scratchv-w5:local`、基础镜像
+`ubuntu:24.04`；可显式设置 `SCRATCHV_CONTAINER_ENGINE`、`SCRATCHV_W5_IMAGE`、
+`SCRATCHV_W5_BASE_IMAGE`、`SCRATCHV_W5_ASSETS` 和 `SCRATCHV_W5_OUTPUT`。
+路径可含空格，挂载路径不能含逗号。脚本检查引擎和资产后构建、运行，不安装引擎，
+不下载模型，不更改 WSL 或 Windows。依赖来自
+[pyproject.toml](../../../pyproject.toml) 的 `llm-deploy`，不另维护一份版本锁。
 
-本轮不会为每个 token 新建线程来模拟可中断执行，也不会吞掉失败后继续选 token。
-QEMU 适配已复用现有运行器，在 UART/QMP 等待中响应取消，并验证超时/取消后的进程及进程组回收。失败运行按既有策略保留 transport 诊断副本。
+部署预检和构建客户端各有独立进程组，SIGINT/SIGTERM 时转发终止并等待清理，必要时
+5 秒后强制结束，返回 130/143。容器运行阶段保留 `exec ... run --init` 信号转发，
+QEMU 适配器负责其子进程回收。CLI 最终保存报告失败时向 stderr 说明保存错误，
+保留已有生成失败或取消的退出码 1/130/143；原本成功或仅构建成功时改为退出 1。
+数值、参考文本等原始错误不会被保存错误覆盖，也不打印误导性的成功报告路径。
+运行中的 SIGINT/SIGTERM 均记录为取消，分别保留退出码 130/143。
 
-## 3 条固定参考用例
+## 如何复现
 
-以下三条原文和预算在 ORT 执行前选定；Paris 原文与 W5 硬门槛保持一致。
-
-| 用例 | prompt 原文 | `max_new_tokens` | 预先约定的内容检查 |
-|---|---|---:|---|
-| `france` | `The capital of France is` | 8 | 新生成文本包含 `Paris` |
-| `germany` | `The capital of Germany is` | 8 | 新生成文本包含 `Berlin` |
-| `japan` | `The capital of Japan is` | 8 | 新生成文本包含 `Tokyo` |
-
-参考必须记录 prompt IDs、新生成 IDs、文本、EOS/停止原因和实际 ORT 版本；
-不能只填写上述预期词。未来 QEMU 对照优先比较逐 token ID；若出现分歧，保留相同
-输入的数值误差和 top-1/top-2 margin，定位原因，不用“语义合理”覆盖数值失败。
-原始全量 logits 是运行中验证对象，无需将每一步约 148 MiB 输出都加入 Git。
-
-[固定参考文件](../../../probes/w5_generation/references.json)保存三条输入及冻结后的
-精确输出，检查入口为 [run.py](../../../probes/w5_generation/run.py)。在仓库根目录，
-激活已按 [Linux 复现说明](../LINUX_REPRODUCTION.md)准备的环境后执行：
+**本地已有环境。** 从仓库根执行，激活项目 Python 3.12 环境并按
+[Linux 开发说明](../LINUX_REPRODUCTION.md)安装依赖。已有固定资产时，原始补全命令为：
 
 ```bash
-python probes/w5_generation/run.py \
-  --assets assets/qwen3-0.6b \
-  --output-dir output/w5-generation-reference
+python scripts/run_inference.py \
+  --model assets/qwen3-0.6b/onnx/model.onnx \
+  --tokenizer-dir assets/qwen3-0.6b/tokenizer \
+  --prompt 'The capital of France is' --max-new-tokens 1 \
+  --verify-onnx assets/qwen3-0.6b/onnx/model.onnx \
+  --harts 4 --matmul-policy blocked_fma --matmul-tile 2x4 \
+  --matmul-rhs-layout column-panel \
+  --mean-policy two-four-lane-last-axis --nonlinear-policy fp32-reference \
+  --timeout 1800 --total-timeout 3600 --output-dir output/w5-paris-new
 ```
 
-这条命令使用固定资产和同一 ORT CPU session 验证三条参考，并在输出目录保存
-`reference-run.json`；不会启动 QEMU。默认检查已冻结参考，不自动覆盖它。
-初次采集需要显式 `--record`，并按预先固定的内容标准确认结果后才冻结；不能为消除
-失败任意重录参考。QEMU 用户入口已实现为 `scripts/run_inference.py`；与本节 ORT 参考工具用途不同，见 [QEMU 说明](qemu-generation.md)。
-2026-10-23 使用同一个 ORT CPU session 实跑，三条均完成 8 个 token，停止原因为
-`max_new_tokens`。独立逐步输入/greedy/停止 oracle 与 Host 核心一致，三个预先固定的
-内容检查均通过，精确 token IDs 已冻结到上述 JSON。
+这会执行一次完整 28 层模型。只构建可加 `--build-only`，其 `BUILD_ONLY` 不表示
+完成生成。复用时以 `--reuse-build output/w5-paris-new/executable.json` 替换
+`--model ...`，仍传相同 tokenizer 和所有原有算术/hart 配置，并使用新的输出目录。
+元数据可能含绝对路径，不直接把宿主构建搬进容器复用；跨环境从模型重新构建。
 
-| 用例 | 实际生成的新文本（保留前导空格） | 耗时 | CPU 时间 |
-|---|---|---:|---:|
-| `france` | ` Paris. The capital of Italy is Rome` | 44.672 s | 44.649 s |
-| `germany` | ` Berlin. The capital of France is Paris` | 42.910 s | 42.894 s |
-| `japan` | ` Tokyo. The capital of the United States` | 42.406 s | 42.394 s |
+聊天模式将上例 `--prompt ...` 换为下列参数，其他模型、参考策略及输出目录参数保留：
 
-全轮耗时 **130.676 s**，CPU 时间 **130.611 s**；进程峰值 RSS **5.002 GiB**
-（`ru_maxrss` 为整个进程累计峰值，不能当作每例独立分配或增量）。模型 session
-加载耗时 0.307 s；这些是 ORT 参考实测，不是 QEMU 生成速度。
+```text
+--mode chat --chat-turn 'Hello.' --chat-turn 'What is 1+1?'
+--chat-turn 'Reply with one word.' --system-prompt 'Give brief answers.'
+```
 
-P0/P1 阶段只执行一次真实 ORT 采集并在每步使用独立 oracle 验证，随后冻结参考，完成离线
-字段一致性检查；未重复执行“冻结后第二次 ORT 回放”。精简公开记录、逐 token
-margin 与环境位于 JSON 的 `baseline` / `cases`，详细本地产物为
-`output/w5-generation-reference/reference-run.json`。原始续写可以继续列举其他事实，
-并因 8-token 预算停止；这三条只验证约定的 raw completion 内容，不宣称 chat 或多轮能力。
+这会按顺序运行三轮，前两轮回答也计入后续 256-token 容量。模板一致性检查不等于
+完整模型三轮生成已实跑。相关测试命令集中在
+[W5 测试说明](../../../tests/llm-deploy/w5/README.md)。
 
-## 保留的执行配置
+**固定版本的独立容器复现。** 以下步骤在同一 Bash 会话依次执行，使用独立的
+Ubuntu 24.04 x86_64 环境，不复制作者的虚拟环境、`output/`、ELF、bundle 或报告。
+三例共用一次新构建、执行 24 次前向，不先另跑 Paris，也不重新录制 ORT 参考。
+固定提交 `8ad347477f7f5ba15b2da7c91178b3c6668456cc` 是已完成完整数值实跑的功能基线；
+该提交用于复现既有完整数值结果，不含本轮报告保存及 SIGTERM 分类修复；这些行为
+使用当前分支的相关小图验证，不将旧完整结果标为本轮重跑。
 
-既有 RV64 路径保持默认 **1 hart**，显式接受 **1 / 2 / 4 / auto**。
-`auto` 只在构建/启动时按进程可用 CPU 解析一次，上限为 4，不在 token 之间动态改数。
-复用 ELF 的 hart 数必须与构建记录一致。Host 生成核心不覆盖这套配置，也不会把
-ORT 的 CPU 线程数误当成 guest hart 数。
+| 条件 | 固定内容或要求 |
+|---|---|
+| 主机工具 | Bash、Git/Git LFS、Python 3.12、Docker Engine/Buildx、GNU time、timeout、setsid、tar |
+| 模型 | `Qwen/Qwen3-0.6B`，revision `c1899de289a04d12100db370d81485cdf75e47ca`，FP32 ONNX 及同版本 tokenizer |
+| 基础镜像 | `public.ecr.aws/ubuntu/ubuntu@sha256:5ce7043d3beb84e91bfeecacb5fafc80602bf247a1dd6016bc0fe7d69d707eca` |
+| 原实跑工具 | Python 3.12.3、QEMU 8.2.2（Ubuntu `1:8.2.2+ds-0ubuntu1.18`）、Zig 0.14.1、ORT 1.22.1、NumPy 2.2.6、Torch 2.7.1+cpu |
+| 原容器引擎 | Docker Engine 29.9.2、Buildx 0.38.1 |
+| 准备后的资源 | 至少 4 个可用逻辑 CPU、10 GiB 可用内存、10 GiB 剩余磁盘；初始建议预留 25 GiB 磁盘 |
+| 时间预算 | 单步 1800 s，总预算 16500 s，外层 280 分钟，强制清理再留 30 s |
 
-QEMU 工作区布局保持 `qemu_workspace_layout=none`，即 padding 关闭。
-均值默认仍为 `sequential`；显式 `--mean-policy two-four-lane-last-axis`
-可用于数值对照，但单独启用尚不能让完整三例通过，见续作报告。
-非线性路径默认仍为 `libm`；显式 `--nonlinear-policy fp32-reference` 选择已有参考的
-Sin/Cos、Sigmoid、Softmax 算术顺序，不改变 hart 选择，也不要求目标具有 x86 SIMD。
-本轮完整 QEMU 三例通过的配置为 `4 hart / blocked_fma / 2x4 / column-panel`，同时
-显式启用 `--mean-policy two-four-lane-last-axis --nonlinear-policy fp32-reference`，
-padding 为 `none`；24 步复用同一 ELF/bundle。默认 `1 hart / sequential / 1x4 / original`、
-Mean `sequential` 和非线性 `libm` 均未改变，不能把新策略的验收结果归给旧算术配置。
-复用时必须显式匹配构建策略；实验 padding、RVV、KV cache、动态长度和量化不纳入本轮。
+镜像 digest 只固定基础镜像；apt 与未逐项锁定的间接依赖仍可能变化。记录实际镜像、
+工具和依赖版本，先核对差异是否影响结果比较，不默认为相同环境。这里沿用原资产
+身份检查，不增加源码、输出或报告哈希。保留部署前后镜像 ID 作为运行记录，
+不要求两者必须相等：Buildx 的缓存构建仍可能更新 provenance/attestation 元数据，
+使 manifest ID 改变。ID 变化本身不足以说明运行内容改变，也不代表版本差异可忽略；
+继续记录固定源码、模型和实际工具/依赖版本，复用既有 ELF/bundle 检查。
 
-## 阶段与验收状态
+**1. 新 clone 并固定提交。**
 
-以下状态核对于 2026-10-23，作者本地实跑、远端 CI 和第二人签收分别记录。
+以下命令在同一个 Bash 会话按顺序执行，从有足够空间的父目录开始。
+目录名 `scratchv-w5-repro` 必须不存在；重试时改用新的目录名，保留失败记录。
 
-| 阶段/门槛 | 当前证据与状态 | 剩余事项 |
+```bash
+set -euo pipefail
+export W5_COMMIT=8ad347477f7f5ba15b2da7c91178b3c6668456cc
+test ! -e scratchv-w5-repro
+GIT_LFS_SKIP_SMUDGE=1 git clone --no-checkout --filter=blob:none \
+  https://github.com/ScratchV-Compiler/ScratchV.git scratchv-w5-repro
+cd scratchv-w5-repro
+git fetch --no-tags origin refs/pull/115/head
+GIT_LFS_SKIP_SMUDGE=1 git checkout --detach "$W5_COMMIT"
+test "$(git rev-parse HEAD)" = "$W5_COMMIT"
+test -z "$(git status --porcelain)"
+
+export W5_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+export SCRATCHV_CONTAINER_ENGINE=docker
+export SCRATCHV_W5_IMAGE="scratchv-w5:independent-$W5_RUN_ID"
+export SCRATCHV_W5_ASSETS="$PWD/output/w5-independent-assets"
+export SCRATCHV_W5_OUTPUT="$PWD/output/w5-independent-$W5_RUN_ID"
+export SCRATCHV_W5_BASE_IMAGE=public.ecr.aws/ubuntu/ubuntu@sha256:5ce7043d3beb84e91bfeecacb5fafc80602bf247a1dd6016bc0fe7d69d707eca
+test ! -e "$SCRATCHV_W5_ASSETS"
+test ! -e "$SCRATCHV_W5_OUTPUT"
+mkdir -p "$SCRATCHV_W5_OUTPUT"
+date -u +%FT%TZ > "$SCRATCHV_W5_OUTPUT/start-utc.txt"
+{
+  git rev-parse HEAD
+  git status --porcelain
+  git remote -v
+} > "$SCRATCHV_W5_OUTPUT/source.txt"
+{
+  cat /etc/os-release
+  uname -a
+  lscpu
+  free -b
+  df -B1 .
+  python3 --version
+  git --version
+  git lfs version
+  docker version
+  docker buildx version
+  docker info --format 'OS={{.OSType}} Arch={{.Architecture}} CPUs={{.NCPU}} Memory={{.MemTotal}}'
+  command -v setsid timeout tar
+  /usr/bin/time --version
+} > "$SCRATCHV_W5_OUTPUT/runner-resources.txt" 2>&1
+docker info > /dev/null
+test "$(uname -m)" = x86_64
+python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+printf 'Run output: %s\n' "$SCRATCHV_W5_OUTPUT"
+```
+
+检查 `runner-resources.txt`：宿主应为 Ubuntu 24.04，Docker daemon 也是本机 Linux；
+若使用远端 daemon、容器资源配额不足或没有引擎，先停止并回报，不用修改 WSL 来凑条件。
+挂载目录不能包含逗号。不要把私人凭据写入报告。
+
+**2. 构建镜像并记录实际环境。**
+
+复用现有 Dockerfile；随后部署脚本会再检查构建并复用 Docker 缓存。
+基础镜像和构建参数不变，不使用作者构建好的镜像。
+
+```bash
+docker build --file deployment/w5/Dockerfile \
+  --build-arg "BASE_IMAGE=$SCRATCHV_W5_BASE_IMAGE" \
+  --tag "$SCRATCHV_W5_IMAGE" . \
+  2>&1 | tee "$SCRATCHV_W5_OUTPUT/image-build.log"
+docker image inspect "$SCRATCHV_W5_IMAGE" \
+  > "$SCRATCHV_W5_OUTPUT/container-image.json"
+docker image inspect --format '{{.Id}}' "$SCRATCHV_W5_IMAGE" \
+  > "$SCRATCHV_W5_OUTPUT/image-id-before.txt"
+docker run --rm --entrypoint python "$SCRATCHV_W5_IMAGE" -m pip freeze \
+  > "$SCRATCHV_W5_OUTPUT/dependencies.txt"
+docker run --rm --entrypoint python "$SCRATCHV_W5_IMAGE" \
+  -c 'import json; from probes.w1_qwen3_export.run import environment; print(json.dumps(environment(export=True), indent=2))' \
+  > "$SCRATCHV_W5_OUTPUT/image-environment.json"
+docker run --rm --entrypoint sh "$SCRATCHV_W5_IMAGE" -c \
+  'python --version; python -m ziglang version; qemu-system-riscv64 --version; dpkg-query -W python3.12 qemu-system-misc' \
+  > "$SCRATCHV_W5_OUTPUT/image-tools.txt"
+cat "$SCRATCHV_W5_OUTPUT/image-tools.txt"
+```
+
+核对 `image-tools.txt` 与上表；环境差异应保留在报告中，部署脚本本身不锁 apt 补丁。
+
+**3. 独立获取固定资产。**
+
+下载只调用现有 `acquire_model`，沿用 W1 manifest 中已有的下载/分片完整性检查。
+它只用 Python 标准库，不执行模型、不重新导出、不安装宿主推理依赖。
+Tokenizer 从同一提交的 Git LFS 获取。
+
+```bash
+git lfs install --local
+git lfs pull --include="assets/qwen3-0.6b/tokenizer/*" --exclude="" \
+  2>&1 | tee "$SCRATCHV_W5_OUTPUT/tokenizer-acquisition.log"
+python3 - <<'PY' 2>&1 | tee "$SCRATCHV_W5_OUTPUT/model-acquisition.log"
+import json, os, shutil
+from pathlib import Path
+from probes.w1_qwen3_export.run import acquire_model
+assets = Path(os.environ["SCRATCHV_W5_ASSETS"])
+out = Path(os.environ["SCRATCHV_W5_OUTPUT"])
+result = acquire_model(assets / "onnx")
+shutil.copytree("assets/qwen3-0.6b/tokenizer", assets / "tokenizer")
+(out / "acquisition.json").write_text(json.dumps(result, indent=2) + "\n")
+PY
+test -z "$(git status --porcelain)"
+```
+
+不要另跑参考采集脚本或添加 `--record`：suite 内部已经逐步对照当轮 ORT 与冻结参考，
+无需再运行一遍完整 ORT 生成作为“预热”。
+
+**4. 资源检查。** 镜像和资产准备后核对可用资源，Docker 配额不能低于要求。
+
+```bash
+python3 - <<'PY'
+import json, os, shutil
+from pathlib import Path
+out = Path(os.environ["SCRATCHV_W5_OUTPUT"])
+mem = {line.split(":")[0]: int(line.split()[1]) * 1024
+       for line in Path("/proc/meminfo").read_text().splitlines()
+       if line.startswith(("MemTotal:", "MemAvailable:"))}
+evidence = {"stage": "after_image_and_assets",
+            "available_cpus": len(os.sched_getaffinity(0)), "memory": mem,
+            "disk_free_bytes": shutil.disk_usage(out).free,
+            "minimum_available_cpus": 4,
+            "minimum_available_memory_bytes": 10 * 1024**3,
+            "minimum_disk_free_bytes": 10 * 1024**3}
+evidence["passed"] = (evidence["available_cpus"] >= 4
+                      and mem.get("MemAvailable", 0) >= 10 * 1024**3
+                      and evidence["disk_free_bytes"] >= 10 * 1024**3)
+(out / "resource-preflight.json").write_text(json.dumps(evidence, indent=2) + "\n")
+if not evidence["passed"]:
+    raise SystemExit("Insufficient W5 CPU/RAM/disk; generation NOT RUN.")
+PY
+```
+
+资源不足时保留记录，不运行完整生成。
+
+**5. 一次运行三条完整用例并保存报告。**
+
+整块复制执行。`--reference-suite` 自带三条用例及每例 8-token 预算，
+不要同时传 `--max-new-tokens`，不要传 `--reuse-build`。
+代码从固定模型重新构建一次，跨用例自动复用同一 ELF/bundle。
+
+```bash
+test "$(git rev-parse HEAD)" = "$W5_COMMIT"
+test -z "$(git status --porcelain)"
+test ! -e "$SCRATCHV_W5_OUTPUT/run"
+date -u +%FT%TZ > "$SCRATCHV_W5_OUTPUT/generation-start-utc.txt"
+
+set +e
+timeout --signal=INT --kill-after=30s 280m \
+  /usr/bin/time -v -o "$SCRATCHV_W5_OUTPUT/process-time.txt" \
+  bash scripts/deploy_w5.sh \
+    --model /assets/onnx/model.onnx --tokenizer-dir /assets/tokenizer \
+    --reference-suite --verify-onnx /assets/onnx/model.onnx \
+    --harts 4 --matmul-policy blocked_fma --matmul-tile 2x4 \
+    --matmul-rhs-layout column-panel \
+    --mean-policy two-four-lane-last-axis --nonlinear-policy fp32-reference \
+    --timeout 1800 --total-timeout 16500 \
+    2>&1 | tee "$SCRATCHV_W5_OUTPUT/runner.log"
+pipeline_status=("${PIPESTATUS[@]}")
+printf '%s\n' "${pipeline_status[0]}" > "$SCRATCHV_W5_OUTPUT/runner-exit-code.txt"
+printf '%s\n' "${pipeline_status[1]}" > "$SCRATCHV_W5_OUTPUT/log-exit-code.txt"
+date -u +%FT%TZ > "$SCRATCHV_W5_OUTPUT/generation-end-utc.txt"
+
+# 此唯一 tag 只供本次使用；不停止其他人的容器。
+{
+  containers=$(docker ps --quiet --filter "ancestor=$SCRATCHV_W5_IMAGE")
+  list_status=$?
+  printf 'list_exit_code=%s\n' "$list_status"
+  for container in $containers; do
+    docker stop --time 30 "$container"
+    printf 'stop_exit_code=%s\n' "$?"
+  done
+  docker ps --filter "ancestor=$SCRATCHV_W5_IMAGE" \
+    --format '{{.ID}} {{.Status}}'
+  printf 'final_list_exit_code=%s\n' "$?"
+} > "$SCRATCHV_W5_OUTPUT/container-cleanup.log" 2>&1
+
+docker image inspect --format '{{.Id}}' "$SCRATCHV_W5_IMAGE" \
+  > "$SCRATCHV_W5_OUTPUT/image-id-after.txt"
+python3 -B -X utf8 scripts/check_w5_ci.py \
+  --report "$SCRATCHV_W5_OUTPUT/run/report.json" \
+  --reference probes/w5_generation/references.json \
+  --exit-code-file "$SCRATCHV_W5_OUTPUT/runner-exit-code.txt" \
+  --output "$SCRATCHV_W5_OUTPUT/result-check.json" \
+  > "$SCRATCHV_W5_OUTPUT/result-check.log" 2>&1
+printf '%s\n' "$?" > "$SCRATCHV_W5_OUTPUT/check-exit-code.txt"
+cat "$SCRATCHV_W5_OUTPUT/result-check.log"
+{
+  date -u +%FT%TZ
+  git rev-parse HEAD
+  git status --porcelain
+  free -b
+  df -B1 .
+} > "$SCRATCHV_W5_OUTPUT/final-resources.txt"
+set -e
+printf 'Preserved output: %s\n' "$SCRATCHV_W5_OUTPUT"
+```
+
+这里为失败留证临时关闭 `errexit`，**脚本走到最后不等于 PASS**。
+即使 suite 非零退出，仍运行容器清理和已有报告检查器；报告缺失时 checker 应失败，
+不能补造成功字段。`result-check.json` 在本地的 `commit` 可为 null；实际 SHA 由
+`source.txt` 和最终 Git 记录确认。
+
+若手动 Ctrl-C 使整段 shell 中断，重新进入同一 clone，恢复上面输出目录和镜像变量，
+执行本节从“此唯一 tag”注释之后的收尾段，再打包已有报告。不要直接重新跑模型。
+主机掉电、daemon 失联或强制终止可能阻止清理；如清理日志有非零码或最后仍列出容器，
+标为未完成并回报，不视为通过。
+
+**三条用例与结果判定。** 全部为 raw completion、greedy、8 个新 token，
+停止原因均为 `max_new_tokens`。文本含前导空格；只出现城市名不足以判定一致，
+需同时核对[冻结参考](../../../probes/w5_generation/references.json)的 IDs 和文本：
+
+| 原始 prompt | 新生成 IDs | 新生成文本 |
 |---|---|---|
-| P0：合同与 3 条参考 | **PASS**；合同冻结，3/3 真实 ORT/Host 参考与独立 oracle 通过，IDs/text/停止原因冻结 | 无实现缺项 |
-| P1：Host token 循环 | **PASS**；核心 55 项及相关边界验证通过 | 无实现缺项 |
-| P2：QEMU 生成适配/CLI | **PASS**；同一 ELF/bundle 跨 token 和命令复用；1/4 hart 数值与中断清理通过 | 无实现缺项 |
-| 默认/手动/auto hart | **PASS（小图）**；默认单核、手动 4、auto→4 的真实容器 CLI 通过，padding 关闭 | 不将小图或显式策略通过推广为默认算术完整模型通过 |
-| `e2e:qemu-paris` | **PASS（作者本地、显式新策略 4 hart）**；France 完整 8 token 的数值、IDs、文本和停止原因通过，输出包含 Paris | 远端完整专项及第二人复现 |
-| `e2e:qemu-prompts` | **PASS（作者本地、显式新策略 4 hart）**；3/3 用例、24/24 完整 QEMU 前向及逐步数值通过，与冻结参考一致 | 远端完整专项及第二人复现 |
-| `unit:multiturn` | **PASS**；40 项会话测试，官方模板/IDs 六份对照；远端官方三轮模板 2/2 通过 | 不宣称已做完整模型三轮对话生成 |
-| `deploy:script` | **PASS（作者真实容器）**；小图、超时/取消和清理通过；完整 28 层 France 单 token 实际生成 ` Paris` | 容器三例 24 步尚未执行，不能用单 token 代替 |
-| 普通 PR CI | **PASS**；[39919353111](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/39919353111) 为 14 成功、7 个按路由跳过；W5 真实小图 12/12、模板 2/2 通过 | 不替代完整生成专项 |
-| W5 完整专项 CI | **BLOCKED / NOT_RUN**；工作流已接入，fork Actions 以 HTTP 422 拒绝 dispatch，未创建 run | 恢复平台执行能力后运行容器三例 24 步 |
-| 第二人独立复现 | **说明已准备，执行待办**；固定提交、环境、命令、验收和回传清单见[交接说明](independent-reproduction.md) | 同事独立构建、实跑并回传签收，作者或 CI 不能替代 |
+| `The capital of France is` | `[12095,13,576,6722,315,15344,374,21718]` | ` Paris. The capital of Italy is Rome` |
+| `The capital of Germany is` | `[19846,13,576,6722,315,9625,374,12095]` | ` Berlin. The capital of France is Paris` |
+| `The capital of Japan is` | `[26194,13,576,6722,315,279,3639,4180]` | ` Tokyo. The capital of the United States` |
 
-旧算术配置的历史失败保留于实跑报告：初始轮三例均在首步失败（仅执行 3/24 步），
-France 的 `max_abs=0.003272057`。显式新策略的 PASS 不改写该历史结果。
+成功要求：三例、24 次前向全部完成，prompt IDs/新 IDs/文本/停止原因匹配；每步全部
+`256×151936=38,895,616` 个 logits 有限且严格 `max_abs < 1e-3`；28 层完整图检查、
+FMA 12 行 binary32 位模式与 FCSR 检查通过；同一 ELF/bundle 与所选策略匹配、
+padding `none`；每个 QEMU 正常退出并回收，没有清理错误。套件、日志管道、报告
+检查器退出码均为 0，最终无本次容器残留，源码没有改动。
+`container_reproduction=NOT_ASSERTED` 是内部 CLI 不会自行宣称容器复现的字段，
+不能手改；容器身份由外层构建、运行和退出记录说明。
 
-W4 完整单次前向的已有证据不替代 W5 token 循环；本页 W5 结果来自上述独立完整生成验收。
-W4 独立复现、Nightly 和团队签收仍按 [W4 验收说明](../W4/validation.md)分别确认。
+**回传报告。** 附 `handoff.txt` 说明执行人、UTC 时间、完整 SHA、独立 clone/构建、
+环境差异、三例 IDs/文本/误差、计时与缺失采样、清理结果以及失败阶段，保留：
 
-完整 QEMU 三例验收已通过，原始结果位于
-`output/w5-followup-20261023/qemu-reference-4hart/run/report.json`。
-gate 失败状态、旧 W4 构建审计传递、逐步验收证据及取消清理已补强。
-本地功能出口已有完整证据：宿主三例 24 步、宿主独立前向，以及干净容器镜像、
-小图、中断清理和完整 Paris 单 token 均已通过，见 [部署记录](deployment.md)。
-容器此次只补一次完整前向，不将其写成容器三例套件；普通 PR CI 已通过，完整专项仍
-**BLOCKED / NOT_RUN**。本地功能完成不等于远端完整验收或第二人签收完成。
-不把候选 token 一致或静态部署检查写成实跑 PASS。当前每 token 启动 QEMU，但复用构建；
-持久 guest、权重驻留、KV cache 等不属于 W5 v1 必需实现。
+- 来源、主机资源、镜像/依赖/工具、下载记录、所有退出码与构建/运行/清理日志。
+- `run/report.json`、`result-check.json`、`run/executable.json`、`run/build/` 的 JSON。
+- `run/steps/step-0000…0023/run.json`、UART 完成帧 `uart.bin`、错误日志及
+  `run/fma-conformance/` 的报告。
 
-
-## CI 接入与远端执行边界
-
-W5 复用 [w4-full-numeric.yml](../../../.github/workflows/w4-full-numeric.yml)，没有再建立
-一套并行的完整模型工作流。手动 `workflow_dispatch` 的 `mode` 为互斥选择：
-
-| mode | 执行范围 |
-|---|---|
-| `small`（默认） | 相关单测和真实小图，不运行完整模型 |
-| `w4-forward` | 原 W4 完整单次前向 |
-| `w5-generation` | 原 `deploy_w5.sh` 在真实容器中运行三例 3×8 token，再校验完整报告 |
-
-已有 `workflow_call` 的 `run_full/case` 接口保留，新增 `run_w5=false`，不自动开启生成。
-W5 选择与 W4 完整前向冲突，或在非手动事件请求 W5 时，先于模型执行明确失败。
-
-**合并前的手动入口**使用 main 上已经存在的
-[llm-deploy.yml](../../../.github/workflows/llm-deploy.yml)，显式传
-`run_w5_validation=true`；该模式跳过旧 W1/W2 完整任务与 W3/W4 完整执行，
-只调用同一提交的 W5 验证。W5 与 W3/W4 同时勾选会直接失败，不同时跑多套模型。
-GitHub 要求手动工作流存在于默认分支，见
-[官方手动运行说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
-审查时远端 main 的 `w4-full-numeric.yml` 尚无 `workflow_dispatch`，因此不能把新文件的
-直接手动入口当作仅推送 W5 分支后必然可用；不要为了建立入口先合并未验收的 W5。
-
-下列入口已获授权并尝试调用；fork 仓库的 Actions 目前在 dispatch 阶段返回 HTTP 422，
-未创建运行。解除该限制后才可重试；执行仍需仓库写权限：
+不传权重、ELF、原始 logits 或 Zig 缓存；失败时也回传已有报告并标明缺失项。
+原始产物保留至复现结果确认；重试使用新目录。沿用原小文件筛选方式打包：
 
 ```bash
-gh workflow run llm-deploy.yml --repo yuki-328/ScratchV --ref codex/w5-generation \
-  -f run_w5_validation=true -f run_w3_validation=false -f run_w4_validation=false
+python3 - <<'PY'
+import os, tarfile
+from pathlib import Path
+out = Path(os.environ["SCRATCHV_W5_OUTPUT"])
+allowed = {".json", ".xml", ".txt", ".log", ".stderr", ".stdout"}
+archive = out.parent / (out.name + "-reports.tar.gz")
+if archive.exists():
+    raise SystemExit(f"Keep earlier evidence; archive already exists: {archive}")
+with tarfile.open(archive, "w:gz") as bundle:
+    for path in sorted(out.rglob("*")):
+        relative = path.relative_to(out)
+        if (path.is_file() and not path.is_symlink()
+                and ".zig-cache" not in relative.parts
+                and (path.suffix in allowed or path.name == "uart.bin")):
+            bundle.add(path, arcname=str(Path(out.name) / relative), recursive=False)
+print(archive)
+PY
 ```
 
-新 `w4-full-numeric.yml` 手动入口进入默认分支后，也可使用上表的 `mode`。
-W5 完整 job/步骤/CLI 总预算分别为
-**350 / 285 / 275 分钟**；镜像和固定资产落盘后才检查 **至少 4 CPU、10 GiB 可用 RAM、
-10 GiB 剩余磁盘**，不足即明确失败，不通过缩小模型或跳过 token 凑齐门槛。
-远端 runner 是否实际满足资源和时限，仍须在专项能够创建运行后实跑确认。
+`process-time.txt` 的 CPU/RSS 属于 Docker 客户端，不是容器或 QEMU 总量。逐步耗时、
+RSS 使用 `run/steps/*/run.json`，partial 采样明确注明；未采集的 CPU 写“未独立采集”，
+不填作者历史数据，也不据不同机器的记录计算加速比。
 
-W4 unit 增加 **12 个真实 QEMU 必跑节点**（生成与取消 2、Mean 8、非线性 2）；
-[llm-deploy.yml](../../../.github/workflows/llm-deploy.yml) 在现有 tokenizer 环境补 **2 个
-官方三轮模板节点**。W5-only 跳过普通 llm-deploy job 时，使用已经构建的同一
-W5 镜像、只读 tokenizer 与测试文件执行这两个模板节点，并保留必跑 JUnit 检查；
-不会因此再安装一套依赖或重复生成。普通 W5 单测继续由既有通用 CI 承担。
-最终汇总区分未选择的 `NOT_RUN` 与请求后失败/取消/skip，不能把缺失证据作为通过。
+## 实际复现结果
 
-上一轮 CI 接入的 **753 项轻量检查通过（19.64s）**，覆盖工作流结构、旧 W4 接口、路径路由、
-JUnit 缺失/skip/fail、资源短缺、退出码与汇总；其中严格报告 gate 为 44 项。
-上述 **14 个必跑节点在 CI 接入阶段仅 collect-only 核对 ID**，该阶段没有再次执行这些节点或完整模型；
-已有真实容器生成/取消 2 节点通过，Mean/非线性沿用此前真实小图证据，不把收集当实跑。
-[严格报告检查器](../../../scripts/check_w5_ci.py) 对已有真实三例 24 步报告
-`output/w5-followup-20261023/qemu-reference-4hart/run/report.json` 离线检查通过。
-本地 CI 检查记录为 `output/w5-ci-integration-20261023/validation.json`，
-同目录保存测试日志、14 个收集节点 ID 以及 98 段内嵌 shell 的语法检查结果。
-上述记录来自提交前的本地实现/证据检查，当时未提交、未推送；其后的普通 PR CI
-已通过，完整专项仍为 **BLOCKED / NOT_RUN**，详见页末发布记录。
+以下完整模型数字来自 **2026-10-23 的历史实跑**，其功能基线为上述 `8ad3474`。
+本轮只补异常处理与文档相关验证，没有重新执行完整模型。完整模型均为
+**28 层 Qwen3-0.6B**，使用显式 `4 hart / blocked_fma / 2x4 / column-panel /
+two-four-lane-last-axis / fp32-reference / padding none`。
 
-## 提交前检查与收尾（2026-10-23）
+**宿主 QEMU 三条固定生成。** 三例各 8 步，24 步的文本、IDs 与停止原因全部符合上表，
+每步完整 logits 均满足严格误差要求，全部 QEMU 进程和进程组已回收。
 
-本节保留提交前检查时点；后续提交、普通 CI 和专项阻塞状态见页末发布记录。
+| 用例 | 生成调用耗时（s） | QEMU CPU（s） | Host CPU（s） | 最大绝对误差 |
+|---|---:|---:|---:|---:|
+| France | 3375.024 | 11517.789 | 167.657 | 0.000303983688 |
+| Germany | 3668.852 | 12574.174 | 190.673 | 0.000262737274 |
+| Japan | 3489.655 | 11958.881 | 178.759 | 0.000197887421 |
 
-已核对 W5 全部待提交改动：生成合同与冻结参考、Host/会话循环、QEMU 适配与 CLI、
-显式数值策略、运行器清理、容器打包、第三方声明、CI 路由和报告。
-**本地可执行的 W5 工作已完成，未发现尚未处理的本地阻塞；远端 CI 验收仍待执行。**
-本轮没有重新运行完整模型或 QEMU 小图，没有暂存、提交或推送。
+整次测量 10540.190 s（约 2 小时 55 分 40 秒），包括准备、ORT 和数值比较。
+24 步 UART 耗时合计 9990.355 s，平均 **416.265 s/token**；QEMU 完整进程合计
+9998.091 s，CPU 合计 36050.844 s，平均约 360.58%（100% 表示一个逻辑 CPU）。
+Host 总 CPU 540.717 s；表中生成阶段合计 537.089 s。
+RSS 观测峰值 QEMU 5.406 GiB、Host 4.254 GiB、同时进程合计 7.644 GiB。
+17/24 步的采样各有一次读取失败，属于 partial，不能当作无缺失峰值。
 
-本轮修复和澄清：
+**独立单次完整前向与干净容器 Paris。** 两次都只生成 `[12095]`、文本 ` Paris`，
+完整 logits 最大误差同为 `0.000172138214`。容器内重新构建一次，没有重复三例套件；
+155,582,464 字节完整输出与宿主单次前向逐字节相同。
 
-- 两个有限 FP32 logits 的诊断差值原先可能溢出为 Infinity，导致严格 JSON 报告写入失败。
-  CLI 和 Host 参考工具现先转为 Python float 再相减；只改变诊断计算，不改变模型、
-  argmax、数值容差、冻结 IDs/text 或每行计算顺序。新增正负 FP32 最大值边界测试。
-- 补齐合并前可用的 W5-only 手动 CI 入口：复用已注册的 llm-deploy，拒绝与 W3/W4
-  同时选择，保留真实小图、官方三轮模板和完整生成门槛。job 预算增加到 350 分钟，
-  给准备、清理和报告上传留余量，生成步骤与 CLI 的时限未放宽。
-- 修正测量口径：宿主/进程树的 21,032 次采样无读取错误，但 24 步中有 17 步的
-  独立 QEMU RSS 各缺一次读取；RSS 峰值是观测值。容器运行器记录的 430.481 秒
-  不包含前置输入打包/写入和 ELF/bundle 校验，原始测量值没有改动。
+| 测量项 | 宿主单次前向 | 容器单次前向 |
+|---|---:|---:|
+| 全过程耗时（s） | 448.263 | 547.454 |
+| UART 耗时（s） | 418.954 | 415.058 |
+| QEMU 完整进程耗时（s） | 419.383 | 415.478 |
+| QEMU CPU（s） | 1498.851 | 未独立采集 |
+| QEMU RSS 观测峰值（GiB） | 5.398 | 5.398 |
 
-| 本轮必要验证 | 结果与边界 |
-|---|---|
-| CLI 与 Host 参考工具 | 107 passed，0 skip；包含两处溢出复现及严格 JSON 边界 |
-| 数值策略、external 运行器及 W4 契约 | 280 passed，0 skip；默认值、错误传播、上下文/工作区复用和取消清理 |
-| CI、部署与打包相关检查 | 811 passed，0 skip；最终 11 项边界复查与此集合重叠，不重复累计 |
-| 工作流与脚本静态检查 | actionlint 1.7.12 检查三份工作流、Bash 语法及 diff 检查通过；未运行外部 ShellCheck/Pyflakes |
-| 既有三例 24 步报告 | 严格 CI 检查器离线核验 PASS；未重新推理 |
+宿主生成调用耗时 441.033 s，Host 总 CPU 25.332 s（生成期间 21.604 s），
+Host/同时进程 RSS 观测峰值分别 4.119/7.210 GiB。容器总耗时含新构建、FMA 和 ORT；
+运行器记录 430.481 s 包括权重传输、QEMU、后检查及清理，不含更早的输入打包、写入和
+ELF/bundle 检查。容器 RSS 有 2071 个有效样本、1 次读取失败，同样为 partial。
 
-本轮证据在工作树下的 `output/w5-precommit-20261023/`：
-`generation-audit.json`、`numeric-audit.json`、`ci-audit.json` 及对应 JUnit。
-前后轮测试集合存在交叉，不将数量累加为独立覆盖总数。
-默认 1 hart、手动 1/2/4 与启动时 auto 保持正常，W5 padding 强制为 none；
-Docker 本轮未启动，WSL 配置未改。
+UART 耗时包含 QEMU 启动和权重装载，不是纯算子时间；完整进程另含 stop/dump/quit。
+宿主单次前向启动了新 QEMU，但未清空宿主页缓存，不宣称冷缓存性能。
+容器单 prompt 的 `full_model_gate=NOT_RUN` 表示未运行三例，不表示未运行完整模型。
 
-剩余事项按性质区分：
+**小图与多轮行为。** 历史真实容器默认单 hart、手动 4 hart、auto 解析为 4 的小图均
+生成 IDs `[2,3,4,6]`、文本 `2 3 4`，EOS 停止，逐步完整 logits 对 ORT 的最大误差为 0，
+padding `none`。不同上下文和中断后的再次生成可复用同一配置 ELF/bundle；
+历史 QEMU 超时/取消及 Docker 构建 SIGINT/SIGTERM 后未遗留目标进程。
+官方聊天模板的有/无 system 三轮渲染和 token 序列与 Transformers 一致；这些回复由
+模板验证预设，未表示完整模型三轮聊天实跑。
 
-1. **当时仍待远端 CI 证据**：提交前计划获准推送后使用上节 W5-only 入口；
-   后续普通 CI 已通过，完整专项被 Actions 平台阻塞。runner 资源不足、失败或取消
-   必须明确失败，不能用本地 PASS 替代。
-2. **数值验收配置限制**：完整模型 PASS 仅属于已记录的显式参考算术组合；
-   原默认 Mean sequential/nonlinear libm 的历史完整 logits 超差仍保留，不能宣称默认路径也通过。
-   本轮没有修改算术，因此未重复完整模型。
-3. **已知运行边界**：同步构建、传输和 ORT 调用按阶段检查预算，不承诺硬中断任意 ORT 调用。
-   KV cache、持久 guest/权重驻留、RVV 和量化属于后续阶段，不属于 W5 v1 未完成的出口项。
+**2026-10-25 局部修复验证。** 基于 `e93233143d2323de7de6888ff7d73bdbf50784c3`
+加入本轮报告保存与取消处理修复后，注入权限、磁盘满、I/O 和序列化失败，CLI 均保留原始生成错误
+或取消退出码；原本成功的运行在最终报告无法保存时返回失败，不误报成功。后续调用
+仍可正常保存。本轮没有重新执行完整模型，上方完整数值与性能数据仍属于历史基线。
 
-## 发布与首次远端 CI 反馈（2026-10-23）
+真实 Docker 小图在默认 1 hart 和手动 4 hart 下，正常生成均得到 `[2,3,4,6]`、
+文本 `2 3 4`，逐步 ORT 最大误差为 0。向 Docker 客户端发送 SIGINT/SIGTERM 后，
+报告均为 `CANCELLED`，退出码分别为 130/143；宿主 PID 被回收、QEMU 进程组为空、
+`--rm` 容器消失，0.3 秒后复查仍无残留。中断检查以临时 `-S` 包装器控制真实 guest
+的暂停时机，不修改生产 harness；正常生成和恢复使用实际小图前向。
 
-代码、测试和报告已作为独立 [PR #115](https://github.com/ScratchV-Compiler/ScratchV/pull/115)
-提交，初始实现提交为 259fc8e。四份报告链接已经验证可访问；没有合并。
+两种信号之后均复用原 ELF/bundle 恢复生成，IDs、文本及全部逐步 logits 仍与基线一致；
+4 hart 的恢复还实测 `auto` 解析为 4，两组 padding 均为 `none`。这些结果说明小图
+取消、清理和复用正常，不扩大为完整模型重跑或完整多轮聊天结果。
 
-首次 [PR CI](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/39917939519)
-实际执行并通过 12 个 W5 相关 QEMU 小图必跑节点及 2 个官方三轮模板节点。
-W4 unit JUnit 为 1762 passed、4 skipped，四个跳过为三种未提供模型资产的优化器对照及
-Linux 上的 Windows junction 专用测试，不涉及上述 12 个必跑节点。完整 W5 门槛按普通
-PR 路由未选择，汇总明确为 w5_generation_accepted=false。
+原始产物为本地 `output/` 内容，不提交权重、ELF 和逐步 logits：
 
-通用测试发现 8 个失败：6 个来自旧 W3 测试求值器不支持新增 W5 互斥表达式；
-另 2 个来自通用 checkout 未下载 tokenizer 的 Git LFS 内容，测试误把指针当作 JSON。
-修复仅涉及测试：补齐 W3/W5 选择矩阵；默认可选资产缺失或为 LFS 指针时明确 skip，
-显式指定 tokenizer 目录时仍必须有效，真正损坏的 JSON 不隐藏为 skip。
-专用 CI 的两项模板必跑门槛保持不变。修复的直接验证为会话/部署 63 passed、
-W3 工作流 54 passed、相关 W4/W5 入口边界 28 passed；均未运行完整模型。
-修复提交 `8ad347477f7f5ba15b2da7c91178b3c6668456cc` 推送后，
-[普通 PR CI 39919353111](https://github.com/ScratchV-Compiler/ScratchV/actions/runs/39919353111)
-已 **SUCCESS**：14 个 job 成功、7 个按路由跳过；通用测试 6107 passed、93 skipped，
-模拟器 7 passed；W4 unit 1762 passed、4 skipped；W5 必跑小图 12/12 和官方模板
-2/2 均通过。此轮测试的是 PR 临时合并提交 `ce9bd0e438e361ca070fad95a95c4fe412ec751b`，
-不把首次失败改写为成功，也不把未选择的完整生成 job 计作通过。
+- `output/w5-followup-20261023/qemu-reference-4hart/run/report.json`：
+  完整三例；同目录 `steps.json`、`numeric-steps.json`、`resources.json` 为计时与资源细节。
+- `output/w5-followup-20261023/qemu-final-single-forward-4hart/`：宿主独立单次前向。
+- `output/w5-container-20261023/paris/run/report.json`：容器完整 Paris 单 token。
+- `output/w5-container-20261023/small-summary.json`、`small-runs/` 与 `build-cancel/`：
+  容器小图、构建取消和进程清理记录。
+- `output/w5-hardening-20261025/docker-final/test_external_signals_reap_gue{0,1}/docker-cancellation-summary.json`：
+  本轮 1/4 hart 小图外部取消、进程清理和恢复结果。
 
-完整 W5 专项在 fork `yuki-328/ScratchV` 的 dispatch 返回
-`HTTP 422: Actions has been disabled for this repository.`，尚未创建运行。
-已核对仓库 Actions `enabled=true`、工作流 `active`；重新应用相同启用设置返回
-HTTP 204，随后 dispatch 仍为 422。现有证据只能确认平台拒绝创建运行，不能认定是
-模型、runner 资源或工作流中的测试失败；需仓库所有者处理 GitHub 侧限制，恢复后再验收。
-
-另一个自动 AI Code Review 的 `review (1)`、`review (2)` 两个批次失败：
-分别有 2、5 份文件各两次请求均出现 `TimeoutError`。这是外部 API 请求超时导致的
-审查覆盖不完整，不是上述数值或单测失败；检查时后续批次仍在运行/排队。
-本地[审查脚本](../../../scripts/ai_code_review.py)已补有界缓解：新计划改为每批
-5 个文件、180 秒 socket 超时，仍最多两次尝试；旧 10 文件计划保留 90 秒窗口和
-原分组。新增逐次脱敏耗时/结果记录，失败仍使门禁失败。
-[相关测试](../../../tests/test_ai_code_review.py) **71 passed**；未调用外部 AI API。
-180 秒不是整个请求的墙钟硬上限，最终仍受 40 分钟 job 限制。
-
-这部分修复与本轮文档更新作为 PR115 后续变更一起交付；尚未部署到可信主干。
-工作流通过 `pull_request_target` 使用可信 base 的脚本，不能改为携密钥执行 PR head。
-生效顺序是：维护者完成正常审批，将修复通过正常合并纳入 `main`；此后新发生的
-PR 事件才会使用新脚本。仅推送 PR 分支或重新运行仍固定旧 base 的历史 run，
-不应当作修复已经部署。当前失败记录保留，不改写为成功；本轮不合并，也不手动
-追加或重跑 AI 审查。现有日志尚不能区分服务排队、生成慢或网络等待，
-不能声明外部服务已恢复。
-
-第二人[独立复现说明](independent-reproduction.md)已准备，实际执行和签收仍待同事完成。
-当前证据位于 `output/w5-publish-20261023/publication.json`、`actions-recovery.json` 及
-`ci-final-artifacts/`；报告与代码已发布，PR 未合并。
-
-[GitHub 官方说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository)
-指出，仓库/账号可能处于独立的平台停用状态，修改普通开关无法恢复，需要联系
-GitHub Support。当前平台未说明具体原因；普通 PR CI 或本地 PASS 不替代完整专项。
-没有改 WSL、默认 hart/padding 或模型数值策略，也没有重复本地完整模型。
-用户已接受仓库自动审查，没有额外手动发起审查。
-
-## P0/P1 已有验证（2026-10-23，未重复执行）
-
-| 验证 | 结果 | 覆盖边界 |
-|---|---:|---|
-| [Host 生成核心](../../../tests/test_generation.py) | 55 passed | 多步输入与结果、0/负数/布尔预算、EOS/容量优先级、非法输出/ID、第二步错误、取消/超时、不同上下文及输出缓冲区复用 |
-| [参考工具](../../../tests/test_w5_generation_reference.py) | 16 passed | 独立逐步输入/greedy/停止 oracle、冻结字段差异、语义检查和错误识别 |
-| [输入辅助函数](../../../tests/test_llm_inputs.py) / [tokenizer](../../../tests/test_qwen3_tokenizer.py) | 148 passed | 既有固定 ABI、mask、词表、解码和严格边界保持正常 |
-| [hart 选择辅助函数](../../../tests/test_riscv_external_harts.py) | 28 passed | 默认/手动/auto、CPU 可用性回退、非法计数和栈规划；11 项不相关测试未选中 |
-| [W4 CLI 配置边界](../../../tests/test_w4_full_probe_contract.py) | 10 passed | mock 构建覆盖默认单核、手动 2/4、auto 一次解析及复用 hart 匹配；未启动 QEMU |
-
-P0/P1 共 **257 passed**；本轮新增的适配、CLI、多轮、部署及相关运行器检查见 [续作报告](qemu-generation.md)。不将前后轮重叠测试简单累加。
-这组结果验证新 Host 核心及已有配置边界，不代表真实 QEMU 的多 token 端到端门槛通过。
-文档检查确认本页本地链接和索引入口可解析，未增加 AI 审查。
+完整三例的独立容器运行以及其他执行人的独立复现记录仍未取得；不能把宿主三例、
+容器单 token 或本轮局部验证合计成这些结果。现有实现仍是无 KV cache、逐 token
+重启 QEMU 与装载权重；常驻运行、多轮完整模型语义和其他算术策略的完整结果未在
+上述实跑范围内。
