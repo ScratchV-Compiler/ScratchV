@@ -676,22 +676,59 @@ def test_w5_manual_job_reuses_deployment_and_preserves_bounded_full_scope():
     gate = step("Require complete W5 generation evidence")
     assert gate["if"] == "always()" and "scripts/check_w5_ci.py" in gate["run"]
     assert "--exit-code-file output/w5-ci/runner-exit-code.txt" in gate["run"]
+    assert "--log-exit-code-file output/w5-ci/log-exit-code.txt" in gate["run"]
     assert all("continue-on-error" not in item for item in job["steps"])
 
 
 @pytest.mark.parametrize("exit_code", [0, 1, 124, 130, 143])
-def test_w5_deployment_pipeline_preserves_actual_exit(bash, tmp_path, exit_code):
-    (tmp_path / "output/w5-ci").mkdir(parents=True)
+@pytest.mark.parametrize("log_failure", [False, True], ids=["log-ok", "log-full"])
+def test_w5_deployment_pipeline_preserves_actual_exit(bash, tmp_path, exit_code, log_failure):
+    if log_failure and not Path("/dev/full").exists():
+        pytest.skip("Real tee write-failure check requires /dev/full")
+    output = tmp_path / "output/w5-ci"
+    output.mkdir(parents=True)
+    if log_failure:
+        (output / "runner.log").symlink_to("/dev/full")
     script = step("Run the frozen W5 suite through the deployment script")["run"]
-    wrapper = 'timeout() { printf "%s\\n" "$@" > "$ARG_LOG"; return "$MOCK_EXIT"; }\n'
+    # Replace only the expensive producer; execute the actual workflow and real tee.
+    wrapper = ('timeout() { printf "%s\\n" "$@" > "$ARG_LOG"; '
+               'printf "generation stdout\\n"; printf "generation stderr\\n" >&2; '
+               'return "$MOCK_EXIT"; }\n')
     capture = tmp_path / "arguments.txt"
     result = subprocess.run([bash, "--noprofile", "--norc", "-c", wrapper + script], cwd=tmp_path,
-        env=dict(os.environ, ARG_LOG=str(capture), MOCK_EXIT=str(exit_code)), capture_output=True, text=True)
-    assert result.returncode == exit_code, result.stderr
-    assert int((tmp_path / "output/w5-ci/runner-exit-code.txt").read_text()) == exit_code
+        env=dict(os.environ, ARG_LOG=str(capture), MOCK_EXIT=str(exit_code)),
+        capture_output=True, text=True, timeout=10)
+    assert (result.returncode != 0) is (log_failure or exit_code != 0), result.stderr
+    log_exit = int((output / "log-exit-code.txt").read_text())
+    assert (log_exit != 0) is log_failure
+    assert result.returncode == (exit_code or log_exit), result.stderr
+    assert int((output / "runner-exit-code.txt").read_text()) == exit_code
+    assert "generation stdout" in result.stdout and "generation stderr" in result.stdout
+    if log_failure:
+        assert "runner.log" in result.stderr
+    else:
+        assert (output / "runner.log").read_text() == "generation stdout\ngeneration stderr\n"
     args = capture.read_text().splitlines()
     assert "scripts/deploy_w5.sh" in args and "--reference-suite" in args
     assert args[args.index("--total-timeout") + 1] == "16500"
+
+
+@pytest.mark.parametrize("status_file", ["runner-exit-code.txt", "log-exit-code.txt"])
+def test_w5_deployment_pipeline_rejects_status_write_failure(bash, tmp_path, status_file):
+    if not Path("/dev/full").exists():
+        pytest.skip("Real status write-failure check requires /dev/full")
+    output = tmp_path / "output/w5-ci"
+    output.mkdir(parents=True)
+    (output / status_file).symlink_to("/dev/full")
+    script = step("Run the frozen W5 suite through the deployment script")["run"]
+    wrapper = 'timeout() { printf "generation completed\\n"; return 0; }\n'
+    result = subprocess.run([bash, "--noprofile", "--norc", "-c", wrapper + script],
+        cwd=tmp_path, capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0, result.stderr
+    assert (output / "runner.log").read_text() == "generation completed\n"
+    assert result.stderr  # The status write, not generation or tee, must fail.
+    if status_file == "log-exit-code.txt":
+        assert (output / "runner-exit-code.txt").read_text() == "0\n"
 
 
 @pytest.mark.parametrize("cpus,ram,disk,passed", [

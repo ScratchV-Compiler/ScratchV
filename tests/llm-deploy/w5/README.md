@@ -53,6 +53,21 @@ python -B -m pytest tests/test_w5_deployment.py -q -p no:cacheprovider
 
 后者覆盖引擎不可用、构建失败、参数透传，以及 info/build 阶段的取消清理；使用假引擎，不替代本目录的真实 Docker run 阶段检查。
 
+W5 专项的日志退出状态沿用现有工作流测试，直接执行 YAML 中的 Bash，并以短小假生成器
+替代模型。需要 Bash、GNU tee、`/dev/full` 和 PyYAML，不需要 Docker 或模型资产：
+生成或日志任一失败必须失败，分别保留退出码；状态文件本身写失败也不能成功。
+
+```bash
+python -B -m pytest tests/test_w4_workflows.py -k 'w5_deployment_pipeline or w5_manual_job' -q -p no:cacheprovider
+```
+
+报告检查器的无模型测试覆盖有效、非零、缺失、不可读和无效的日志状态；即使生成报告
+为 PASS，也不能覆盖日志失败。旧版未传日志检查参数的调用仍可用：
+
+```bash
+python -B -m pytest tests/test_w5_ci.py -q -p no:cacheprovider
+```
+
 原多轮文档中的模板对照入口保留如下，使用本地官方 tokenizer，不运行完整模型：
 
 ```bash

@@ -570,10 +570,15 @@ jobs:
               --mean-policy two-four-lane-last-axis --nonlinear-policy fp32-reference \
               --timeout 1800 --total-timeout 16500 \
               2>&1 | tee output/w5-ci/runner.log
-          status=${PIPESTATUS[0]}
+          pipeline_status=("${PIPESTATUS[@]}")
           set -e
-          printf '%s\n' "$status" > output/w5-ci/runner-exit-code.txt
-          exit "$status"
+          printf '%s\n' "${pipeline_status[0]}" > output/w5-ci/runner-exit-code.txt
+          printf '%s\n' "${pipeline_status[1]}" > output/w5-ci/log-exit-code.txt
+          # Preserve generation failures (including timeout/cancellation) first.
+          if (( pipeline_status[0] != 0 )); then
+            exit "${pipeline_status[0]}"
+          fi
+          exit "${pipeline_status[1]}"
       - name: Reap any container left by an interrupted Docker client
         if: always()
         timeout-minutes: 2
@@ -592,6 +597,7 @@ jobs:
           python -B -X utf8 scripts/check_w5_ci.py \
             --report output/w5-ci/run/report.json \
             --exit-code-file output/w5-ci/runner-exit-code.txt \
+            --log-exit-code-file output/w5-ci/log-exit-code.txt \
             --output output/w5-ci/ci-gate.json
       - name: Record final W5 resource and retention scope
         if: always()

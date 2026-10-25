@@ -188,8 +188,17 @@ def test_fma_summary_cannot_mask_incomplete_or_failing_rows(gate, report, refere
         gate.validate_report(report, reference)
 
 
-@pytest.mark.parametrize("exit_text,expected", [("0\n", 0), ("130\n", 1), ("", 1)])
-def test_cli_checks_real_exit_code_and_writes_status(gate, report, tmp_path, monkeypatch, exit_text, expected):
+@pytest.mark.parametrize("exit_text", ["0\n", "130\n", ""])
+@pytest.mark.parametrize("log_text", [
+    pytest.param(None, id="legacy-no-log-check"),
+    pytest.param("0\n", id="log-success"),
+    pytest.param("1\n", id="log-failure"),
+    pytest.param("", id="log-empty"),
+    pytest.param("invalid\n", id="log-invalid"),
+    pytest.param("missing", id="log-missing"),
+    pytest.param("directory", id="log-unreadable"),
+])
+def test_cli_checks_real_exit_code_and_writes_status(gate, report, tmp_path, monkeypatch, exit_text, log_text):
     report_path = tmp_path / "report.json"
     report_path.write_text(json.dumps(report))
     exit_path = tmp_path / "exit-code.txt"
@@ -197,13 +206,26 @@ def test_cli_checks_real_exit_code_and_writes_status(gate, report, tmp_path, mon
     output = tmp_path / "gate.json"
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    code = gate.main(["--report", str(report_path), "--exit-code-file", str(exit_path),
-                      "--output", str(output)])
+    argv = ["--report", str(report_path), "--exit-code-file", str(exit_path),
+            "--output", str(output)]
+    if log_text is not None:
+        log_path = tmp_path / "log-exit-code.txt"
+        if log_text == "directory":
+            log_path.mkdir()
+        elif log_text != "missing":
+            log_path.write_text(log_text)
+        argv += ["--log-exit-code-file", str(log_path)]
+    expected = 0 if exit_text == "0\n" and log_text in (None, "0\n") else 1
+    code = gate.main(argv)
     assert code == expected
     result = json.loads(output.read_text())
     assert result["status"] == ("PASS" if expected == 0 else "FAIL")
     assert result["passed"] is (expected == 0)
     assert result["status"] in summary.read_text()
+    if exit_text == "0\n" and log_text in ("1\n", "", "invalid\n"):
+        assert "Log capture process" in result["error"]
+    if expected:
+        assert "24/24 numeric steps" not in summary.read_text()
 
 
 def test_missing_run_report_produces_failure_artifact(gate, tmp_path):

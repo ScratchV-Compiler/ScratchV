@@ -106,6 +106,8 @@ def main(argv=None):
     cli.add_argument("--report", type=Path, required=True)
     cli.add_argument("--reference", type=Path, default=ROOT / "probes/w5_generation/references.json")
     cli.add_argument("--exit-code-file", type=Path, required=True)
+    cli.add_argument("--log-exit-code-file", type=Path,
+                     help="Also require the tee log capture to have exited successfully")
     cli.add_argument("--output", type=Path, required=True)
     args = cli.parse_args(argv)
     result = {"status": "FAIL", "passed": False, "scope": "Three frozen cases, 24 full QEMU forwards",
@@ -113,6 +115,9 @@ def main(argv=None):
               "defaults_changed": False, "raw_logits_uploaded": False}
     try:
         require(args.exit_code_file.read_text().strip() == "0", "Generation process did not exit successfully")
+        if args.log_exit_code_file is not None:
+            require(args.log_exit_code_file.read_text().strip() == "0",
+                    "Log capture process did not exit successfully")
         report = json.loads(args.report.read_text(encoding="utf-8"))
         validate_report(report, json.loads(args.reference.read_text(encoding="utf-8")))
         result.update(status="PASS", passed=True, numeric_steps=24, cases=3,
