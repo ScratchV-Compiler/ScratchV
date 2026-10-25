@@ -382,6 +382,13 @@ jobs:
       - name: Topic 12 instruction-counter benchmark
         run: |
           timeout 300s $PY benchmarks/bench_inst_counter.py --repeats 20
+          $PY -m scratchv.backend.inst_counter \
+            tests/fixtures/inst_counter/compare_before.s \
+            tests/fixtures/inst_counter/compare_after.s \
+            --compare \
+            --json-output benchmark_reports/topic12_compare.json \
+            --markdown benchmark_reports/topic12_compare.md \
+            --html benchmark_reports/topic12_compare.html
 
       # ── 3.2 DSL 用例编译 + 模拟基准 ────────────────────────────────────
       - name: DSL case compilation benchmarks
