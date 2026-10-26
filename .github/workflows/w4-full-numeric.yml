@@ -45,9 +45,20 @@ jobs:
           set -euo pipefail
           mkdir -p output/w4-unit
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y qemu-system-misc
+          sudo apt-get install --no-install-recommends -y qemu-system-misc libopenblas-pthread-dev
           python -m pip install numpy==2.2.6 onnx==1.18.0 onnxruntime==1.22.1 protobuf==5.29.5 pytest==9.1.1 PyYAML==6.0.3 ziglang==0.14.1
           python -m pip install --no-deps -e .
+          # Use the standard LP64 distro library and only the required NMSIS sources.
+          nmsis_dir="$PWD/output/w4-unit/NMSIS"
+          git init "$nmsis_dir"
+          git -C "$nmsis_dir" remote add origin https://github.com/Nuclei-Software/NMSIS.git
+          git -C "$nmsis_dir" sparse-checkout init --cone
+          git -C "$nmsis_dir" sparse-checkout set NMSIS/DSP/Include NMSIS/Core/Include NMSIS/DSP/Source/MatrixFunctions
+          # NMSIS 1.6.0; fixed source revision, no separate SDK build.
+          git -C "$nmsis_dir" fetch --depth 1 --filter=blob:none origin dc728b988b6562868d311a2e14b5d9f8ebbd26b0
+          git -C "$nmsis_dir" checkout --detach FETCH_HEAD
+          printf 'SCRATCHV_NMSIS_ROOT=%s\n' "$nmsis_dir" >> "$GITHUB_ENV"
+          printf 'SCRATCHV_OPENBLAS_INCLUDE_DIR=/usr/include/x86_64-linux-gnu/openblas-pthread\nSCRATCHV_OPENBLAS_LIBRARY_DIR=/usr/lib/x86_64-linux-gnu/openblas-pthread\n' >> "$GITHUB_ENV"
           python -m pip check
           python -m pip freeze > output/w4-unit/dependencies.txt
           zig_dir=$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent)')
@@ -70,6 +81,8 @@ jobs:
             tests/test_licm_safety.py tests/test_optimizer_numeric_semantics.py \
             tests/test_tensor_boundary_contracts.py tests/test_tensor_return_contract.py \
             tests/test_weight_bundle.py tests/test_tensor_c_external.py \
+            tests/test_tensor_c_external_matmul.py tests/test_external_matmul_build.py \
+            tests/test_tensor_c_openblas.py tests/test_tensor_c_nmsis.py \
             tests/test_w4_contract.py tests/test_riscv_external_contract.py \
             tests/test_riscv_external.py tests/test_w4_full_probe.py \
             tests/test_riscv_external_harts.py \
@@ -87,6 +100,12 @@ jobs:
           root = ET.parse("output/w4-unit/tests.xml").getroot()
           required = ("test_external_rv64_matmul_and_reuse", "test_weight_pointer_above_32bit_limit",
                       "test_real_rv64_fma_exact_conformance",
+                      "test_rv64_external_c_function_smoke",
+                      "test_openblas_real_link_runtime_guards_and_adapter_dimensions",
+                      "test_nmsis_adapter_boundaries_in_guest",
+                      "test_compiler_config_executes_nmsis_on_qemu",
+                      "test_rv64_precompiled_provider_executes[object-inline]",
+                      "test_rv64_precompiled_provider_executes[archive-external]",
                       "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-1]",
                       "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-2]",
                       "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-4]",

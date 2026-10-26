@@ -69,6 +69,9 @@ scratchv = "scratchv.main:main"
 [tool.setuptools]
 license-files = ["LICENSE", "LICENSES/*.txt", "THIRD_PARTY_NOTICES.txt"]
 
+[tool.setuptools.package-data]
+"scratchv.backend" = ["openblas_matmul.c", "nmsis_matmul.c"]
+
 [tool.setuptools.packages.find]
 include = ["scratchv", "scratchv.*", "scratchv_dag", "scratchv_dag.*", "benchmarks", "benchmarks.*"]
 

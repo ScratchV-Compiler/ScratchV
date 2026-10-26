@@ -122,6 +122,18 @@ def test_github_path_globs_keep_segment_boundaries(path, pattern, expected):
     assert scope.matches_path(path, pattern) is expected
 
 
+@pytest.mark.parametrize("path", [
+    "scratchv/backend/external_matmul.py", "scratchv/backend/openblas.py",
+    "scratchv/backend/openblas_matmul.c", "scratchv/backend/nmsis.py",
+    "scratchv/backend/nmsis_matmul.c", "tests/test_tensor_c_external_matmul.py",
+    "tests/test_external_matmul_build.py", "tests/test_tensor_c_openblas.py",
+    "tests/test_tensor_c_nmsis.py", "tests/fixtures/external_matmul.c", "pyproject.toml",
+])
+def test_external_matmul_changes_select_the_real_library_job(path):
+    config = scope.read_config(ROOT / "scripts/ci_scopes.json")
+    assert scope.select_scopes(config, [path])["w4"]
+
+
 def test_delivered_w4_scope_receives_matching_and_shared_changes():
     config = {**CONFIG, "w4": ["probes/w4_*/**"]}
     assert scope.select_scopes(config, ["probes/w4_full/run.py"])["w4"]

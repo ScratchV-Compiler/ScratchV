@@ -62,6 +62,22 @@ def test_expensive_forward_is_not_automatic_on_pr_or_enabled_as_a_schedule():
     assert "if" not in data["jobs"]["unit"]
 
 
+def test_small_job_provisions_real_external_libraries_and_selects_their_tests():
+    setup = step("Install fixed regression dependencies and tools")["run"]
+    assert "libopenblas-pthread-dev" in setup
+    assert "https://github.com/Nuclei-Software/NMSIS.git" in setup
+    assert "fetch --depth 1 --filter=blob:none origin dc728b988b6562868d311a2e14b5d9f8ebbd26b0" in setup
+    assert "sparse-checkout set NMSIS/DSP/Include NMSIS/Core/Include NMSIS/DSP/Source/MatrixFunctions" in setup
+    for variable in ("SCRATCHV_OPENBLAS_INCLUDE_DIR", "SCRATCHV_OPENBLAS_LIBRARY_DIR", "SCRATCHV_NMSIS_ROOT"):
+        assert variable in setup
+    assert "openblas-pthread" in setup and '>> "$GITHUB_ENV"' in setup
+    command = step("Run ABI, streaming bundle, runner and actual QEMU tests")["run"]
+    for filename in ("test_tensor_c_external_matmul.py", "test_external_matmul_build.py",
+                     "test_tensor_c_openblas.py", "test_tensor_c_nmsis.py"):
+        assert "tests/" + filename in command
+    assert "--run-full" not in command and "probes.w4_qwen3_full.run" not in command
+
+
 def test_single_ci_entry_calls_w4_unit_only_on_pull_requests():
     data = workflow(CI_PATH)
     assert "pull_request" in data["on"]
@@ -300,6 +316,12 @@ def test_actual_ci_report_gate_rejects_false_or_incomplete_acceptance(tmp_path, 
 @pytest.mark.parametrize("result", ["pass", "skipped", "failure", "error", "missing", "duplicate"])
 @pytest.mark.parametrize("required", ["test_external_rv64_matmul_and_reuse", "test_weight_pointer_above_32bit_limit",
     "test_real_rv64_fma_exact_conformance",
+    "test_rv64_external_c_function_smoke",
+    "test_openblas_real_link_runtime_guards_and_adapter_dimensions",
+    "test_nmsis_adapter_boundaries_in_guest",
+    "test_compiler_config_executes_nmsis_on_qemu",
+    "test_rv64_precompiled_provider_executes[object-inline]",
+    "test_rv64_precompiled_provider_executes[archive-external]",
     "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-1]",
     "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-2]",
     "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-4]",
@@ -321,6 +343,12 @@ def test_actual_junit_gate_requires_real_qemu_execution(tmp_path, result, requir
         case *= 2
     for name in ("test_external_rv64_matmul_and_reuse", "test_weight_pointer_above_32bit_limit",
                  "test_real_rv64_fma_exact_conformance",
+                 "test_rv64_external_c_function_smoke",
+                 "test_openblas_real_link_runtime_guards_and_adapter_dimensions",
+                 "test_nmsis_adapter_boundaries_in_guest",
+                 "test_compiler_config_executes_nmsis_on_qemu",
+                 "test_rv64_precompiled_provider_executes[object-inline]",
+                 "test_rv64_precompiled_provider_executes[archive-external]",
                  "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-1]",
                  "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-2]",
                  "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-4]",

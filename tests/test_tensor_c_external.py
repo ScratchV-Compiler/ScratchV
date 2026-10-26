@@ -21,6 +21,7 @@ import pytest
 from scratchv.backend.tensor_c_codegen import TensorCCodegen, TensorCCodegenError
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import DataType, Value
+from scratchv.runtime.riscv_tensor import _external_matmul_build_args
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,10 +65,11 @@ def library(tmp_path, artifact, compiler):
     environment = dict(os.environ)
     environment.setdefault("ZIG_GLOBAL_CACHE_DIR", str(ROOT / "output/zig-global-cache"))
     environment.setdefault("ZIG_LOCAL_CACHE_DIR", str(tmp_path / "zig-cache"))
-    command = [*compiler, "-shared", "-O2", "-std=c11", *artifact.compile_flags]
+    sources, cflags, ldflags, strict = _external_matmul_build_args(artifact, "host")
+    command = [*compiler, "-shared", "-O2", "-std=c11", *artifact.compile_flags, *cflags]
     if sys.platform != "win32":
         command.append("-fPIC")
-    command += [str(source), "-o", str(binary), "-lm"]
+    command += [str(source), *sources, "-o", str(binary), "-lm", *ldflags, *strict]
     result = subprocess.run(command, capture_output=True, text=True,
                             timeout=180, env=environment)
     assert result.returncode == 0, result.stdout + result.stderr
