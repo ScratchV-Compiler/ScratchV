@@ -44,6 +44,7 @@
 | [developer_guide.md](reference/developer_guide.md) | 开发者指南：代码规范、测试、CI |
 | [optimization_guide.md](reference/optimization_guide.md) | 优化指南：从哪里入手、怎么验证 |
 | [verification.md](reference/verification.md) | 验证方法：如何确认编译结果正确 |
+| [W5 功能、验证与性能数据](llm-deploy-v1.0/W5/README.md#maintainer-overview) | 改动范围、数值/耗时、CI/benchmark、复现及未验证范围 |
 | [CODING_STANDARDS.md](reference/CODING_STANDARDS.md) | 代码风格规范 |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | 贡献指南 |
 

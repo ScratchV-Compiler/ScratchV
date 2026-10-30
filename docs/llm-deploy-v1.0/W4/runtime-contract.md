@@ -63,6 +63,33 @@ int scratchv_run_external(const void *const inputs[],
 blocked_fma；后者按 128 项 K 分块、块内显式融合乘加、块间 FP32 相加。保持非
 fast-math、禁止隐式 FMA 合并，不能将两种累加顺序声称为逐位等价。
 
+`mean_policy` 默认为 `sequential`。W4/W5 CLI 可显式传
+`--mean-policy two-four-lane-last-axis`，只对 FP32 单一末轴 ReduceMean 使用已有
+W3 参考的双四路固定求和顺序；这是便携标量 C，不要求宿主或 guest 支持 SSE/RVV。
+非末轴归约、MatMul 和 Softmax 不随此选项改变。它可能改变 FP32 舍入结果，
+不能当作与旧顺序逐位等价，也不能标成完整的 `numpy-fp32-reference-v4` 实现。
+构建/运行报告记录该策略，旧构建缺字段只解释为 `sequential`；不同策略的 ELF
+不得混用。默认值、有限性检查、错误传播和工作区要求保持不变。
+
+`nonlinear_policy` 默认为 `libm`，保留原 Sin/Cos、Sigmoid 和 Softmax 路径。
+显式 `--nonlinear-policy fp32-reference` 使用已有参考的非融合三角多项式、
+Sigmoid 有理多项式及 Softmax 的 16 路求和/倒数乘法顺序；以标量 C 和显式 FP32 FMA
+实现，不要求 guest 支持 AVX512，也不按宿主 ISA 自动切换。三角函数在
+`abs(x) >= 18000` 时保留平台 libm 回退；不承诺该范围与所有平台逐位一致。
+它与 Mean 选项独立，既不改变 MatMul 策略，也不改变 Pow。两个选项都可能改变
+舍入结果；不能把组合称为完整 FP32 reference profile 的逐位实现或任意 ORT 版本的保证。
+原有限性检查、错误传播、Softmax 行并行/回调复用和工作区契约仍适用。
+
+参考 Sigmoid 将输入夹到 [-18, 18]、输出夹到 [0, 1]；Softmax 将减去行最大值后的
+指数输入下限固定为约 -103.972084。原非有限输入（包括 -inf mask）以及有限值相减
+产生的非有限结果仍被拒绝。这是固定数值策略，不代表通用精度提升；数值对照以
+IEEE FP32、最近偶数舍入（RNE）、保留次正规数及显式 FMA、禁止隐式融合/fast-math
+为前提。现有验证覆盖当前 Host 与 RV64GC/QEMU，不构成任意 ORT 版本、CPU dispatch、
+NPU 或 flush-to-zero 模式的等价保证。
+
+构建/运行证据记录此策略，缺字段的旧 ELF 只解释为 `libm`；CLI 复用必须显式匹配。
+数值策略需要重新生成 ELF，兼容的原权重 bundle 可以复用。
+
 `riscv_external.py` 验证 ELF 架构、ABI、入口、装载段和布局，启动裸机 QEMU。guest
 输出完成帧后，host 用 QMP 停止并转储精确大小输出，再退出；输出不是由 host C/NumPy
 替算。实际 QEMU 在完整运行前须通过严格 FMA 位模式/FCSR 检查。

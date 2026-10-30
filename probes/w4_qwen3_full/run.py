@@ -26,7 +26,7 @@ from probes.w3_qwen3_full.cases import input_cases, CASE_NAMES
 from probes.w4_qwen3_full.fma_conformance import run_probe as run_fma_probe
 from scratchv.backend.tensor_c_codegen import TensorCCodegen, TensorSpec, _shape
 from scratchv.ir.types import DataType
-from scratchv.runtime.riscv_harts import resolve_harts
+from scratchv.runtime.riscv_harts import read_cores, resolve_cores
 from scratchv.runtime.riscv_external import build_external, run_external, ExternalExecutable, validate_external_elf
 from scratchv.runtime.riscv_tensor import discover_toolchain, RiscVToolchain, input_layout, toolchain_versions
 from scratchv.runtime.weight_bundle import write_weight_bundle, validate_weight_bundle, plan_guest_memory
@@ -103,11 +103,16 @@ def spec_json(spec):
 
 
 def save_executable(exe, out):
+    cores = read_cores(exe.evidence)
+    if cores != exe.cores:
+        raise ValueError("Executable core count does not match build evidence")
+    # Keep equal legacy fields so existing readers can consume newly saved builds.
+    evidence = {**exe.evidence, "cores": cores, "harts": cores}
     record = {"elf": str(exe.elf_path), "bundle_dir": str(exe.bundle_dir), "manifest": exe.manifest,
               "layout": exe.layout, "inputs": [spec_json(s) for s in exe.inputs],
               "weights": [spec_json(s) for s in exe.weights], "output": spec_json(exe.output),
-              "cc": list(exe.toolchain.cc), "qemu": exe.toolchain.qemu, "evidence": exe.evidence,
-              "harts": exe.harts}
+              "cc": list(exe.toolchain.cc), "qemu": exe.toolchain.qemu, "evidence": evidence,
+              "cores": cores, "harts": cores}
     atomic_text(out / "executable.json", json.dumps(record, indent=2) + "\n")
     return sha256_file(out / "executable.json")
 
@@ -138,18 +143,22 @@ def load_executable(path):
     exe = ExternalExecutable(Path(record["elf"]), Path(record["bundle_dir"]), record["manifest"],
         record["layout"], tuple(map(spec, record["inputs"])), spec(record["output"]),
         tuple(map(spec, record["weights"])), RiscVToolchain(tuple(record["cc"]), record["qemu"]),
-        record["evidence"], harts=record.get("harts", 1))
-    if (type(exe.harts) is not int or exe.harts not in (1, 2, 4)
-            or type(exe.evidence.get("harts", 1)) is not int
-            or exe.evidence.get("harts", 1) != exe.harts):
-        raise ValueError("Reused hart count does not match build evidence")
+        record["evidence"], cores=read_cores(record))
+    if read_cores(exe.evidence) != exe.cores:
+        raise ValueError("Reused core count does not match build evidence")
+    mean_policy = exe.evidence.get("mean_policy", "sequential")
+    if not isinstance(mean_policy, str) or mean_policy not in ("sequential", "two-four-lane-last-axis"):
+        raise ValueError("Unsupported reused Mean policy")
+    nonlinear_policy = exe.evidence.get("nonlinear_policy", "libm")
+    if not isinstance(nonlinear_policy, str) or nonlinear_policy not in ("libm", "fp32-reference"):
+        raise ValueError("Unsupported reused nonlinear policy")
     manifest = validate_weight_bundle(exe.bundle_dir, exe.weights)
     if manifest != exe.manifest:
         raise ValueError("Reused weights do not match build manifest")
     _, input_bytes = input_layout(exe.inputs)
     layout = plan_guest_memory(workspace_bytes=exe.layout["regions"]["workspace"]["nbytes"],
         weight_bytes=manifest["total_bytes"], input_bytes=input_bytes, output_bytes=exe.output.nbytes,
-        harts=exe.harts)
+        cores=exe.cores)
     if layout != exe.layout:
         raise ValueError("Reused memory layout is not the canonical non-overlapping plan")
     evidence = validate_external_elf(exe.elf_path, layout)
@@ -160,7 +169,7 @@ def load_executable(path):
     for name, digest in exe.evidence["sources"].items():
         if Path(name).name != name or sha256_file(exe.elf_path.parent / name) != digest:
             raise ValueError("Reused generated source changed after build")
-    return exe
+    return replace(exe, evidence={**exe.evidence, "cores": exe.cores, "harts": exe.cores})
 
 
 def ort_reference(model_dir, feed, output):
@@ -179,6 +188,39 @@ def ort_reference(model_dir, feed, output):
     gc.collect()
 
 
+class CoreNamespace(argparse.Namespace):
+    """Keep the legacy attribute as a live alias, including caller updates."""
+
+    @property
+    def harts(self):
+        return self.cores
+
+    @harts.setter
+    def harts(self, value):
+        self.cores = value
+
+
+class _CoreCountAction(argparse.Action):
+    """One count for both spellings; never silently let one override the other."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        provided = getattr(namespace, "_core_count_arguments", {})
+        if any(name != option_string and value != values for name, value in provided.items()):
+            parser.error("--cores and --harts must specify the same value")
+        # Preserve argparse's last-value behavior when a wrapper repeats one spelling.
+        provided[option_string] = values
+        namespace._core_count_arguments = provided
+        setattr(namespace, self.dest, values)
+
+
+def add_core_argument(parser):
+    parser.add_argument("--cores", "--harts", dest="cores",
+                        choices=("1", "2", "4", "auto"), default="1",
+                        action=_CoreCountAction,
+                        help="QEMU CPU cores (default: 1); auto selects 1/2/4 from available CPUs, "
+                             "up to 4; --harts is a compatibility alias; parallel MatMul requires blocked_fma")
+
+
 def main(argv=None):
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--model-dir", type=Path, required=True)
@@ -190,35 +232,39 @@ def main(argv=None):
                      default="none",
                      help="QEMU-only experimental two-buffer workspace layout (default: none); "
                           "padding adds 4 KiB and may reduce performance; unsupported graphs fail")
-    cli.add_argument("--harts", choices=("1", "2", "4", "auto"), default="1",
-                     help="RV64 harts (default: 1); auto selects 1/2/4 from available CPUs, "
-                          "up to 4; parallel MatMul requires blocked_fma")
+    add_core_argument(cli)
     cli.add_argument("--timeout", type=float, default=10800)
     cli.add_argument("--build-timeout", type=float, default=900)
     cli.add_argument("--build-only", action="store_true")
     cli.add_argument("--matmul-policy", choices=("sequential", "blocked_fma"), default="sequential")
+    cli.add_argument("--mean-policy", choices=("sequential", "two-four-lane-last-axis"), default="sequential",
+                     help="FP32 last-axis Mean order; explicit W3 reference component, not its full profile")
+    cli.add_argument("--nonlinear-policy", choices=("libm", "fp32-reference"), default="libm",
+                     help="Explicit FP32 Trig/Sigmoid/Softmax order; default preserves platform libm")
     cli.add_argument("--matmul-tile", choices=("1x4", "2x4", "1x8"), default="1x4",
                      help="MatMul output tile (default: 1x4); 2x4/1x8 require blocked_fma")
     cli.add_argument("--reuse-build", type=Path, help="Local executable.json; verified before every run")
     cli.add_argument("--matmul-rhs-layout", choices=("original", "column-panel"), default="original",
                      help="Experimental immutable MatMul RHS packing (default: original); "
                           "column-panel requires blocked_fma")
-    args = cli.parse_args(argv)
+    args = cli.parse_args(argv, namespace=CoreNamespace())
     if args.matmul_tile != "1x4" and args.matmul_policy != "blocked_fma":
         cli.error("--matmul-tile 2x4/1x8 requires --matmul-policy blocked_fma")
     if args.matmul_rhs_layout != "original" and args.matmul_policy != "blocked_fma":
         cli.error("--matmul-rhs-layout column-panel requires --matmul-policy blocked_fma")
-    requested_harts = args.harts if args.harts == "auto" else int(args.harts)
-    args.harts = resolve_harts(requested_harts)
-    if requested_harts == "auto":
-        print(f"[W4] auto selected {args.harts} hart(s)", flush=True)
+    requested_cores = args.cores if args.cores == "auto" else int(args.cores)
+    args.cores = resolve_cores(requested_cores)
+    if requested_cores == "auto":
+        print(f"[W4] auto selected {args.cores} core(s)", flush=True)
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=False)
     start = time.perf_counter()
     report = {"schema_version": 1, "gate": "numeric:qemu-full-qwen3", "passed": False,
               "status": "FAIL", "stage": "initialization", "stages_seconds": {}, "cases": [],
-              "harts_requested": requested_harts, "harts": args.harts,
-              "matmul_tile": args.matmul_tile,
+              "cores_requested": requested_cores, "cores": args.cores,
+              "harts_requested": requested_cores, "harts": args.cores,
+              "matmul_tile": args.matmul_tile, "mean_policy": args.mean_policy,
+              "nonlinear_policy": args.nonlinear_policy,
               "matmul_rhs_layout": args.matmul_rhs_layout,
               "qemu_workspace_layout_requested": args.qemu_workspace_layout,
               "gates": {"build:riscv-full": False, "smoke:qemu-full": False,
@@ -247,7 +293,6 @@ def main(argv=None):
         model_dir = args.model_dir.resolve()
         report["model_dir"] = str(model_dir)
         report["matmul_policy"] = args.matmul_policy
-        report["harts"] = args.harts
         report["model_files"] = stage("asset_hashes", lambda: assets.verify_files(model_dir))
         import onnx
         model = stage("metadata_load", lambda: onnx.load(str(model_dir / "model.onnx"), load_external_data=False))
@@ -259,8 +304,19 @@ def main(argv=None):
             if sha256_file(args.reuse_build) != previous.get("executable_sha256"):
                 raise ValueError("Reused executable metadata hash is missing or changed")
             exe = stage("load_existing_build", lambda: load_executable(args.reuse_build))
-            if exe.harts != args.harts:
-                raise ValueError("Reused build hart count differs from requested --harts")
+            if (("cores" in previous or "harts" in previous)
+                    and read_cores(previous) != exe.cores):
+                raise ValueError("Reused report core count differs from executable")
+            if exe.cores != args.cores:
+                raise ValueError("Reused build core count differs from requested --cores")
+            if (exe.evidence.get("mean_policy", "sequential") != args.mean_policy
+                    or previous.get("mean_policy", "sequential") != args.mean_policy):
+                raise ValueError("Reused build Mean policy differs from requested --mean-policy; "
+                                 "rebuild the executable")
+            if (exe.evidence.get("nonlinear_policy", "libm") != args.nonlinear_policy
+                    or previous.get("nonlinear_policy", "libm") != args.nonlinear_policy):
+                raise ValueError("Reused build nonlinear policy differs from requested --nonlinear-policy; "
+                                 "rebuild the executable")
             if (exe.evidence.get("matmul_tile", "1x4") != args.matmul_tile
                     or previous.get("matmul_tile", "1x4") != args.matmul_tile):
                 raise ValueError("Reused build MatMul tile differs from requested --matmul-tile; "
@@ -304,6 +360,7 @@ def main(argv=None):
                 initializers=parser.initializers, constant_storage="external",
                 max_constant_bytes=3 * 1024**3, max_workspace_bytes=1024**3,
                 kernel_calls=True, matmul_policy=args.matmul_policy, matmul_tile=args.matmul_tile,
+                mean_policy=args.mean_policy, nonlinear_policy=args.nonlinear_policy,
                 matmul_rhs_layout=args.matmul_rhs_layout,
                 qemu_workspace_layout=args.qemu_workspace_layout).generate())
             report["codegen"] = {"source_bytes": len(artifact.source.encode()),
@@ -313,6 +370,8 @@ def main(argv=None):
                                   "qemu_workspace_buffers": artifact.qemu_workspace_buffers,
                                   "weights": len(artifact.external_weights),
                                   "kernel_calls": artifact.kernel_calls,
+                                  "mean_policy": artifact.mean_policy,
+                                  "nonlinear_policy": artifact.nonlinear_policy,
                                   "matmul_tile": artifact.matmul_tile,
                                   "matmul_rhs_layout": artifact.matmul_rhs_layout,
                                   "matmul_rhs_panels": list(artifact.matmul_rhs_panels),
@@ -321,7 +380,7 @@ def main(argv=None):
                 artifact.external_initializers, out / "weights"))
             toolchain = discover_toolchain(args.cc, args.qemu)
             exe = stage("build_riscv_full", lambda: build_external(artifact, out / "weights",
-                out / "build", toolchain, timeout=args.build_timeout, harts=args.harts))
+                out / "build", toolchain, timeout=args.build_timeout, cores=args.cores))
             del artifact, program, parser
             gc.collect()
         report["executable_sha256"] = save_executable(exe, out)

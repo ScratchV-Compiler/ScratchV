@@ -34,7 +34,7 @@ def test_reusable_jobs_share_the_callers_run_and_same_commit():
         assert not ({'pull_request', 'push'} & set(workflow(filename)['on']))
     assert jobs['llm']['needs'] == 'scope'
     assert jobs['llm']['if'] == "github.event_name == 'pull_request' && needs.scope.outputs.llm == 'true'"
-    assert workflow('llm-deploy.yml')['jobs']['full-qwen3-onnx']['if'] == "github.event_name != 'pull_request'"
+    assert workflow('llm-deploy.yml')['jobs']['full-qwen3-onnx']['if'] == "github.event_name != 'pull_request' && !inputs.run_w5_validation"
     assert 'workflow_dispatch' in workflow('llm-deploy.yml')['on']
 
 
@@ -96,7 +96,7 @@ def test_the_w1_w2_job_writes_no_step_summary():
     data = workflow('llm-deploy.yml')
     writers = {name for name, job in data['jobs'].items()
                for step in job.get('steps', []) if 'GITHUB_STEP_SUMMARY' in step.get('run', '')}
-    assert writers == {'full-qwen3-onnx', 'w3-execution-summary', 'w4-execution-summary'}
+    assert writers == {'full-qwen3-onnx', 'w3-execution-summary', 'w4-execution-summary', 'w5-execution-summary'}
 
 
 def test_linux_reproduction_check_runs_without_a_path_filter():
@@ -224,3 +224,33 @@ def test_delegated_rv64_junit_check_requires_one_real_success(tmp_path, outcome)
     result = subprocess.run([sys.executable, '-c', checker], cwd=tmp_path,
                             capture_output=True, text=True)
     assert (result.returncode == 0) is (outcome == 'success')
+
+
+@pytest.mark.parametrize("suffix", ["None", "Give brief answers."])
+@pytest.mark.parametrize("outcome", ["pass", "skipped", "failure", "error", "missing", "duplicate"])
+def test_w5_official_three_round_template_must_execute(tmp_path, suffix, outcome):
+    import subprocess
+    import sys
+    import xml.etree.ElementTree as ET
+
+    steps = workflow("llm-deploy.yml")["jobs"]["llm-deploy"]["steps"]
+    actual = next(step for step in steps if step.get("name") == "W5 official three-round conversation template")
+    assert "tests/test_conversation.py::test_official_three_round_rendering_matches_transformers" in actual["run"]
+    assert "if" not in actual and "continue-on-error" not in actual
+    checker = actual["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    suite = ET.Element("testsuite")
+    for current in ("None", "Give brief answers."):
+        if current == suffix and outcome == "missing":
+            continue
+        name = f"test_official_three_round_rendering_matches_transformers[{current}]"
+        row = ET.SubElement(suite, "testcase", name=name)
+        if current == suffix:
+            if outcome in ("skipped", "failure", "error"):
+                ET.SubElement(row, outcome)
+            elif outcome == "duplicate":
+                ET.SubElement(suite, "testcase", name=name)
+    directory = tmp_path / "output/w5-multiturn"
+    directory.mkdir(parents=True)
+    ET.ElementTree(suite).write(directory / "tests.xml")
+    result = subprocess.run([sys.executable, "-c", checker], cwd=tmp_path, capture_output=True, text=True)
+    assert (result.returncode == 0) is (outcome == "pass"), result.stderr
