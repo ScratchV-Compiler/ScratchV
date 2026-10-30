@@ -265,6 +265,12 @@ class CompilerDriver:
             output_path = {"llvm": "output.ll", "tensor-c": "output.c", "ir": "output.ir"}.get(
                 self.config.backend, "output.s")
 
+        if self.config.backend == "llvm" and self.config.count_instr:
+            return CompileResult(
+                success=False,
+                errors=["Instruction counting is not supported for LLVM backend."],
+            )
+
         use_dsl = dsl_source is not None or (input_path and input_path.endswith(".dsl"))
 
         if use_dsl:
@@ -440,7 +446,19 @@ class CompilerDriver:
                 warnings=warnings,
             )
 
-        # --- 6. Cycle estimation ---
+        # --- 6. Instruction count stats ---
+        # When --count-instr is requested, parse the generated RISC-V assembly and categorize
+        # instructions into 9 canonical functional categories, attaching the statistics dict
+        # to the CompileResult stats for CLI and programmatic consumers.
+        instruction_count_stats = None
+        if self.config.count_instr and asm_text:
+            try:
+                from scratchv.backend.inst_counter import analyze_instructions
+                instruction_count_stats = analyze_instructions(asm_text).to_dict()
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"Instruction counting failed: {e}")
+
+        # --- 7. Cycle estimation ---
         cycle_report = ""
         if self.config.cycle_stats:
             from scratchv.backend.cycle_estimator import (
@@ -460,7 +478,7 @@ class CompilerDriver:
             except Exception as e:  # noqa: BLE001
                 warnings.append(f"Cycle estimation failed: {e}")
 
-        # --- 7. Write output ---
+        # --- 8. Write output ---
         with open(output_path, "w") as f:
             f.write(asm_text)
 
@@ -476,6 +494,7 @@ class CompilerDriver:
                 "register_map": dict(self._last_register_map),
                 "allocation": dict(self._last_allocation_stats),
                 "assembly": self._pass_stats(self._assembly_report),
+                **({"instruction_count": instruction_count_stats} if instruction_count_stats is not None else {}),
                 **schedule_stats,
             },
             warnings=warnings,

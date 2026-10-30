@@ -4,6 +4,7 @@ __pycache__/
 dist/
 build/
 *.s
+!tests/fixtures/**/*.s
 *.o
 *.ll
 models/
