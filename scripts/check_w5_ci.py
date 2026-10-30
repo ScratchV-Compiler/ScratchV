@@ -8,9 +8,15 @@ import math
 import os
 from pathlib import Path
 import re
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-POLICIES = {"harts": 4, "matmul_policy": "blocked_fma", "matmul_tile": "2x4",
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scratchv.runtime.riscv_harts import UNSET, read_cores
+
+POLICIES = {"cores": 4, "matmul_policy": "blocked_fma", "matmul_tile": "2x4",
             "matmul_rhs_layout": "column-panel", "mean_policy": "two-four-lane-last-axis",
             "nonlinear_policy": "fp32-reference", "qemu_workspace_layout": "none"}
 
@@ -34,8 +40,10 @@ def validate_report(report, reference):
             "Generation did not complete the full reference gate")
     build = report.get("build", {})
     for key, value in POLICIES.items():
-        require(type(report.get(key)) is type(value) and report[key] == value
-                and type(build.get(key)) is type(value) and build[key] == value,
+        reported = read_cores(report, default=UNSET) if key == "cores" else report.get(key)
+        built = read_cores(build, default=UNSET) if key == "cores" else build.get(key)
+        require(type(reported) is type(value) and reported == value
+                and type(built) is type(value) and built == value,
                 f"Unexpected {key} in report/build")
     audit = build.get("w5_graph_audit", {})
     require(audit.get("passed") is True and type(audit.get("layer_count")) is int
@@ -95,8 +103,9 @@ def validate_report(report, reference):
                     and type(run.get("step")) is int and run["step"] == index
                     and type(run.get("valid_length")) is int and run["valid_length"] == valid_length
                     and run.get("elf_sha256") == elf and run.get("weight_sha256") == weights
+                    and read_cores(run, default=UNSET) == POLICIES["cores"]
                     and all(type(run.get(key)) is type(POLICIES[key]) and run[key] == POLICIES[key]
-                            for key in ("harts", "mean_policy", "nonlinear_policy", "qemu_workspace_layout")),
+                            for key in ("mean_policy", "nonlinear_policy", "qemu_workspace_layout")),
                     f"QEMU completion, cleanup or reuse failed at forward {index}")
             index += 1
 
@@ -128,7 +137,7 @@ def main(argv=None):
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     text = (f"## W5 generation {result['status']}\n\n{result['scope']}. "
-            "4 hart; explicit Mean/nonlinear reference policies; padding off. "
+            "4 core; explicit Mean/nonlinear reference policies; padding off. "
             "This is not acceptance of the unchanged default arithmetic configuration.\n\n"
             + (f"24/24 numeric steps, 3/3 frozen outputs; max_abs={result['max_abs']:.9g}; "
                f"elapsed={result['elapsed_seconds']} s.\n" if result["passed"]

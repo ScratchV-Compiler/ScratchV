@@ -1365,7 +1365,7 @@ def test_column_panel_rv64_errors_recover_in_same_guest_workspace(tmp_path):
     from scratchv.runtime.riscv_tensor import discover_toolchain
     from scratchv.runtime.weight_bundle import write_weight_bundle
 
-    # Only the final row is poisoned, owned by a worker in the 4-hart 2x4 partition.
+    # Only the final row is poisoned, owned by a worker in the 4-core 2x4 partition.
     program, bindings, data = _panel_graph(k=129, n=17, m=17, transpose=True)
     bindings["panel_weight"].fill(2.0)
     data.fill(0.25)

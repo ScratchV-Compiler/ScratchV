@@ -93,10 +93,11 @@ def test_build_failure_never_starts_generation(setup):
     assert [call[0] for call in recorded(calls)] == ["info", "build"]
 
 
-def test_arguments_mounts_and_invoking_user_are_preserved(setup):
+@pytest.mark.parametrize("option", ["--cores", "--harts"])
+def test_arguments_mounts_and_invoking_user_are_preserved(setup, option):
     env, calls, output = setup
     args = ["--model", "/assets/model.onnx", "--tokenizer-dir", "/assets/tokenizer",
-            "--prompt", "quotes '$HOME'; * stay literal", "--harts", "auto",
+            "--prompt", "quotes '$HOME'; * stay literal", option, "auto",
             "--output-dir", "/output/second run"]
     result = run(env, *args)
     assert result.returncode == 0, result.stderr

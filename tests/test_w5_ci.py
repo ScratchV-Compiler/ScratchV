@@ -236,3 +236,38 @@ def test_missing_run_report_produces_failure_artifact(gate, tmp_path):
                       "--exit-code-file", str(exit_path), "--output", str(output)]) == 1
     result = json.loads(output.read_text())
     assert result["status"] == "FAIL" and result["passed"] is False
+
+
+@pytest.mark.parametrize("form", ["cores", "harts", "both", "mixed"])
+def test_core_field_compatibility_at_report_build_and_each_forward(gate, report, reference, form):
+    records = [report, report["build"], *report["runs"]]
+    for index, record in enumerate(records):
+        count = record.pop("harts")
+        selected = ("cores" if index % 2 else "harts") if form == "mixed" else form
+        if selected in ("cores", "both"):
+            record["cores"] = count
+        if selected in ("harts", "both"):
+            record["harts"] = count
+    assert gate.validate_report(report, reference) is None
+
+
+@pytest.mark.parametrize("location", ["top", "build", "run"])
+@pytest.mark.parametrize("fields", [
+    {},
+    {"cores": 1},
+    {"cores": True},
+    {"cores": 4.0},
+    {"cores": "4"},
+    {"cores": None},
+    {"cores": 4, "harts": 1},
+    {"cores": 1, "harts": 4},
+    {"cores": 4, "harts": 4.0},
+    {"cores": 4, "harts": None},
+])
+def test_missing_invalid_or_conflicting_core_fields_cannot_pass(
+        gate, report, reference, location, fields):
+    target = report if location == "top" else report["build"] if location == "build" else report["runs"][7]
+    target.pop("harts")
+    target.update(fields)
+    with pytest.raises(ValueError):
+        gate.validate_report(report, reference)

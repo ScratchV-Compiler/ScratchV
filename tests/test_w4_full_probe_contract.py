@@ -370,7 +370,7 @@ def test_reused_executable_rejects_invalid_harts(tmp_path, monkeypatch, harts):
     path, record = _saved_executable(tmp_path, monkeypatch)
     record["harts"] = record["evidence"]["harts"] = harts
     path.write_text(json.dumps(record), encoding="utf-8")
-    with pytest.raises(ValueError, match="hart"):
+    with pytest.raises(ValueError, match="core|hart"):
         run.load_executable(path)
 
 
@@ -378,7 +378,7 @@ def test_reused_executable_rejects_hart_count_changed_without_rebuild(tmp_path, 
     path, record = _saved_executable(tmp_path, monkeypatch)
     record["harts"] = 4
     path.write_text(json.dumps(record), encoding="utf-8")
-    with pytest.raises(ValueError, match="hart"):
+    with pytest.raises(ValueError, match="core|hart"):
         run.load_executable(path)
 
 
@@ -416,15 +416,15 @@ def test_full_cli_resolves_harts_once_before_tiny_graph_build(tmp_path, monkeypa
     expected = 2 if requested == "auto" else requested or 1
     built = []
     def stopped_build(artifact, *a, **kw):
-        built.append(kw["harts"])
-        assert type(kw["harts"]) is int and kw["harts"] == expected
+        built.append(kw["cores"])
+        assert type(kw["cores"]) is int and kw["cores"] == expected
         assert artifact.qemu_workspace_layout == layout
         assert artifact.mean_policy == mean_policy
         assert artifact.nonlinear_policy == nonlinear_policy
         raise RuntimeError("intentional tiny-graph build stop")
     monkeypatch.setattr(run, "build_external", stopped_build)
     if requested is not None:
-        arguments += ["--harts", str(requested)]
+        arguments += ["--cores" if layout == "none" else "--harts", str(requested)]
     if layout != "none":
         arguments += ["--qemu-workspace-layout", layout]
     arguments += ["--mean-policy", mean_policy, "--nonlinear-policy", nonlinear_policy]
@@ -433,7 +433,8 @@ def test_full_cli_resolves_harts_once_before_tiny_graph_build(tmp_path, monkeypa
     assert built == [expected]
     assert probes == ([0] if requested == "auto" else [])
     assert saved["harts_requested"] == (requested if requested is not None else 1)
-    assert saved["harts"] == expected
+    assert saved["cores"] == saved["harts"] == expected
+    assert saved["cores_requested"] == saved["harts_requested"]
     assert saved["qemu_workspace_layout_requested"] == saved["codegen"]["qemu_workspace_layout"] == layout
     assert saved["mean_policy"] == saved["codegen"]["mean_policy"] == mean_policy
     assert saved["nonlinear_policy"] == saved["codegen"]["nonlinear_policy"] == nonlinear_policy
@@ -457,7 +458,7 @@ def test_full_cli_auto_reuse_requires_resolved_harts_to_match_build(tmp_path, mo
     if built_harts == 4:
         assert result == 0 and saved["status"] == "BUILD_ONLY"
     else:
-        assert result == 1 and "hart count" in saved["error"]
+        assert result == 1 and "core count" in saved["error"]
         assert saved["stage"] == "load_existing_build"
 
 
@@ -510,7 +511,7 @@ def test_full_cli_matmul_tile_reaches_tiny_graph_build(tmp_path, monkeypatch, ti
 
     def stopped_build(artifact, *a, **kw):
         generated.append(artifact)
-        assert kw["harts"] == 1 and artifact.qemu_workspace_layout == "none"
+        assert kw["cores"] == 1 and artifact.qemu_workspace_layout == "none"
         raise RuntimeError("intentional tile build stop")
 
     monkeypatch.setattr(run, "build_external", stopped_build)
@@ -606,7 +607,7 @@ def test_full_cli_rhs_layout_reaches_tiny_graph_build(tmp_path, monkeypatch, rhs
 
     def stopped_build(artifact, *a, **kw):
         generated.append(artifact)
-        assert kw["harts"] == 1 and artifact.qemu_workspace_layout == "none"
+        assert kw["cores"] == 1 and artifact.qemu_workspace_layout == "none"
         raise RuntimeError("intentional RHS layout build stop")
 
     monkeypatch.setattr(run, "build_external", stopped_build)
@@ -827,3 +828,66 @@ def test_w4_unknown_nonlinear_policy_fails_before_output(tmp_path, policy):
         run.main(["--model-dir", str(tmp_path), "--output-dir", str(target),
                   "--nonlinear-policy", policy])
     assert exc.value.code == 2 and not target.exists()
+
+
+@pytest.mark.parametrize("cores", [1, 4])
+@pytest.mark.parametrize("top_names,evidence_names", [
+    (("cores",), ("cores",)), (("harts",), ("harts",)),
+    (("cores",), ("harts",)), (("harts",), ("cores",)),
+    (("cores", "harts"), ("cores", "harts")),
+])
+def test_core_metadata_aliases_roundtrip_without_rewriting_source(
+        tmp_path, monkeypatch, cores, top_names, evidence_names):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    record.update({name: cores for name in top_names})
+    record["evidence"].update({name: cores for name in evidence_names})
+    record["layout"] = plan_guest_memory(input_bytes=2048, output_bytes=256 * 151936 * 4,
+                                         workspace_bytes=64, cores=cores)
+    original = json.dumps(record)
+    path.write_text(original)
+    executable = run.load_executable(path)
+    assert executable.cores == executable.harts == cores
+    assert path.read_text() == original
+    out = tmp_path / "resaved"
+    out.mkdir()
+    run.save_executable(executable, out)
+    saved = json.loads((out / "executable.json").read_text())
+    assert saved["cores"] == saved["harts"] == cores
+    assert saved["evidence"]["cores"] == saved["evidence"]["harts"] == cores
+    reloaded = run.load_executable(out / "executable.json")
+    assert reloaded.cores == cores and reloaded.elf_path == executable.elf_path
+
+
+@pytest.mark.parametrize("container", ["top", "evidence"])
+@pytest.mark.parametrize("fields", [
+    {"cores": 4, "harts": 1}, {"cores": 1, "harts": True},
+    {"cores": None}, {"cores": True}, {"cores": "1"}, {"cores": "auto"}, {"cores": 3},
+])
+def test_core_metadata_rejects_conflicts_and_invalid_values(tmp_path, monkeypatch, container, fields):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    (record if container == "top" else record["evidence"]).update(fields)
+    path.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="core|hart"):
+        run.load_executable(path)
+
+
+def test_core_metadata_without_either_field_stays_single_core(tmp_path, monkeypatch):
+    path, _ = _saved_executable(tmp_path, monkeypatch)
+    executable = run.load_executable(path)
+    assert executable.cores == executable.harts == 1
+    assert executable.evidence["cores"] == executable.evidence["harts"] == 1
+
+
+@pytest.mark.parametrize("entry", ["full", "diagnostic"])
+@pytest.mark.parametrize("flags", [
+    ["--cores", "1", "--harts", "4"], ["--harts", "4", "--cores", "1"],
+    ["--cores", "auto", "--harts", "4"], ["--cores", "3"],
+])
+def test_w4_core_alias_conflict_stops_before_output(tmp_path, entry, flags):
+    from probes.w4_qwen3_full import diagnostic
+    module = run if entry == "full" else diagnostic
+    output = tmp_path / "output"
+    with pytest.raises(SystemExit) as exc:
+        module.main(["--model-dir", str(tmp_path / "model"), "--output-dir", str(output), *flags])
+    assert exc.value.code == 2
+    assert not output.exists()

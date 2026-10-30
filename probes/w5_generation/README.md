@@ -38,4 +38,5 @@ python probes/w5_generation/run.py \
 
 每步同时记录 ORT forward wall/CPU 时间；每条用例另记包括 Host 输入准备、检查、采样及解码的 wall/CPU 时间。session 加载单独计时。CPU 时间含进程内所有线程；Linux `ru_maxrss` 是进程截至当时的累计峰值，不能作为每个用例的独立内存增量。这些是 ORT/Host 数据，不能与既有 QEMU 计时混用或推算 QEMU 加速比。
 
-本探针不读写 hart、padding、CI 或 WSL 设置。QEMU 的默认 1 hart、手动 1/2/4、启动时 auto 和默认关闭的 padding 仍由既有后端负责。
+本探针不读写 core 数、padding、CI 或 WSL 设置。QEMU 的默认 1 core、手动 1/2/4、启动时 auto 和默认关闭的 padding 仍由既有后端负责。
+QEMU 生成入口使用 `--cores`，仍接受旧 `--harts`；它们不属于本 Host 参考探针的参数，详见 [W5 开发说明](../../docs/llm-deploy-v1.0/W5/README.md)。

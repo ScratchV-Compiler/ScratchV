@@ -55,13 +55,13 @@ def runtime(cli, monkeypatch):
     tokenizer = Tokenizer()
     executable = SimpleNamespace(
         evidence={"matmul_policy": "sequential", "qemu_workspace_layout": "none"},
-        toolchain=SimpleNamespace(cc="unused-cc", qemu="unused-qemu"), harts=1,
+        toolchain=SimpleNamespace(cc="unused-cc", qemu="unused-qemu"), cores=1,
     )
     state = SimpleNamespace(tokenizer=tokenizer, exe=executable, prepared=[], adapters=[],
-                            saved=[], fma=[], failure=None, oracle=None, harts=[])
+                            saved=[], fma=[], failure=None, oracle=None, cores=[])
 
-    def prepare(args, out, harts):
-        state.prepared.append((args, out, harts))
+    def prepare(args, out, cores):
+        state.prepared.append((args, out, cores))
         return executable
 
     class Adapter:
@@ -89,7 +89,7 @@ def runtime(cli, monkeypatch):
     monkeypatch.setattr(cli, "QemuForward", Adapter)
     monkeypatch.setattr(cli, "run_fma_probe", fma)
     monkeypatch.setattr(cli, "oracle_session", lambda path: SimpleNamespace(run=lambda names, feed: [state.oracle]))
-    monkeypatch.setattr(cli, "resolve_harts", lambda requested: state.harts.append(requested) or (4 if requested == "auto" else requested))
+    monkeypatch.setattr(cli, "resolve_cores", lambda requested: state.cores.append(requested) or (4 if requested == "auto" else requested))
     return state
 
 
@@ -101,9 +101,10 @@ def report(tmp_path):
     return json.loads((tmp_path / "run/report.json").read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("requested,resolved", [(None, 1), ("2", 2), ("4", 4), ("auto", 4)])
-def test_raw_multitoken_one_build_one_adapter_and_harts_resolved_once(cli, runtime, tmp_path, requested, resolved):
-    options = [] if requested is None else ["--harts", requested]
+@pytest.mark.parametrize("flag", ["--cores", "--harts"])
+@pytest.mark.parametrize("requested,resolved", [(None, 1), ("1", 1), ("2", 2), ("4", 4), ("auto", 4)])
+def test_raw_multitoken_one_build_one_adapter_and_cores_resolved_once(cli, runtime, tmp_path, flag, requested, resolved):
+    options = [] if requested is None else [flag, requested]
     assert cli.main(argv(tmp_path, "--prompt", " raw text ", "--max-new-tokens", "3", *options)) == 0
     value = report(tmp_path)
     assert value["status"] == "PASS" and value["passed"]
@@ -111,8 +112,9 @@ def test_raw_multitoken_one_build_one_adapter_and_harts_resolved_once(cli, runti
     assert value["qemu_workspace_layout"] == "none" and value["mean_policy"] == "sequential"
     assert value["nonlinear_policy"] == "libm"
     assert value["executable_sha256"] == "fixture-metadata-identity"
-    assert value["harts"] == resolved
-    assert runtime.harts == ["auto" if requested == "auto" else int(requested or 1)]
+    assert value["cores"] == value["harts"] == resolved
+    assert value["cores_requested"] == value["harts_requested"]
+    assert runtime.cores == ["auto" if requested == "auto" else int(requested or 1)]
     assert len(runtime.prepared) == len(runtime.saved) == len(runtime.adapters) == 1
     assert len(runtime.fma) == 1
     assert runtime.adapters[0].exe is runtime.exe
@@ -199,24 +201,24 @@ def matching_reuse_metadata(cli, monkeypatch, path):
     monkeypatch.setattr(cli, "sha256_file", lambda metadata: "matching")
 
 
-@pytest.mark.parametrize("changes,harts", [
-    ({"harts": 4}, 1),
+@pytest.mark.parametrize("changes,cores", [
+    ({"cores": 4}, 1),
     ({"matmul_policy": "blocked_fma"}, 1),
     ({"matmul_tile": "2x4"}, 1),
     ({"matmul_rhs_layout": "column-panel"}, 1),
     ({"qemu_workspace_layout": "two-buffer-pad-4k"}, 1),
 ])
-def test_reuse_rejects_changed_configuration_or_padding(cli, monkeypatch, tmp_path, changes, harts):
+def test_reuse_rejects_changed_configuration_or_padding(cli, monkeypatch, tmp_path, changes, cores):
     args = cli.parse_args(["--reuse-build", str(tmp_path / "old/executable.json"),
                            "--tokenizer-dir", "tokens", "--output-dir", str(tmp_path / "new"),
                            "--prompt", "text"])
     matching_reuse_metadata(cli, monkeypatch, args.reuse_build)
     evidence = {"matmul_policy": "sequential", "matmul_tile": "1x4", "matmul_rhs_layout": "original", "qemu_workspace_layout": "none"}
-    evidence.update({k: v for k, v in changes.items() if k != "harts"})
-    exe = SimpleNamespace(harts=changes.get("harts", 1), evidence=evidence)
+    evidence.update({k: v for k, v in changes.items() if k != "cores"})
+    exe = SimpleNamespace(cores=changes.get("cores", 1), evidence=evidence)
     monkeypatch.setattr(cli, "load_executable", lambda path: exe)
     with pytest.raises(ValueError, match="differs"):
-        cli.prepare_executable(args, tmp_path, harts)
+        cli.prepare_executable(args, tmp_path, cores)
 
 
 def test_matching_reuse_returns_same_executable_without_compile(cli, monkeypatch, tmp_path):
@@ -224,7 +226,7 @@ def test_matching_reuse_returns_same_executable_without_compile(cli, monkeypatch
                            "--tokenizer-dir", "tokens", "--output-dir", str(tmp_path / "new"),
                            "--prompt", "text"])
     matching_reuse_metadata(cli, monkeypatch, args.reuse_build)
-    exe = SimpleNamespace(harts=1, evidence={"matmul_policy": "sequential"})
+    exe = SimpleNamespace(cores=1, evidence={"matmul_policy": "sequential"})
     monkeypatch.setattr(cli, "load_executable", lambda path: exe)
     monkeypatch.setattr(cli, "build_external", lambda *a, **kw: pytest.fail("must not rebuild"))
     assert cli.prepare_executable(args, tmp_path, 1) is exe
@@ -327,7 +329,7 @@ def test_verified_legacy_report_cannot_overwrite_native_failed_audit(cli, monkey
     @dataclass
     class Executable:
         evidence: dict
-        harts: int = 1
+        cores: int = 1
 
     metadata = tmp_path / "old/executable.json"
     matching_reuse_metadata(cli, monkeypatch, metadata)
@@ -588,15 +590,15 @@ def test_full_suite_abort_retains_completed_step_evidence(cli, runtime, referenc
     (None, 8, 1), ("1", 8, 1), ("2", 8, 2), ("4", 1, 4),
     ("auto", 1, 1), ("auto", 3, 2), ("auto", 12, 4),
 ])
-def test_cli_uses_real_hart_resolver_without_changing_default(cli, runtime, tmp_path, monkeypatch, requested, cpu_count, resolved):
+def test_cli_uses_real_core_resolver_without_changing_default(cli, runtime, tmp_path, monkeypatch, requested, cpu_count, resolved):
     from scratchv.runtime import riscv_harts
     affinity_reads = []
     monkeypatch.setattr(riscv_harts.os, "sched_getaffinity", lambda pid: affinity_reads.append(pid) or set(range(cpu_count)))
-    monkeypatch.setattr(cli, "resolve_harts", riscv_harts.resolve_harts)
-    options = [] if requested is None else ["--harts", requested]
+    monkeypatch.setattr(cli, "resolve_cores", riscv_harts.resolve_cores)
+    options = [] if requested is None else ["--cores", requested]
     assert cli.main(argv(tmp_path, "--build-only", *options)) == 0
     value = report(tmp_path)
-    assert value["harts"] == resolved and runtime.prepared[0][2] == resolved
+    assert value["cores"] == resolved and runtime.prepared[0][2] == resolved
     assert value["qemu_workspace_layout"] == "none" and value["qemu_forwards"] == 0
     assert affinity_reads == ([0] if requested == "auto" else [])
 
@@ -613,7 +615,7 @@ def test_w5_reuse_mean_policy_requires_explicit_matching_build(cli, monkeypatch,
     evidence = {"matmul_policy": "sequential"}
     if built is not None:
         evidence["mean_policy"] = built
-    exe = SimpleNamespace(harts=1, evidence=evidence)
+    exe = SimpleNamespace(cores=1, evidence=evidence)
     monkeypatch.setattr(cli, "load_executable", lambda path: exe)
     monkeypatch.setattr(cli, "build_external", lambda *a, **kw: pytest.fail("reuse must not compile"))
     args = cli.parse_args(["--reuse-build", str(metadata), "--tokenizer-dir", "tokens",
@@ -628,7 +630,7 @@ def test_w5_reuse_mean_policy_requires_explicit_matching_build(cli, monkeypatch,
 def test_w5_reuse_mean_evidence_and_sibling_report_must_agree(cli, monkeypatch, tmp_path):
     metadata = tmp_path / "old/executable.json"
     matching_reuse_metadata(cli, monkeypatch, metadata)
-    exe = SimpleNamespace(harts=1, evidence={"matmul_policy": "sequential", "mean_policy": "two-four-lane-last-axis"})
+    exe = SimpleNamespace(cores=1, evidence={"matmul_policy": "sequential", "mean_policy": "two-four-lane-last-axis"})
     monkeypatch.setattr(cli, "load_executable", lambda path: exe)
     args = cli.parse_args(["--reuse-build", str(metadata), "--tokenizer-dir", "tokens",
         "--output-dir", str(tmp_path / "out"), "--prompt", "text", "--mean-policy", "two-four-lane-last-axis"])
@@ -660,7 +662,7 @@ def test_w5_mean_policy_reaches_real_codegen_without_compiler(cli, monkeypatch, 
     args = cli.parse_args(argv(tmp_path, "--build-only", "--mean-policy", policy))
     exe = cli.prepare_executable(args, tmp_path, 1)
     assert len(built) == 1 and built[0].mean_policy == policy
-    assert exe.evidence["mean_policy"] == policy and exe.harts == 1
+    assert exe.evidence["mean_policy"] == policy and exe.cores == 1
     assert built[0].matmul_policy == "sequential" and built[0].qemu_workspace_layout == "none"
 
 
@@ -682,7 +684,7 @@ def test_w5_reuse_nonlinear_policy_requires_explicit_matching_build(cli, monkeyp
     evidence = {"matmul_policy": "sequential"}
     if built is not None:
         evidence["nonlinear_policy"] = built
-    exe = SimpleNamespace(harts=1, evidence=evidence)
+    exe = SimpleNamespace(cores=1, evidence=evidence)
     monkeypatch.setattr(cli, "load_executable", lambda path: exe)
     monkeypatch.setattr(cli, "build_external", lambda *a, **kw: pytest.fail("reuse must not compile"))
     args = cli.parse_args(["--reuse-build", str(metadata), "--tokenizer-dir", "tokens",
@@ -697,7 +699,7 @@ def test_w5_reuse_nonlinear_policy_requires_explicit_matching_build(cli, monkeyp
 def test_w5_reuse_nonlinear_evidence_and_sibling_report_must_agree(cli, monkeypatch, tmp_path):
     metadata = tmp_path / "old/executable.json"
     matching_reuse_metadata(cli, monkeypatch, metadata)
-    exe = SimpleNamespace(harts=1, evidence={"matmul_policy": "sequential", "nonlinear_policy": "fp32-reference"})
+    exe = SimpleNamespace(cores=1, evidence={"matmul_policy": "sequential", "nonlinear_policy": "fp32-reference"})
     monkeypatch.setattr(cli, "load_executable", lambda path: exe)
     args = cli.parse_args(["--reuse-build", str(metadata), "--tokenizer-dir", "tokens",
         "--output-dir", str(tmp_path / "out"), "--prompt", "text", "--nonlinear-policy", "fp32-reference"])
@@ -729,7 +731,7 @@ def test_w5_nonlinear_policy_reaches_real_codegen_without_compiler(cli, monkeypa
     args = cli.parse_args(argv(tmp_path, "--build-only", "--nonlinear-policy", policy))
     exe = cli.prepare_executable(args, tmp_path, 1)
     assert len(built) == 1 and built[0].nonlinear_policy == policy
-    assert exe.evidence["nonlinear_policy"] == policy and exe.harts == 1
+    assert exe.evidence["nonlinear_policy"] == policy and exe.cores == 1
     assert built[0].matmul_policy == "sequential" and built[0].qemu_workspace_layout == "none"
 
 
@@ -755,3 +757,93 @@ def test_finite_extreme_logits_have_json_safe_diagnostic_margin(cli):
     assert comparison["qemu_token_id"] == comparison["ort_token_id"] == 3
     assert comparison["ort_top2_margin"] == 2.0 * float(np.finfo(np.float32).max)
     json.dumps(comparison, allow_nan=False)
+
+
+@pytest.mark.parametrize("flags", [
+    ["--cores", "4", "--harts", "4"], ["--harts", "auto", "--cores", "auto"],
+    ["--harts", "1", "--harts", "4", "--cores", "4"],
+    ["--cores", "1", "--cores", "4", "--harts", "4"],
+])
+def test_equal_cli_aliases_resolve_once(cli, runtime, tmp_path, flags):
+    assert cli.main(argv(tmp_path, "--build-only", *flags)) == 0
+    saved = report(tmp_path)
+    assert saved["cores"] == saved["harts"] == 4
+    assert len(runtime.cores) == len(runtime.prepared) == 1
+
+
+@pytest.mark.parametrize("flags", [
+    ["--cores", "4", "--harts", "1"], ["--harts", "4", "--cores", "1"],
+    ["--cores", "auto", "--harts", "4"], ["--harts", "auto", "--cores", "1"],
+    ["--harts", "1", "--harts", "4", "--cores", "1"],
+    ["--cores", "1", "--cores", "4", "--harts", "1"],
+    ["--cores", "3"], ["--harts", "0"],
+])
+def test_core_alias_conflict_or_invalid_count_has_no_side_effects(cli, runtime, tmp_path, flags):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(argv(tmp_path, "--build-only", *flags))
+    assert exc.value.code == 2
+    assert not (tmp_path / "run").exists()
+    assert runtime.prepared == runtime.cores == []
+
+
+@pytest.mark.parametrize("fields", [{"cores": 4}, {"harts": 4}, {"cores": 1, "harts": 4}])
+def test_reused_report_rejects_inconsistent_core_aliases(cli, monkeypatch, tmp_path, fields):
+    metadata = tmp_path / "old/executable.json"
+    matching_reuse_metadata(cli, monkeypatch, metadata)
+    previous = metadata.with_name("report.json")
+    record = json.loads(previous.read_text())
+    record.update(fields)
+    previous.write_text(json.dumps(record))
+    monkeypatch.setattr(cli, "load_executable", lambda path: SimpleNamespace(
+        cores=1, evidence={"matmul_policy": "sequential"}))
+    args = cli.parse_args(["--reuse-build", str(metadata), "--tokenizer-dir", "tokens",
+                           "--output-dir", str(tmp_path / "new"), "--prompt", "text"])
+    with pytest.raises(ValueError, match="core|hart"):
+        cli.prepare_executable(args, tmp_path, cores=1)
+
+
+@pytest.mark.parametrize("flag", ["--cores", "--harts"])
+@pytest.mark.parametrize("first,last,expected", [("1", "4", 4), ("4", "1", 1), ("1", "auto", 4)])
+def test_repeated_core_option_preserves_argparse_last_value(cli, runtime, tmp_path, flag, first, last, expected):
+    assert cli.main(argv(tmp_path, "--build-only", flag, first, flag, last)) == 0
+    saved = report(tmp_path)
+    requested = "auto" if last == "auto" else int(last)
+    assert saved["cores"] == saved["harts"] == expected
+    assert saved["cores_requested"] == saved["harts_requested"] == requested
+    assert runtime.cores == [requested]
+    assert len(runtime.prepared) == 1
+
+
+@pytest.mark.parametrize("flag", ["--cores", "--harts"])
+@pytest.mark.parametrize("requested", [None, "1", "2", "4", "auto"])
+def test_parse_args_retains_legacy_harts_attribute_and_string_type(cli, tmp_path, flag, requested):
+    flags = [] if requested is None else [flag, requested]
+    args = cli.parse_args(argv(tmp_path, "--build-only", *flags))
+    assert args.cores == args.harts == (requested or "1")
+    assert type(args.cores) is type(args.harts) is str
+
+
+def test_parsed_core_attributes_stay_synchronized_when_callers_update_either_name(cli, tmp_path):
+    args = cli.parse_args(argv(tmp_path, "--build-only"))
+    args.harts = "4"
+    assert args.cores == args.harts == "4"
+    args.cores = "auto"
+    assert args.harts == args.cores == "auto"
+    # W4 resolves its selected count on the namespace after parsing.
+    args.cores = 4
+    assert args.harts == args.cores == 4
+
+
+@pytest.mark.parametrize("value,expected", [("4", 4), ("auto", 4)])
+def test_old_wrapper_harts_assignment_reaches_core_selection_once(
+        cli, runtime, monkeypatch, tmp_path, value, expected):
+    args = cli.parse_args(argv(tmp_path, "--build-only"))
+    args.harts = value
+    monkeypatch.setattr(cli, "parse_args", lambda _argv: args)
+    assert cli.main([]) == 0
+    saved = report(tmp_path)
+    assert saved["cores"] == saved["harts"] == expected
+    assert saved["cores_requested"] == saved["harts_requested"] == (
+        value if value == "auto" else int(value))
+    assert runtime.cores == [value if value == "auto" else int(value)]
+    assert len(runtime.prepared) == 1

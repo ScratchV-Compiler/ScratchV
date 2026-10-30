@@ -189,10 +189,23 @@ static float sv_sigmoid(float x) {
 '''
 
 _EXTERNAL_PRELUDE = r'''
+#if defined(SCRATCHV_CORES) && defined(SCRATCHV_HARTS) && SCRATCHV_CORES != SCRATCHV_HARTS
+#error "SCRATCHV_CORES and legacy SCRATCHV_HARTS disagree"
+#endif
+#ifndef SCRATCHV_CORES
+#ifdef SCRATCHV_HARTS
+#define SCRATCHV_CORES SCRATCHV_HARTS
+#else
+#define SCRATCHV_CORES 1
+#endif
+#endif
+#ifndef SCRATCHV_HARTS
+#define SCRATCHV_HARTS SCRATCHV_CORES
+#endif
 /* External storage targets 64-bit hosts/guests; lengths are caller-validated. */
 _Static_assert(sizeof(size_t) == 8 && sizeof(uintptr_t) == 8,
                "external tensor ABI requires a 64-bit target");
-#if defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1
+#if defined(SCRATCHV_CORES) && SCRATCHV_CORES > 1
 /* Synchronous: all callbacks finish before workspace reuse or validation. */
 extern void sv_parallel_for(size_t count,
                             void (*fn)(void *, size_t, size_t), void *context);
@@ -960,7 +973,7 @@ class TensorCCodegen:
                 # Each output retains increasing K order, fused FP32 products,
                 # and a separate FP32 addition after each 128-element K block.
                 # Tiles only share input loads across independent outputs; they
-                # never split a reduction between harts or change its grouping.
+                # never split a reduction between cores or change its grouping.
                 # __builtin_fmaf retains explicit FMA with -ffp-contract=off.
                 tile_rows, tile_columns = (int(part) for part in self.matmul_tile.split("x"))
                 lanes = tile_rows * tile_columns
@@ -1039,8 +1052,8 @@ class TensorCCodegen:
                 # Each task owns one (batch, row tile, column tile); its K loop
                 # and 128-element grouping are shared verbatim with serial.
                 if tasks >= 2 and math.prod(batch) * m * n * k >= 32768:
-                    condition = ("defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1 "
-                                 f"&& SCRATCHV_HARTS <= {tasks}")
+                    condition = ("defined(SCRATCHV_CORES) && SCRATCHV_CORES > 1 "
+                                 f"&& SCRATCHV_CORES <= {tasks}")
                     context = f"sv_matmul_{dst}"
                     aliases = []
                     seen = set()
@@ -1104,7 +1117,7 @@ class TensorCCodegen:
             axis = details["axis"]
             outer, dimension, inner = math.prod(x.shape[:axis]), x.shape[axis], math.prod(x.shape[axis+1:])
             off = f"o*{dimension*inner}ULL+j*{inner}ULL+t"
-            # Only independent (outer, inner) rows may run on different harts.
+            # Only independent (outer, inner) rows may run on different cores.
             # The explicitly selected arithmetic is identical in both paths.
             initialization, exponential = "sum=0.0f", "expf"
             accumulate, finish, normalize = "sum+=v;", "", "/=sum"
@@ -1129,8 +1142,8 @@ class TensorCCodegen:
             # Keep small/empty graphs and inline storage on the original path.
             # This floor avoids a barrier for tiny graphs; it is not autotuning.
             if self.constant_storage == "external" and rows >= 2 and size >= 32768:
-                condition = ("defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1 "
-                             f"&& SCRATCHV_HARTS <= {rows}")
+                condition = ("defined(SCRATCHV_CORES) && SCRATCHV_CORES > 1 "
+                             f"&& SCRATCHV_CORES <= {rows}")
                 # Reuse code only: each operation keeps its own input/output
                 # pointers and status, initialized below before the joined call.
                 key = (x.dtype, x.shape, axis)

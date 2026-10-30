@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 
 from probes.w3_common import atomic_text
 from probes.w2_runtime_model.run import checked_inputs
-from probes.w4_qwen3_full.run import load_executable, save_executable, ATOL
+from probes.w4_qwen3_full.run import CoreNamespace, add_core_argument, load_executable, save_executable, ATOL
 from probes.w4_qwen3_full.fma_conformance import run_probe as run_fma_probe
 from scratchv.backend.tensor_c_codegen import TensorCCodegen
 from scratchv.runtime.generation import GenerationCancelledError, generate
@@ -32,7 +32,7 @@ from scratchv.runtime.llm_inputs import last_valid_logits, greedy_token
 from scratchv.runtime.qemu_generation import QemuForward
 from scratchv.runtime.qwen3_tokenizer import Qwen3Tokenizer
 from scratchv.runtime.riscv_external import build_external, sha256_file
-from scratchv.runtime.riscv_harts import resolve_harts
+from scratchv.runtime.riscv_harts import UNSET, read_cores, resolve_cores, select_cores
 from scratchv.runtime.riscv_tensor import discover_toolchain
 from scratchv.runtime.weight_bundle import write_weight_bundle
 
@@ -51,7 +51,7 @@ def parse_args(argv=None):
     prompt.add_argument("--reference-suite", action="store_true", help="Run all 3 frozen W5 prompts")
     cli.add_argument("--system-prompt")
     cli.add_argument("--max-new-tokens", type=int)
-    cli.add_argument("--harts", choices=("1", "2", "4", "auto"), default="1")
+    add_core_argument(cli)
     cli.add_argument("--timeout", type=float, default=3600, help="Per-forward QEMU timeout, seconds")
     cli.add_argument("--total-timeout", type=float, default=10800, help="Generation/suite timeout, seconds")
     cli.add_argument("--build-timeout", type=float, default=900)
@@ -66,7 +66,7 @@ def parse_args(argv=None):
     cli.add_argument("--matmul-tile", choices=("1x4", "2x4", "1x8"), default="1x4")
     cli.add_argument("--matmul-rhs-layout", choices=("original", "column-panel"), default="original")
     cli.add_argument("--verify-onnx", type=Path, help="Optional ORT numeric/greedy oracle for every step")
-    args = cli.parse_args(argv)
+    args = cli.parse_args(argv, namespace=CoreNamespace())
     if any(not np.isfinite(t) or t <= 0 for t in (args.timeout, args.total_timeout, args.build_timeout)):
         cli.error("timeouts must be positive and finite")
     if args.max_new_tokens is not None and args.max_new_tokens < 0:
@@ -84,22 +84,26 @@ def parse_args(argv=None):
     return args
 
 
-def prepare_executable(args, out, harts):
+def prepare_executable(args, out, cores=UNSET, *, harts=UNSET):
     """Reuse existing metadata validation, or compile/write weights exactly once."""
+    cores = select_cores(cores, harts=harts)
     if args.reuse_build:
         previous = args.reuse_build.with_name("report.json")
         record = json.loads(previous.read_text(encoding="utf-8"))
         if record.get("executable_sha256") != sha256_file(args.reuse_build):
             raise ValueError("Reused executable metadata identity is missing or changed")
         exe = load_executable(args.reuse_build)
+        if (("cores" in record or "harts" in record)
+                and read_cores(record) != exe.cores):
+            raise ValueError("Reused report core count differs from executable")
         # W4 stored arithmetic policy in the sibling report; W5 also keeps it
         # in the validated executable metadata.
         policy = exe.evidence.get("matmul_policy", record.get("matmul_policy"))
         expected = {"matmul_tile": args.matmul_tile, "matmul_rhs_layout": args.matmul_rhs_layout,
                     "qemu_workspace_layout": "none"}
         defaults = {"matmul_tile": "1x4", "matmul_rhs_layout": "original", "qemu_workspace_layout": "none"}
-        if exe.harts != harts or policy != args.matmul_policy:
-            raise ValueError("Reused build hart count/arithmetic policy differs from requested configuration")
+        if exe.cores != cores or policy != args.matmul_policy:
+            raise ValueError("Reused build core count/arithmetic policy differs from requested configuration")
         if (exe.evidence.get("mean_policy", "sequential") != args.mean_policy
                 or record.get("mean_policy", "sequential") != args.mean_policy):
             raise ValueError("Reused build Mean policy differs from requested --mean-policy")
@@ -131,7 +135,7 @@ def prepare_executable(args, out, harts):
     ).generate()
     write_weight_bundle(artifact.external_weights, artifact.external_initializers, out / "weights")
     exe = build_external(artifact, out / "weights", out / "build",
-                         discover_toolchain(args.cc, args.qemu), timeout=args.build_timeout, harts=harts)
+                         discover_toolchain(args.cc, args.qemu), timeout=args.build_timeout, cores=cores)
     audit = {"passed": False, "layer_count": None}
     if tuple(exe.output.shape) == (1, 256, 151936):
         import onnx
@@ -201,10 +205,11 @@ def main(argv=None):
     args = parse_args(argv)
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    requested = args.harts if args.harts == "auto" else int(args.harts)
-    harts = resolve_harts(requested)
+    requested = args.cores if args.cores == "auto" else int(args.cores)
+    cores = resolve_cores(requested)
     report = {"schema_version": 1, "status": "FAIL", "passed": False, "stage": "prepare",
-              "mode": args.mode, "harts_requested": requested, "harts": harts,
+              "mode": args.mode, "cores_requested": requested, "cores": cores,
+              "harts_requested": requested, "harts": cores,
               "qemu_workspace_layout": "none", "matmul_policy": args.matmul_policy,
               "mean_policy": args.mean_policy, "nonlinear_policy": args.nonlinear_policy,
               "matmul_tile": args.matmul_tile, "matmul_rhs_layout": args.matmul_rhs_layout,
@@ -233,7 +238,7 @@ def main(argv=None):
                 previous[sig] = signal.getsignal(sig)
                 signal.signal(sig, interrupted)
         tokenizer = Qwen3Tokenizer.from_directory(args.tokenizer_dir)
-        exe = prepare_executable(args, out, harts)
+        exe = prepare_executable(args, out, cores)
         if args.reference_suite:
             require_full_executable(exe)
         report["executable_sha256"] = save_executable(exe, out)

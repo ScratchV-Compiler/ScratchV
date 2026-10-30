@@ -185,7 +185,7 @@ def test_external_signals_reap_guest_and_reuse_build(tmp_path, docker_assets, ha
               "--max-new-tokens", "8", "--verify-onnx", "/assets/model.onnx",
               "--qemu", "/assets/qemu-control", "--matmul-policy", "blocked_fma",
               "--timeout", "90", "--total-timeout", "180", "--build-timeout", "180"]
-    # The single-hart baseline really exercises the CLI default.
+    # The single-core baseline really exercises the CLI default.
     hart_args = [] if harts == 1 else ["--harts", "4"]
     active = None
     evidence = {"harts": harts, "image": image, "cancellations": []}

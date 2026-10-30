@@ -6,7 +6,7 @@ runs in RV64 instructions, without semihosting or host numerical substitution.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 import ctypes
 import errno
 import hashlib
@@ -32,7 +32,10 @@ from .riscv_tensor import (
     _terminate_invocation, _windows_job, input_layout, pack_inputs, toolchain_versions,
 )
 from .weight_bundle import MIB, plan_guest_memory, validate_weight_bundle
-from .riscv_harts import STARTUP_ASSEMBLY as MULTIHART_STARTUP, WORKER_SOURCE, resolve_harts, validate_harts
+from .riscv_harts import (
+    STARTUP_ASSEMBLY as MULTICORE_STARTUP, CORE_DEFINITIONS, WORKER_SOURCE, UNSET,
+    read_cores, resolve_cores, select_cores, validate_cores,
+)
 from .weight_transport import (
     stage_transport, validate_transport, remove_transport, save_transport_report,
     refresh_transport_residuals,
@@ -111,7 +114,7 @@ def validate_external_elf(path, layout):
             "sha256": hashlib.sha256(data).hexdigest()}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ExternalExecutable:
     elf_path: Path
     bundle_dir: Path
@@ -122,7 +125,36 @@ class ExternalExecutable:
     weights: tuple
     toolchain: RiscVToolchain
     evidence: dict
-    harts: int = 1
+    cores: int
+    harts: int
+    _replace_cores: InitVar[int]
+
+    def __init__(self, elf_path, bundle_dir, manifest, layout, inputs, output,
+                 weights, toolchain, evidence, cores=UNSET, *, harts=UNSET, _replace_cores=UNSET):
+        if _replace_cores is not UNSET:
+            # replace() supplies the original values for omitted fields. Its
+            # InitVar carries the baseline without adding a key to asdict().
+            # One changed alias updates both; two different new values fail.
+            baseline = validate_cores(_replace_cores)
+            if cores is not UNSET:
+                validate_cores(cores)
+            if harts is not UNSET:
+                validate_cores(harts)
+            if cores is not UNSET and harts is not UNSET and cores != harts:
+                if cores == baseline:
+                    cores = harts
+                elif harts == baseline:
+                    harts = cores
+        count = select_cores(cores, harts=harts)
+        for name, value in (("elf_path", elf_path), ("bundle_dir", bundle_dir),
+                            ("manifest", manifest), ("layout", layout), ("inputs", inputs),
+                            ("output", output), ("weights", weights), ("toolchain", toolchain),
+                            ("evidence", evidence), ("cores", count), ("harts", count)):
+            object.__setattr__(self, name, value)
+
+    @property
+    def _replace_cores(self):
+        return self.cores
 
 
 def guest_harness(artifact, manifest, layout):
@@ -133,7 +165,7 @@ def guest_harness(artifact, manifest, layout):
     inputs = ",".join(f"(const void *)0x{layout['input_base'] + n:x}UL" for n in offsets) or "0"
     weights = ",".join(f"(const void *)0x{layout['weights_base'] + t['offset']:x}UL"
                        for t in manifest["tensors"]) or "0"
-    return r'''
+    return CORE_DEFINITIONS + r'''
 typedef unsigned long usize;
 typedef unsigned char u8;
 typedef unsigned int u32;
@@ -155,7 +187,7 @@ static void frame(u32 status, u64 size) {
     for (int i=0;i<4;++i) uart_byte((u8)(status>>(8*i)));
     for (int i=0;i<8;++i) uart_byte((u8)(size>>(8*i)));
     __asm__ volatile("fence rw,rw" ::: "memory");
-#if SCRATCHV_HARTS > 1
+#if SCRATCHV_CORES > 1
     __asm__ volatile("csrw mie, zero" ::: "memory");
 #endif
     for (;;) __asm__ volatile("wfi");
@@ -173,8 +205,8 @@ void sv_main(void) {{
 '''
 
 
-def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0, harts=1):
-    harts = resolve_harts(harts)
+def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0, cores=UNSET, harts=UNSET):
+    cores = resolve_cores(select_cores(cores, harts=harts, allow_auto=True))
     if artifact.constant_storage != "external":
         raise ValueError("External runtime requires external code generation")
     mean_policy = getattr(artifact, "mean_policy", "sequential")
@@ -187,7 +219,7 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
     _, input_bytes = input_layout(artifact.inputs)
     layout = plan_guest_memory(workspace_bytes=artifact.workspace_bytes,
                                weight_bytes=manifest["total_bytes"], input_bytes=input_bytes,
-                               output_bytes=artifact.output.nbytes, harts=harts)
+                               output_bytes=artifact.output.nbytes, cores=cores)
     build_dir = Path(build_dir).resolve()
     build_dir.mkdir(parents=True, exist_ok=False)
     linker = LINKER_SCRIPT.replace("0x1c000000", hex(layout["code_capacity"]))
@@ -200,11 +232,11 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
         "    .text.expf : ALIGN(4096) { *(.text.expf) } > RAM\n"
         "    .text : { *(.text .text.*) } > RAM",
     )
-    if harts != 1:
-        linker = linker.replace("0x100000", hex(harts * MIB)).replace(
-            "1 MiB guest stack", f"{harts} MiB guest stacks")
+    if cores != 1:
+        linker = linker.replace("0x100000", hex(cores * MIB)).replace(
+            "1 MiB guest stack", f"{cores} MiB guest stacks")
     sources = {"model.c": artifact.source, "guest.c": guest_harness(artifact, manifest, layout),
-               "start.S": STARTUP_ASSEMBLY if harts == 1 else MULTIHART_STARTUP, "link.ld": linker}
+               "start.S": STARTUP_ASSEMBLY if cores == 1 else MULTICORE_STARTUP, "link.ld": linker}
     for name, source in sources.items():
         (build_dir / name).write_text(source, encoding="utf-8")
     target = (["-target", "riscv64-linux-musl", "-static"] if toolchain.is_zig else
@@ -215,7 +247,7 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
                "-fno-stack-protector", "-fno-pie", "-fPIC" if toolchain.is_zig else "-fno-pic",
                "-fno-fast-math", "-ffp-contract=off", "-fno-strict-aliasing",
                "-ffunction-sections", "-fdata-sections", *artifact.compile_flags,
-               f"-DSCRATCHV_HARTS={harts}",
+               f"-DSCRATCHV_CORES={cores}", f"-DSCRATCHV_HARTS={cores}",
                "model.c", "guest.c", "start.S", "-Wl,-T,link.ld", "-Wl,-e,sv_boot",
                "-Wl,--gc-sections", "-Wl,--build-id=none", *(["-lm"] if toolchain.is_zig else []),
                "-o", "model.elf"]
@@ -239,7 +271,7 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
     if result.returncode:
         raise RuntimeError(result.stderr.decode(errors="replace")[-12000:])
     evidence = validate_external_elf(build_dir / "model.elf", layout)
-    evidence.update(compile_seconds=time.perf_counter() - start, command=command, harts=harts,
+    evidence.update(compile_seconds=time.perf_counter() - start, command=command, cores=cores, harts=cores,
                     mean_policy=mean_policy, nonlinear_policy=nonlinear_policy,
                     matmul_tile=artifact.matmul_tile,
                     matmul_rhs_layout=artifact.matmul_rhs_layout,
@@ -253,7 +285,7 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
     (build_dir / "build.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
     return ExternalExecutable(build_dir / "model.elf", Path(bundle_dir).resolve(), manifest, layout,
                               tuple(artifact.inputs), artifact.output, tuple(artifact.external_weights),
-                              toolchain, evidence, harts)
+                              toolchain, evidence, cores)
 
 
 def _check_cancelled(cancelled):
@@ -612,16 +644,17 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
     _check_cancelled(cancelled)
     if not np.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be positive and finite")
-    harts = validate_harts(getattr(executable, "harts", 1))
-    built_harts = validate_harts(executable.evidence.get("harts", 1))
+    cores = select_cores(getattr(executable, "cores", UNSET),
+                         harts=getattr(executable, "harts", UNSET))
+    built_cores = read_cores(executable.evidence)
     mean_policy = executable.evidence.get("mean_policy", "sequential")
     if not isinstance(mean_policy, str) or mean_policy not in ("sequential", "two-four-lane-last-axis"):
         raise ValueError("Unsupported executable Mean policy")
     nonlinear_policy = executable.evidence.get("nonlinear_policy", "libm")
     if not isinstance(nonlinear_policy, str) or nonlinear_policy not in ("libm", "fp32-reference"):
         raise ValueError("Unsupported executable nonlinear policy")
-    if harts != built_harts or executable.layout["regions"]["stack"]["nbytes"] != harts * MIB:
-        raise ValueError("Executable hart count disagrees with its build or stack layout")
+    if cores != built_cores or executable.layout["regions"]["stack"]["nbytes"] != cores * MIB:
+        raise ValueError("Executable core count (legacy harts) disagrees with its build or stack layout")
     if sha256_file(executable.elf_path) != executable.evidence["sha256"]:
         raise ValueError("ELF changed after build")
     manifest = validate_weight_bundle(executable.bundle_dir, executable.weights)
@@ -636,7 +669,7 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
         port = reservation.getsockname()[1]
     layout = executable.layout
     command = [executable.toolchain.qemu, "-machine", "virt", "-cpu", "rv64", "-accel",
-               "tcg" if harts == 1 else "tcg,thread=multi", "-smp", str(harts), "-m", str(layout["memory_mib"]), "-bios", "none", "-display", "none",
+               "tcg" if cores == 1 else "tcg,thread=multi", "-smp", str(cores), "-m", str(layout["memory_mib"]), "-bios", "none", "-display", "none",
                "-monitor", "none", "-serial", "file:uart.bin", "-no-reboot",
                "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off,nodelay=on",
                "-kernel", str(executable.elf_path), "-device",
@@ -646,7 +679,7 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
         options["start_new_session"] = True
     started = time.perf_counter()
     report = {"passed": False, "status": "FAIL", "command": command, "timeout_s": timeout,
-              "harts": harts, "mean_policy": mean_policy, "nonlinear_policy": nonlinear_policy,
+              "cores": cores, "harts": cores, "mean_policy": mean_policy, "nonlinear_policy": nonlinear_policy,
               "qemu_workspace_layout": executable.evidence.get("qemu_workspace_layout", "none"),
               "transport": "QMP physical memory dump after guest completion", "guest_completed": False}
     transport_dir = run_dir / "weight-transport"

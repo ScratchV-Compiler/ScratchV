@@ -609,7 +609,7 @@ jobs:
             "reports_retention_days": 30,
             "raw_logits_uploaded": false,
             "weights_uploaded": false,
-            "scope": "Three frozen raw-completion prompts, eight greedy tokens each; one ELF/bundle, 4 hart, explicit Mean and nonlinear reference policies, padding off.",
+            "scope": "Three frozen raw-completion prompts, eight greedy tokens each; one ELF/bundle, 4 core, explicit Mean and nonlinear reference policies, padding off.",
             "container_scope": "The original deployment script exit, CLI gate and workflow job together establish container acceptance. CLI container_reproduction=NOT_ASSERTED is preserved.",
             "timing_scope": "GNU time measures the Docker client, not container CPU/RSS; per-forward QEMU elapsed/RSS evidence is in run.json. This CI run is not a calibrated speedup benchmark.",
             "failure_scope": "Normal failures retain reports. Runner loss, hard job timeout or cancellation can prevent cleanup and artifact upload.",

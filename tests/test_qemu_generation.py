@@ -1,4 +1,4 @@
-"""Generation ABI, live guest cancellation, and reusable 1/4-hart small graphs."""
+"""Generation ABI, live guest cancellation, and reusable 1/4-core small graphs."""
 import json
 import os
 from pathlib import Path
