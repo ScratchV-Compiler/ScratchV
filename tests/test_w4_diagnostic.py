@@ -191,19 +191,19 @@ def test_diagnostic_cli_rejects_unbounded_timeout_before_creating_output(tmp_pat
 @pytest.mark.parametrize("policy,kernel_calls,flags", [
     ("sequential", True, []),
     ("sequential", False, ["--no-kernel-calls"]),
-    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--kernel-calls", "--harts", "4"]),
+    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--kernel-calls", "--cores", "4"]),
     ("blocked_fma", False, ["--matmul-policy", "blocked_fma", "--no-kernel-calls"]),
-    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--harts", "auto"]),
+    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--cores", "auto"]),
     ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--matmul-tile", "1x4"]),
-    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--matmul-tile", "2x4", "--harts", "4"]),
+    ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--matmul-tile", "2x4", "--cores", "4"]),
     ("blocked_fma", False, ["--matmul-policy", "blocked_fma", "--matmul-tile", "1x8",
-                          "--no-kernel-calls", "--harts", "auto"]),
+                          "--no-kernel-calls", "--cores", "auto"]),
     ("blocked_fma", True, ["--matmul-policy", "blocked_fma", "--matmul-rhs-layout", "column-panel",
-                         "--matmul-tile", "2x4", "--harts", "4"]),
+                         "--matmul-tile", "2x4", "--cores", "4"]),
     ("blocked_fma", False, ["--matmul-policy", "blocked_fma", "--matmul-rhs-layout", "column-panel",
-                          "--no-kernel-calls", "--harts", "auto"]),
+                          "--no-kernel-calls", "--cores", "auto"]),
     ("sequential", True, ["--qemu-workspace-layout", "two-buffer-pad-4k"]),
-    ("sequential", True, ["--qemu-workspace-layout", "two-buffer-pad-4k", "--harts", "4"]),
+    ("sequential", True, ["--qemu-workspace-layout", "two-buffer-pad-4k", "--cores", "4"]),
 ])
 def test_diagnostic_codegen_policy_reaches_build_and_failed_build_never_accepts_gate(
         tmp_path, monkeypatch, policy, kernel_calls, flags):
@@ -240,7 +240,7 @@ def test_diagnostic_codegen_policy_reaches_build_and_failed_build_never_accepts_
     monkeypatch.setattr(onnx_parser, "ONNXParser", lambda: parser)
     monkeypatch.setattr(diagnostic, "discover_toolchain", lambda *a: object())
     generated = []
-    requested_harts = flags[flags.index("--harts") + 1] if "--harts" in flags else "1"
+    requested_harts = flags[flags.index("--cores") + 1] if "--cores" in flags else "1"
     requested_harts = "auto" if requested_harts == "auto" else int(requested_harts)
     expected_harts = 2 if requested_harts == "auto" else requested_harts
     probes = []
@@ -251,7 +251,7 @@ def test_diagnostic_codegen_policy_reaches_build_and_failed_build_never_accepts_
     monkeypatch.setattr(os, "sched_getaffinity", available_cpus, raising=False)
 
     def stopped_build(artifact, *a, **kw):
-        assert type(kw["harts"]) is int and kw["harts"] == expected_harts
+        assert type(kw["cores"]) is int and kw["cores"] == expected_harts
         generated.append(artifact)
         raise RuntimeError("intentional unit-test build stop")
 
@@ -276,7 +276,7 @@ def test_diagnostic_codegen_policy_reaches_build_and_failed_build_never_accepts_
     assert report["matmul_rhs_layout"] == report["codegen"]["matmul_rhs_layout"] == requested_rhs_layout
     assert report["codegen"]["matmul_rhs_panels"] == list(artifact.matmul_rhs_panels)
     assert report["harts_requested"] == requested_harts
-    assert report["harts"] == expected_harts
+    assert report["cores"] == expected_harts
     assert report["qemu_workspace_layout_requested"] == requested_layout
     assert report["codegen"]["qemu_workspace_layout"] == requested_layout
     assert probes == ([0] if requested_harts == "auto" else [])

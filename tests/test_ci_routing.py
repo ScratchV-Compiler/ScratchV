@@ -327,3 +327,14 @@ def test_summary_cli_returns_success_only_for_complete_result():
     result = subprocess.run([sys.executable, "-B", "-X", "utf8", str(ROOT / "scripts/summarize_ci.py")],
                             env=env, capture_output=True, text=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0 and "**PASS**" in result.stdout
+
+
+@pytest.mark.parametrize("path", [
+    "scripts/run_inference.py", "scripts/deploy_w5.sh", "scripts/check_w5_ci.py",
+    "deployment/w5/Dockerfile", "probes/w5_generation/references.json",
+    "tests/test_generation.py", "tests/test_conversation.py", "tests/test_qemu_generation.py",
+    "tests/test_w5_ci.py", "tests/test_riscv_mean_policy.py", "tests/test_riscv_nonlinear_policy.py",
+])
+def test_w5_paths_route_to_existing_runtime_and_tokenizer_gates(path):
+    config = scope.read_config(ROOT / "scripts/ci_scopes.json")
+    assert scope.select_scopes(config, [path]) == {"llm": True, "w4": True}

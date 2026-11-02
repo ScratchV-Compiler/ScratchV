@@ -48,7 +48,7 @@ jobs:
     uses: ./.github/workflows/topic06-benchmark.yml
 
   w4:
-    name: W4 small QEMU checks
+    name: W4/W5 small QEMU checks
     needs: scope
     if: github.event_name == 'pull_request' && needs.scope.outputs.w4 == 'true'
     uses: ./.github/workflows/w4-full-numeric.yml

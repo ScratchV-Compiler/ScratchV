@@ -168,7 +168,7 @@ def test_workflow_publishes_summaries_even_on_failure_and_runs_tests():
         assert step["if"] == "always()"
         assert "scripts/summarize_w4_ci.py" in step["run"]
         assert all(".outcome" in value for value in step["env"].values())
-    assert set(workflow["on"]) == {"workflow_call"}
+    assert set(workflow["on"]) == {"workflow_call", "workflow_dispatch"}
     ci = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert "paths" not in ci["on"]["pull_request"]
     assert any(job.get("uses") == "./.github/workflows/w4-full-numeric.yml"

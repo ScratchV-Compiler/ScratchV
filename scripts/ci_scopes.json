@@ -30,7 +30,18 @@
     "tests/test_w2_*.py",
     "tests/test_numeric_metrics.py",
     "tests/test_numeric_summary.py",
-    ".github/workflows/llm-deploy.yml"
+    ".github/workflows/llm-deploy.yml",
+    "scripts/run_inference.py",
+    "scripts/deploy_w5.sh",
+    "scripts/check_w5_ci.py",
+    "deployment/w5/**",
+    "probes/w5_generation/**",
+    "tests/test_generation.py",
+    "tests/test_conversation.py",
+    "tests/test_qemu_generation.py",
+    "tests/test_w5_*.py",
+    "tests/test_riscv_mean_policy.py",
+    "tests/test_riscv_nonlinear_policy.py"
   ],
   "w4": [
     ".github/workflows/w4-full-numeric.yml",
@@ -59,6 +70,21 @@
     "tests/test_riscv_external*.py",
     "tests/test_riscv_process_cleanup.py",
     "tests/test_riscv_weight_transport.py",
-    "requirements/qwen3-small-probe.txt"
+    "requirements/qwen3-small-probe.txt",
+    "scripts/run_inference.py",
+    "scripts/deploy_w5.sh",
+    "scripts/check_w5_ci.py",
+    "deployment/w5/**",
+    "probes/w5_generation/**",
+    "tests/test_generation.py",
+    "tests/test_conversation.py",
+    "tests/test_qemu_generation.py",
+    "tests/test_w5_*.py",
+    "tests/test_riscv_mean_policy.py",
+    "tests/test_riscv_nonlinear_policy.py",
+    "pyproject.toml",
+    "assets/qwen3-0.6b/**",
+    "tests/test_tensor_c_mean_policy.py",
+    "tests/test_tensor_c_nonlinear_policy.py"
   ]
 }

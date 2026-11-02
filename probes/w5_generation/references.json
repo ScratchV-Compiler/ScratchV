@@ -1,0 +1,422 @@
+{
+  "schema_version": 1,
+  "status": "frozen",
+  "model_manifest": "probes/w1_qwen3_export/manifest.json",
+  "model_id": "Qwen/Qwen3-0.6B",
+  "revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+  "contract": {
+    "batch_size": 1,
+    "sequence_length": 256,
+    "dtype": "float32",
+    "use_cache": false,
+    "prompt_format": "raw_completion",
+    "add_special_tokens": false,
+    "sampling": "greedy_argmax_lowest_id",
+    "skip_special_tokens": true,
+    "clean_up_tokenization_spaces": false,
+    "stop_priority": [
+      "eos",
+      "capacity",
+      "max_new_tokens"
+    ]
+  },
+  "cases": [
+    {
+      "name": "france",
+      "prompt": "The capital of France is",
+      "prompt_utf8_hex": "546865206361706974616c206f66204672616e6365206973",
+      "required_substring": "Paris",
+      "max_new_tokens": 8,
+      "prompt_token_ids": [
+        785,
+        6722,
+        315,
+        9625,
+        374
+      ],
+      "generated_token_ids": [
+        12095,
+        13,
+        576,
+        6722,
+        315,
+        15344,
+        374,
+        21718
+      ],
+      "generated_text": " Paris. The capital of Italy is Rome",
+      "stop_reason": "max_new_tokens",
+      "semantic_passed": true,
+      "host_oracle_passed": true,
+      "steps": [
+        {
+          "step": 0,
+          "valid_length": 5,
+          "token_id": 12095,
+          "decoded_token": " Paris",
+          "top1_logit": 17.498851776123047,
+          "top2_logit": 14.337191581726074,
+          "top1_top2_margin": 3.1616601943969727,
+          "forward_wall_seconds": 5.923962489000019,
+          "forward_cpu_seconds": 5.923590624
+        },
+        {
+          "step": 1,
+          "valid_length": 6,
+          "token_id": 13,
+          "decoded_token": ".",
+          "top1_logit": 19.274662017822266,
+          "top2_logit": 19.083740234375,
+          "top1_top2_margin": 0.19092178344726562,
+          "forward_wall_seconds": 5.199123996000026,
+          "forward_cpu_seconds": 5.199001791
+        },
+        {
+          "step": 2,
+          "valid_length": 7,
+          "token_id": 576,
+          "decoded_token": " The",
+          "top1_logit": 16.967761993408203,
+          "top2_logit": 15.490779876708984,
+          "top1_top2_margin": 1.4769821166992188,
+          "forward_wall_seconds": 5.950034952000067,
+          "forward_cpu_seconds": 5.946767153999998
+        },
+        {
+          "step": 3,
+          "valid_length": 8,
+          "token_id": 6722,
+          "decoded_token": " capital",
+          "top1_logit": 18.299823760986328,
+          "top2_logit": 14.856491088867188,
+          "top1_top2_margin": 3.4433326721191406,
+          "forward_wall_seconds": 5.595218937000027,
+          "forward_cpu_seconds": 5.592634477000001
+        },
+        {
+          "step": 4,
+          "valid_length": 9,
+          "token_id": 315,
+          "decoded_token": " of",
+          "top1_logit": 20.05550193786621,
+          "top2_logit": 17.614667892456055,
+          "top1_top2_margin": 2.4408340454101562,
+          "forward_wall_seconds": 5.342139397999972,
+          "forward_cpu_seconds": 5.338031255000001
+        },
+        {
+          "step": 5,
+          "valid_length": 10,
+          "token_id": 15344,
+          "decoded_token": " Italy",
+          "top1_logit": 16.641294479370117,
+          "top2_logit": 16.617063522338867,
+          "top1_top2_margin": 0.02423095703125,
+          "forward_wall_seconds": 5.288755011000035,
+          "forward_cpu_seconds": 5.285648705
+        },
+        {
+          "step": 6,
+          "valid_length": 11,
+          "token_id": 374,
+          "decoded_token": " is",
+          "top1_logit": 22.20791244506836,
+          "top2_logit": 16.946107864379883,
+          "top1_top2_margin": 5.261804580688477,
+          "forward_wall_seconds": 5.632552263999969,
+          "forward_cpu_seconds": 5.624142145
+        },
+        {
+          "step": 7,
+          "valid_length": 12,
+          "token_id": 21718,
+          "decoded_token": " Rome",
+          "top1_logit": 20.907331466674805,
+          "top2_logit": 17.204931259155273,
+          "top1_top2_margin": 3.7024002075195312,
+          "forward_wall_seconds": 5.547119829000053,
+          "forward_cpu_seconds": 5.546546575000001
+        }
+      ],
+      "wall_seconds": 44.67187527400006,
+      "cpu_seconds": 44.649298945,
+      "process_peak_rss_kib": 5244604
+    },
+    {
+      "name": "germany",
+      "prompt": "The capital of Germany is",
+      "prompt_utf8_hex": "546865206361706974616c206f66204765726d616e79206973",
+      "required_substring": "Berlin",
+      "max_new_tokens": 8,
+      "prompt_token_ids": [
+        785,
+        6722,
+        315,
+        9856,
+        374
+      ],
+      "generated_token_ids": [
+        19846,
+        13,
+        576,
+        6722,
+        315,
+        9625,
+        374,
+        12095
+      ],
+      "generated_text": " Berlin. The capital of France is Paris",
+      "stop_reason": "max_new_tokens",
+      "semantic_passed": true,
+      "host_oracle_passed": true,
+      "steps": [
+        {
+          "step": 0,
+          "valid_length": 5,
+          "token_id": 19846,
+          "decoded_token": " Berlin",
+          "top1_logit": 16.521493911743164,
+          "top2_logit": 14.624658584594727,
+          "top1_top2_margin": 1.8968353271484375,
+          "forward_wall_seconds": 5.496049604999939,
+          "forward_cpu_seconds": 5.495774664999999
+        },
+        {
+          "step": 1,
+          "valid_length": 6,
+          "token_id": 13,
+          "decoded_token": ".",
+          "top1_logit": 19.563419342041016,
+          "top2_logit": 19.295778274536133,
+          "top1_top2_margin": 0.2676410675048828,
+          "forward_wall_seconds": 5.400778742000057,
+          "forward_cpu_seconds": 5.400431184999995
+        },
+        {
+          "step": 2,
+          "valid_length": 7,
+          "token_id": 576,
+          "decoded_token": " The",
+          "top1_logit": 16.98853874206543,
+          "top2_logit": 15.723114013671875,
+          "top1_top2_margin": 1.2654247283935547,
+          "forward_wall_seconds": 5.322351349999963,
+          "forward_cpu_seconds": 5.322156993
+        },
+        {
+          "step": 3,
+          "valid_length": 8,
+          "token_id": 6722,
+          "decoded_token": " capital",
+          "top1_logit": 18.370086669921875,
+          "top2_logit": 14.746591567993164,
+          "top1_top2_margin": 3.623495101928711,
+          "forward_wall_seconds": 4.931711173000053,
+          "forward_cpu_seconds": 4.928969291000001
+        },
+        {
+          "step": 4,
+          "valid_length": 9,
+          "token_id": 315,
+          "decoded_token": " of",
+          "top1_logit": 20.154003143310547,
+          "top2_logit": 18.079017639160156,
+          "top1_top2_margin": 2.0749855041503906,
+          "forward_wall_seconds": 5.378948186000002,
+          "forward_cpu_seconds": 5.3775705759999965
+        },
+        {
+          "step": 5,
+          "valid_length": 10,
+          "token_id": 9625,
+          "decoded_token": " France",
+          "top1_logit": 18.578645706176758,
+          "top2_logit": 17.20067024230957,
+          "top1_top2_margin": 1.3779754638671875,
+          "forward_wall_seconds": 5.244032164000032,
+          "forward_cpu_seconds": 5.239271584999997
+        },
+        {
+          "step": 6,
+          "valid_length": 11,
+          "token_id": 374,
+          "decoded_token": " is",
+          "top1_logit": 21.884960174560547,
+          "top2_logit": 16.38650894165039,
+          "top1_top2_margin": 5.498451232910156,
+          "forward_wall_seconds": 5.602864303999922,
+          "forward_cpu_seconds": 5.602449051000008
+        },
+        {
+          "step": 7,
+          "valid_length": 12,
+          "token_id": 12095,
+          "decoded_token": " Paris",
+          "top1_logit": 21.248014450073242,
+          "top2_logit": 16.446701049804688,
+          "top1_top2_margin": 4.801313400268555,
+          "forward_wall_seconds": 5.380494970000086,
+          "forward_cpu_seconds": 5.373863341999993
+        }
+      ],
+      "wall_seconds": 42.910345698000015,
+      "cpu_seconds": 42.893603793,
+      "process_peak_rss_kib": 5244636
+    },
+    {
+      "name": "japan",
+      "prompt": "The capital of Japan is",
+      "prompt_utf8_hex": "546865206361706974616c206f66204a6170616e206973",
+      "required_substring": "Tokyo",
+      "max_new_tokens": 8,
+      "prompt_token_ids": [
+        785,
+        6722,
+        315,
+        6323,
+        374
+      ],
+      "generated_token_ids": [
+        26194,
+        13,
+        576,
+        6722,
+        315,
+        279,
+        3639,
+        4180
+      ],
+      "generated_text": " Tokyo. The capital of the United States",
+      "stop_reason": "max_new_tokens",
+      "semantic_passed": true,
+      "host_oracle_passed": true,
+      "steps": [
+        {
+          "step": 0,
+          "valid_length": 5,
+          "token_id": 26194,
+          "decoded_token": " Tokyo",
+          "top1_logit": 16.132610321044922,
+          "top2_logit": 15.243704795837402,
+          "top1_top2_margin": 0.8889055252075195,
+          "forward_wall_seconds": 5.337803195999982,
+          "forward_cpu_seconds": 5.3336678580000125
+        },
+        {
+          "step": 1,
+          "valid_length": 6,
+          "token_id": 13,
+          "decoded_token": ".",
+          "top1_logit": 18.725910186767578,
+          "top2_logit": 18.47475242614746,
+          "top1_top2_margin": 0.2511577606201172,
+          "forward_wall_seconds": 5.40962941600003,
+          "forward_cpu_seconds": 5.409200784999996
+        },
+        {
+          "step": 2,
+          "valid_length": 7,
+          "token_id": 576,
+          "decoded_token": " The",
+          "top1_logit": 16.345678329467773,
+          "top2_logit": 15.184026718139648,
+          "top1_top2_margin": 1.161651611328125,
+          "forward_wall_seconds": 5.2799776159999965,
+          "forward_cpu_seconds": 5.279397790000004
+        },
+        {
+          "step": 3,
+          "valid_length": 8,
+          "token_id": 6722,
+          "decoded_token": " capital",
+          "top1_logit": 17.322513580322266,
+          "top2_logit": 14.836996078491211,
+          "top1_top2_margin": 2.4855175018310547,
+          "forward_wall_seconds": 5.683535881000012,
+          "forward_cpu_seconds": 5.678628095000008
+        },
+        {
+          "step": 4,
+          "valid_length": 9,
+          "token_id": 315,
+          "decoded_token": " of",
+          "top1_logit": 19.100204467773438,
+          "top2_logit": 17.763046264648438,
+          "top1_top2_margin": 1.337158203125,
+          "forward_wall_seconds": 5.363878753999984,
+          "forward_cpu_seconds": 5.363313796
+        },
+        {
+          "step": 5,
+          "valid_length": 10,
+          "token_id": 279,
+          "decoded_token": " the",
+          "top1_logit": 16.005170822143555,
+          "top2_logit": 15.628267288208008,
+          "top1_top2_margin": 0.3769035339355469,
+          "forward_wall_seconds": 5.153919003999931,
+          "forward_cpu_seconds": 5.153602902000003
+        },
+        {
+          "step": 6,
+          "valid_length": 11,
+          "token_id": 3639,
+          "decoded_token": " United",
+          "top1_logit": 16.810474395751953,
+          "top2_logit": 15.270747184753418,
+          "top1_top2_margin": 1.5397272109985352,
+          "forward_wall_seconds": 5.270241868000085,
+          "forward_cpu_seconds": 5.270055357000004
+        },
+        {
+          "step": 7,
+          "valid_length": 12,
+          "token_id": 4180,
+          "decoded_token": " States",
+          "top1_logit": 20.563379287719727,
+          "top2_logit": 17.63241195678711,
+          "top1_top2_margin": 2.930967330932617,
+          "forward_wall_seconds": 4.756456833000016,
+          "forward_cpu_seconds": 4.755680379999987
+        }
+      ],
+      "wall_seconds": 42.40610255299998,
+      "cpu_seconds": 42.394194961,
+      "process_peak_rss_kib": 5244696
+    }
+  ],
+  "tokenizer": {
+    "pad_token_id": 151643,
+    "generation_eos_token_ids": [
+      151645,
+      151643
+    ],
+    "model_vocab_size": 151936,
+    "tokenizer_vocab_size": 151669
+  },
+  "baseline": {
+    "recorded_at_utc": "2026-10-23T00:42:50.852643+00:00",
+    "acquisition": "One ORT run with independent per-step Host/input/argmax/stop oracle; not a second frozen replay.",
+    "environment": {
+      "python": "3.12.3",
+      "platform": "Linux-6.18.40.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+      "packages": {
+        "numpy": "2.2.6",
+        "onnxruntime": "1.22.1",
+        "tokenizers": "0.21.4"
+      },
+      "provider": "CPUExecutionProvider",
+      "intra_op_threads": 1,
+      "inter_op_threads": 1,
+      "graph_optimization": "ORT_DISABLE_ALL",
+      "cpu_memory_arena": false
+    },
+    "session_load_wall_seconds": 0.3070653280000215,
+    "session_load_cpu_seconds": 0.29269802199999995,
+    "wall_seconds": 130.67631491099996,
+    "cpu_seconds": 130.61070972899998,
+    "process_peak_rss_kib": 5244696,
+    "memory_note": "Linux ru_maxrss is cumulative process peak, not per-case allocation.",
+    "qemu_e2e": "NOT_RUN"
+  }
+}

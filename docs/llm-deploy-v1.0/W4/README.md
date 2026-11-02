@@ -19,7 +19,7 @@ W3 [#96](https://github.com/ScratchV-Compiler/ScratchV/pull/96) 已于 2026-10-1
 | [复现步骤](reproduction.md) | 固定依赖与模型、完整运行、诊断和原始数组复核 |
 | [验收与 CI](validation.md) | 分层门槛、测试入口、默认关闭的 Nightly、证据边界 |
 | [阶段衔接与后续准备](evolution.md) | W1–W4 接口对应、W5 前置工作、未来 MLIR 转换边界 |
-| [软仿优化实测报告](softsim-optimization-2026-10-22.md) | 多 hart、微内核、布局与运行器优化；完整模型对照和适用边界 |
+| [软仿优化实测报告](softsim-optimization-2026-10-22.md) | 多核、微内核、布局与运行器优化；完整模型对照和适用边界 |
 
 ## 验收标准
 

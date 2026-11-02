@@ -18,6 +18,8 @@ import stat
 
 import numpy as np
 
+from .riscv_harts import UNSET, select_cores
+
 
 SCHEMA = "scratchv.weights"
 VERSION = 1
@@ -331,16 +333,14 @@ def validate_weight_bundle(directory, expected_specs=None):
 
 
 def plan_guest_memory(code_capacity=128 * MIB, workspace_bytes=0, weight_bytes=0,
-                      input_bytes=0, output_bytes=0, *, ram_base=0x80000000, harts=1):
-    """Plan RV64 regions; code_capacity includes one 1 MiB stack per hart.
+                      input_bytes=0, output_bytes=0, *, ram_base=0x80000000, cores=UNSET, harts=UNSET):
+    """Plan RV64 regions; code_capacity includes one 1 MiB stack per core.
 
     All bases are 64-byte aligned. RAM is rounded up to MiB with at least 16 MiB
     and at least 5% spare capacity. This plan does not replace ELF bounds checks.
     """
-    from .riscv_harts import validate_harts
-
     try:
-        stack_bytes = validate_harts(harts) * MIB
+        stack_bytes = select_cores(cores, harts=harts) * MIB
     except ValueError as exc:
         raise WeightBundleError(str(exc)) from exc
     sizes = {"code_capacity": code_capacity, "workspace_bytes": workspace_bytes,
@@ -351,7 +351,7 @@ def plan_guest_memory(code_capacity=128 * MIB, workspace_bytes=0, weight_bytes=0
     if ram_base % ALIGNMENT or code_capacity % ALIGNMENT:
         raise WeightBundleError("RAM base and code capacity must be 64-byte aligned")
     if code_capacity < stack_bytes + ALIGNMENT:
-        raise WeightBundleError("Code capacity must include code plus a 1 MiB stack per hart")
+        raise WeightBundleError("Code capacity must include code plus a 1 MiB stack per core")
     regions = {}
     cursor = ram_base
     for name, nbytes in (("code", code_capacity - stack_bytes), ("stack", stack_bytes),

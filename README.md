@@ -116,6 +116,7 @@ ONNX 模型 (.onnx)
 |------|------|
 | [📘 课程首页](https://scratchv-compiler.github.io/ScratchV/docs/index.html) | 交互式课程（推荐新手） |
 | [📖 文档导航](docs/INDEX.md) | 全部 Markdown 文档索引 |
+| [W5 功能、验证与性能数据](docs/llm-deploy-v1.0/W5/README.md#maintainer-overview) | 本次改动、完整生成实测、CI/benchmark 数据入口及未完成项 |
 | [🏗️ 架构总览](docs/reference/ARCHITECTURE.md) | ONNX→RISC-V 双路径详解 |
 | [📊 性能仪表盘](https://scratchv-compiler.github.io/ScratchV/dashboard.html) | LLVM vs ScratchV 对比 |
 | [课题 06 测试套件](docs/topics/06-性能基准套件/06-性能测试套件使用说明.md) | TinyFive 正确性验证、Benchmark 与回归报告 |

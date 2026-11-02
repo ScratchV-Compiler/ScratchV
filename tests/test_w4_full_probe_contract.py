@@ -370,7 +370,7 @@ def test_reused_executable_rejects_invalid_harts(tmp_path, monkeypatch, harts):
     path, record = _saved_executable(tmp_path, monkeypatch)
     record["harts"] = record["evidence"]["harts"] = harts
     path.write_text(json.dumps(record), encoding="utf-8")
-    with pytest.raises(ValueError, match="hart"):
+    with pytest.raises(ValueError, match="core|hart"):
         run.load_executable(path)
 
 
@@ -378,13 +378,17 @@ def test_reused_executable_rejects_hart_count_changed_without_rebuild(tmp_path, 
     path, record = _saved_executable(tmp_path, monkeypatch)
     record["harts"] = 4
     path.write_text(json.dumps(record), encoding="utf-8")
-    with pytest.raises(ValueError, match="hart"):
+    with pytest.raises(ValueError, match="core|hart"):
         run.load_executable(path)
 
 
 @pytest.mark.parametrize("requested", [None, 2, 4, "auto"])
 @pytest.mark.parametrize("layout", ["none", "two-buffer-pad-4k"])
-def test_full_cli_resolves_harts_once_before_tiny_graph_build(tmp_path, monkeypatch, requested, layout):
+@pytest.mark.parametrize("mean_policy,nonlinear_policy", [
+    ("sequential", "libm"), ("two-four-lane-last-axis", "libm"),
+    ("sequential", "fp32-reference"), ("two-four-lane-last-axis", "fp32-reference"),
+])
+def test_full_cli_resolves_harts_once_before_tiny_graph_build(tmp_path, monkeypatch, requested, layout, mean_policy, nonlinear_policy):
     from scratchv.frontend import onnx_parser
     from scratchv.ir.builder import IRBuilder
     from scratchv.ir.types import Value
@@ -412,22 +416,28 @@ def test_full_cli_resolves_harts_once_before_tiny_graph_build(tmp_path, monkeypa
     expected = 2 if requested == "auto" else requested or 1
     built = []
     def stopped_build(artifact, *a, **kw):
-        built.append(kw["harts"])
-        assert type(kw["harts"]) is int and kw["harts"] == expected
+        built.append(kw["cores"])
+        assert type(kw["cores"]) is int and kw["cores"] == expected
         assert artifact.qemu_workspace_layout == layout
+        assert artifact.mean_policy == mean_policy
+        assert artifact.nonlinear_policy == nonlinear_policy
         raise RuntimeError("intentional tiny-graph build stop")
     monkeypatch.setattr(run, "build_external", stopped_build)
     if requested is not None:
-        arguments += ["--harts", str(requested)]
+        arguments += ["--cores" if layout == "none" else "--harts", str(requested)]
     if layout != "none":
         arguments += ["--qemu-workspace-layout", layout]
+    arguments += ["--mean-policy", mean_policy, "--nonlinear-policy", nonlinear_policy]
     assert run.main(arguments + ["--build-only"]) == 1
     saved = json.loads((output / "report.json").read_text())
     assert built == [expected]
     assert probes == ([0] if requested == "auto" else [])
     assert saved["harts_requested"] == (requested if requested is not None else 1)
-    assert saved["harts"] == expected
+    assert saved["cores"] == saved["harts"] == expected
+    assert saved["cores_requested"] == saved["harts_requested"]
     assert saved["qemu_workspace_layout_requested"] == saved["codegen"]["qemu_workspace_layout"] == layout
+    assert saved["mean_policy"] == saved["codegen"]["mean_policy"] == mean_policy
+    assert saved["nonlinear_policy"] == saved["codegen"]["nonlinear_policy"] == nonlinear_policy
     assert "intentional tiny-graph build stop" in saved["error"]
     assert not saved["full_qemu_forward_executed"]
 
@@ -448,7 +458,7 @@ def test_full_cli_auto_reuse_requires_resolved_harts_to_match_build(tmp_path, mo
     if built_harts == 4:
         assert result == 0 and saved["status"] == "BUILD_ONLY"
     else:
-        assert result == 1 and "hart count" in saved["error"]
+        assert result == 1 and "core count" in saved["error"]
         assert saved["stage"] == "load_existing_build"
 
 
@@ -501,7 +511,7 @@ def test_full_cli_matmul_tile_reaches_tiny_graph_build(tmp_path, monkeypatch, ti
 
     def stopped_build(artifact, *a, **kw):
         generated.append(artifact)
-        assert kw["harts"] == 1 and artifact.qemu_workspace_layout == "none"
+        assert kw["cores"] == 1 and artifact.qemu_workspace_layout == "none"
         raise RuntimeError("intentional tile build stop")
 
     monkeypatch.setattr(run, "build_external", stopped_build)
@@ -597,7 +607,7 @@ def test_full_cli_rhs_layout_reaches_tiny_graph_build(tmp_path, monkeypatch, rhs
 
     def stopped_build(artifact, *a, **kw):
         generated.append(artifact)
-        assert kw["harts"] == 1 and artifact.qemu_workspace_layout == "none"
+        assert kw["cores"] == 1 and artifact.qemu_workspace_layout == "none"
         raise RuntimeError("intentional RHS layout build stop")
 
     monkeypatch.setattr(run, "build_external", stopped_build)
@@ -705,3 +715,179 @@ def test_full_cli_rejects_rhs_layout_before_output_creation(tmp_path, layout):
                   "--matmul-rhs-layout", layout])
     assert exc.value.code == 2
     assert not target.exists()
+
+
+@pytest.mark.parametrize("policy", [None, "sequential", "two-four-lane-last-axis"])
+def test_load_retains_mean_policy_and_legacy_default(tmp_path, monkeypatch, policy):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    if policy is not None:
+        record["evidence"]["mean_policy"] = policy
+        path.write_text(json.dumps(record))
+    exe = run.load_executable(path)
+    assert exe.evidence.get("mean_policy", "sequential") == (policy or "sequential")
+    if policy is None:
+        assert "mean_policy" not in exe.evidence  # Do not relabel the legacy artifact.
+
+
+@pytest.mark.parametrize("policy", [None, True, "reference-v4", 1])
+def test_load_rejects_invalid_explicit_mean_policy(tmp_path, monkeypatch, policy):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    record["evidence"]["mean_policy"] = policy
+    path.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="Mean policy"):
+        run.load_executable(path)
+
+
+@pytest.mark.parametrize("built", [None, "sequential", "two-four-lane-last-axis"])
+@pytest.mark.parametrize("requested", ["sequential", "two-four-lane-last-axis"])
+def test_w4_mean_policy_reuse_requires_explicit_matching_build(tmp_path, monkeypatch, built, requested):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    existing = run.load_executable(None)
+    evidence = {} if built is None else {"mean_policy": built}
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing, evidence=evidence))
+    previous = tmp_path / "previous/report.json"
+    record = json.loads(previous.read_text())
+    if built is not None:
+        record["mean_policy"] = built
+    previous.write_text(json.dumps(record))
+    result = run.main(arguments + ["--mean-policy", requested, "--build-only"])
+    saved = json.loads((output / "report.json").read_text())
+    assert saved["mean_policy"] == requested and not saved["full_qemu_forward_executed"]
+    if (built or "sequential") == requested:
+        assert result == 0 and saved["status"] == "BUILD_ONLY"
+    else:
+        assert result == 1 and "Mean policy" in saved["error"]
+
+
+def test_w4_mean_policy_report_disagreement_rejects_reuse(tmp_path, monkeypatch):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    existing = run.load_executable(None)
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing,
+        evidence={"mean_policy": "two-four-lane-last-axis"}))
+    assert run.main(arguments + ["--mean-policy", "two-four-lane-last-axis", "--build-only"]) == 1
+    saved = json.loads((output / "report.json").read_text())
+    assert "Mean policy" in saved["error"] and not saved["full_qemu_forward_executed"]
+
+
+@pytest.mark.parametrize("policy", [None, "libm", "fp32-reference"])
+def test_load_retains_nonlinear_policy_and_legacy_default(tmp_path, monkeypatch, policy):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    if policy is not None:
+        record["evidence"]["nonlinear_policy"] = policy
+        path.write_text(json.dumps(record))
+    exe = run.load_executable(path)
+    assert exe.evidence.get("nonlinear_policy", "libm") == (policy or "libm")
+    if policy is None:
+        assert "nonlinear_policy" not in exe.evidence  # Do not relabel the legacy artifact.
+
+
+@pytest.mark.parametrize("policy", [None, True, "reference-v4", 1])
+def test_load_rejects_invalid_explicit_nonlinear_policy(tmp_path, monkeypatch, policy):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    record["evidence"]["nonlinear_policy"] = policy
+    path.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="nonlinear policy"):
+        run.load_executable(path)
+
+
+@pytest.mark.parametrize("built", [None, "libm", "fp32-reference"])
+@pytest.mark.parametrize("requested", ["libm", "fp32-reference"])
+def test_w4_nonlinear_policy_reuse_requires_explicit_matching_build(tmp_path, monkeypatch, built, requested):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    existing = run.load_executable(None)
+    evidence = {} if built is None else {"nonlinear_policy": built}
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing, evidence=evidence))
+    previous = tmp_path / "previous/report.json"
+    record = json.loads(previous.read_text())
+    if built is not None:
+        record["nonlinear_policy"] = built
+    previous.write_text(json.dumps(record))
+    result = run.main(arguments + ["--nonlinear-policy", requested, "--build-only"])
+    saved = json.loads((output / "report.json").read_text())
+    assert saved["nonlinear_policy"] == requested and not saved["full_qemu_forward_executed"]
+    if (built or "libm") == requested:
+        assert result == 0 and saved["status"] == "BUILD_ONLY"
+    else:
+        assert result == 1 and "nonlinear policy" in saved["error"]
+
+
+def test_w4_nonlinear_policy_report_disagreement_rejects_reuse(tmp_path, monkeypatch):
+    arguments, output = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    existing = run.load_executable(None)
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(existing,
+        evidence={"nonlinear_policy": "fp32-reference"}))
+    assert run.main(arguments + ["--nonlinear-policy", "fp32-reference", "--build-only"]) == 1
+    saved = json.loads((output / "report.json").read_text())
+    assert "nonlinear policy" in saved["error"] and not saved["full_qemu_forward_executed"]
+
+
+@pytest.mark.parametrize("policy", ["unknown", "sequential", ""])
+def test_w4_unknown_nonlinear_policy_fails_before_output(tmp_path, policy):
+    target = tmp_path / "report"
+    with pytest.raises(SystemExit) as exc:
+        run.main(["--model-dir", str(tmp_path), "--output-dir", str(target),
+                  "--nonlinear-policy", policy])
+    assert exc.value.code == 2 and not target.exists()
+
+
+@pytest.mark.parametrize("cores", [1, 4])
+@pytest.mark.parametrize("top_names,evidence_names", [
+    (("cores",), ("cores",)), (("harts",), ("harts",)),
+    (("cores",), ("harts",)), (("harts",), ("cores",)),
+    (("cores", "harts"), ("cores", "harts")),
+])
+def test_core_metadata_aliases_roundtrip_without_rewriting_source(
+        tmp_path, monkeypatch, cores, top_names, evidence_names):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    record.update({name: cores for name in top_names})
+    record["evidence"].update({name: cores for name in evidence_names})
+    record["layout"] = plan_guest_memory(input_bytes=2048, output_bytes=256 * 151936 * 4,
+                                         workspace_bytes=64, cores=cores)
+    original = json.dumps(record)
+    path.write_text(original)
+    executable = run.load_executable(path)
+    assert executable.cores == executable.harts == cores
+    assert path.read_text() == original
+    out = tmp_path / "resaved"
+    out.mkdir()
+    run.save_executable(executable, out)
+    saved = json.loads((out / "executable.json").read_text())
+    assert saved["cores"] == saved["harts"] == cores
+    assert saved["evidence"]["cores"] == saved["evidence"]["harts"] == cores
+    reloaded = run.load_executable(out / "executable.json")
+    assert reloaded.cores == cores and reloaded.elf_path == executable.elf_path
+
+
+@pytest.mark.parametrize("container", ["top", "evidence"])
+@pytest.mark.parametrize("fields", [
+    {"cores": 4, "harts": 1}, {"cores": 1, "harts": True},
+    {"cores": None}, {"cores": True}, {"cores": "1"}, {"cores": "auto"}, {"cores": 3},
+])
+def test_core_metadata_rejects_conflicts_and_invalid_values(tmp_path, monkeypatch, container, fields):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    (record if container == "top" else record["evidence"]).update(fields)
+    path.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="core|hart"):
+        run.load_executable(path)
+
+
+def test_core_metadata_without_either_field_stays_single_core(tmp_path, monkeypatch):
+    path, _ = _saved_executable(tmp_path, monkeypatch)
+    executable = run.load_executable(path)
+    assert executable.cores == executable.harts == 1
+    assert executable.evidence["cores"] == executable.evidence["harts"] == 1
+
+
+@pytest.mark.parametrize("entry", ["full", "diagnostic"])
+@pytest.mark.parametrize("flags", [
+    ["--cores", "1", "--harts", "4"], ["--harts", "4", "--cores", "1"],
+    ["--cores", "auto", "--harts", "4"], ["--cores", "3"],
+])
+def test_w4_core_alias_conflict_stops_before_output(tmp_path, entry, flags):
+    from probes.w4_qwen3_full import diagnostic
+    module = run if entry == "full" else diagnostic
+    output = tmp_path / "output"
+    with pytest.raises(SystemExit) as exc:
+        module.main(["--model-dir", str(tmp_path / "model"), "--output-dir", str(output), *flags])
+    assert exc.value.code == 2
+    assert not output.exists()

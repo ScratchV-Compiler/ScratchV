@@ -1,0 +1,27 @@
+# Dockerfile-specific allowlist: never send weights, ELF, venvs, Git or output.
+**
+!pyproject.toml
+!README.md
+!LICENSE
+!LICENSES/
+!LICENSES/**
+!THIRD_PARTY_NOTICES.txt
+!scratchv/
+!scratchv/**
+!scratchv_dag/
+!scratchv_dag/**
+!benchmarks/
+!benchmarks/**
+!scripts/
+!scripts/run_inference.py
+!probes/
+!probes/**/
+!probes/**/*.py
+!probes/**/*.json
+!deployment/
+!deployment/w5/
+!deployment/w5/Dockerfile
+**/__pycache__/
+**/*.pyc
+probes/**/out/
+probes/**/output/

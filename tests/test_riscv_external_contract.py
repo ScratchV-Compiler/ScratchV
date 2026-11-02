@@ -578,3 +578,127 @@ def test_cleanup_observation_failure_preserves_error_and_finishes_resource_clean
     # Transport observation/reporting is attempted even after monitor failure.
     assert report["weight_transport"]["retained_observation"] == "complete"
     assert report["weight_transport"]["retained_bytes"] == 0
+
+
+@pytest.mark.parametrize("policy", ["sequential", "two-four-lane-last-axis"])
+def test_external_build_records_explicit_mean_policy_without_compiler(tmp_path, monkeypatch, policy):
+    import subprocess
+    builder = IRBuilder()
+    x = Value("x", shape=(2, 4))
+    builder.new_function("main", [x]); builder.new_block("entry"); builder.ret(builder.neg(x))
+    artifact = TensorCCodegen(builder.program, constant_storage="external", mean_policy=policy).generate()
+    bundle = tmp_path / "weights"
+    manifest = write_weight_bundle(artifact.external_weights, artifact.external_initializers, bundle)
+    _, input_bytes = runtime.input_layout(artifact.inputs)
+    layout = plan_guest_memory(workspace_bytes=artifact.workspace_bytes,
+        input_bytes=input_bytes, output_bytes=artifact.output.nbytes, weight_bytes=manifest["total_bytes"])
+
+    def compile_fixture(command, *, cwd, **kwargs):
+        _elf(Path(cwd) / "model.elf", layout)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(runtime, "_run_process", compile_fixture)
+    monkeypatch.setattr(runtime, "toolchain_versions", lambda *_: {})
+    executable = runtime.build_external(artifact, bundle, tmp_path / "build", RiscVToolchain(("mock-cc",), "mock-qemu"))
+    assert executable.evidence["mean_policy"] == policy
+    assert json.loads((tmp_path / "build/build.json").read_text())["mean_policy"] == policy
+    assert executable.harts == 1 and executable.evidence["qemu_workspace_layout"] == "none"
+
+
+@pytest.mark.parametrize("policy", [None, True, "unsupported"])
+def test_external_build_rejects_unknown_mean_policy_before_creating_artifacts(tmp_path, policy):
+    artifact = SimpleNamespace(constant_storage="external", mean_policy=policy)
+    with pytest.raises(ValueError, match="Mean policy"):
+        runtime.build_external(artifact, tmp_path / "weights", tmp_path / "build", None)
+    assert not (tmp_path / "build").exists()
+
+
+@pytest.mark.parametrize("policy", [None, "sequential", "two-four-lane-last-axis"])
+def test_external_run_reports_mean_policy_including_legacy_default(tmp_path, monkeypatch, policy):
+    import numpy as np
+    from dataclasses import replace
+    executable = _unlaunchable_executable(tmp_path)
+    if policy is not None:
+        executable = replace(executable, evidence={**executable.evidence, "mean_policy": policy})
+    run_dir = tmp_path / "run"
+    # A missing QEMU executable stops before any process/model execution, but
+    # still exercises the runner's real failure-report publication.
+    with pytest.raises(OSError):
+        runtime.run_external(executable, {"x": np.ones(1, np.float32)}, run_dir)
+    report = json.loads((run_dir / "run.json").read_text())
+    assert report["mean_policy"] == (policy or "sequential")
+    assert report["status"] == "FAIL" and report["guest_completed"] is False
+
+
+@pytest.mark.parametrize("policy", [None, True, "unsupported"])
+def test_external_run_rejects_invalid_mean_policy_before_launch(tmp_path, policy):
+    import numpy as np
+    from dataclasses import replace
+    executable = _unlaunchable_executable(tmp_path)
+    executable = replace(executable, evidence={**executable.evidence, "mean_policy": policy})
+    run_dir = tmp_path / "run"
+    with pytest.raises(ValueError, match="Mean policy"):
+        runtime.run_external(executable, {"x": np.ones(1, np.float32)}, run_dir)
+    assert not run_dir.exists()
+
+
+@pytest.mark.parametrize("policy", ["libm", "fp32-reference"])
+def test_external_build_records_explicit_nonlinear_policy_without_compiler(tmp_path, monkeypatch, policy):
+    import subprocess
+    builder = IRBuilder()
+    x = Value("x", shape=(2, 4))
+    builder.new_function("main", [x]); builder.new_block("entry"); builder.ret(builder.neg(x))
+    artifact = TensorCCodegen(builder.program, constant_storage="external", nonlinear_policy=policy).generate()
+    bundle = tmp_path / "weights"
+    manifest = write_weight_bundle(artifact.external_weights, artifact.external_initializers, bundle)
+    _, input_bytes = runtime.input_layout(artifact.inputs)
+    layout = plan_guest_memory(workspace_bytes=artifact.workspace_bytes,
+        input_bytes=input_bytes, output_bytes=artifact.output.nbytes, weight_bytes=manifest["total_bytes"])
+
+    def compile_fixture(command, *, cwd, **kwargs):
+        _elf(Path(cwd) / "model.elf", layout)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(runtime, "_run_process", compile_fixture)
+    monkeypatch.setattr(runtime, "toolchain_versions", lambda *_: {})
+    executable = runtime.build_external(artifact, bundle, tmp_path / "build", RiscVToolchain(("mock-cc",), "mock-qemu"))
+    assert executable.evidence["nonlinear_policy"] == policy
+    assert json.loads((tmp_path / "build/build.json").read_text())["nonlinear_policy"] == policy
+    assert executable.harts == 1 and executable.evidence["qemu_workspace_layout"] == "none"
+
+
+@pytest.mark.parametrize("policy", [None, True, "unsupported"])
+def test_external_build_rejects_unknown_nonlinear_policy_before_creating_artifacts(tmp_path, policy):
+    artifact = SimpleNamespace(constant_storage="external", nonlinear_policy=policy)
+    with pytest.raises(ValueError, match="nonlinear policy"):
+        runtime.build_external(artifact, tmp_path / "weights", tmp_path / "build", None)
+    assert not (tmp_path / "build").exists()
+
+
+@pytest.mark.parametrize("policy", [None, "libm", "fp32-reference"])
+def test_external_run_reports_nonlinear_policy_including_legacy_default(tmp_path, monkeypatch, policy):
+    import numpy as np
+    from dataclasses import replace
+    executable = _unlaunchable_executable(tmp_path)
+    if policy is not None:
+        executable = replace(executable, evidence={**executable.evidence, "nonlinear_policy": policy})
+    run_dir = tmp_path / "run"
+    # A missing QEMU executable stops before any process/model execution, but
+    # still exercises the runner's real failure-report publication.
+    with pytest.raises(OSError):
+        runtime.run_external(executable, {"x": np.ones(1, np.float32)}, run_dir)
+    report = json.loads((run_dir / "run.json").read_text())
+    assert report["nonlinear_policy"] == (policy or "libm")
+    assert report["status"] == "FAIL" and report["guest_completed"] is False
+
+
+@pytest.mark.parametrize("policy", [None, True, "unsupported"])
+def test_external_run_rejects_invalid_nonlinear_policy_before_launch(tmp_path, policy):
+    import numpy as np
+    from dataclasses import replace
+    executable = _unlaunchable_executable(tmp_path)
+    executable = replace(executable, evidence={**executable.evidence, "nonlinear_policy": policy})
+    run_dir = tmp_path / "run"
+    with pytest.raises(ValueError, match="nonlinear policy"):
+        runtime.run_external(executable, {"x": np.ones(1, np.float32)}, run_dir)
+    assert not run_dir.exists()

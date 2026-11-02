@@ -1,5 +1,5 @@
 """Real small-guest checks for external-runtime hart ownership and barriers."""
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, asdict, fields, replace
 import os
 import shutil
 import subprocess
@@ -10,8 +10,8 @@ import pytest
 from scratchv.backend.tensor_c_codegen import TensorCArtifact, TensorCCodegen, TensorSpec
 from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import DataType, Value
-from scratchv.runtime.riscv_external import build_external, run_external
-from scratchv.runtime.riscv_harts import resolve_harts
+from scratchv.runtime.riscv_external import ExternalExecutable, build_external, run_external
+from scratchv.runtime.riscv_harts import UNSET, read_cores, resolve_cores, resolve_harts, select_cores
 from scratchv.runtime.riscv_tensor import RiscVToolchain, discover_toolchain
 from scratchv.runtime.weight_bundle import MIB, plan_guest_memory, write_weight_bundle
 
@@ -367,3 +367,183 @@ struct context { u64 *out; u64 value; u64 ready[4]; };
     np.testing.assert_array_equal(output[:65], expected)
     assert report["passed"] and report["harts"] == harts
     np.testing.assert_array_equal(output[73:73+harts], 0)
+
+
+@pytest.mark.parametrize("cores", [1, 2, 4])
+def test_cores_and_legacy_harts_select_the_same_layout(cores):
+    assert select_cores(cores) == select_cores(harts=cores) == select_cores(cores, harts=cores)
+    assert resolve_cores(cores) == resolve_harts(cores)
+    assert plan_guest_memory(cores=cores) == plan_guest_memory(harts=cores)
+    assert select_cores() == 1
+
+
+@pytest.mark.parametrize("bad", [None, True, False, 0, 3, 1.0, "2"])
+def test_invalid_cores_and_alias_conflicts_fail_before_build(tmp_path, bad):
+    for kwargs in ({"cores": bad}, {"cores": 4, "harts": bad}):
+        with pytest.raises(ValueError, match="cores"):
+            plan_guest_memory(**kwargs)
+        with pytest.raises(ValueError, match="cores"):
+            build_external(artifact(), tmp_path / "missing", tmp_path / "build",
+                           RiscVToolchain(("unused",), "unused"), **kwargs)
+    assert not (tmp_path / "build").exists()
+    with pytest.raises(ValueError, match="disagree"):
+        select_cores(4, harts=1)
+    with pytest.raises(ValueError, match="disagree"):
+        select_cores("auto", harts=4, allow_auto=True)
+
+
+@pytest.mark.parametrize("record,expected", [
+    ({}, 1), ({"cores": 4}, 4), ({"harts": 4}, 4),
+    ({"cores": 2, "harts": 2}, 2),
+])
+def test_core_metadata_reads_both_generations(record, expected):
+    assert read_cores(record) == expected
+
+
+@pytest.mark.parametrize("record", [
+    {"cores": 4, "harts": 1}, {"cores": 1, "harts": True},
+    {"cores": False, "harts": 1}, {"cores": None},
+    {"cores": "4"}, {"harts": 1.0}, {"cores": "auto"},
+])
+def test_core_metadata_rejects_invalid_or_conflicting_aliases(record):
+    with pytest.raises(ValueError, match="cores"):
+        read_cores(record)
+
+
+def test_required_core_metadata_does_not_invent_a_single_core():
+    with pytest.raises(ValueError, match="Missing cores"):
+        read_cores({}, default=UNSET)
+
+
+def test_executable_constructor_and_dataclass_replace_accept_both_spellings(tmp_path):
+    positional = (tmp_path / "model.elf", tmp_path, {}, {}, (), None, (),
+                  RiscVToolchain(("unused",), "unused"), {})
+    original = ExternalExecutable(*positional, cores=4)
+    assert original.cores == original.harts == 4
+    assert ExternalExecutable(*positional, harts=4) == original
+    assert ExternalExecutable(*positional, cores=4, harts=4) == original
+    assert ExternalExecutable(*positional).cores == 1
+    assert replace(original, evidence={"changed": True}).cores == 4
+    assert replace(original, cores=2).cores == replace(original, harts=2).cores == 2
+    with pytest.raises(ValueError, match="disagree"):
+        ExternalExecutable(*positional, cores=4, harts=1)
+    with pytest.raises(ValueError, match="disagree"):
+        replace(original, cores=2, harts=1)
+
+
+@pytest.mark.skipif(not os.environ.get("SCRATCHV_QEMU"), reason="explicit RV64 tools required")
+@pytest.mark.parametrize("cores", [1, 4])
+def test_new_core_api_runs_small_graph_and_reuses_legacy_build_evidence(tmp_path, cores):
+    model = artifact()
+    write_weight_bundle((), (), tmp_path / "weights")
+    executable = build_external(model, tmp_path / "weights", tmp_path / "build",
+                                discover_toolchain(), cores=cores)
+    assert executable.cores == executable.harts == cores
+    assert executable.evidence["cores"] == executable.evidence["harts"] == cores
+    first, report = run_external(executable, {}, tmp_path / "current", timeout=15)
+    assert report["passed"] and report["cores"] == report["harts"] == cores
+    evidence = dict(executable.evidence)
+    del evidence["cores"]
+    legacy, old_report = run_external(replace(executable, evidence=evidence), {},
+                                      tmp_path / "legacy", timeout=15)
+    assert old_report["passed"] and old_report["cores"] == cores
+    np.testing.assert_array_equal(first, legacy)
+    expected = np.full(65, sum(range(1, 33)), dtype=np.int64)
+    expected[0] += 1000
+    expected[:3] += 2000
+    np.testing.assert_array_equal(first[:65], expected)
+    bad = replace(executable, evidence={**evidence, "cores": 2 if cores == 1 else 1})
+    with pytest.raises(ValueError, match="disagree"):
+        run_external(bad, {}, tmp_path / "conflicting", timeout=1)
+    assert not (tmp_path / "conflicting").exists()
+
+
+@pytest.mark.parametrize("definitions", [
+    [], ["-DSCRATCHV_CORES=4"], ["-DSCRATCHV_HARTS=4"],
+    ["-DSCRATCHV_CORES=4", "-DSCRATCHV_HARTS=4"],
+])
+def test_runtime_macro_aliases_support_existing_c_and_assembly(definitions):
+    from scratchv.runtime.riscv_harts import STARTUP_ASSEMBLY, WORKER_SOURCE
+    from scratchv.backend.tensor_c_codegen import _EXTERNAL_PRELUDE
+    compiler = shutil.which("cc")
+    if not compiler:
+        pytest.skip("host C preprocessor required")
+    expected = 4 if definitions else 1
+    for source, language in ((STARTUP_ASSEMBLY, "assembler-with-cpp"),
+                             (WORKER_SOURCE, "c"), (_EXTERNAL_PRELUDE, "c")):
+        completed = subprocess.run([compiler, "-E", "-P", "-x", language, *definitions, "-"],
+                                   input=source + "\nSCRATCHV_CORES SCRATCHV_HARTS\n",
+                                   text=True, capture_output=True, check=True)
+        assert completed.stdout.rstrip().endswith(f"{expected} {expected}")
+
+
+def test_runtime_macro_alias_conflicts_are_rejected():
+    from scratchv.runtime.riscv_harts import STARTUP_ASSEMBLY, WORKER_SOURCE
+    from scratchv.backend.tensor_c_codegen import _EXTERNAL_PRELUDE
+    compiler = shutil.which("cc")
+    if not compiler:
+        pytest.skip("host C preprocessor required")
+    for source, language in ((STARTUP_ASSEMBLY, "assembler-with-cpp"),
+                             (WORKER_SOURCE, "c"), (_EXTERNAL_PRELUDE, "c")):
+        completed = subprocess.run([compiler, "-E", "-P", "-x", language,
+                                    "-DSCRATCHV_CORES=4", "-DSCRATCHV_HARTS=1", "-"],
+                                   input=source, text=True, capture_output=True)
+        assert completed.returncode != 0 and "disagree" in completed.stderr
+
+
+@pytest.mark.parametrize("kwargs,expected", [
+    ({}, 1), ({"cores": 1}, 1), ({"cores": 2}, 2), ({"cores": 4}, 4),
+    ({"harts": 4}, 4), ({"cores": 4, "harts": 4}, 4),
+])
+def test_executable_asdict_preserves_public_core_and_legacy_fields(tmp_path, kwargs, expected):
+    original = ExternalExecutable(
+        tmp_path / "model.elf", tmp_path, {}, {}, (), None, (),
+        RiscVToolchain(("unused",), "unused"), {"labels": ["original"]}, **kwargs)
+    record = asdict(original)
+    assert record["cores"] == record["harts"] == expected
+    assert type(record["cores"]) is type(record["harts"]) is int
+    assert set(record) == {
+        "elf_path", "bundle_dir", "manifest", "layout", "inputs",
+        "output", "weights", "toolchain", "evidence", "cores", "harts",
+    }
+    record["evidence"]["labels"].append("copy")
+    assert original.evidence == {"labels": ["original"]}
+    shallow = {field.name: getattr(original, field.name) for field in fields(original)}
+    assert ExternalExecutable(**shallow) == original
+    shallow.pop("cores")
+    assert ExternalExecutable(**shallow) == original
+    with pytest.raises(FrozenInstanceError):
+        original.cores = 2
+    with pytest.raises(FrozenInstanceError):
+        original.harts = 2
+
+
+@pytest.mark.parametrize("initial", [1, 2, 4])
+@pytest.mark.parametrize("updated", [1, 2, 4])
+def test_executable_replace_keeps_serialized_core_aliases_equal(tmp_path, initial, updated):
+    original = ExternalExecutable(
+        tmp_path / "model.elf", tmp_path, {}, {}, (), None, (),
+        RiscVToolchain(("unused",), "unused"), {}, cores=initial)
+    for change in ({"cores": updated}, {"harts": updated},
+                   {"cores": updated, "harts": updated},
+                   {"cores": initial, "harts": updated},
+                   {"cores": updated, "harts": initial}):
+        changed = replace(original, **change)
+        assert changed.cores == changed.harts == updated
+        copied = replace(changed, evidence={"modified": True})
+        record = asdict(copied)
+        assert record["cores"] == record["harts"] == updated
+        assert original.cores == original.harts == initial
+    others = [value for value in (1, 2, 4) if value != initial]
+    with pytest.raises(ValueError, match="disagree"):
+        replace(original, cores=others[0], harts=others[1])
+
+
+@pytest.mark.parametrize("field", ["cores", "harts"])
+@pytest.mark.parametrize("bad", [None, True, False, 1.0, "4", 0, 3, "auto"])
+def test_executable_replace_rejects_invalid_count_before_alias_sync(tmp_path, field, bad):
+    original = ExternalExecutable(
+        tmp_path / "model.elf", tmp_path, {}, {}, (), None, (),
+        RiscVToolchain(("unused",), "unused"), {}, cores=1)
+    with pytest.raises(ValueError, match="cores"):
+        replace(original, **{field: bad})

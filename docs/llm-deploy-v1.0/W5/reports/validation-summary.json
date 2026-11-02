@@ -1,0 +1,826 @@
+{
+ "schema_version": 1,
+ "title": "W5 历史实跑数据摘要",
+ "scope": {
+  "historical_result": true,
+  "new_model_execution": false,
+  "current_commit_ci_result": false,
+  "full_model_measurement_date": "2026-10-23",
+  "full_model_baseline_commit": "8ad347477f7f5ba15b2da7c91178b3c6668456cc",
+  "baseline_source": "baseline_and_scope",
+  "baseline_note": "完整模型数据沿用 README 记录的历史功能基线，不代表后续命名、兼容修复或最新 PR 提交已经重跑完整模型。",
+  "sources_base": "所有来源路径相对于当时运行所在的 W5 仓库工作树根目录；output 原始文件保留本地，本摘要公开可读数据。",
+  "raw_report_schema_version": 1,
+  "field_mapping": "本摘要 cores/cores_requested 对应历史原始 schema 1 的 harts/harts_requested；没有重写原始记录。",
+  "excluded": "不复制机器绝对路径、PID、编译命令、制品哈希、源码、权重、ELF 或张量数组。token ID 是冻结生成用例结果。"
+ },
+ "units": {
+  "time": "带 _s 的字段单位为秒；wall 是经过时间，CPU 是线程累计处理器时间，不能互相相加。",
+  "memory": "带 _bytes 的字段单位为 byte；RSS 是采样观测值，不是内存硬上限；GiB 换算为 bytes / 1073741824。",
+  "cpu_percent": "QEMU CPU / QEMU process wall * 100；100% 表示一个逻辑 CPU。",
+  "numerical": "max_abs 为所比较 logits 元素最大绝对误差；*_frozen_selected_abs 为选中 token logit 相对冻结参考的绝对误差。",
+  "step": "numeric_steps 的 step 是各用例内部前向序号，从 0 到 7；case 与 step 共同定位一条记录。"
+ },
+ "measurement_definitions": {
+  "generation_wall_s": "单条用例生成调用经过时间，包含逐 token QEMU 调用与 Host 参考数值检查，不是编译耗时。",
+  "uart_completion_wall_s": "QEMU launch through host validation of the UART completion frame",
+  "qemu_process_wall_s": "QEMU 子进程寿命；包括 UART 完成后的停止、输出转储与退出清理。",
+  "runner_elapsed_s": "运行器调用总耗时，包含权重传输、QEMU、完成后检查和清理；不等同于纯算子执行。",
+  "measurement_total_wall_s": "外层测量全过程，包含准备、ORT 参考和数值检查。",
+  "qemu_cpu_s": "每步 RUSAGE_CHILDREN CPU 差值由测量工具归入 QEMU，三例汇总取 cases[*].qemu_cpu；不使用包含其他子进程的 total_child_cpu。",
+  "host_cpu_s": "Host 进程 CPU，含 ORT 及验证开销；case 与整个测量的范围分别记录。",
+  "rss": "Host+live descendants simultaneous RSS sum；共享页可能重复计数。各进程独立峰值不能相加当作同一时刻峰值。",
+  "cache": "复用相同 ELF/bundle；每次前向启动新 QEMU，未清空宿主页缓存，不能作为冷缓存结果。",
+  "performance_comparison": "这些数据没有单核完整生成对照，不据此计算 W5 1/4 核生成加速比。",
+  "inference_program_elapsed_s": "推理程序开始准备至程序内部计时结束，取对应 run/report.json 的 elapsed_seconds；包含当次实际发生的构建、自检、参考程序初始化、生成与校验及程序内收尾，不包含此前构建、Docker 镜像准备或容器启动。",
+  "compile_wall_s": "本次 C 程序编译与链接经过时间，取新构建的 build.compile_seconds；包含编译器启动、C 编译、汇编、链接、日志保存和 ELF 检查，不含此前模型解析、C 源码生成及权重打包。复用构建时为 null，不能计入旧构建记录中的编译时间。",
+  "deployment_elapsed_s": "保留的历史字段名；容器记录中与 inference_program_elapsed_s 同取 run/report.json.elapsed_seconds，并非 Docker 镜像准备到退出的外层全过程。"
+ },
+ "configuration": {
+  "model_id": "Qwen/Qwen3-0.6B",
+  "layers": 28,
+  "generation": {
+   "batch_size": 1,
+   "sequence_length": 256,
+   "dtype": "float32",
+   "use_cache": false,
+   "prompt_format": "raw_completion",
+   "add_special_tokens": false,
+   "sampling": "greedy_argmax_lowest_id"
+  },
+  "cores_requested": 4,
+  "cores": 4,
+  "matmul_policy": "blocked_fma",
+  "matmul_tile": "2x4",
+  "matmul_rhs_layout": "column-panel",
+  "mean_policy": "two-four-lane-last-axis",
+  "nonlinear_policy": "fp32-reference",
+  "qemu_workspace_layout": "none",
+  "execution": "one ELF/bundle; a fresh QEMU process per forward; no KV cache",
+  "versions": {
+   "compiler": "0.14.1",
+   "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+   "target": "riscv64 / RV64GC / LP64D / QEMU virt / bare metal",
+   "math_library": "Zig-bundled musl"
+  },
+  "host_environment": {
+   "platform": "Linux-6.18.40.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+   "python": "3.12.3",
+   "packages": {
+    "numpy": "2.2.6",
+    "onnxruntime": "1.22.1",
+    "tokenizers": "0.21.4"
+   },
+   "available_logical_cpus": 4,
+   "clocksource": "tsc",
+   "host_tree_sample_interval_s": 0.5,
+   "reference_provider": "CPUExecutionProvider"
+  },
+  "scope_note": "显式优化策略的历史完整模型结果；不是默认算术策略完整验收。默认单核与手动/auto 的覆盖另见小图记录。"
+ },
+ "three_case_generation": {
+  "sources": [
+   "three_case_report",
+   "three_case_resources",
+   "three_case_metadata"
+  ],
+  "status": "PASS",
+  "passed": true,
+  "full_model_gate": "PASS",
+  "container_reproduction": "NOT_ASSERTED",
+  "forward_count": 24,
+  "cases": [
+   {
+    "name": "france",
+    "prompt": "The capital of France is",
+    "max_new_tokens": 8,
+    "generated_token_ids": [
+     12095,
+     13,
+     576,
+     6722,
+     315,
+     15344,
+     374,
+     21718
+    ],
+    "generated_text": " Paris. The capital of Italy is Rome",
+    "stop_reason": "max_new_tokens",
+    "forward_count": 8,
+    "reference_passed": true,
+    "generation_wall_s": 3375.0240403530006,
+    "qemu_cpu_s": 11517.789080999999,
+    "host_cpu_s": 167.656669,
+    "sampled_host_peak_rss_bytes": 4568129536,
+    "sampled_simultaneous_tree_peak_rss_bytes": 8123035648,
+    "max_abs": 0.0003039836883544922,
+    "numeric_steps_passed": true
+   },
+   {
+    "name": "germany",
+    "prompt": "The capital of Germany is",
+    "max_new_tokens": 8,
+    "generated_token_ids": [
+     19846,
+     13,
+     576,
+     6722,
+     315,
+     9625,
+     374,
+     12095
+    ],
+    "generated_text": " Berlin. The capital of France is Paris",
+    "stop_reason": "max_new_tokens",
+    "forward_count": 8,
+    "reference_passed": true,
+    "generation_wall_s": 3668.8521105910004,
+    "qemu_cpu_s": 12574.174352,
+    "host_cpu_s": 190.67315399999998,
+    "sampled_host_peak_rss_bytes": 4404678656,
+    "sampled_simultaneous_tree_peak_rss_bytes": 8207597568,
+    "max_abs": 0.0002627372741699219,
+    "numeric_steps_passed": true
+   },
+   {
+    "name": "japan",
+    "prompt": "The capital of Japan is",
+    "max_new_tokens": 8,
+    "generated_token_ids": [
+     26194,
+     13,
+     576,
+     6722,
+     315,
+     279,
+     3639,
+     4180
+    ],
+    "generated_text": " Tokyo. The capital of the United States",
+    "stop_reason": "max_new_tokens",
+    "forward_count": 8,
+    "reference_passed": true,
+    "generation_wall_s": 3489.654915645,
+    "qemu_cpu_s": 11958.880560000001,
+    "host_cpu_s": 178.75917299999992,
+    "sampled_host_peak_rss_bytes": 4400611328,
+    "sampled_simultaneous_tree_peak_rss_bytes": 7957729280,
+    "max_abs": 0.00019788742065429688,
+    "numeric_steps_passed": true
+   }
+  ],
+  "totals": {
+   "measurement_total_wall_s": 10540.189622884001,
+   "generation_wall_s": 10533.531066589001,
+   "uart_completion_wall_s": 9990.355179675997,
+   "qemu_process_wall_s": 9998.090941066994,
+   "qemu_cpu_s": 36050.843993,
+   "qemu_average_cpu_percent": 360.58,
+   "host_measurement_cpu_s": 540.716702,
+   "host_generation_cpu_s": 537.088996,
+   "sampled_qemu_peak_rss_bytes": 5804662784,
+   "sampled_host_peak_rss_bytes": 4568129536,
+   "sampled_simultaneous_tree_peak_rss_bytes": 8207597568,
+   "numeric_max_abs": 0.0003039836883544922,
+   "all_qemu_reaped": true
+  },
+  "sampling": {
+   "qemu_rss_partial_steps": [
+    0,
+    1,
+    5,
+    6,
+    7,
+    9,
+    11,
+    12,
+    14,
+    15,
+    16,
+    17,
+    18,
+    20,
+    21,
+    22,
+    23
+   ],
+   "qemu_rss_sample_errors": 17,
+   "host_tree_sample_count": 21032,
+   "host_tree_sample_errors": 0,
+   "max_abs_perf_minus_raw_s": 0.0007727560023340629,
+   "max_abs_utc_minus_perf_s": 0.0005040991982241394,
+   "note": "17/24 步 QEMU RSS 各失读一次，峰值属于 partial；Host/tree 零采样错误不能替代 QEMU 采样完整性。"
+  },
+  "numeric_comparison": {
+   "atol": 0.001,
+   "rtol": 0.0,
+   "elements_compared_per_step": 38895616,
+   "reference": "冻结 reference token 与本次 ORT/QEMU greedy token 逐步一致，并检查 logits 数值误差；不含原始张量数组。",
+   "all_24_steps": {
+    "selected_row_passed": true,
+    "frozen_step_passed": true,
+    "reference_token_passed": true
+   }
+  },
+  "numeric_steps": [
+   {
+    "case": "france",
+    "step": 0,
+    "valid_length": 5,
+    "qemu_token_id": 12095,
+    "ort_token_id": 12095,
+    "frozen_token_id": 12095,
+    "max_abs": 0.00017213821411132812,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "france",
+    "step": 1,
+    "valid_length": 6,
+    "qemu_token_id": 13,
+    "ort_token_id": 13,
+    "frozen_token_id": 13,
+    "max_abs": 9.34600830078125e-05,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "france",
+    "step": 2,
+    "valid_length": 7,
+    "qemu_token_id": 576,
+    "ort_token_id": 576,
+    "frozen_token_id": 576,
+    "max_abs": 0.00011712312698364258,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "france",
+    "step": 3,
+    "valid_length": 8,
+    "qemu_token_id": 6722,
+    "ort_token_id": 6722,
+    "frozen_token_id": 6722,
+    "max_abs": 0.0003039836883544922,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "france",
+    "step": 4,
+    "valid_length": 9,
+    "qemu_token_id": 315,
+    "ort_token_id": 315,
+    "frozen_token_id": 315,
+    "max_abs": 0.00013625621795654297,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "france",
+    "step": 5,
+    "valid_length": 10,
+    "qemu_token_id": 15344,
+    "ort_token_id": 15344,
+    "frozen_token_id": 15344,
+    "max_abs": 6.151199340820312e-05,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "france",
+    "step": 6,
+    "valid_length": 11,
+    "qemu_token_id": 374,
+    "ort_token_id": 374,
+    "frozen_token_id": 374,
+    "max_abs": 0.00016880035400390625,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 1.9073486328125e-06,
+    "passed": true
+   },
+   {
+    "case": "france",
+    "step": 7,
+    "valid_length": 12,
+    "qemu_token_id": 21718,
+    "ort_token_id": 21718,
+    "frozen_token_id": 21718,
+    "max_abs": 0.0001971721649169922,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 1.9073486328125e-06,
+    "passed": true
+   },
+   {
+    "case": "germany",
+    "step": 0,
+    "valid_length": 5,
+    "qemu_token_id": 19846,
+    "ort_token_id": 19846,
+    "frozen_token_id": 19846,
+    "max_abs": 0.00018739700317382812,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "germany",
+    "step": 1,
+    "valid_length": 6,
+    "qemu_token_id": 13,
+    "ort_token_id": 13,
+    "frozen_token_id": 13,
+    "max_abs": 5.5789947509765625e-05,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "germany",
+    "step": 2,
+    "valid_length": 7,
+    "qemu_token_id": 576,
+    "ort_token_id": 576,
+    "frozen_token_id": 576,
+    "max_abs": 0.0001690387725830078,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "germany",
+    "step": 3,
+    "valid_length": 8,
+    "qemu_token_id": 6722,
+    "ort_token_id": 6722,
+    "frozen_token_id": 6722,
+    "max_abs": 0.0002627372741699219,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 1.9073486328125e-06,
+    "passed": true
+   },
+   {
+    "case": "germany",
+    "step": 4,
+    "valid_length": 9,
+    "qemu_token_id": 315,
+    "ort_token_id": 315,
+    "frozen_token_id": 315,
+    "max_abs": 0.0002231597900390625,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 5.7220458984375e-06,
+    "passed": true
+   },
+   {
+    "case": "germany",
+    "step": 5,
+    "valid_length": 10,
+    "qemu_token_id": 9625,
+    "ort_token_id": 9625,
+    "frozen_token_id": 9625,
+    "max_abs": 0.00014162063598632812,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "germany",
+    "step": 6,
+    "valid_length": 11,
+    "qemu_token_id": 374,
+    "ort_token_id": 374,
+    "frozen_token_id": 374,
+    "max_abs": 0.00011169910430908203,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 1.9073486328125e-06,
+    "passed": true
+   },
+   {
+    "case": "germany",
+    "step": 7,
+    "valid_length": 12,
+    "qemu_token_id": 12095,
+    "ort_token_id": 12095,
+    "frozen_token_id": 12095,
+    "max_abs": 0.00017213821411132812,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 1.9073486328125e-06,
+    "passed": true
+   },
+   {
+    "case": "japan",
+    "step": 0,
+    "valid_length": 5,
+    "qemu_token_id": 26194,
+    "ort_token_id": 26194,
+    "frozen_token_id": 26194,
+    "max_abs": 3.3289194107055664e-05,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "japan",
+    "step": 1,
+    "valid_length": 6,
+    "qemu_token_id": 13,
+    "ort_token_id": 13,
+    "frozen_token_id": 13,
+    "max_abs": 0.00019788742065429688,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "japan",
+    "step": 2,
+    "valid_length": 7,
+    "qemu_token_id": 576,
+    "ort_token_id": 576,
+    "frozen_token_id": 576,
+    "max_abs": 0.0001494884490966797,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "japan",
+    "step": 3,
+    "valid_length": 8,
+    "qemu_token_id": 6722,
+    "ort_token_id": 6722,
+    "frozen_token_id": 6722,
+    "max_abs": 8.016824722290039e-05,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "japan",
+    "step": 4,
+    "valid_length": 9,
+    "qemu_token_id": 315,
+    "ort_token_id": 315,
+    "frozen_token_id": 315,
+    "max_abs": 0.00010776519775390625,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "japan",
+    "step": 5,
+    "valid_length": 10,
+    "qemu_token_id": 279,
+    "ort_token_id": 279,
+    "frozen_token_id": 279,
+    "max_abs": 9.918212890625e-05,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 0.0,
+    "passed": true
+   },
+   {
+    "case": "japan",
+    "step": 6,
+    "valid_length": 11,
+    "qemu_token_id": 3639,
+    "ort_token_id": 3639,
+    "frozen_token_id": 3639,
+    "max_abs": 5.27501106262207e-05,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 5.7220458984375e-06,
+    "passed": true
+   },
+   {
+    "case": "japan",
+    "step": 7,
+    "valid_length": 12,
+    "qemu_token_id": 4180,
+    "ort_token_id": 4180,
+    "frozen_token_id": 4180,
+    "max_abs": 5.817413330078125e-05,
+    "ort_frozen_selected_abs": 0.0,
+    "qemu_frozen_selected_abs": 1.9073486328125e-06,
+    "passed": true
+   }
+  ]
+ },
+ "single_full_forward_comparison": {
+  "date": "2026-10-23",
+  "scope": "相同完整 28 层模型及显式策略，各生成第一个 Paris token；本机复用构建，容器重新编译，不能用总时间差判断容器额外开销；不是三例完整生成的容器对照。",
+  "host": {
+   "sources": [
+    "host_single_report",
+    "host_single_resources",
+    "repeat_and_cleanup"
+   ],
+   "passed": true,
+   "forward_count": 1,
+   "full_reference_suite_evaluated": false,
+   "case": {
+    "prompt": "The capital of France is",
+    "max_new_tokens": 1,
+    "generated_token_ids": [
+     12095
+    ],
+    "generated_text": " Paris",
+    "stop_reason": "max_new_tokens"
+   },
+   "measurement_total_wall_s": 448.2632728360004,
+   "generation_wall_s": 441.0328804979981,
+   "uart_completion_wall_s": 418.95395780800027,
+   "qemu_process_wall_s": 419.38253989200166,
+   "qemu_cpu_s": 1498.851419,
+   "host_measurement_cpu_s": 25.33218,
+   "host_generation_cpu_s": 21.604175,
+   "sampled_host_peak_rss_bytes": 4423188480,
+   "sampled_simultaneous_tree_peak_rss_bytes": 7741919232,
+   "qemu_rss": {
+    "sampled_peak_bytes": 5796397056,
+    "availability": "available",
+    "successful_samples": 2091,
+    "sample_errors": 0,
+    "sample_interval_s": 0.2
+   },
+   "max_abs": 0.00017213821411132812,
+   "qemu_reaped": true,
+   "inference_program_elapsed_s": 444.4163706699983,
+   "build_reused": true,
+   "compile_wall_s": null,
+   "compile_note": "本次复用已有 ELF 和权重包，没有重新编译完整模型；原始报告 build 中保留的旧 compile_seconds 不计入此次运行。"
+  },
+  "container": {
+   "sources": [
+    "container_paris_report",
+    "container_paris_summary"
+   ],
+   "passed": true,
+   "forward_count": 1,
+   "case": {
+    "prompt": "The capital of France is",
+    "max_new_tokens": 1,
+    "generated_token_ids": [
+     12095
+    ],
+    "generated_text": " Paris",
+    "stop_reason": "max_new_tokens"
+   },
+   "full_model_gate": "NOT_RUN",
+   "container_reproduction": "NOT_ASSERTED",
+   "acceptance": "PASS: clean-container single Paris forward; existing host 3x8 gate is separate",
+   "deployment_elapsed_s": 547.4544949770025,
+   "runner_elapsed_s": 430.48115924100057,
+   "uart_completion_wall_s": 415.05810176999876,
+   "qemu_process_wall_s": 415.47787108400007,
+   "qemu_cpu_s": null,
+   "cpu_note": "No independent container CPU-total measurement in this deployment acceptance; Docker client GNU time is not container CPU time.",
+   "qemu_rss": {
+    "sampled_peak_bytes": 5795934208,
+    "availability": "partial",
+    "successful_samples": 2071,
+    "sample_errors": 1,
+    "sample_interval_s": 0.2
+   },
+   "max_abs": 0.00017213821411132812,
+   "qemu_reaped": true,
+   "process_exit_code": 0,
+   "matches_host_full_logits_byte_for_byte": true,
+   "compared_bytes": 155582464,
+   "scope_note": "full_model_gate=NOT_RUN 表示未执行容器三例 24 步整套验收；本次确实执行了完整模型一个前向。容器 CPU 未独立采集，不能使用 Docker 客户端 CPU 代替。",
+   "inference_program_elapsed_s": 547.4544949770025,
+   "build_reused": false,
+   "compile_wall_s": 93.86813328300195,
+   "compile_note": "本次在容器内重新编译完整模型；compile_wall_s 已包含在 inference_program_elapsed_s 中，不能再次相加。"
+  }
+ },
+ "container_small_graph": {
+  "date": "2026-10-23",
+  "source": "container_small_summary",
+  "passed": true,
+  "scope": "独立的小型确定性图；不代表完整模型生成性能。",
+  "cases": [
+   {
+    "mode": "default",
+    "cores_requested": 1,
+    "cores": 1,
+    "passed": true,
+    "tokens": [
+     2,
+     3,
+     4,
+     6
+    ],
+    "max_abs": 0,
+    "padding": "none"
+   },
+   {
+    "mode": "manual",
+    "cores_requested": 4,
+    "cores": 4,
+    "passed": true,
+    "tokens": [
+     2,
+     3,
+     4,
+     6
+    ],
+    "max_abs": 0,
+    "padding": "none"
+   },
+   {
+    "mode": "auto_reuse",
+    "cores_requested": "auto",
+    "cores": 4,
+    "passed": true,
+    "tokens": [
+     2,
+     3,
+     4,
+     6
+    ],
+    "max_abs": 0,
+    "padding": "none"
+   }
+  ]
+ },
+ "process_cleanup": {
+  "full_model_history": {
+   "date": "2026-10-23",
+   "source": "repeat_and_cleanup",
+   "formal_suite_passed": true,
+   "suite_forwards": 24,
+   "single_forward_passed": true,
+   "same_existing_elf_and_bundle_identity": true,
+   "repeat_full_output_byte_identical": true,
+   "compared_bytes": 155582464,
+   "qemu_processes_and_groups_absent": 25,
+   "all_recorded_processes_absent": true
+  },
+  "docker_external_cancellation": {
+   "date": "2026-10-25",
+   "base_commit": "e93233143d2323de7de6888ff7d73bdbf50784c3",
+   "version_note": "README 记录为该基线上加入报告保存与取消修复后的局部验证，不是 2026-10-23 完整模型重跑。",
+   "scope": "真实 Docker 小图；取消时用临时 -S 包装器控制 guest 暂停时机。0.3 秒后复查清理；恢复沿用相同 ELF/bundle。",
+   "cases": [
+    {
+     "source": "docker_cancellation_1_core",
+     "cores": 1,
+     "passed": true,
+     "available_auto_cores": 4,
+     "baseline": {
+      "status": "PASS",
+      "passed": true,
+      "cores_requested": 1,
+      "cores": 1,
+      "padding": "none",
+      "generated_token_ids": [
+       2,
+       3,
+       4,
+       6
+      ],
+      "generated_text": "2 3 4",
+      "max_abs": 0.0,
+      "all_numeric_steps_passed": true
+     },
+     "signals": [
+      {
+       "signal": "SIGINT",
+       "exit_code": 130,
+       "container_removed": true,
+       "host_processes_reaped": true,
+       "qemu_group_empty": true,
+       "delayed_recheck_seconds": 0.3,
+       "report_status": "CANCELLED",
+       "report_passed": false,
+       "recovery": {
+        "status": "PASS",
+        "passed": true,
+        "cores_requested": 1,
+        "cores": 1,
+        "max_abs": 0.0,
+        "all_numeric_steps_passed": true,
+        "output_matches_baseline": true,
+        "padding": "none"
+       }
+      },
+      {
+       "signal": "SIGTERM",
+       "exit_code": 143,
+       "container_removed": true,
+       "host_processes_reaped": true,
+       "qemu_group_empty": true,
+       "delayed_recheck_seconds": 0.3,
+       "report_status": "CANCELLED",
+       "report_passed": false,
+       "recovery": {
+        "status": "PASS",
+        "passed": true,
+        "cores_requested": 1,
+        "cores": 1,
+        "max_abs": 0.0,
+        "all_numeric_steps_passed": true,
+        "output_matches_baseline": true,
+        "padding": "none"
+       }
+      }
+     ]
+    },
+    {
+     "source": "docker_cancellation_4_core",
+     "cores": 4,
+     "passed": true,
+     "available_auto_cores": 4,
+     "baseline": {
+      "status": "PASS",
+      "passed": true,
+      "cores_requested": 4,
+      "cores": 4,
+      "padding": "none",
+      "generated_token_ids": [
+       2,
+       3,
+       4,
+       6
+      ],
+      "generated_text": "2 3 4",
+      "max_abs": 0.0,
+      "all_numeric_steps_passed": true
+     },
+     "signals": [
+      {
+       "signal": "SIGINT",
+       "exit_code": 130,
+       "container_removed": true,
+       "host_processes_reaped": true,
+       "qemu_group_empty": true,
+       "delayed_recheck_seconds": 0.3,
+       "report_status": "CANCELLED",
+       "report_passed": false,
+       "recovery": {
+        "status": "PASS",
+        "passed": true,
+        "cores_requested": "auto",
+        "cores": 4,
+        "max_abs": 0.0,
+        "all_numeric_steps_passed": true,
+        "output_matches_baseline": true,
+        "padding": "none"
+       }
+      },
+      {
+       "signal": "SIGTERM",
+       "exit_code": 143,
+       "container_removed": true,
+       "host_processes_reaped": true,
+       "qemu_group_empty": true,
+       "delayed_recheck_seconds": 0.3,
+       "report_status": "CANCELLED",
+       "report_passed": false,
+       "recovery": {
+        "status": "PASS",
+        "passed": true,
+        "cores_requested": "auto",
+        "cores": 4,
+        "max_abs": 0.0,
+        "all_numeric_steps_passed": true,
+        "output_matches_baseline": true,
+        "padding": "none"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "remaining_scope": {
+  "current_head_full_model": "未因本次摘要整理重跑；历史完整模型结果不得描述为当前代码的新执行结果。",
+  "container_three_cases_24_steps": "上述容器数据只覆盖 Paris 单步及小图，未提供容器三例 24 步完整运行结果。",
+  "second_person_reproduction": "这些作者本机记录不构成第二人独立复现。",
+  "ci_and_benchmark": "本文件不包含最新 Actions CI 或 benchmark 状态；它们与历史 W5 模型测量分开查看。",
+  "chat_and_cache": "raw completion 与无 KV cache；三例文本不是完整多轮聊天质量验收。"
+ },
+ "sources": {
+  "three_case_report": "output/w5-followup-20261023/qemu-reference-4hart/run/report.json",
+  "three_case_resources": "output/w5-followup-20261023/qemu-reference-4hart/resources.json",
+  "three_case_metadata": "output/w5-followup-20261023/qemu-reference-4hart/metadata.json",
+  "host_single_report": "output/w5-followup-20261023/qemu-final-single-forward-4hart/run/report.json",
+  "host_single_resources": "output/w5-followup-20261023/qemu-final-single-forward-4hart/resources.json",
+  "repeat_and_cleanup": "output/w5-followup-20261023/qemu-final-single-forward-4hart/repeat-and-cleanup-check.json",
+  "container_paris_report": "output/w5-container-20261023/paris/run/report.json",
+  "container_paris_summary": "output/w5-container-20261023/paris-summary.json",
+  "container_small_summary": "output/w5-container-20261023/small-summary.json",
+  "docker_cancellation_1_core": "output/w5-hardening-20261025/docker-final/test_external_signals_reap_gue0/docker-cancellation-summary.json",
+  "docker_cancellation_4_core": "output/w5-hardening-20261025/docker-final/test_external_signals_reap_gue1/docker-cancellation-summary.json",
+  "frozen_reference": "probes/w5_generation/references.json",
+  "baseline_and_scope": "docs/llm-deploy-v1.0/W5/README.md"
+ }
+}

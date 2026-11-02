@@ -1,6 +1,8 @@
 # W4 分层验证与 CI
 
-## 日常最小验证与多 hart
+## 日常最小验证与多核
+
+本文的 core 指 QEMU 模拟的 CPU 核，不表示宿主的物理核心。当前命令参数使用 `--cores`，Python 参数与属性使用 `cores`。
 
 先按改动选择直接相关的测试；文档和配置改动只做对应检查。矩阵生成或并行运行时
 改动可先运行以下小图回归（按[复现步骤](reproduction.md)设置 Python、编译器和 QEMU）：
@@ -11,19 +13,33 @@ python -B -X utf8 -m pytest -q \
   tests/test_riscv_external_harts.py tests/test_w4_fma_cross_backend.py
 ```
 
-外置运行时 `build_external(..., harts=1)`、完整探测及检查点诊断入口的
-`--harts {1,2,4,auto}` 均默认单核，手动 1/2/4 保持原值。`--harts auto`
-（或 `build_external(..., harts="auto")`）在构建前按当前进程可用 CPU 数向下选择：
-1 个选 1 hart，2–3 个选 2 hart，4 个及以上选 4 hart。Linux 优先使用 CPU affinity；
+外置运行时 `build_external(..., cores=1)`、完整探测及检查点诊断入口的
+`--cores {1,2,4,auto}` 均默认单核，手动 1/2/4 保持原值。`--cores auto`
+（或 `build_external(..., cores="auto")`）在构建前按当前进程可用 CPU 数向下选择：
+1 个选 1 core，2–3 个选 2 core，4 个及以上选 4 core。Linux 优先使用 CPU affinity；
 不可用时回退进程/系统 CPU 数，无法确定时保守选 1。此口径不估计瞬时空闲率或
 cgroup CPU 带宽配额，也不受 `OMP_NUM_THREADS` 等 BLAS 线程设置影响。
 
+旧 `--harts`、Python 的 `harts` 参数和属性仍兼容。CLI 解析结果的 `args.harts`
+是 `args.cores` 的可读写别名，修改任一属性都会同步；默认值、手动值和 `auto`
+在 `parse_args()` 返回时仍保持原字符串类型。命令行、普通构造和运行时 API 中，
+新旧名称同时传入时必须一致，否则在构建或运行前报错。新构建与报告以 `cores` 为主要字段，同时保留等值的
+`harts` 兼容字段；有请求值的报告同样保留 `cores_requested` 与 `harts_requested`。
+读取旧记录时接受仅有 `harts` 的格式；两种核数字段均缺失时按原规则视为单核，
+两种字段不一致或值无效时拒绝复用。历史报告和 ELF/bundle 不因改名而改写。
+
+`dataclasses.asdict(executable)` 同时输出整数 `cores` 和等值的旧 `harts` 字段，
+不输出私有核数字段；正式 `executable.json` 的保存和读取方式保持不变。
+`dataclasses.replace(executable, cores=2)` 和旧 `harts=2` 写法都会同步两个字段。
+`replace()` 会自动补入原值，因此一边为原值、另一边为新值时按新值更新；
+两边都是不同于原值的新值且互不相等时拒绝。建议一次只用一个名称更新核数。
+
 选择只发生在启动/构建时，运行中不切换；CLI 会打印自动选择结果，报告用
-`harts_requested` 记录请求、`harts` 记录实际整数。当前数学策略的默认值仍是
+`cores_requested` 记录请求、`cores` 记录实际整数。当前数学策略的默认值仍是
 `sequential`；需要矩阵并行时必须同时显式使用 `--matmul-policy blocked_fma`。
 MatMul 的多核路径只用于 `blocked_fma` 中足够大的矩阵，按独立输出块分工；
 每个元素的 K 顺序和 K=128 分组保持不变，算子结束后才复用工作区。
-`sequential` 下的 MatMul 仍串行。每个 hart 独立使用 1 MiB 栈。
+`sequential` 下的 MatMul 仍串行。每个 core 独立使用 1 MiB 栈。
 
 外置运行器在 Linux 上用 inotify 与 pidfd 等待已有 UART 完成帧，启动前注册目录监视，
 不再固定每 50ms 轮询；平台或内核不支持时保留轮询回退。`run.json` 的 `timing_mode`
@@ -32,14 +48,14 @@ MatMul 的多核路径只用于 `blocked_fma` 中足够大的矩阵，按独立�
 QMP 服务端连接启用 `nodelay=on`，减少 STOP 事件与命令回复之间的小包等待；仍等待
 匹配回复，并在停止后复核 UART 帧，再转储输出、检查退出和清理资源。
 
-外置 Softmax 在实际 hart 数大于 1、总元素数至少为 32768，且独立行数不少于
-hart 数时可并行；它不依赖 `matmul_policy`，因此显式选择多 hart 后，即使 MatMul
-策略为 `sequential`，符合条件的 Softmax 也会并行。默认仍为单 hart、`sequential`。
+外置 Softmax 在实际 core 数大于 1、总元素数至少为 32768，且独立行数不少于
+core 数时可并行；它不依赖 `matmul_policy`，因此显式选择多核后，即使 MatMul
+策略为 `sequential`，符合条件的 Softmax 也会并行。默认仍为单核、`sequential`。
 独立行对应固定的 `(outer, inner)` 坐标，每行完整保留原有求最大值、逐项 `expf`
 与求和、逐项归一化顺序，不拆分行内归约。输出有限性检查紧跟每个 FP32 归一化值
-的写回，不再由主 hart 在算子结束后重复扫描整个输出；检查本身及输入、权重、其它
+的写回，不再由主核在算子结束后重复扫描整个输出；检查本身及输入、权重、其它
 算子的校验仍保留。工作线程通过原子状态回传数值错误，`sv_parallel_for` 等全部回调
-完成后，主 hart 检查错误状态，再进行后续工作区复用。inline 存储、单 hart、小图
+完成后，主核检查错误状态，再进行后续工作区复用。inline 存储、单核、小图
 及独立行数不足时仍走串行路径，并在同样的逐行写回位置检查输出。
 32768 元素只是保守的启用门槛，尚未校准为各形状的最佳阈值；继续复用已有门铃/WFI
 同步和 `expf` 页对齐。此代码生成改动需要重新构建 ELF，复用旧 ELF 不会加入
@@ -48,11 +64,11 @@ Softmax 并行或写回时的有限性检查融合。
 同一次生成中，输入形状、dtype 和规范化 axis 相同的外置并行 Softmax 复用回调代码。
 只共享函数与结构体定义；每次算子调用仍使用独立的输入、输出指针和初始化为零的
 错误状态，完成同步后才检查状态和复用工作区。此复用不改变单核默认、手动/自动
-hart 选择、并行门槛或行内数值顺序；也不代表真实硬件缓存或完整模型的等比例收益。
+core 选择、并行门槛或行内数值顺序；也不代表真实硬件缓存或完整模型的等比例收益。
 
 代码生成 API 可显式比较 `TensorCCodegen(..., constant_storage="external",
 matmul_policy="blocked_fma", matmul_tile="2x4")` 或 `matmul_tile="1x8"`。
-`matmul_tile` 默认仍为 `"1x4"`；候选仅适用于外置 `blocked_fma`，不改变 hart 的
+`matmul_tile` 默认仍为 `"1x4"`；候选仅适用于外置 `blocked_fma`，不改变 core 的
 默认、手动或自动选择方式。`2x4` 复用两行之间的 B 加载，`1x8` 复用八列之间的
 A 加载；每个输出仍按原 K 顺序执行显式 FP32 FMA，保留 128 项分组和块末加法。
 尾行、尾列有边界保护，不使用 RVV 或 fast-math；面板布局由下述独立实验选项控制。
@@ -66,7 +82,7 @@ A 加载；每个输出仍按原 K 顺序执行显式 FP32 FMA，保留 128 项�
 `matmul_rhs_layout="column-panel"`；默认 `original` 保留原布局。该选项只打包二维
 常量 RHS，允许 LHS 带批维；每个面板的列宽沿用 `matmul_tile`，物理布局为
 `[ceil(N/NR), K, NR]`。它复用相邻列的权重访存，仍按递增 K 顺序执行 FMA，保留
-128 项分组与块末加法，不改变默认单核或手动、自动 hart 选择。
+128 项分组与块末加法，不改变默认单核或手动、自动 core 选择。
 
 只有常量的全部消费者都把它用作 MatMul RHS 时才选择面板。独占常量经过合法二维
 转置后仅供 MatMul RHS 使用时，在局部复制的 IR 容器中折叠该转置，交由原有生命周期
@@ -82,19 +98,19 @@ A 加载；每个输出仍按原 K 顺序执行显式 FP32 FMA，保留 128 项�
 `matmul_rhs_layout` 与 `matmul_rhs_panels` 在报告和构建证据中记录逻辑形状、物理形状、
 原权重、折叠的转置及视图/复制方式；复用同时校验布局和面板记录。旧记录缺字段只兼容
 `original`，面板构建必须重新生成；选择相同选项不意味着可以绕过已有源码、权重和
-构建身份校验。小图收益需与同 hart、同微内核、同计时方式的原布局比较，常量转置链
+构建身份校验。小图收益需与相同 core 数量、同微内核、同计时方式的原布局比较，常量转置链
 还包含省去转置复制的收益，不能把总差值全部归为缓存效果。
 
 外置 ELF 构建将频繁调用的 `expf` 代码段起始地址按 4096 字节页对齐，避免当前
 实现因生成图代码长度变化而跨页、引入额外的 QEMU TCG 开销。这里只调整链接布局，
-不改变 `expf` 的数值实现、默认单核或手动/自动 hart 选择。应用此修复必须重新构建
+不改变 `expf` 的数值实现、默认单核或手动/自动 core 选择。应用此修复必须重新构建
 ELF；`--reuse-build` 复用旧 ELF 不会应用新布局。收益应通过相同条件的小图对照确认，
 不能直接外推到完整模型。
 
 QEMU 两缓冲工作区可显式尝试实验选项
 `TensorCCodegen(..., constant_storage="external", qemu_workspace_layout="two-buffer-pad-4k")`。
 完整探测及检查点 CLI 对应 `--qemu-workspace-layout {none,two-buffer-pad-4k}`，
-默认 `none` 完整保留原布局；该选项不改变默认单核或手动、自动 hart 选择。
+默认 `none` 完整保留原布局；该选项不改变默认单核或手动、自动 core 选择。
 仅当原工作区的所有分配可归入恰好两个固定、相邻、互不重叠的区间时，实验布局才在
 两者之间插入 4096 字节，工作区需求也增加 4096 字节。其他图或容量不足会明确报错，
 不会静默忽略选项；完整 Qwen 图和检查点不保证满足两缓冲条件。
@@ -107,8 +123,8 @@ QEMU 两缓冲工作区可显式尝试实验选项
 与地址变化仍存在，应独立评估，不能把它当作 NPU 内核、硬件缓存或通用内存布局优化。
 
 以下只是参数示例，不是要求运行完整模型：
-`--qemu-workspace-layout two-buffer-pad-4k --harts 4`。
-先用相同输入的 1、4 hart 小图检查位级输出一致性、容量不足处理、耗时、累计 CPU 时间、
+`--qemu-workspace-layout two-buffer-pad-4k --cores 4`。
+先用相同输入的 1、4 core 小图检查位级输出一致性、容量不足处理、耗时、累计 CPU 时间、
 RSS 和 SoftMMU 样本，覆盖收益与退化形状。报告的 `qemu_workspace_layout_requested`
 保留请求，`codegen.qemu_workspace_layout` 和构建证据记录所用布局；构建证据的
 `qemu_workspace_buffers` 记录缓冲区位置。修改布局须重新生成、构建 ELF；复用时请求
@@ -116,7 +132,7 @@ RSS 和 SoftMMU 样本，覆盖收益与退化形状。报告的 `qemu_workspace
 
 多核任务、就绪和完成等待使用 QEMU virt 的 MSIP 软件中断门铃与 WFI。
 等待端先清门铃，再检查任务代次、完成状态和错误；发送端先发布状态再通知，
-避免通知先到时丢失唤醒。空闲 worker 和等待完成的主 hart 可休眠，默认单核路径
+避免通知先到时丢失唤醒。空闲 worker 和等待完成的主核可休眠，默认单核路径
 不启用此机制。启动阶段极短的 BSS 就绪轮询保留；其他板型需适配中断控制器。
 
 应同时比较同一候选、相同小图的耗时、累计 CPU 时间和输出位模式。
@@ -128,9 +144,9 @@ QEMU 小图，必要时再用 `diagnostic --checkpoint layer_0.output`。检查�
 `COMPLETE` 仅表示执行完成，还须查看 `diagnostic_threshold_passed`。完整模型与
 原数组 audit 留到候选稳定、明确需要完整验收时运行，不作为每次编辑的默认步骤。
 
-同一候选重复执行可复用已有 `--reuse-build`；改变源码、数学策略或 hart 数必须重新
+同一候选重复执行可复用已有 `--reuse-build`；改变源码、数学策略或 core 数必须重新
 构建。`auto` 也必须与当前探测后选择的数量一致，复用数量不符时明确报错；
-不会修改旧 ELF 的 hart 数。旧的未记录 hart 数的构建按单核处理，不能直接以多核运行。
+不会修改旧 ELF 的 core 数。旧的未记录 core 数的构建按单核处理，不能直接以多核运行。
 
 ## 按风险阅读实现和测试
 
@@ -227,7 +243,7 @@ step 200 分钟、job 240 分钟。正常失败上传已有报告与日志；宿
 复现者 / 日期：
 源码：候选完整 SHA、工作树是否干净；若为未提交快照，附基线 SHA、源码清单和快照 SHA256：
 环境：宿主 OS/架构、Python/依赖、Zig/QEMU 实际版本及二进制 SHA256（见主报告）：
-执行：完整命令、case、MatMul 策略、hart 数（默认 1）；是否独立重新构建并执行 QEMU：
+执行：完整命令、case、MatMul 策略、core 数（默认 1）；是否独立重新构建并执行 QEMU：
 单测：通过/失败/跳过数，tests.xml 位置；每项相关跳过原因：
 完整门槛：build:riscv-full / smoke:qemu-full / numeric:qemu-full-qwen3：
 数值：elements_compared、max_abs、atol、rtol；FMA 精确检查和离线 audit 结果：

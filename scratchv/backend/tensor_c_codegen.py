@@ -19,6 +19,16 @@ values, workspace capacity and writable-buffer overlap are checked in C.
 Supported element types are FP32, INT32 and INT64. Control flow, dynamic shapes,
 empty reductions and nonfinite arithmetic are rejected explicitly. This backend
 does not silently lower tensor operations to scalar integer instructions.
+
+The default Mean policy preserves sequential FP32 accumulation. The explicit
+``mean_policy="two-four-lane-last-axis"`` option changes only single-last-axis
+FP32 ReduceMean to the existing reference's canonical two-four-lane order.
+It uses portable scalar C, preserves finite checks and requires no SIMD ISA.
+The separate nonlinear_policy="fp32-reference" option selects fixed FP32
+Sin/Cos, Sigmoid and Softmax arithmetic; its default "libm" is unchanged.
+The reference uses no host ISA dispatch, preserves all numeric checks, and
+retains libm trigonometry outside abs(x) < 18000. Pow and standalone Exp are
+unaffected. Neither explicit policy guarantees every ORT build's exact bits.
 """
 
 from __future__ import annotations
@@ -30,6 +40,10 @@ from typing import Mapping
 
 import numpy as np
 
+from scratchv.backend.tensor_c_mean import TWO_FOUR_LANE_LAST_AXIS_C
+from scratchv.backend.tensor_c_nonlinear import (
+    TRIG_REFERENCE_C, SIGMOID_REFERENCE_C, SOFTMAX_REFERENCE_C,
+)
 from scratchv.ir.types import DataType, OpCode, Program, Value
 from scratchv.verification.ir_numpy_ops import OpError, check_instruction
 
@@ -82,6 +96,8 @@ class TensorCArtifact:
     matmul_rhs_panels: tuple[dict[str, object], ...] = ()
     qemu_workspace_layout: str = "none"
     qemu_workspace_buffers: tuple[tuple[int, int], ...] = ()
+    mean_policy: str = "sequential"
+    nonlinear_policy: str = "libm"
 
 
 def _shape(shape):
@@ -173,10 +189,23 @@ static float sv_sigmoid(float x) {
 '''
 
 _EXTERNAL_PRELUDE = r'''
+#if defined(SCRATCHV_CORES) && defined(SCRATCHV_HARTS) && SCRATCHV_CORES != SCRATCHV_HARTS
+#error "SCRATCHV_CORES and legacy SCRATCHV_HARTS disagree"
+#endif
+#ifndef SCRATCHV_CORES
+#ifdef SCRATCHV_HARTS
+#define SCRATCHV_CORES SCRATCHV_HARTS
+#else
+#define SCRATCHV_CORES 1
+#endif
+#endif
+#ifndef SCRATCHV_HARTS
+#define SCRATCHV_HARTS SCRATCHV_CORES
+#endif
 /* External storage targets 64-bit hosts/guests; lengths are caller-validated. */
 _Static_assert(sizeof(size_t) == 8 && sizeof(uintptr_t) == 8,
                "external tensor ABI requires a 64-bit target");
-#if defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1
+#if defined(SCRATCHV_CORES) && SCRATCHV_CORES > 1
 /* Synchronous: all callbacks finish before workspace reuse or validation. */
 extern void sv_parallel_for(size_t count,
                             void (*fn)(void *, size_t, size_t), void *context);
@@ -202,7 +231,8 @@ class TensorCCodegen:
                  *, max_workspace_bytes=256 * 1024 * 1024,
                  max_constant_bytes=256 * 1024 * 1024, constant_storage="inline",
                  kernel_calls=False, matmul_policy="sequential", matmul_tile="1x4",
-                 qemu_workspace_layout="none", matmul_rhs_layout="original"):
+                 qemu_workspace_layout="none", matmul_rhs_layout="original",
+                 mean_policy="sequential", nonlinear_policy="libm"):
         self.program = program
         self.initializers = {} if initializers is None else dict(initializers)
         self.max_workspace_bytes = max_workspace_bytes
@@ -210,6 +240,8 @@ class TensorCCodegen:
         self.constant_storage = constant_storage
         self.kernel_calls = kernel_calls
         self.matmul_policy = matmul_policy
+        self.mean_policy = mean_policy
+        self.nonlinear_policy = nonlinear_policy
         self.matmul_tile = matmul_tile
         self.matmul_rhs_layout = matmul_rhs_layout
         self.qemu_workspace_layout = qemu_workspace_layout
@@ -222,6 +254,14 @@ class TensorCCodegen:
             raise TensorCCodegenError("kernel_calls must be boolean")
         if self.kernel_calls and self.constant_storage != "external":
             raise TensorCCodegenError("kernel_calls requires external constant storage")
+        if (not isinstance(self.mean_policy, str)
+                or self.mean_policy not in ("sequential", "two-four-lane-last-axis")):
+            raise TensorCCodegenError(
+                "mean_policy must be 'sequential' or 'two-four-lane-last-axis'")
+        if (not isinstance(self.nonlinear_policy, str)
+                or self.nonlinear_policy not in ("libm", "fp32-reference")):
+            raise TensorCCodegenError(
+                "nonlinear_policy must be 'libm' or 'fp32-reference'")
         if self.matmul_policy not in ("sequential", "blocked_fma"):
             raise TensorCCodegenError("matmul_policy must be 'sequential' or 'blocked_fma'")
         if self.matmul_policy != "sequential" and self.constant_storage != "external":
@@ -269,6 +309,8 @@ class TensorCCodegen:
         self.external_scalar_checks = []
         self.kernels = []
         self._softmax_callbacks = {}
+        self._mean_last_used = False
+        self._nonlinear_used = set()
         self.constant_bytes = 0
         self._counter = 0
         defined = set()
@@ -413,8 +455,12 @@ class TensorCCodegen:
         self.body += ["if (!output) return 1;",
                       f"for (size_t i=0; i<{output.size}ULL; ++i) (({ctype} *)output)[i] = {self.names[output.name]}[i];",
                       "return 0;"]
+        mean_prelude = TWO_FOUR_LANE_LAST_AXIS_C if self._mean_last_used else ""
+        nonlinear_prelude = "".join(source for name, source in (
+            ("trig", TRIG_REFERENCE_C), ("sigmoid", SIGMOID_REFERENCE_C),
+            ("softmax", SOFTMAX_REFERENCE_C)) if name in self._nonlinear_used)
         if self.constant_storage == "external":
-            source = (_PRELUDE + _EXTERNAL_PRELUDE + "".join(self.kernels)
+            source = (_PRELUDE + mean_prelude + nonlinear_prelude + _EXTERNAL_PRELUDE + "".join(self.kernels)
                       + "#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
                       + "int scratchv_run_external(const void *const inputs[], "
                       "const void *const weights[], void *workspace, size_t workspace_bytes, "
@@ -428,18 +474,21 @@ class TensorCCodegen:
                 external_initializers=tuple(self.external_initializers),
                 kernel_calls=self.kernel_calls,
                 matmul_policy=self.matmul_policy,
+                mean_policy=self.mean_policy,
+                nonlinear_policy=self.nonlinear_policy,
                 matmul_tile=self.matmul_tile,
                 matmul_rhs_layout=self.matmul_rhs_layout,
                 matmul_rhs_panels=tuple(self.matmul_rhs_panels),
                 qemu_workspace_layout=self.qemu_workspace_layout,
                 qemu_workspace_buffers=qemu_workspace_buffers,
             )
-        source = (_PRELUDE + "\n" + "\n".join(self.constants)
+        source = (_PRELUDE + mean_prelude + nonlinear_prelude + "\n" + "\n".join(self.constants)
                   + f"\nstatic union {{ uint64_t align; unsigned char bytes[{max(high, 8)}]; }} sv_arena;\n"
                   + "#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
                   + "int scratchv_run(const void *const inputs[], void *output) {\n  "
                   + "\n  ".join(self.body) + "\n}\n")
-        return TensorCArtifact(source, inputs, output, high, self.constant_bytes)
+        return TensorCArtifact(source, inputs, output, high, self.constant_bytes,
+                               mean_policy=self.mean_policy, nonlinear_policy=self.nonlinear_policy)
 
     def _panel_inputs(self, program, initializers):
         """Select immutable 2D RHS storage; copy only IR containers we change.
@@ -888,6 +937,13 @@ class TensorCCodegen:
                 if op == OpCode.SQRT:
                     checks = f"if ({a}<0.0f) return 2; "
                 expression = f"{function}({a})"
+                if self.nonlinear_policy == "fp32-reference":
+                    if op in (OpCode.SIN, OpCode.COS):
+                        self._nonlinear_used.add("trig")
+                        expression = f"sv_fp32_reference_trig({a}, {int(op == OpCode.SIN)})"
+                    elif op == OpCode.SIGMOID:
+                        self._nonlinear_used.add("sigmoid")
+                        expression = f"sv_fp32_reference_sigmoid({a})"
             self.body.append(f"for (size_t i=0; i<{size}ULL; ++i) {{ {checks}{dst}[i]={expression}; }}")
             return
         x, src = xs[0], names[0]
@@ -917,7 +973,7 @@ class TensorCCodegen:
                 # Each output retains increasing K order, fused FP32 products,
                 # and a separate FP32 addition after each 128-element K block.
                 # Tiles only share input loads across independent outputs; they
-                # never split a reduction between harts or change its grouping.
+                # never split a reduction between cores or change its grouping.
                 # __builtin_fmaf retains explicit FMA with -ffp-contract=off.
                 tile_rows, tile_columns = (int(part) for part in self.matmul_tile.split("x"))
                 lanes = tile_rows * tile_columns
@@ -996,8 +1052,8 @@ class TensorCCodegen:
                 # Each task owns one (batch, row tile, column tile); its K loop
                 # and 128-element grouping are shared verbatim with serial.
                 if tasks >= 2 and math.prod(batch) * m * n * k >= 32768:
-                    condition = ("defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1 "
-                                 f"&& SCRATCHV_HARTS <= {tasks}")
+                    condition = ("defined(SCRATCHV_CORES) && SCRATCHV_CORES > 1 "
+                                 f"&& SCRATCHV_CORES <= {tasks}")
                     context = f"sv_matmul_{dst}"
                     aliases = []
                     seen = set()
@@ -1036,6 +1092,18 @@ class TensorCCodegen:
                 f"{dst}[batch*{m*n}ULL+m*{n}ULL+n]=acc; }}")
         elif op == OpCode.REDUCE_MEAN:
             axes = details["axes"]
+            if (self.mean_policy == "two-four-lane-last-axis"
+                    and x.dtype == DataType.FLOAT32 and x.shape
+                    and axes == (len(x.shape) - 1,)):
+                # Explicitly changes the reduction order; no SIMD ISA required.
+                # Shape, not the caller's address, determines the row prefix.
+                self._mean_last_used = True
+                width = x.shape[-1]
+                self.body.append(
+                    f"for (size_t i=0; i<{size}ULL; ++i) "
+                    f"{dst}[i]=sv_two_four_lane_mean_last("
+                    f"{src}+i*{width}ULL, {width}ULL, i);")
+                return  # Keep the existing finite check and error propagation.
             remaining = tuple(a for a in range(len(x.shape)) if a not in axes)
             outer_shape = tuple(x.shape[a] for a in remaining)
             reduced_shape = tuple(x.shape[a] for a in axes)
@@ -1049,14 +1117,24 @@ class TensorCCodegen:
             axis = details["axis"]
             outer, dimension, inner = math.prod(x.shape[:axis]), x.shape[axis], math.prod(x.shape[axis+1:])
             off = f"o*{dimension*inner}ULL+j*{inner}ULL+t"
-            # A row retains its original max, exp/sum and normalization order.
-            # Only independent (outer, inner) rows may run on different harts.
-            row = ("float maximum=-0x1.fffffep+127f, sum=0.0f; "
+            # Only independent (outer, inner) rows may run on different cores.
+            # The explicitly selected arithmetic is identical in both paths.
+            initialization, exponential = "sum=0.0f", "expf"
+            accumulate, finish, normalize = "sum+=v;", "", "/=sum"
+            if self.nonlinear_policy == "fp32-reference":
+                self._nonlinear_used.add("softmax")
+                initialization = "sv_reference_lanes[16]={0.0f}"
+                exponential = "sv_fp32_reference_exp_nonpositive"
+                accumulate = "sv_reference_lanes[j%16ULL]+=v;"
+                finish = ("float sum=sv_fp32_reference_sum_sixteen(sv_reference_lanes); "
+                          "float sv_reference_reciprocal=1.0f/sum; ")
+                normalize = "*=sv_reference_reciprocal"
+            row = (f"float maximum=-0x1.fffffep+127f, {initialization}; "
                 f"for (size_t j=0; j<{dimension}ULL; ++j) if ({src}[{off}]>maximum) maximum={src}[{off}]; "
                 f"for (size_t j=0; j<{dimension}ULL; ++j) {{ float shifted={src}[{off}]-maximum; "
-                "if (!sv_finite(shifted)) return 2; float v=expf(shifted); "
-                f"{dst}[{off}]=v; sum+=v; }} "
-                f"for (size_t j=0; j<{dimension}ULL; ++j) {{ {dst}[{off}]/=sum; "
+                f"if (!sv_finite(shifted)) return 2; float v={exponential}(shifted); "
+                f"{dst}[{off}]=v; {accumulate} }} "
+                f"{finish}for (size_t j=0; j<{dimension}ULL; ++j) {{ {dst}[{off}]{normalize}; "
                 f"if (!sv_finite({dst}[{off}])) return 2; }} ")
             serial = (f"for (size_t o=0; o<{outer}ULL; ++o) "
                       f"for (size_t t=0; t<{inner}ULL; ++t) {{ " + row + "}")
@@ -1064,8 +1142,8 @@ class TensorCCodegen:
             # Keep small/empty graphs and inline storage on the original path.
             # This floor avoids a barrier for tiny graphs; it is not autotuning.
             if self.constant_storage == "external" and rows >= 2 and size >= 32768:
-                condition = ("defined(SCRATCHV_HARTS) && SCRATCHV_HARTS > 1 "
-                             f"&& SCRATCHV_HARTS <= {rows}")
+                condition = ("defined(SCRATCHV_CORES) && SCRATCHV_CORES > 1 "
+                             f"&& SCRATCHV_CORES <= {rows}")
                 # Reuse code only: each operation keeps its own input/output
                 # pointers and status, initialized below before the joined call.
                 key = (x.dtype, x.shape, axis)
