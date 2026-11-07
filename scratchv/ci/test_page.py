@@ -1,7 +1,10 @@
-"""Generate unit test visualization page from JUnit XML or JSON data."""
+"""Generate the test results page from the current pytest JUnit XML."""
 
 from __future__ import annotations
-import json, os, sys, xml.etree.ElementTree as ET
+from html import escape
+import json
+import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime
 
@@ -14,7 +17,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2
 .header{background:linear-gradient(135deg,#1e293b,#0f172a);border:1px solid #334155;border-radius:12px;padding:20px 28px;margin-bottom:20px}
 .header h1{font-size:1.3rem;color:#f8fafc}
 .header .sub{font-size:.72rem;color:#64748b;margin-top:6px}
-.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:20px}
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:20px}
 .summary .kpi{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px;text-align:center}
 .summary .kpi .v{font-size:1.8rem;font-weight:800}
 .summary .kpi .v.g{color:#22c55e}.summary .kpi .v.r{color:#ef4444}
@@ -66,81 +69,77 @@ MODULES = {
 
 def parse_junit(xml_path: str) -> list[dict]:
     """Parse pytest JUnit XML into structured test results."""
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
+    root = ET.parse(xml_path).getroot()
+    if root.tag not in {"testsuite", "testsuites"}:
+        raise ValueError(f"Expected JUnit testsuite(s), got {root.tag!r}")
     results = []
-    for suite in root.iter("testsuite"):
-        for case in suite.iter("testcase"):
-            name = case.get("classname", "").split(".")[-1] + "::" + case.get("name", "")
-            passed = True
-            error_msg = ""
-            for child in case:
-                if child.tag in ("failure", "error"):
-                    passed = False
-                    error_msg = child.get("message", "")[:120]
-            results.append({
-                "name": name,
-                "passed": passed,
-                "time": float(case.get("time", 0)),
-                "error": error_msg,
-                "file": case.get("classname", "").split(".")[0],
-            })
+    for case in root.iter("testcase"):
+        classname = case.get("classname", "").split(".")
+        file = case.get("file")
+        if not file:
+            # Pytest xunit2 emits tests.test_module[.TestClass], without file.
+            module = next((i for i, part in enumerate(classname)
+                           if part.startswith("test_")), None)
+            file = ("/".join(classname[:module + 1]) + ".py" if module is not None
+                    else case.get("classname") or "unknown")
+        status = next((label for tag, label in (("error", "errors"), ("failure", "failed"),
+                                                ("skipped", "skipped"))
+                       if case.find(tag) is not None), "passed")
+        results.append({"file": file, "status": status, "time": float(case.get("time", 0))})
+    if not results:
+        raise ValueError("JUnit report contains no test cases")
     return results
 
 
 def aggregate(results: list[dict]) -> dict:
     """Aggregate individual test results into per-module summary."""
     modules = {}
-    for r in results:
-        # Extract the test file name from the test name
-        fname = r.get("file", "")
-        if not fname:
-            # Fallback: derive from test name
-            fname = r["name"].split("::")[0] + ".py"
-        if fname not in modules:
-            modules[fname] = {"passed": 0, "failed": 0, "time": 0.0, "tests": []}
-        m = modules[fname]
-        m["time"] += r["time"]
-        if r["passed"]:
-            m["passed"] += 1
-        else:
-            m["failed"] += 1
-        m["tests"].append(r)
+    for row in results:
+        module = modules.setdefault(row["file"], {
+            "passed": 0, "failed": 0, "errors": 0, "skipped": 0, "time": 0.0,
+        })
+        module[row["status"]] += 1
+        module["time"] += row["time"]
     return modules
 
 
 def generate(modules: dict | None = None, junit_path: str = "") -> str:
     """Generate the test visualization HTML page."""
-    if junit_path and os.path.exists(junit_path):
-        results = parse_junit(junit_path)
-        modules = aggregate(results)
-
-    if modules is None:
-        modules = {}
+    if junit_path:
+        modules = aggregate(parse_junit(junit_path))
+    if not modules:
+        raise ValueError("No test results to render")
 
     total_pass = sum(m["passed"] for m in modules.values())
     total_fail = sum(m["failed"] for m in modules.values())
-    total_tests = total_pass + total_fail
-    pass_rate = (total_pass / total_tests * 100) if total_tests > 0 else 100
+    total_errors = sum(m.get("errors", 0) for m in modules.values())
+    total_skipped = sum(m.get("skipped", 0) for m in modules.values())
+    executed = total_pass + total_fail + total_errors
+    total_tests = executed + total_skipped
+    if not total_tests:
+        raise ValueError("No test results to render")
+    pass_rate = total_pass / executed * 100 if executed else None
+    rate_text = f"{pass_rate:.0f}%" if executed else "无已执行用例"
 
-    # Save history
-    _save_history(total_pass, total_fail, len(modules), pass_rate)
+    _save_history(total_pass, total_fail, len(modules), pass_rate, total_errors, total_skipped)
 
     # Sort: failures first, then by name
     sorted_mods = sorted(modules.items(),
-                         key=lambda x: (-x[1]["failed"], x[0]))
+                         key=lambda x: (-x[1]["failed"] - x[1].get("errors", 0), x[0]))
 
     h = f"""<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ScratchV · Unit Tests</title><style>{CSS}</style></head><body><div class="wrap"><div class="topnav"><a href="docs/index.html">📘 课程</a> <a href="dashboard.html">📊 Dashboard</a> <a href="history.html">📈 历史</a></div>
 <div class="header">
 <h1>ScratchV 单元测试</h1>
-<div class="sub">{len(modules)} 个模块 · {total_tests} 个测试用例 · 更新于 {datetime.now().strftime("%Y-%m-%d %H:%M")}</div>
+<div class="sub">{len(modules)} 个模块 · {total_tests} 个测试用例（JUnit 记录）· 更新于 {datetime.now().strftime("%Y-%m-%d %H:%M")}</div>
 </div>
 
 <div class="summary">
 <div class="kpi"><div class="v g">{total_pass}</div><div class="l">通过</div></div>
 <div class="kpi"><div class="v{' r' if total_fail>0 else ' g'}">{total_fail}</div><div class="l">失败</div></div>
-<div class="kpi"><div class="v{' g' if pass_rate>=90 else ' r'}">{pass_rate:.0f}%</div><div class="l">通过率</div></div>
+<div class="kpi"><div class="v{' r' if total_errors else ''}">{total_errors}</div><div class="l">错误</div></div>
+<div class="kpi"><div class="v">{total_skipped}</div><div class="l">跳过</div></div>
+<div class="kpi"><div class="v">{rate_text}</div><div class="l">已执行用例通过率</div></div>
 </div>"""
 
     # ── History trend ──
@@ -148,26 +147,30 @@ def generate(modules: dict | None = None, junit_path: str = "") -> str:
     if len(hist) >= 2:
         h += """<div style="margin-bottom:16px;font-size:.68rem;color:#64748b">历史: """
         for entry in hist[-8:]:
-            dot = "#22c55e" if entry["fail"] == 0 else "#ef4444"
-            h += f"""<span style="color:{dot};margin:0 2px" title="{entry['ts'][:10]}: {entry['pass']}/{entry['pass']+entry['fail']}">●</span>"""
+            rejected = entry["fail"] + entry.get("errors", 0)
+            count = entry["pass"] + rejected
+            dot = "#ef4444" if rejected else "#22c55e" if count else "#64748b"
+            h += f"""<span style="color:{dot};margin:0 2px" title="{entry['ts'][:10]}: {entry['pass']}/{count}">●</span>"""
         h += "</div>"
 
     # ── Module grid ──
     h += '<div class="grid2">'
     for fname, m in sorted_mods:
-        meta = MODULES.get(fname, (fname.replace("test_", "").replace(".py", "").title(), ""))
-        name_en, name_cn = meta
-        total = m["passed"] + m["failed"]
-        pct = m["passed"] / total * 100 if total > 0 else 100
-        ok = m["failed"] == 0
+        label = Path(fname).name
+        name_en, name_cn = MODULES.get(label, (escape(fname), ""))
+        rejected = m["failed"] + m.get("errors", 0)
+        count = m["passed"] + rejected
+        skipped = m.get("skipped", 0)
+        pct = m["passed"] / count * 100 if count else 0
+        mark, color = ("✗", "r") if rejected else ("✓", "g") if count else ("–", "")
         h += f"""<div class="module">
-<div class="icon {'g' if ok else 'r'}">{'✓' if ok else '✗'}</div>
+<div class="icon {color}">{mark}</div>
 <div class="info">
 <div class="name">{name_en} <span style="color:#475569;font-size:.65rem">{name_cn}</span></div>
-<div class="desc">{m['passed']}/{total} 通过 · {m['time']:.2f}s</div>
+<div class="desc">{m['passed']}/{count} 已执行通过 · {skipped} 跳过 · {m['time']:.2f}s</div>
 </div>
-<div class="bar-wrap"><div class="bar-fill {'g' if ok else 'r'}" style="width:{pct}%"></div></div>
-<div class="count">{pct:.0f}%</div>
+<div class="bar-wrap"><div class="bar-fill {color}" style="width:{pct}%"></div></div>
+<div class="count">{f"{pct:.0f}%" if count else "—"}</div>
 </div>"""
     h += "</div>"
 
@@ -179,7 +182,7 @@ ScratchV CI · <a href="https://github.com/ScratchV-Compiler/ScratchV">GitHub</a
     return h
 
 
-def _save_history(passed: int, failed: int, modules: int, rate: float):
+def _save_history(passed: int, failed: int, modules: int, rate: float | None, errors: int, skipped: int):
     try:
         hist = json.loads(HIST_FILE.read_text()) if HIST_FILE.exists() else []
     except Exception:
@@ -187,7 +190,8 @@ def _save_history(passed: int, failed: int, modules: int, rate: float):
     hist.append({
         "ts": datetime.now().isoformat(),
         "pass": passed, "fail": failed,
-        "modules": modules, "rate": round(rate, 1),
+        "errors": errors, "skipped": skipped, "modules": modules,
+        "rate": round(rate, 1) if rate is not None else None,
     })
     hist = hist[-50:]
     HIST_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -201,23 +205,22 @@ def _load_history() -> list[dict]:
         return []
 
 
-def main():
+def main(argv=None):
     import argparse
     p = argparse.ArgumentParser(description="Generate test visualization page")
-    p.add_argument("--junit", default="", help="pytest JUnit XML path")
+    p.add_argument("--junit", default=str(PROJ / "benchmark_reports" / "test_results.xml"), help="pytest JUnit XML path")
     p.add_argument("-o", "--output", default=str(PROJ / "benchmark_reports" / "tests.html"),
                    help="Output HTML path")
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
-    modules = None
-    if args.junit and os.path.exists(args.junit):
-        results = parse_junit(args.junit)
-        modules = aggregate(results)
-
-    html = generate(modules)
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    with open(args.output, "w") as f:
-        f.write(html)
+    try:
+        html = generate(junit_path=args.junit)
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(html, encoding="utf-8")
+    except (ET.ParseError, OSError, ValueError) as exc:
+        print(f"Cannot generate test page: {exc}", file=sys.stderr)
+        return 1
     print(f"→ {args.output} ({len(html):,}B)", file=sys.stderr)
     return 0
 

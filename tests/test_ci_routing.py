@@ -77,7 +77,7 @@ def test_real_diff_includes_rename_source_deletion_and_space_names(repository):
     assert set(paths) == {"scratchv/delete.py", "docs/old.md", "moved outside docs.md",
                           "unrelated name with spaces.txt"}
     assert scope.detect_scopes(root, "pull_request", event, config) == (
-        {"llm": True, "w4": False}, 4)
+        {"llm": True, "w4": False, "docs_only": False}, 4)
 
 
 def test_merge_base_diff_excludes_base_branch_only_changes(repository):
@@ -89,7 +89,7 @@ def test_merge_base_diff_excludes_base_branch_only_changes(repository):
     head = commit(root, "PR branch")
     set_event(event, advanced_base, head)
     assert scope.detect_scopes(root, "pull_request", event, config) == (
-        {"llm": False, "w4": False}, 1)
+        {"llm": False, "w4": False, "docs_only": True}, 1)
 
 
 @pytest.mark.parametrize("path,expected", [
@@ -133,7 +133,7 @@ def test_non_pr_never_activates_scopes_or_needs_event(repository, event_name):
     root, _, config, event = repository
     event.write_text("invalid JSON", encoding="utf-8")
     assert scope.detect_scopes(root, event_name, event, config) == (
-        {"llm": False, "w4": False}, 0)
+        {"llm": False, "w4": False, "docs_only": False}, 0)
 
 
 @pytest.mark.parametrize("event_name", ["pull_request_target", "", "unexpected", "pull_request\n"])
@@ -203,7 +203,7 @@ def test_cli_writes_only_boolean_scopes_and_count(repository, monkeypatch, capsy
     output = root.parent / "github-output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     assert scope.main() == 0
-    assert output.read_text(encoding="utf-8") == "llm=true\nw4=false\n"
+    assert output.read_text(encoding="utf-8") == "llm=true\nw4=false\ndocs_only=false\n"
     captured = capsys.readouterr()
     assert "Changed path count: 1" in captured.out
     assert "private" not in captured.out and not captured.err
@@ -248,6 +248,7 @@ def test_git_timeout_is_bounded_and_never_publishes_success(repository, monkeypa
 def successful_jobs(*, requested=True, w4=False):
     results = {name: {"result": "success"} for name in summary.REQUIRED}
     results["scope"]["outputs"] = {name: str(requested).lower() for name in ("llm", "w4")}
+    results["scope"]["outputs"]["docs_only"] = "false"
     if not w4:
         results["scope"]["outputs"]["w4"] = "false"
     for name in ("llm", *(("w4",) if w4 else ())):
@@ -338,3 +339,51 @@ def test_summary_cli_returns_success_only_for_complete_result():
 def test_w5_paths_route_to_existing_runtime_and_tokenizer_gates(path):
     config = scope.read_config(ROOT / "scripts/ci_scopes.json")
     assert scope.select_scopes(config, [path]) == {"llm": True, "w4": True}
+
+def test_lightweight_docs_never_cover_unknown_mixed_deleted_or_out_of_scope_renames(repository):
+    root, base, config, event = repository
+
+    def docs_only(head):
+        set_event(event, base, head)
+        return scope.detect_scopes(root, "pull_request", event, config)[0]["docs_only"]
+
+    assert not docs_only(base)
+    write(root, "docs/guide/01-编译器概念入门.md")
+    assert docs_only(commit(root, "ordinary guide"))
+    (root / "scratchv/delete.py").rename(root / "CONTRIBUTING.md")
+    assert not docs_only(commit(root, "move code to a document"))
+
+    for path in ("docs/llm-deploy-v1.0/W5/README.md", "docs/guide/new.md", "unknown.txt"):
+        git(root, "checkout", "--detach", base)
+        write(root, path)
+        write(root, "README.md", "edited")
+        assert not docs_only(commit(root, "mixed change"))
+
+
+def test_docs_summary_requires_all_document_checks_and_expected_skips():
+    from copy import deepcopy
+
+    jobs = successful_jobs(requested=False, w4=True)
+    jobs["scope"]["outputs"]["docs_only"] = "true"
+    for key in ("test", "benchmark", "topic06"):
+        jobs[key]["result"] = "skipped"
+    text, passed = summary.render_summary(jobs)
+    assert passed and "Only documentation checks" in text
+    for key in ("scope", "test", "benchmark", "topic06", "llm", "w4"):
+        broken = deepcopy(jobs)
+        broken[key]["result"] = "failure"
+        assert not summary.render_summary(broken)[1]
+        del broken[key]
+        # Both optional flags are explicit here. The compatibility path for
+        # an older caller without W4 is already tested separately.
+        if key != "w4":
+            assert not summary.render_summary(broken)[1]
+    for flag in (None, False, "TRUE", "false"):
+        broken = deepcopy(jobs)
+        broken["scope"]["outputs"]["docs_only"] = flag
+        assert not summary.render_summary(broken)[1]
+    for key in ("llm", "w4"):
+        broken = deepcopy(jobs)
+        broken["scope"]["outputs"][key] = "true"
+        broken[key]["result"] = "success"
+        assert not summary.render_summary(broken)[1]

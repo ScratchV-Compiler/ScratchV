@@ -1,9 +1,11 @@
 """W5 CLI orchestration boundaries without a model, compiler or QEMU."""
 
+import gc
 from importlib.util import module_from_spec, spec_from_file_location
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -58,7 +60,7 @@ def runtime(cli, monkeypatch):
         toolchain=SimpleNamespace(cc="unused-cc", qemu="unused-qemu"), cores=1,
     )
     state = SimpleNamespace(tokenizer=tokenizer, exe=executable, prepared=[], adapters=[],
-                            saved=[], fma=[], failure=None, oracle=None, cores=[])
+                            saved=[], fma=[], failure=None, oracle=None, cores=[], collect=Mock())
 
     def prepare(args, out, cores):
         state.prepared.append((args, out, cores))
@@ -83,6 +85,8 @@ def runtime(cli, monkeypatch):
         state.fma.append((args, kwargs))
         return {"passed": True, "status": "PASS"}
 
+    # Fake runtimes own no model resources. Record the final cleanup call locally.
+    monkeypatch.setattr(cli, "gc", SimpleNamespace(collect=state.collect))
     monkeypatch.setattr(cli.Qwen3Tokenizer, "from_directory", lambda path: tokenizer)
     monkeypatch.setattr(cli, "prepare_executable", prepare)
     monkeypatch.setattr(cli, "save_executable", lambda exe, out: state.saved.append((exe, out)) or "fixture-metadata-identity")
@@ -143,11 +147,13 @@ def test_three_chat_turns_reuse_adapter_and_commit_ordered_history(cli, runtime,
 
 
 def test_build_only_never_executes_fma_or_forward_and_not_pass(cli, runtime, tmp_path):
+    runtime.collect.side_effect = gc.collect
     assert cli.main(argv(tmp_path, "--build-only")) == 0
     value = report(tmp_path)
     assert value["status"] == "BUILD_ONLY" and value["passed"] is False
     assert value["full_model_gate"] == "NOT_RUN" and value["qemu_forwards"] == 0
     assert runtime.fma == [] and runtime.adapters[0].inputs == []
+    runtime.collect.assert_called_once_with()
 
 
 @pytest.mark.parametrize("error,expected,status", [
@@ -164,6 +170,7 @@ def test_cancel_failure_report_retains_attempt_without_claiming_success(cli, run
     assert value["cases"] == [] and value["full_model_gate"] == "NOT_RUN"
     assert value["forward_attempts"] == 1 and value["qemu_forwards"] == 0
     assert type(error).__name__ in value["error"]
+    runtime.collect.assert_called_once_with()
 
 
 def test_numeric_oracle_failure_is_reported_before_committing_tokens(cli, runtime, tmp_path):

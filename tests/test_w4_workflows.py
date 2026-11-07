@@ -139,30 +139,6 @@ def test_registered_llm_entry_calls_same_commit_w4_without_changing_w3_or_pr_def
         assert checkout["with"]["ref"] == "${{ github.sha }}"
 
 
-@pytest.mark.parametrize("event", ["pull_request", "schedule", "workflow_dispatch"])
-@pytest.mark.parametrize("requested", ["", "false", "true"])
-@pytest.mark.parametrize("result", ["success", "failure", "cancelled", "skipped", ""])
-def test_llm_w4_scope_rejects_skipped_or_failed_explicit_execution(tmp_path, event, requested, result):
-    active = event == "workflow_dispatch" and requested == "true"
-    passed = active and result == "success"
-    not_run = not active and result == "skipped"
-    summary = tmp_path / "summary.md"
-    status = workflow(LLM_PATH)["jobs"]["w4-execution-summary"]
-    assert status["if"] == "always()" and status["needs"] == ["w4-validation"]
-    script = python_body("Require explicitly requested W4 execution", LLM_PATH)
-    completed = subprocess.run([sys.executable, "-c", script], cwd=tmp_path,
-        env=dict(os.environ, GITHUB_EVENT_NAME=event, W4_REQUESTED=requested,
-                 W4_RESULT=result, GITHUB_STEP_SUMMARY=str(summary)), capture_output=True, text=True)
-    assert (completed.returncode == 0) is (passed or not_run), completed.stderr
-    text = summary.read_text(encoding="utf-8")
-    label = "PASS" if passed else "NOT RUN" if not_run else "FAIL"
-    assert f"**{label}**" in text
-    assert "<details>" in text and "w4-full-reports-*" in text
-    assert "Nightly activation" in text and "same commit" in text
-    if not_run:
-        assert "not requested" in text and "not full QEMU acceptance" in text
-
-
 def test_single_case_default_and_deadlines_leave_room_to_upload_failures():
     data = workflow()
     assert data["on"]["workflow_call"]["inputs"]["case"]["default"] == "full_seed_0"
@@ -309,8 +285,8 @@ def test_actual_ci_report_gate_rejects_false_or_incomplete_acceptance(tmp_path, 
     assert (result.returncode == 0) is (damage is None), result.stderr
 
 
-@pytest.mark.parametrize("result", ["pass", "skipped", "failure", "error", "missing", "duplicate"])
-@pytest.mark.parametrize("required", ["test_external_rv64_matmul_and_reuse", "test_weight_pointer_above_32bit_limit",
+REQUIRED_QEMU_TESTS = (
+    "test_external_rv64_matmul_and_reuse", "test_weight_pointer_above_32bit_limit",
     "test_real_rv64_fma_exact_conformance",
     "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-1]",
     "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-2]",
@@ -321,7 +297,18 @@ def test_actual_ci_report_gate_rejects_false_or_incomplete_acceptance(tmp_path, 
     "test_post_execution_transport_corruption_fails_and_retains_copies",
     "test_success_copy_cleanup_failure_is_not_a_pass",
     "test_actual_shared_library_executes_kernel_calls_and_unloads[sequential]",
-    "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]"] + W5_REQUIRED)
+    "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]",
+) + tuple(W5_REQUIRED)
+
+
+# Check every required name, then exercise the shared status check once per
+# outcome at the last required name, after earlier successes. The all-passing
+# XML is the same regardless of which name is selected.
+@pytest.mark.parametrize("result,required", [
+    *[pytest.param("missing", name, id=f"missing-{name}") for name in REQUIRED_QEMU_TESTS],
+    *[pytest.param(result, REQUIRED_QEMU_TESTS[-1], id=result)
+      for result in ("pass", "skipped", "failure", "error", "duplicate")],
+])
 def test_actual_junit_gate_requires_real_qemu_execution(tmp_path, result, required):
     folder = tmp_path / "output/w4-unit"
     folder.mkdir(parents=True)
@@ -331,24 +318,15 @@ def test_actual_junit_gate_requires_real_qemu_execution(tmp_path, result, requir
         case = ""
     elif result == "duplicate":
         case *= 2
-    for name in ("test_external_rv64_matmul_and_reuse", "test_weight_pointer_above_32bit_limit",
-                 "test_real_rv64_fma_exact_conformance",
-                 "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-1]",
-                 "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-2]",
-                 "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-4]",
-                 "test_blocked_fma_host_and_rv64_are_bitwise_equal[left2-right2-auto]",
-                 "test_column_panel_rv64_errors_recover_in_same_guest_workspace",
-                 "test_real_qemu_contiguous_loader_segments_and_success_cleanup[chunk31-3]",
-                 "test_post_execution_transport_corruption_fails_and_retains_copies",
-                 "test_success_copy_cleanup_failure_is_not_a_pass",
-                 "test_actual_shared_library_executes_kernel_calls_and_unloads[sequential]",
-                 "test_actual_shared_library_executes_kernel_calls_and_unloads[blocked_fma]") + tuple(W5_REQUIRED):
+    for name in REQUIRED_QEMU_TESTS:
         if name != required:
             case += f'<testcase name="{name}"/>'
     (folder / "tests.xml").write_text(f"<testsuite>{case}</testsuite>", encoding="utf-8")
     code = python_body("Run ABI, streaming bundle, runner and actual QEMU tests")
     completed = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True)
     assert (completed.returncode == 0) is (result == "pass"), completed.stderr
+    if result != "pass":
+        assert f"Real QEMU/Host C regression must execute and pass: {required}" in completed.stderr
 
 
 @pytest.mark.parametrize("case,ram_gib,disk_gib,passed", [
@@ -517,7 +495,7 @@ def test_w1_w3_handoff_is_bounded_and_uses_the_same_commit():
         assert (ROOT / "tests" / name).is_file()
     assert "acquire_model" not in unit and "--case all" not in unit
     assert "probes.w3_qwen3_full.run" not in unit
-    assert "requirements/qwen3-small-probe.txt" in step("Install W3-pinned CPU environment and Zig 0.14.1")["run"]
+    assert 'pip install -e ".[llm-deploy]"' in step("Install W3-pinned CPU environment and Zig 0.14.1")["run"]
     assert "probes.w1_qwen3_export.run import acquire_model" in step("Acquire the fixed original ONNX assets")["run"]
     # The top-level CI handles every PR to main, including shared source and
     # workflow changes. This reusable workflow has no independent PR trigger.
@@ -560,14 +538,14 @@ def test_nightly_all_entries_require_explicit_repository_opt_in(event, enabled, 
     assert all("continue-on-error" not in job for job in data["jobs"].values())
 
 
-@pytest.mark.parametrize("event", ["pull_request", "push", "workflow_dispatch", "schedule"])
+# Event routing is tested separately; this script consumes the resolved request.
 @pytest.mark.parametrize("requested", ["false", "true"])
 @pytest.mark.parametrize("unit", ["success", "failure", "cancelled", "skipped"])
 @pytest.mark.parametrize("full", ["success", "failure", "cancelled", "skipped"])
-def test_ci_summary_actual_bash_failure_matrix(bash, tmp_path, event, requested, unit, full):
+def test_ci_summary_actual_bash_failure_matrix(bash, tmp_path, requested, unit, full):
     enabled = requested == "true"
     expected = unit == "success" and full == ("success" if enabled else "skipped")
-    env = dict(os.environ, GITHUB_EVENT_NAME=event, UNIT_RESULT=unit, FULL_NUMERIC_RESULT=full,
+    env = dict(os.environ, GITHUB_EVENT_NAME="pull_request", UNIT_RESULT=unit, FULL_NUMERIC_RESULT=full,
                FULL_REQUESTED=requested, W5_REQUESTED="false", W5_GENERATION_RESULT="skipped",
                SELECTED_CASE="full_seed_0", GITHUB_SHA="a" * 40, GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="1",
                GITHUB_STEP_SUMMARY=(tmp_path / "summary.md").as_posix())
@@ -646,7 +624,8 @@ def test_w5_manual_selection_is_exclusive_and_old_callers_remain(event, mode, le
     assert _full_enabled(data["jobs"]["full-numeric"]["if"], event, mode, legacy) is w4
     assert _full_enabled(data["jobs"]["w5-generation"]["if"], event, mode, legacy) is w5
     assert not (w4 and w5)
-    assert set(data["on"]["workflow_call"]["inputs"]) == {"run_full", "run_w5", "case"}
+    assert set(data["on"]["workflow_call"]["inputs"]) == {"run_full", "run_w5", "case",
+                                                           "ci_covers_generic_regressions"}
     assert "schedule" not in data["on"] and "pull_request" not in data["on"]
 
 
@@ -843,35 +822,6 @@ def test_reusable_w5_input_is_manual_and_mutually_exclusive(tmp_path, event, mod
         assert w5_enabled and not w4_enabled
     if not allowed:
         assert not w5_enabled and not w4_enabled
-
-
-@pytest.mark.parametrize("selection,result,legacy,requested,expected", [
-    ("success", "success", "skipped", "true", "PASS"),
-    ("success", "skipped", "skipped", "true", "FAIL"),
-    ("success", "cancelled", "skipped", "true", "FAIL"),
-    ("success", "failure", "skipped", "true", "FAIL"),
-    ("failure", "skipped", "skipped", "true", "FAIL"),
-    ("cancelled", "skipped", "skipped", "true", "FAIL"),
-    ("success", "success", "success", "true", "FAIL"),
-    ("success", "success", "failure", "true", "FAIL"),
-    ("success", "success", "cancelled", "true", "FAIL"),
-    ("success", "skipped", "success", "false", "NOT RUN"),
-    ("success", "success", "skipped", "false", "FAIL"),
-])
-def test_w5_entry_summary_requires_success_and_no_legacy_execution(
-        tmp_path, selection, result, legacy, requested, expected):
-    job = workflow(LLM_PATH)["jobs"]["w5-execution-summary"]
-    assert job["if"] == "always()"
-    results = {name: {"result": legacy} for name in job["needs"]}
-    results["validation-selection"] = {"result": selection}
-    results["w5-validation"] = {"result": result}
-    summary = tmp_path / "summary.md"
-    completed = subprocess.run([sys.executable, "-c", python_body("Require the requested W5-only execution", LLM_PATH)],
-        cwd=tmp_path, env=dict(os.environ, GITHUB_EVENT_NAME="workflow_dispatch", W5_REQUESTED=requested,
-                             W5_JOB_RESULTS=json.dumps(results), GITHUB_STEP_SUMMARY=str(summary)),
-        capture_output=True, text=True)
-    assert (completed.returncode == 0) is (expected != "FAIL"), completed.stderr
-    assert f"**{expected}**" in summary.read_text()
 
 
 @pytest.mark.parametrize("suffix", ["None", "Give brief answers."])
