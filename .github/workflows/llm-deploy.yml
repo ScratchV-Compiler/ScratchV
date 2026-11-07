@@ -139,6 +139,12 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py3.12-llm-deploy-${{ hashFiles('pyproject.toml', 'requirements/*.txt') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-llm-deploy-
 
       # ── 前置：RISC-V 工具链 + Python 依赖 ──────────────────────────────
       - name: Install RISC-V toolchain and QEMU
@@ -196,6 +202,8 @@ jobs:
         run: python3 scripts/check_llm_deploy_docs.py --week W1
 
       - name: "docs:linux-reproduction"
+        # CI's scope job checks this before invoking the delegated PR workflow.
+        if: github.event_name != 'pull_request' || !inputs.ci_covers_generic_regressions
         run: python3 scripts/check_linux_repro_docs.py --check-bash
 
       # ── probe:qemu-matmul ─────────────────────────────────────────────
@@ -256,8 +264,11 @@ jobs:
               --junit-xml="output/process-cleanup-repeats/attempt-$attempt.xml"
           done
 
+      # CI.test already executes these same frontend cases. Standalone callers
+      # keep the local run; CI acceptance requires the delegated test job.
       - name: "unit:frontend-ops"
         id: frontend_ops
+        if: github.event_name != 'pull_request' || !inputs.ci_covers_generic_regressions
         run: |
           python3 -m pytest tests/test_qwen3_frontend_patterns.py -q \
             --junit-xml=output/w2-frontend-ops.xml
@@ -294,10 +305,16 @@ jobs:
             --require-clean --output-dir output/w1-repro-env
 
       - name: Runtime unit regressions in pinned environment
+        env:
+          CI_COVERS_GENERIC_REGRESSIONS: ${{ inputs.ci_covers_generic_regressions }}
         run: |
-          "$QWEN3_PY" -m pytest \
-            tests/test_llm_inputs.py tests/test_qwen3_tokenizer.py \
-            tests/test_w2_runtime_gate.py tests/test_w2_runtime_metadata.py \
+          set -euo pipefail
+          generic_tests=(tests/test_llm_inputs.py tests/test_w2_runtime_metadata.py)
+          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && "${CI_COVERS_GENERIC_REGRESSIONS:-false}" == "true" ]]; then
+            generic_tests=()
+          fi
+          "$QWEN3_PY" -m pytest "${generic_tests[@]}" \
+            tests/test_qwen3_tokenizer.py tests/test_w2_runtime_gate.py \
             tests/test_w2_runtime_reporting.py tests/test_w2_runtime_model.py \
             -q --junit-xml=output/w2-runtime-tests.xml
 
@@ -384,13 +401,18 @@ jobs:
         if: always()
         env:
           FRONTEND_OUTCOME: ${{ steps.frontend_ops.outcome }}
+          CI_COVERS_GENERIC_REGRESSIONS: ${{ inputs.ci_covers_generic_regressions }}
           BACKEND_OUTCOME: ${{ steps.backend_ops.outcome }}
           RUNTIME_OUTCOME: ${{ steps.runtime.outcome }}
           RUNTIME_MODEL_OUTCOME: ${{ steps.runtime_model.outcome }}
         run: |
           {
             echo "## W2 frontend, backend and host runtime"
-            echo "unit:frontend-ops: $FRONTEND_OUTCOME"
+            if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && "${CI_COVERS_GENERIC_REGRESSIONS:-false}" == "true" ]]; then
+              echo "unit:frontend-ops: delegated to required CI.test; see that job for its result"
+            else
+              echo "unit:frontend-ops: $FRONTEND_OUTCOME"
+            fi
             echo "unit:backend-ops: $BACKEND_OUTCOME"
             echo "unit:runtime: $RUNTIME_OUTCOME"
             echo "integration:runtime-model: $RUNTIME_MODEL_OUTCOME"
@@ -545,6 +567,12 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py3.12-full-qwen3-onnx-${{ hashFiles('pyproject.toml', 'requirements/*.txt') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-full-qwen3-onnx-
       - name: Install pinned full-model validation dependencies
         run: |
           python3 -m pip install -v -e ".[llm-deploy]"
@@ -606,6 +634,12 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py3.12-full-qwen3-frontend-${{ hashFiles('pyproject.toml', 'requirements/*.txt') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-full-qwen3-frontend-
       - name: Install pinned frontend audit dependencies
         run: |
           python3 -m pip install -v -e ".[llm-deploy]"
@@ -691,102 +725,54 @@ jobs:
           W2_JOB_RESULTS: ${{ toJSON(needs) }}
         run: python3 scripts/check_w2_ci_results.py
 
-  w3-execution-summary:
-    name: "W3 / execution scope"
-    needs: [w3-validation]
+  full-validation-summary:
+    name: W3/W4/W5 full validation summary
+    needs: [validation-selection, w3-validation, w4-validation, w5-validation, llm-deploy, full-qwen3-onnx, full-qwen3-frontend]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: State whether W3 actually ran
+      - name: Summarize requested and actual full validations
         env:
-          W3_RESULT: ${{ needs.w3-validation.result }}
-        run: |
-          python3 - <<'PY'
-          import os
-          result = os.environ.get("W3_RESULT", "")
-          labels = {"success": "PASS", "failure": "FAIL", "cancelled": "CANCELLED", "skipped": "NOT RUN"}
-          label = labels.get(result, "UNCONFIRMED")
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
-              stream.write("## W3 execution scope\n\n")
-              stream.write(f"**{label}** — W3 preparation and full 28-layer IR numeric.\n\n")
-              if result == "skipped":
-                  stream.write("W3 is opt-in and is not executed by default on pull requests. W1/W2 success is not W3 acceptance.\n\n")
-              elif result == "success":
-                  stream.write("See the W3 preparation and W3 complete IR numeric summaries in this run for numerical data.\n\n")
-              else:
-                  stream.write("No W3 acceptance claimed; inspect the called jobs and any partial evidence.\n\n")
-              stream.write("<details><summary>Scope and evidence</summary>\n\nManual LLM Deploy runs can enable `run_w3_validation`. "
-                           "Numerical reports are retained in `w3-preparation-reports` and `w3-full-numeric-reports` when generated. "
-                           "Full-model QEMU is a separate W4 gate; independent reproduction and team sign-off remain separate.\n\n</details>\n")
-          PY
-
-  w4-execution-summary:
-    name: "W4 / execution scope"
-    needs: [w4-validation]
-    if: always()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Require explicitly requested W4 execution
-        env:
-          W4_RESULT: ${{ needs.w4-validation.result }}
+          W3_REQUESTED: ${{ inputs.run_w3_validation }}
           W4_REQUESTED: ${{ inputs.run_w4_validation }}
-        run: |
-          python3 - <<'PY'
-          import os
-          result = os.environ.get("W4_RESULT", "")
-          requested = (os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
-                       and os.environ.get("W4_REQUESTED", "").casefold() == "true")
-          passed = requested and result == "success"
-          not_run = not requested and result == "skipped"
-          label = "PASS" if passed else "NOT RUN" if not_run else "FAIL"
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
-              stream.write("## W4 execution scope\n\n")
-              stream.write(f"**{label}** — one complete 28-layer RV64 QEMU forward and retained-array audit.\n\n")
-              if passed:
-                  stream.write("See the W4 complete Qwen3 RV64 forward summary in this run for measured error, ELF size and QEMU time.\n\n")
-              elif not_run:
-                  stream.write("W4 is opt-in and was not requested. W1/W2/W3 success is not full QEMU acceptance.\n\n")
-              else:
-                  stream.write("Requested validation did not complete successfully, or execution was unexpected; inspect the called W4 jobs. No full QEMU acceptance claimed.\n\n")
-              stream.write("<details><summary>Scope and evidence</summary>\n\n"
-                           "Manual LLM Deploy runs can enable `run_w4_validation` and choose `w4_case`. "
-                           "The reusable workflow uses the same commit and retains measured reports in `w4-full-reports-*` "
-                           "and raw arrays in `w4-full-raw-*`. This single case is not seven-case coverage, "
-                           "Nightly activation, independent reproduction or team sign-off.\n\n</details>\n")
-          if not (passed or not_run):
-              raise SystemExit("Explicit W4 validation must actually run and pass")
-          PY
-
-  w5-execution-summary:
-    name: "W5 / explicit execution scope"
-    needs: [validation-selection, w5-validation, llm-deploy, full-qwen3-onnx, full-qwen3-frontend, w3-validation, w4-validation]
-    if: always()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Require the requested W5-only execution
-        env:
           W5_REQUESTED: ${{ inputs.run_w5_validation }}
-          W5_JOB_RESULTS: ${{ toJSON(needs) }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
-          python3 - <<'PY'
-          import json, os
-          requested = (os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
-                       and os.environ.get("W5_REQUESTED", "").casefold() == "true")
-          results = {name: item.get("result") for name, item in json.loads(os.environ["W5_JOB_RESULTS"]).items()}
-          selected = results.get("validation-selection") == "success"
-          passed = requested and selected and results.get("w5-validation") == "success"
-          if requested:
-              passed = passed and all(results.get(name) == "skipped" for name in (
-                  "llm-deploy", "full-qwen3-onnx", "full-qwen3-frontend", "w3-validation", "w4-validation"))
-          not_run = not requested and selected and results.get("w5-validation") == "skipped"
-          label = "PASS" if passed else "NOT RUN" if not_run else "FAIL"
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
-              stream.write(f"## W5 execution scope\n\n**{label}** — explicit container generation, three frozen prompts and 24 forwards.\n\n")
-              stream.write("Only the selected W5 path may execute; the reusable workflow requires real small QEMU, "
-                           "official three-round template and full-generation evidence. NOT RUN is not W5 acceptance.\n")
-          if not (passed or not_run):
-              raise SystemExit("Requested W5-only validation must pass without concurrent legacy full runs")
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+
+          results = {job: data["result"] for job, data in json.loads(os.environ["JOB_RESULTS"]).items()}
+          manual = os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+          scopes = {
+              "W3": ("Preparation and seven full IR cases", "`w3-preparation-reports`, `w3-full-numeric-reports`"),
+              "W4": ("One full RV64 forward and output audit", "`w4-full-reports-*`, `w4-full-raw-*`"),
+              "W5": ("Three prompts in a clean container, 24 forwards", "`w5-generation-reports-*`"),
+          }
+          requested = {stage for stage in scopes
+                       if manual and os.environ.get(stage + "_REQUESTED", "").lower() == "true"}
+          selection_ok = results.get("validation-selection") == "success"
+          other_jobs = ("llm-deploy", "full-qwen3-onnx", "full-qwen3-frontend", "w3-validation", "w4-validation")
+          conflicts = [job for job in other_jobs if results.get(job) != "skipped"] if "W5" in requested else []
+
+          print("## W3/W4/W5 full validation\n")
+          print("| Stage | Coverage | Requested | Job result | Status | Artifact names (when produced) |")
+          print("| --- | --- | --- | --- | --- | --- |")
+          success = selection_ok
+          for stage, (coverage, reports) in scopes.items():
+              wanted = stage in requested
+              actual = results.get(stage.lower() + "-validation", "missing")
+              expected = "success" if wanted else "skipped"
+              valid = selection_ok and actual == expected and not (stage == "W5" and conflicts)
+              status = ("PASS" if wanted else "NOT RUN") if valid else "FAIL"
+              artifacts = reports if actual in {"success", "failure", "cancelled"} else "—"
+              print(f"| {stage} | {coverage} | {'yes' if wanted else 'no'} | {actual} | **{status}** | {artifacts} |")
+              success = success and valid
+          if not selection_ok:
+              print("\nValidation selection did not succeed.")
+          if conflicts:
+              print("\nW5-only validation requires these jobs to be skipped: " + ", ".join(conflicts))
+          if not success:
+              raise SystemExit("Full validation did not match the requested scope")
           PY

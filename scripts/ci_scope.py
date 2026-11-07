@@ -13,6 +13,12 @@ import sys
 
 
 SCOPES = ("llm", "w4")
+# List ordinary reader guides explicitly. New paths keep the full test suite.
+LIGHTWEIGHT_DOCS = {
+    "README.md", "CONTRIBUTING.md", "docs/INDEX.md",
+    "docs/guide/01-编译器概念入门.md", "docs/guide/03-指标解读指南.md",
+    "docs/guide/04-故障排除FAQ.md",
+}
 SHARED_PATHS = (".github/workflows/**", "scripts/ci_*", "scripts/summarize_ci.py", "tests/test_ci_*")
 SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,12 +97,14 @@ def detect_scopes(root: Path, event_name: str, event_path: Path | None,
     if event_name not in {"pull_request", "push", "schedule", "workflow_dispatch"}:
         raise ValueError("unsupported or missing GitHub event name")
     if event_name != "pull_request":
-        return dict.fromkeys(SCOPES, False), 0
+        return dict.fromkeys((*SCOPES, "docs_only"), False), 0
     if event_path is None:
         raise ValueError("GITHUB_EVENT_PATH is required for pull requests")
     base, head = pr_commits(event_path)
     paths = changed_paths(root, base, head)
-    return select_scopes(config, paths), len(paths)
+    selected = select_scopes(config, paths)
+    selected["docs_only"] = bool(paths) and not any(selected.values()) and LIGHTWEIGHT_DOCS.issuperset(paths)
+    return selected, len(paths)
 
 
 def main() -> int:
@@ -109,7 +117,7 @@ def main() -> int:
         destination = os.environ.get("GITHUB_OUTPUT")
         if not destination:
             raise ValueError("GITHUB_OUTPUT is required")
-        lines = "".join(f"{name}={str(scopes[name]).lower()}\n" for name in SCOPES)
+        lines = "".join(f"{name}={str(selected).lower()}\n" for name, selected in scopes.items())
         with open(destination, "a", encoding="utf-8") as stream:
             stream.write(lines)
         print(f"Changed path count: {count}")

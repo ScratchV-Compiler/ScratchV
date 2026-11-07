@@ -1109,6 +1109,13 @@ def parse_args(argv=None):
         action="store_true",
         help="Return exit code 1 when one or more selected cases fail.",
     )
+    parser.add_argument(
+        "--require-category",
+        action="append",
+        default=[],
+        metavar="CATEGORY",
+        help="Require this category to be present and all its selected cases to pass; repeatable.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1433,7 +1440,22 @@ def main(argv=None):
         selection_filter=args.name_filter,
     )
     print(f"Metadata written to {metadata_path}")
-    return 1 if args.fail_on_test_failure and failed else 0
+    required_failed = False
+    for category in sorted({name.lower() for name in args.require_category}):
+        category_results = [
+            item for item in results if item["category"].lower() == category
+        ]
+        if not category_results:
+            print(f"Required category missing: {category}")
+            required_failed = True
+        else:
+            failed_cases = [
+                item["name"] for item in category_results if item["status"] != "PASS"
+            ]
+            if failed_cases:
+                print(f"Required category failed: {category}: {', '.join(failed_cases)}")
+                required_failed = True
+    return 1 if required_failed or (args.fail_on_test_failure and failed) else 0
 
 
 if __name__ == "__main__":

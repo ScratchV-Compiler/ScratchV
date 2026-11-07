@@ -350,11 +350,38 @@ def test_make_and_ci_use_only_the_unified_peephole_html():
     assert "peephole_compare.html" not in makefile
     assert "peephole_dsl_compare.html" not in makefile
     assert "cnn_peephole_compare.html" not in makefile
-    assert "make -s ci-peephole" in workflow
+    assert "make -s bench-peephole" in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert "name: peephole-benchmark-report" in workflow
     assert "benchmark_reports/peephole_benchmark.html" in workflow
     assert "if-no-files-found: error" in workflow
+
+    # Exercise Make's dependency expansion: CI measurements contain no pytest
+    # or CLI smoke; the independent local target still runs both first.
+    import subprocess
+
+    measured = subprocess.run(
+        ["make", "-n", "-s", "bench-peephole", "PY=python3"],
+        cwd=root, capture_output=True, text=True, check=True,
+    ).stdout
+    standalone = subprocess.run(
+        ["make", "-n", "-s", "ci-peephole", "PY=python3"],
+        cwd=root, capture_output=True, text=True, check=True,
+    ).stdout
+    assert "pytest" not in measured and "-m scratchv.backend.asm_peephole" not in measured
+    assert "pytest tests/test_asm_peephole" in standalone
+    assert "-m scratchv.backend.asm_peephole --list-rules" in standalone
+    for script in (
+        "bench_asm_peephole.py", "compare_peephole.py",
+        "compare_peephole_cnn.py",
+    ):
+        command = f"python3 benchmarks/{script}"
+        assert measured.count(command) == standalone.count(command) == 1
+    assert measured.count("python3 benchmarks/compare_peephole_html.py") == 2
+    assert standalone.count("python3 benchmarks/compare_peephole_html.py") == 2
+    assert "--sizes 1 2 100 --fusion-ratio 0.3 --repeats 2" in measured
+    assert "--repeats 2 --output-dir benchmark_reports" in measured
+    assert standalone.index("pytest") < standalone.index("python3 benchmarks/bench_asm_peephole.py")
 
 
 def test_unified_summary_contains_dynamic_sections_and_case_details():

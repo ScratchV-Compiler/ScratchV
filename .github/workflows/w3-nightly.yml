@@ -19,6 +19,7 @@ jobs:
     uses: ./.github/workflows/w3-full-numeric.yml
     with:
       case: all
+      preparation_runs_regressions: true
   acceptance:
     if: ${{ always() && (github.event_name == 'workflow_dispatch' || vars.W3_NIGHTLY_ENABLED == 'true') }}
     needs: [preparation, full-numeric]

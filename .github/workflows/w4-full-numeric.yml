@@ -25,6 +25,11 @@ on:
           - changed_padding
   workflow_call:
     inputs:
+      ci_covers_generic_regressions:
+        description: Caller requires its generic test job to pass; deduplicate pure tests only on ordinary PRs
+        type: boolean
+        required: false
+        default: false
       run_w5:
         description: Explicit manual W5-only generation from an existing dispatch entry
         type: boolean
@@ -80,12 +85,20 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py3.12-w4-unit-${{ hashFiles('pyproject.toml', 'requirements/*.txt') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-w4-unit-
       - name: Install fixed regression dependencies and tools
         run: |
           set -euo pipefail
           mkdir -p output/w4-unit
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y qemu-system-misc
+          if ! command -v qemu-system-riscv64 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y qemu-system-misc
+          fi
           python -m pip install numpy==2.2.6 onnx==1.18.0 onnxruntime==1.22.1 protobuf==5.29.5 pytest==9.1.1 PyYAML==6.0.3 ziglang==0.14.1
           python -m pip install --no-deps -e .
           python -m pip check
@@ -101,11 +114,21 @@ jobs:
           } > output/w4-unit/tools.txt
       - name: Run ABI, streaming bundle, runner and actual QEMU tests
         id: unit_tests
+        env:
+          CI_COVERS_GENERIC_REGRESSIONS: ${{ inputs.ci_covers_generic_regressions }}
         run: |
           set -euo pipefail
-          python -B -X utf8 -m pytest \
-            tests/test_w1_qwen3_export.py tests/test_llm_inputs.py \
-            tests/test_w2_runtime_metadata.py tests/test_w3_full_gate.py \
+          # The required CI.test job owns these pure tests on delegated PRs.
+          # Standalone callers and manual/scheduled runs still execute them here.
+          generic_tests=(
+            tests/test_llm_inputs.py tests/test_w2_runtime_metadata.py
+            tests/test_w4_workflows.py tests/test_w4_ci_summary.py
+          )
+          if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && "${CI_COVERS_GENERIC_REGRESSIONS:-false}" == "true" ]]; then
+            generic_tests=()
+          fi
+          python -B -X utf8 -m pytest "${generic_tests[@]}" \
+            tests/test_w1_qwen3_export.py tests/test_w3_full_gate.py \
             tests/test_w3_atomic_text.py \
             tests/test_licm_safety.py tests/test_optimizer_numeric_semantics.py \
             tests/test_tensor_boundary_contracts.py tests/test_tensor_return_contract.py \
@@ -121,7 +144,6 @@ jobs:
             tests/test_riscv_weight_transport.py \
             tests/test_qemu_generation.py::test_real_qemu_multitoken_reuse_numerics_timeout_and_cancel \
             tests/test_riscv_mean_policy.py tests/test_riscv_nonlinear_policy.py \
-            tests/test_w4_workflows.py tests/test_w4_ci_summary.py \
             -q -p no:cacheprovider --basetemp output/w4-unit/pytest \
             --junitxml output/w4-unit/tests.xml
           python - <<'PY'
@@ -196,6 +218,8 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Validate case and record available Linux resources
         run: |
           set -euo pipefail
@@ -232,11 +256,12 @@ jobs:
         timeout-minutes: 20
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y qemu-system-misc time
-          python -m pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install -r requirements/qwen3-small-probe.txt PyYAML==6.0.3 ziglang==0.14.1
-          python -m pip install -e .
+          if ! command -v qemu-system-riscv64 >/dev/null || [[ ! -x /usr/bin/time ]]; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends -y qemu-system-misc time
+          fi
+          python -m pip install -e ".[llm-deploy]"
+          python -c "import torch; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
           python -m pip check
           python -m pip freeze > output/w4-ci/dependencies.txt
           zig_dir=$(python -c 'from pathlib import Path; import ziglang; print(Path(ziglang.__file__).parent)')

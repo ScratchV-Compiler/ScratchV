@@ -21,7 +21,9 @@ POLICIES = {
 
 
 @pytest.fixture
-def gate():
+def gate(tmp_path, monkeypatch):
+    # Failure cases must never append simulated results to the real Actions page.
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
     spec = spec_from_file_location("w5_ci_gate_tests", ROOT / "scripts/check_w5_ci.py")
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -188,15 +190,19 @@ def test_fma_summary_cannot_mask_incomplete_or_failing_rows(gate, report, refere
         gate.validate_report(report, reference)
 
 
-@pytest.mark.parametrize("exit_text", ["0\n", "130\n", ""])
-@pytest.mark.parametrize("log_text", [
-    pytest.param(None, id="legacy-no-log-check"),
-    pytest.param("0\n", id="log-success"),
-    pytest.param("1\n", id="log-failure"),
-    pytest.param("", id="log-empty"),
-    pytest.param("invalid\n", id="log-invalid"),
-    pytest.param("missing", id="log-missing"),
-    pytest.param("directory", id="log-unreadable"),
+# A failed generator stops before log inspection. Check each log condition with
+# a successful generator, plus generator failures and one simultaneous failure.
+@pytest.mark.parametrize("exit_text,log_text", [
+    pytest.param("0\n", None, id="legacy-no-log-check"),
+    pytest.param("0\n", "0\n", id="log-success"),
+    pytest.param("0\n", "1\n", id="log-failure"),
+    pytest.param("0\n", "", id="log-empty"),
+    pytest.param("0\n", "invalid\n", id="log-invalid"),
+    pytest.param("0\n", "missing", id="log-missing"),
+    pytest.param("0\n", "directory", id="log-unreadable"),
+    pytest.param("130\n", "0\n", id="generation-failure"),
+    pytest.param("", "0\n", id="generation-empty"),
+    pytest.param("130\n", "1\n", id="generation-and-log-failure"),
 ])
 def test_cli_checks_real_exit_code_and_writes_status(gate, report, tmp_path, monkeypatch, exit_text, log_text):
     report_path = tmp_path / "report.json"
@@ -224,6 +230,12 @@ def test_cli_checks_real_exit_code_and_writes_status(gate, report, tmp_path, mon
     assert result["status"] in summary.read_text()
     if exit_text == "0\n" and log_text in ("1\n", "", "invalid\n"):
         assert "Log capture process" in result["error"]
+    if exit_text != "0\n":
+        assert "Generation process did not exit successfully" in result["error"]
+    elif log_text == "missing":
+        assert result["error"].startswith("FileNotFoundError:")
+    elif log_text == "directory":
+        assert result["error"].startswith("IsADirectoryError:")
     if expected:
         assert "24/24 numeric steps" not in summary.read_text()
 
@@ -236,6 +248,9 @@ def test_missing_run_report_produces_failure_artifact(gate, tmp_path):
                       "--exit-code-file", str(exit_path), "--output", str(output)]) == 1
     result = json.loads(output.read_text())
     assert result["status"] == "FAIL" and result["passed"] is False
+    summary = (tmp_path / "summary.md").read_text()
+    assert "W5 generation FAIL" in summary
+    assert "FileNotFoundError:" in summary and "missing.json" in summary
 
 
 @pytest.mark.parametrize("form", ["cores", "harts", "both", "mixed"])

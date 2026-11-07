@@ -20,6 +20,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install ScratchV and benchmark dependencies
         run: |
@@ -29,16 +31,15 @@ jobs:
       - name: Verify Topic 06 integration contracts
         run: python -m pytest tests/topic06/test_integration.py -q
 
-      - name: Run supported correctness gates
+      - name: Run all cases once and check supported categories
+        id: benchmark
         run: |
-          python scripts/run_topic06_benchmarks.py --category activation --fail-on-test-failure
-          python scripts/run_topic06_benchmarks.py --category elementwise --fail-on-test-failure
-          python scripts/run_topic06_benchmarks.py --category loop --fail-on-test-failure
+          python scripts/run_topic06_benchmarks.py \
+            --require-category activation --require-category elementwise --require-category loop
 
       - name: Generate full diagnostic benchmark report
-        run: |
-          python scripts/run_topic06_benchmarks.py
-          python scripts/generate_topic06_report.py --full-report
+        if: ${{ !cancelled() && (steps.benchmark.outcome == 'success' || steps.benchmark.outcome == 'failure') }}
+        run: python scripts/generate_topic06_report.py --full-report
 
       - name: Publish benchmark summary
         if: always()
