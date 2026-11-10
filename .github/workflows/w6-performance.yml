@@ -1,0 +1,130 @@
+name: W6 performance and numeric checks
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "small: Dense and Attention; full: also measure LM Head and full_seed_0"
+        type: choice
+        options: [small, full]
+        default: small
+  schedule:
+    - cron: "17 21 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: w6-performance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    if: github.event_name == 'workflow_dispatch' || vars.W6_NIGHTLY_ENABLED == 'true'
+    runs-on: ${{ vars.W6_PERF_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 240
+    env:
+      PIP_NO_CACHE_DIR: "1"
+      W6_MODE: ${{ github.event_name == 'schedule' && 'full' || inputs.mode }}
+      W6_ROOT: output/w6-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Check available CPUs, RAM and disk
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          mkdir -p output
+          mkdir "$W6_ROOT"
+          python - <<'PY' | tee "$W6_ROOT/runner.txt"
+          import os, platform, shutil
+          from pathlib import Path
+          mode = os.environ["W6_MODE"]
+          if mode not in ("small", "full"):
+              raise SystemExit("Unsupported W6 mode")
+          cpus = len(os.sched_getaffinity(0))
+          available = next(int(line.split()[1]) for line in Path("/proc/meminfo").read_text().splitlines()
+                           if line.startswith("MemAvailable:")) / 2**20
+          free = shutil.disk_usage(".").free / 2**30
+          # Full local footprint, MiB: model 2298, LM input 744, small graphs 176,
+          # LM runs 1812, two builds 4636, three outputs 900, transient RAM image 2274,
+          # Python 1688 and Zig cache 40. Allow room for installation / download.
+          ram, disk = (8, 18) if mode == "full" else (2, 2)
+          print(f"Available: {cpus} CPU(s), {available:.2f} GiB RAM, {free:.2f} GiB disk.")
+          print(f"W6 {mode} requires 4 available CPUs, {ram} GiB RAM, {disk} GiB disk.")
+          distro = platform.freedesktop_os_release()
+          if (platform.machine() != "x86_64" or distro["ID"] != "ubuntu" or distro["VERSION_ID"] != "24.04"
+                  or cpus < 4 or available < ram or free < disk):
+              reason = (f"W6 {mode} requires Ubuntu 24.04 x64, 4 CPUs, {ram} GiB available RAM and {disk} GiB free disk. "
+                        f"Runner has {distro['PRETTY_NAME']} {platform.machine()}, {cpus} CPUs, "
+                        f"{available:.2f} GiB RAM and {free:.2f} GiB free disk. "
+                        "Select a suitable runner with W6_PERF_RUNNER.")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+                  print(reason, file=summary)
+              raise SystemExit(reason)
+          PY
+        shell: bash
+      - name: Install the W4-compatible QEMU and Python tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y qemu-system-misc
+          if [[ "$W6_MODE" == full ]]; then
+            python -m pip install -e '.[llm-deploy]'
+          else
+            python -m pip install -e . numpy==2.2.6 onnx==1.18.0 onnxruntime==1.22.1 protobuf==5.29.5 ziglang==0.14.1
+          fi
+          python -m pip check
+          python --version
+          python -m ziglang version
+          qemu-system-riscv64 --version
+      - name: Measure Dense and Attention
+        run: python -B -u -m probes.w6_performance.run --compare-candidates --output-dir "$W6_ROOT/matmul"
+      - name: Prepare the shared LM Head weight and ORT reference
+        if: env.W6_MODE == 'full'
+        run: |
+          python -B -u -m probes.w6_performance.prepare_lm_head \
+            --model-dir "$W6_ROOT/model" --output-dir "$W6_ROOT/lm-head-input"
+      - name: Measure small and real-vocabulary LM Head
+        if: env.W6_MODE == 'full'
+        run: |
+          python -B -u -m probes.w6_performance.lm_head \
+            --assets "$W6_ROOT/lm-head-input" --output-dir "$W6_ROOT/lm-head"
+      - name: Measure full_seed_0 with original, LM Head-only and file-backed RAM
+        if: env.W6_MODE == 'full'
+        run: |
+          python -B -u -m probes.w6_performance.full_forward --model-dir "$W6_ROOT/model" \
+            --output-dir "$W6_ROOT/full" --candidate-weight-transport file-backed-ram
+      - name: Check this run's measurements
+        if: always()
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code HEAD --
+          python -B scripts/check_w6_ci.py --run-dir "$W6_ROOT" --commit "$GITHUB_SHA" \
+            --mode "$W6_MODE" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Save measurement reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w6-${{ env.W6_MODE }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.W6_ROOT }}/runner.txt
+            ${{ env.W6_ROOT }}/matmul/result.json
+            ${{ env.W6_ROOT }}/matmul/runs.jsonl
+            ${{ env.W6_ROOT }}/lm-head/result.json
+            ${{ env.W6_ROOT }}/full/comparison.json
+            ${{ env.W6_ROOT }}/full/*/build/report.json
+            ${{ env.W6_ROOT }}/full/*/forward/report.json
+            ${{ env.W6_ROOT }}/full/*/forward/full-resources.json
+            ${{ env.W6_ROOT }}/full/*/forward/full_seed_0/qemu/run.json
+          if-no-files-found: warn
+          retention-days: 14

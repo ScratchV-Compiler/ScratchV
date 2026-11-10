@@ -36,6 +36,7 @@ from .riscv_harts import (
     STARTUP_ASSEMBLY as MULTICORE_STARTUP, CORE_DEFINITIONS, WORKER_SOURCE, UNSET,
     read_cores, resolve_cores, select_cores, validate_cores,
 )
+from .file_ram_transport import boot_weight_overlay, open_ram_image, stage_ram_image, validate_ram_image
 from .weight_transport import (
     stage_transport, validate_transport, remove_transport, save_transport_report,
     refresh_transport_residuals,
@@ -205,10 +206,17 @@ void sv_main(void) {{
 '''
 
 
+def validate_lm_head_policy(value):
+    if not isinstance(value, str) or value not in ("original", "vocab-blocked"):
+        raise ValueError(f"Unsupported LM Head policy: {value!r}")
+    return value
+
+
 def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0, cores=UNSET, harts=UNSET):
     cores = resolve_cores(select_cores(cores, harts=harts, allow_auto=True))
     if artifact.constant_storage != "external":
         raise ValueError("External runtime requires external code generation")
+    lm_head_policy = validate_lm_head_policy(getattr(artifact, "lm_head_policy", "original"))
     mean_policy = getattr(artifact, "mean_policy", "sequential")
     if not isinstance(mean_policy, str) or mean_policy not in ("sequential", "two-four-lane-last-axis"):
         raise ValueError("Unsupported external Mean policy")
@@ -273,7 +281,7 @@ def build_external(artifact, bundle_dir, build_dir, toolchain, *, timeout=600.0,
     evidence = validate_external_elf(build_dir / "model.elf", layout)
     evidence.update(compile_seconds=time.perf_counter() - start, command=command, cores=cores, harts=cores,
                     mean_policy=mean_policy, nonlinear_policy=nonlinear_policy,
-                    matmul_tile=artifact.matmul_tile,
+                    lm_head_policy=lm_head_policy, matmul_tile=artifact.matmul_tile,
                     matmul_rhs_layout=artifact.matmul_rhs_layout,
                     matmul_rhs_panels=list(artifact.matmul_rhs_panels),
                     qemu_workspace_layout=artifact.qemu_workspace_layout,
@@ -632,13 +640,18 @@ class _QemuMemoryMonitor:
         }
 
 
-def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None):
+def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None, qemu_weight_transport="loader"):
     """Run a fresh guest, require completion, stop, dump exact output, then quit.
 
     An optional cancellation callback is observed during UART/QMP waits and
     between transport stages. Raising or returning true unwinds process cleanup.
     Existing event timing remains unchanged without a cancellation callback.
     """
+    if qemu_weight_transport not in ("loader", "file-backed-ram"):
+        raise ValueError("Unknown QEMU weight transport")
+    file_ram = qemu_weight_transport == "file-backed-ram"
+    if file_ram and not sys.platform.startswith("linux"):
+        raise ValueError("file-backed-ram transport requires Linux")
     if cancelled is not None and not callable(cancelled):
         raise TypeError("cancelled must be callable or None")
     _check_cancelled(cancelled)
@@ -647,6 +660,7 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
     cores = select_cores(getattr(executable, "cores", UNSET),
                          harts=getattr(executable, "harts", UNSET))
     built_cores = read_cores(executable.evidence)
+    lm_head_policy = validate_lm_head_policy(executable.evidence.get("lm_head_policy", "original"))
     mean_policy = executable.evidence.get("mean_policy", "sequential")
     if not isinstance(mean_policy, str) or mean_policy not in ("sequential", "two-four-lane-last-axis"):
         raise ValueError("Unsupported executable Mean policy")
@@ -661,6 +675,14 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
     if manifest != executable.manifest:
         raise ValueError("Weight manifest changed after build")
     payload = pack_inputs(executable.inputs, inputs)
+    if file_ram:
+        _, input_bytes = input_layout(executable.inputs)
+        expected_layout = plan_guest_memory(
+            workspace_bytes=executable.layout["regions"]["workspace"]["nbytes"],
+            weight_bytes=manifest["total_bytes"], input_bytes=input_bytes,
+            output_bytes=executable.output.nbytes, cores=cores)
+        if executable.layout != expected_layout:
+            raise ValueError("file-backed-ram requires a canonical guest RAM layout")
     run_dir = Path(run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "inputs.bin").write_bytes(payload or b"\0")
@@ -668,7 +690,8 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     layout = executable.layout
-    command = [executable.toolchain.qemu, "-machine", "virt", "-cpu", "rv64", "-accel",
+    machine = "virt,memory-backend=svram" if file_ram else "virt"
+    command = [executable.toolchain.qemu, "-machine", machine, "-cpu", "rv64", "-accel",
                "tcg" if cores == 1 else "tcg,thread=multi", "-smp", str(cores), "-m", str(layout["memory_mib"]), "-bios", "none", "-display", "none",
                "-monitor", "none", "-serial", "file:uart.bin", "-no-reboot",
                "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off,nodelay=on",
@@ -680,10 +703,13 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
     started = time.perf_counter()
     report = {"passed": False, "status": "FAIL", "command": command, "timeout_s": timeout,
               "cores": cores, "harts": cores, "mean_policy": mean_policy, "nonlinear_policy": nonlinear_policy,
+              "lm_head_policy": lm_head_policy,
               "qemu_workspace_layout": executable.evidence.get("qemu_workspace_layout", "none"),
               "transport": "QMP physical memory dump after guest completion", "guest_completed": False}
     transport_dir = run_dir / "weight-transport"
     report["weight_transport"] = {}
+    report["qemu_weight_transport"] = qemu_weight_transport
+    ram_stream = boot_overlay = None
     qmp, process, job, primary_error, monitor = None, None, None, None, None
     qemu_started, qemu_exited = None, None
     completion = None
@@ -695,12 +721,30 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
             previous_term = signal.getsignal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, _terminate_invocation)
         report["stage"] = "weight_transport"
-        stage_transport(executable.bundle_dir / "weights.bin", manifest, transport_dir,
-                        report["weight_transport"])
-        for row in report["weight_transport"]["files"]:
-            path = str(transport_dir / row["file"]).replace(",", ",,")
-            command += ["-device", f"loader,file={path},addr=0x{layout['weights_base'] + row['offset']:x},force-raw=on"]
-        # Empty bundles intentionally emit no raw loader: QEMU rejects 0-byte files.
+        if file_ram:
+            cancelled_check = (lambda: _check_cancelled(cancelled)) if cancelled is not None else None
+            stage_ram_image(executable.bundle_dir / "weights.bin", manifest, layout,
+                            transport_dir, report["weight_transport"], cancelled_check)
+            ram_stream, _ = open_ram_image(transport_dir, report["weight_transport"])
+            # Inherit the verified read-only file, independent of path replacement.
+            fd = ram_stream.fileno()
+            options["pass_fds"] = (fd,)
+            command += ["-object", f"memory-backend-file,id=svram,size={layout['ram_bytes']},"
+                        f"mem-path=/proc/self/fd/{fd},readonly=on,rom=off,share=off"]
+            boot_overlay = boot_weight_overlay(command, ram_stream, layout, transport_dir,
+                                               report["weight_transport"], timeout, cancelled_check)
+            if boot_overlay is not None:
+                overlay_fd = boot_overlay.fileno()
+                options["pass_fds"] = (fd, overlay_fd)
+                address = report["weight_transport"]["boot_probe"]["restore_address"]
+                command += ["-device", f"loader,file=/proc/self/fd/{overlay_fd},addr={address:#x},force-raw=on"]
+        else:
+            stage_transport(executable.bundle_dir / "weights.bin", manifest, transport_dir,
+                            report["weight_transport"])
+            for row in report["weight_transport"]["files"]:
+                path = str(transport_dir / row["file"]).replace(",", ",,")
+                command += ["-device", f"loader,file={path},addr=0x{layout['weights_base'] + row['offset']:x},force-raw=on"]
+            # Empty bundles intentionally emit no raw loader: QEMU rejects 0-byte files.
         _check_cancelled(cancelled)
         report["stage"] = "qemu"
         deadline = time.monotonic() + timeout
@@ -762,8 +806,9 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
                 raise ValueError("Weight bundle changed during execution")
             _check_cancelled(cancelled)
             report["stage"] = "weight_transport_postcheck"
-            report["weight_transport"]["post_validation_elapsed_s"] = validate_transport(
-                transport_dir, report["weight_transport"])
+            report["weight_transport"]["post_validation_elapsed_s"] = (
+                validate_ram_image(transport_dir, report["weight_transport"], cancelled_check)
+                if file_ram else validate_transport(transport_dir, report["weight_transport"]))
             _check_cancelled(cancelled)
             report.update(passed=True, status="PASS", exit_code=process.returncode,
                           output_sha256=sha256_file(output_path), elf_sha256=executable.evidence["sha256"],
@@ -785,6 +830,10 @@ def run_external(executable, inputs, run_dir, *, timeout=3600.0, cancelled=None)
             except BaseException as exc:
                 cleanup_errors.append(f"{label}: {type(exc).__name__}: {exc}")
 
+        if boot_overlay is not None:
+            cleanup("close sealed weight overlay", boot_overlay.close)
+        if ram_stream is not None:
+            cleanup("close read-only RAM image", ram_stream.close)
         if qmp is not None:
             cleanup("qmp.close", qmp.close)
         if completion is not None:
