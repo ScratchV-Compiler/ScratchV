@@ -129,12 +129,30 @@ def test_another_ci_run_is_not_accepted_as_current_evidence(evidence, monkeypatc
     assert '**PASS**' not in render(evidence)
 
 
-def test_acceptance_needs_no_installed_python_dependencies(evidence):
+@pytest.mark.parametrize('destination', ['stdout', 'summary'])
+def test_acceptance_needs_no_installed_python_dependencies(evidence, monkeypatch, destination):
+    runner_summary = evidence/'runner-summary.md'
+    runner_summary.write_text('Existing runner summary\n', encoding='utf-8')
+    monkeypatch.setenv('GITHUB_STEP_SUMMARY', str(runner_summary))
+    # A child CLI must use its own destination, never the enclosing CI step's.
+    environment = dict(os.environ)
+    environment.pop('GITHUB_STEP_SUMMARY', None)
+    summary = evidence/'summary.md'
+    if destination == 'summary':
+        environment['GITHUB_STEP_SUMMARY'] = str(summary)
     result = subprocess.run([sys.executable, '-S', str(ROOT/'scripts/summarize_w2_ci.py'),
                              '--report-dir', str(evidence)], cwd=evidence,
-                            capture_output=True, text=True, timeout=10)
+                            env=environment, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
-    assert '## KV cache' in result.stdout
+    if destination == 'summary':
+        assert result.stdout == ''
+        text = summary.read_text(encoding='utf-8')
+    else:
+        assert not summary.exists()
+        text = result.stdout
+    assert '## KV cache' in text
+    assert '**PASS**（CI 步骤：success）' in text
+    assert runner_summary.read_text(encoding='utf-8') == 'Existing runner summary\n'
 
 
 def test_workflow_preserves_and_downloads_this_runs_kv_evidence():
