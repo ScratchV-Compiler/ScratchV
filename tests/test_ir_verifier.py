@@ -350,7 +350,7 @@ _SIGNATURE_GROUPS = [
     ((O.STORE,), (2, 2, False, None)),
     ((O.BR, O.ENDFOR), (0, 0, False, None)),
     ((O.BR_IF,), (1, 2, False, None)),
-    ((O.RETURN,), (0, 1, False, None)),
+    ((O.RETURN,), (0, None, False, None)),
 ]
 _EXPECTED_SIGNATURES = {
     opcode: signature for opcodes, signature in _SIGNATURE_GROUPS for opcode in opcodes

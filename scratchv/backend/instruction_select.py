@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Optional
 
-from scratchv.ir.types import Instruction, Function, Program
+from scratchv.ir.types import Instruction, Function, Program, OpCode
 from scratchv.backend.symbols import validate_function_symbol
 from scratchv.backend.machine_types import (
     MachineInstr,
@@ -55,6 +55,11 @@ class InstructionSelector:
 
         Returns flat list of MachineInstrs.
         """
+        if any(len(func.returns) > 1 or any(
+            inst.opcode == OpCode.RETURN and len(inst.operands) > 1
+            for block in func.blocks for inst in block.instructions)
+            for func in self.program.functions):
+            raise ValueError("RISC-V scalar selector does not support multiple return values; use Tensor-C v2")
         self._instructions = []
         self._label_counter = 0
         self._temp_counter = 0

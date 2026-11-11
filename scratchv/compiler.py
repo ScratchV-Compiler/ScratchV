@@ -102,6 +102,9 @@ class CompilerConfig:
     target_isa: str = "rv32im"
     target_abi: str = "ilp32"
     max_tensor_workspace_bytes: int = 256 * 1024 * 1024
+    tensor_constant_storage: str = "inline"
+    tensor_function_name: str | None = None
+    tensor_abi_version: int | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -495,6 +498,13 @@ class CompilerDriver:
                 "allocation": dict(self._last_allocation_stats),
                 "assembly": self._pass_stats(self._assembly_report),
                 **({"instruction_count": instruction_count_stats} if instruction_count_stats is not None else {}),
+                **({"tensor": {
+                    "abi_version": self.tensor_artifact.abi_version,
+                    "function_name": self.tensor_artifact.function_name,
+                    "workspace_bytes": self.tensor_artifact.workspace_bytes,
+                    "outputs": [{"name": spec.name, "dtype": spec.dtype.value, "shape": list(spec.shape)}
+                                for spec in self.tensor_artifact.outputs],
+                }} if self.tensor_artifact is not None else {}),
                 **schedule_stats,
             },
             warnings=warnings,
@@ -615,9 +625,17 @@ class CompilerDriver:
             self.tensor_artifact = TensorCCodegen(
                 program, self.initializers,
                 max_workspace_bytes=self.config.max_tensor_workspace_bytes,
+                constant_storage=self.config.tensor_constant_storage,
+                function_name=self.config.tensor_function_name,
+                abi_version=self.config.tensor_abi_version,
             ).generate()
             return self.tensor_artifact.source
 
+        if any(len(function.returns) > 1 or any(
+            instruction.opcode.value == 'return' and len(instruction.operands) > 1
+            for block in function.blocks for instruction in block.instructions)
+            for function in program.functions):
+            raise ValueError("Legacy backends do not support multiple return values; use Tensor-C v2")
         # The legacy selectors operate on scalar registers. Do not silently
         # turn a tensor MatMul into a scalar MUL (or tensor softmax into a move).
         values = list(program.global_values)

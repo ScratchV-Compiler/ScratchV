@@ -80,7 +80,7 @@ def test_all_named_checkpoints_roundtrip_with_one_ir_run_and_independent_ort(tmp
 
     monkeypatch.setattr(IRInterpreter, "run", count)
     result = IRInterpreter(program).run(feed, initializers=parser.initializers)
-    checkpoints = unpack_trace(result.return_value, schema)
+    checkpoints = unpack_trace(result.return_values[0], schema)
     assert calls == [1]
     assert result.executed_steps > len(model.graph.node)
     assert compare_outputs(checkpoints, references, list(references))["passed"]

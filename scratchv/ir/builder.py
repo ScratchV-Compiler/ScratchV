@@ -288,6 +288,10 @@ class IRBuilder:
             cmp_op=operator,
         )
 
+    def ret_many(self, values: list[Value] | tuple[Value, ...]) -> Instruction:
+        """Return ordered independent tensors; ret() retains its scalar API."""
+        return self._emit(OpCode.RETURN, operands=list(values))
+
     def ret(self, val: Value | None = None) -> Instruction:
         operands = [val] if val else []
         return self._emit(OpCode.RETURN, operands=operands)

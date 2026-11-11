@@ -111,7 +111,7 @@ def test_non_instruction_diagnostics_have_honest_context(kind):
     elif kind == "param":
         function.params = [Value("input", "f32")]
     elif kind == "returns":
-        function.returns = [Value("a"), Value("b")]
+        function.returns = [Value("a", "f32"), Value("b")]
     if kind != "no-entry":
         block = function.new_block("entry")
         if kind != "empty":
@@ -122,7 +122,7 @@ def test_non_instruction_diagnostics_have_honest_context(kind):
     assert "instruction=" not in rendered
     assert "-->" in rendered and "note:" in rendered
     expected = {"global": "global #0", "param": "param #0", "empty": "<empty block>",
-                "no-entry": "<no basic blocks>", "returns": "return signature:"}[kind]
+                "no-entry": "<no basic blocks>", "returns": "return #0"}[kind]
     assert expected in rendered
 
 

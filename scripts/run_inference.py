@@ -42,6 +42,10 @@ def parse_args(argv=None):
     source = cli.add_mutually_exclusive_group(required=True)
     source.add_argument("--model", type=Path, help="Static ONNX graph; compile once")
     source.add_argument("--reuse-build", type=Path, help="Existing W4/W5 executable.json")
+    cli.add_argument("--kv-cache", action="store_true", help="Resident KV session: --model is Prefill ONNX")
+    cli.add_argument("--decode-model", type=Path, help="Static Decode ONNX (requires --kv-cache)")
+    cli.add_argument("--kv-capacity", type=int, choices=(256,), default=256,
+                     help="KV ABI v1 capacity (256)")
     cli.add_argument("--tokenizer-dir", type=Path, required=True)
     cli.add_argument("--output-dir", type=Path, required=True, help="New output directory")
     cli.add_argument("--mode", choices=("raw", "chat"), default="raw")
@@ -81,6 +85,15 @@ def parse_args(argv=None):
         cli.error("nondefault tile/RHS layout requires --matmul-policy blocked_fma")
     if args.reuse_build and args.cc:
         cli.error("--cc cannot change a reused build")
+    if args.kv_cache:
+        if args.mode != "raw" or args.reference_suite:
+            cli.error("--kv-cache currently supports raw completion only")
+        if args.model and not args.decode_model:
+            cli.error("--kv-cache with --model requires --decode-model")
+        if args.reuse_build and args.decode_model:
+            cli.error("--decode-model cannot change a reused KV build")
+    elif args.decode_model:
+        cli.error("--decode-model requires --kv-cache")
     return args
 
 
@@ -201,8 +214,120 @@ def compare_step(actual, expected, valid_length, vocab_size):
             "elements_compared": int(actual.size)}
 
 
+def cached_main(args):
+    from scratchv.frontend.onnx_parser import ONNXParser
+    from scratchv.runtime.cached_generation import generate_cached
+    from scratchv.runtime.kv_cache import KVCacheLayout, cached_logits
+    from scratchv.runtime.llm_inputs import prepare_inputs
+    from scratchv.runtime.riscv_session import (
+        build_session, QemuSession, save_session_executable, load_session_executable)
+    out = args.output_dir.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    cores = resolve_cores(args.cores if args.cores == 'auto' else int(args.cores))
+    started = time.perf_counter()
+    report = {'schema_version': 1, 'passed': False, 'status': 'FAIL', 'kv_cache': True,
+              'mode': 'raw', 'cores': cores, 'capacity': args.kv_capacity,
+              'execution': 'one resident QEMU; one Prefill then single-token Decode',
+              'full_model_gate': 'NOT_RUN', 'numeric_steps': [], 'generation_timings': {}}
+    session = None
+    try:
+        tokenizer = Qwen3Tokenizer.from_directory(args.tokenizer_dir)
+        if args.reuse_build:
+            prior = json.loads(args.reuse_build.with_name('report.json').read_text())
+            if prior.get('executable_sha256') != sha256_file(args.reuse_build):
+                raise ValueError('Reused KV executable metadata changed')
+            exe = load_session_executable(args.reuse_build)
+            if exe.cores != cores:
+                raise ValueError('Reused KV core count differs from requested configuration')
+            policies = {'matmul_policy': args.matmul_policy, 'matmul_tile': args.matmul_tile,
+                        'matmul_rhs_layout': args.matmul_rhs_layout, 'mean_policy': args.mean_policy,
+                        'nonlinear_policy': args.nonlinear_policy}
+            if exe.evidence.get('policies') != policies:
+                raise ValueError('Reused KV arithmetic policies differ from requested configuration')
+            if args.qemu:
+                exe = replace(exe, toolchain=discover_toolchain(exe.toolchain.cc, args.qemu))
+        else:
+            artifacts = []
+            for mode, path in (('prefill', args.model), ('decode', args.decode_model)):
+                parser = ONNXParser()
+                program = parser.parse(str(path.resolve()), mmap_external_data=True)
+                artifacts.append(TensorCCodegen(program, parser.initializers,
+                    constant_storage='external', abi_version=2, function_name=f'sv_{mode}_v2',
+                    max_constant_bytes=3*1024**3, max_workspace_bytes=1024**3, kernel_calls=True,
+                    matmul_policy=args.matmul_policy, matmul_tile=args.matmul_tile,
+                    matmul_rhs_layout=args.matmul_rhs_layout, mean_policy=args.mean_policy,
+                    nonlinear_policy=args.nonlinear_policy).generate())
+            outputs = artifacts[0].outputs
+            if len(outputs)<3 or len(outputs)%2!=1 or len(outputs[1].shape)!=4:
+                raise ValueError('Invalid KV output signature')
+            cache = KVCacheLayout((len(outputs)-1)//2, outputs[1].shape[1], outputs[1].shape[3],
+                                  outputs[0].shape[2], pad_token_id=tokenizer.pad_token_id)
+            exe = build_session(*artifacts, cache, out/'build', discover_toolchain(args.cc,args.qemu),
+                                cores=cores, timeout=args.build_timeout)
+            exe = replace(exe, evidence={**exe.evidence, 'policies': {
+                'matmul_policy': args.matmul_policy, 'matmul_tile': args.matmul_tile,
+                'matmul_rhs_layout': args.matmul_rhs_layout, 'mean_policy': args.mean_policy,
+                'nonlinear_policy': args.nonlinear_policy}})
+        if (exe.cache_layout.vocab_size != tokenizer.model_vocab_size
+                or exe.cache_layout.pad_token_id != tokenizer.pad_token_id):
+            raise ValueError('Tokenizer differs from the KV executable vocabulary/padding')
+        report['build'] = exe.evidence
+        report['executable_sha256'] = save_session_executable(exe, out)
+        if args.build_only:
+            report.update(status='BUILD_ONLY')
+            return 0
+        oracle = oracle_session(args.verify_onnx) if args.verify_onnx else None
+        deadline = time.monotonic()+args.total_timeout
+        session = QemuSession(exe, out/'session', timeout=args.timeout, deadline=deadline)
+        class CheckedSession:
+            def reset(self):
+                self.history = []
+                return session.reset()
+            def check(self, actual):
+                if oracle is not None:
+                    prepared = prepare_inputs(self.history,pad_token_id=tokenizer.pad_token_id,
+                                              vocab_size=tokenizer.model_vocab_size)
+                    expected = oracle.run(None,prepared.as_feed())[0]
+                    expected = last_valid_logits(expected,len(self.history),vocab_size=tokenizer.model_vocab_size)
+                    observed = cached_logits(actual,tokenizer.model_vocab_size)
+                    error = float(np.max(np.abs(observed.astype(np.float64)-expected.astype(np.float64))))
+                    equal = greedy_token(observed)==greedy_token(expected)
+                    report['numeric_steps'].append(dict(max_abs_error=error,greedy_equal=equal,
+                                                         valid_length=len(self.history)))
+                    if error>ATOL or not equal:
+                        raise ValueError('Cached logits differ from the uncached ORT oracle')
+                return actual
+            def prefill(self, ids):
+                self.history = list(ids)
+                return self.check(session.prefill(ids))
+            def decode(self, token):
+                self.history.append(token)
+                return self.check(session.decode(token))
+        with session:
+            result = generate_cached(args.prompt,tokenizer=tokenizer,session=CheckedSession(),
+                max_new_tokens=8 if args.max_new_tokens is None else args.max_new_tokens,
+                timeout_seconds=max(0,deadline-time.monotonic()),timings=report['generation_timings'])
+        report['result'] = asdict(result)
+        report.update(passed=True,status='PASS')
+        print(result.generated_text)
+        return 0
+    except BaseException as exc:
+        report['error'] = f'{type(exc).__name__}: {exc}'
+        if isinstance(exc, KeyboardInterrupt):
+            return 130
+        return 1
+    finally:
+        if session is not None:
+            report['session'] = session.report
+            report['runs'] = session.runs
+        report['elapsed_seconds'] = time.perf_counter()-started
+        atomic_text(out/'report.json',json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False)+'\n')
+
+
 def main(argv=None):
     args = parse_args(argv)
+    if args.kv_cache:
+        return cached_main(args)
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=False)
     requested = args.cores if args.cores == "auto" else int(args.cores)

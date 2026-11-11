@@ -38,7 +38,7 @@ def test_ir_fault_is_failed_and_actual_trace_is_preserved(tmp_path, monkeypatch,
         assert kwargs["collect_memory_stats"] is True
         if fault == "exception":
             raise RuntimeError("injected execution failure")
-        return SimpleNamespace(return_value=actual.ravel() if kind == "diagnostic" else actual,
+        return SimpleNamespace(return_values=(actual.ravel(),), return_value=actual,
                                executed_steps=5, memory_stats={"retained_values": 2})
 
     monkeypatch.setattr(IRInterpreter, "run", execute)

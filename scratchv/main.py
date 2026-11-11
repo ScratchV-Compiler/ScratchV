@@ -54,6 +54,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Maximum static workspace for tensor-c (default: 256 MiB)",
     )
 
+    parser.add_argument("--tensor-constant-storage", choices=("inline", "external"), default="inline")
+    parser.add_argument("--tensor-function-name", help="Validated Tensor-C entry point")
+    parser.add_argument("--tensor-abi-version", type=int, choices=(1, 2), help="Multiple results require 2")
+
     # ── Register allocation ─────────────────────────────────────────────
     parser.add_argument(
         "--reg-alloc",
@@ -212,6 +216,9 @@ def args_to_config(args: argparse.Namespace) -> CompilerConfig:
         verify=args.verify,
         verify_ir=args.verify_ir,
         max_tensor_workspace_bytes=args.tensor_workspace_mib * 1024 * 1024,
+        tensor_constant_storage=args.tensor_constant_storage,
+        tensor_function_name=args.tensor_function_name,
+        tensor_abi_version=args.tensor_abi_version,
         rtol=args.rtol,
         atol=args.atol,
         use_logger=args.log_level is not None,
@@ -350,6 +357,16 @@ def main(argv: list[str] | None = None) -> int:
             print(render_ir_error(issue, stream=sys.stderr), file=sys.stderr)
 
     if result.success:
+        if driver.tensor_artifact is not None and driver.tensor_artifact.constant_storage == "external":
+            from scratchv.runtime.weight_bundle import write_weight_bundle
+            bundle_path = Path(result.output_path).with_suffix(".weights")
+            try:
+                write_weight_bundle(driver.tensor_artifact.external_weights,
+                                    driver.tensor_artifact.external_initializers, bundle_path)
+                Path(result.output_path + ".json").write_text(json.dumps(result.stats["tensor"], indent=2) + "\n")
+            except (OSError, ValueError) as exc:
+                print(f"Error: failed to package external weights: {exc}", file=sys.stderr)
+                return 1
         if args.emit_register_map:
             register_map_path = Path(args.emit_register_map)
             try:

@@ -301,6 +301,50 @@ jobs:
             tests/test_w2_runtime_reporting.py tests/test_w2_runtime_model.py \
             -q --junit-xml=output/w2-runtime-tests.xml
 
+      - name: KV cache unit and resident QEMU gates
+        id: kv_cache
+        timeout-minutes: 10
+        env:
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          "$QWEN3_PY" -m pytest tests/test_kv*.py tests/llm-deploy/w6 -q \
+            --junit-xml=output/w6-kv-tests.xml
+          "$QWEN3_PY" probes/w6_kv_cache/run.py \
+            --output-dir output/w6-kv-cache --qemu --cores 1
+
+      - name: Record KV cache execution outcome
+        if: always()
+        env:
+          KV_OUTCOME: ${{ steps.kv_cache.outcome }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path('output').mkdir(exist_ok=True)
+          record = {'schema': 'scratchv.kv-ci-outcome.v1', 'outcome': os.environ['KV_OUTCOME'],
+                    'commit': os.environ['GITHUB_SHA'], 'run_id': os.environ['GITHUB_RUN_ID'],
+                    'run_attempt': os.environ['GITHUB_RUN_ATTEMPT']}
+          Path('output/w6-kv-status.json').write_text(json.dumps(record) + '\n', encoding='utf-8')
+          PY
+
+      - name: Upload KV cache evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: w6-kv-cache
+          path: |
+            output/w6-kv-status.json
+            output/w6-kv-tests.xml
+            output/w6-kv-cache/export.json
+            output/w6-kv-cache/validation.json
+            output/w6-kv-cache/qemu-1/session.json
+            output/w6-kv-cache/build-1/build.json
+            output/w6-kv-cache/build-1/layout.json
+          retention-days: 14
+
       - name: "unit:runtime"
         id: runtime
         timeout-minutes: 10
@@ -680,10 +724,17 @@ jobs:
         with:
           name: qwen3-full-frontend-parse-output
           path: output/qwen3-parse
+      - name: Download KV cache reports
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: w6-kv-cache
+          path: output
       - name: List downloaded W2 reports
         if: always()
         run: find output -name report.json -print 2>/dev/null | sort || true
-      - name: Summarize W2 operators, precision and timing
+      - name: Summarize W2 and KV validation
         if: always()
         run: python3 scripts/summarize_w2_ci.py --report-dir output
       - name: Require actual success from every W2 job

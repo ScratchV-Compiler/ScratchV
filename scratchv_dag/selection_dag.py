@@ -264,6 +264,8 @@ class DAGBuilder:
             cond, true_t, false_t, chain=self._chain)
 
     def _build_return(self, instr: Any) -> None:
+        if len(instr.operands) > 1:
+            raise ValueError("DAG scalar backend does not support multiple return values; use Tensor-C v2")
         vals = [self._get_val(instr.operands[0])] if instr.operands else None
         self._chain = self.dag.get_ret(vals, chain=self._chain)
 

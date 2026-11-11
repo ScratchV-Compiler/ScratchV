@@ -5,7 +5,8 @@ one place that answers what the W2 summary is for:
 
 * which operators each layer supports and which were exercised this run;
 * how far the numbers are from ORT and the independent NumPy references;
-* how long the whole chain takes, per model and in total.
+* how long the whole chain takes, per model and in total;
+* this run's separate small-model KV cache status, precision, timing and memory.
 
 Everything else belongs in the step log, not on the Actions page. Reporting
 never substitutes for, or changes, a probe's exit code.
@@ -31,6 +32,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from probes.numeric_summary import METRIC_EXPLANATION, compact_metric_table
+from scripts.summarize_kv_ci import render as render_kv_summary
 
 # Inputs are bound separately from the much smaller Actions page budget.
 MAX_REPORT_BYTES = 64 * 1024 * 1024
@@ -373,6 +375,7 @@ def timing_table(rows):
 
 
 def render(directory):
+    kv_summary = render_kv_summary(directory)
     loaded = {name: load_report(directory, name) for name in DIRECTORIES}
     reports = {name: report for name, (report, _) in loaded.items()}
     try:
@@ -382,18 +385,19 @@ def render(directory):
     except (TypeError, KeyError, ValueError, AttributeError, RecursionError):
         # A malformed report must not turn into an apparently complete page.
         return ("## W2 测试项\n\n**报告结构不符** — 无法渲染算子、精度与耗时；"
-                "请检查各 W2 job 的日志与产物。\n")
+                "请检查各 W2 job 的日志与产物。\n\n" + kv_summary)
 
     lines = ["## W2 测试项\n\n", "### 算子支持\n\n", *operators,
              "\n### 精度\n\n", *precision_legend(), precision,
              "\n\nIR 最终输出一行使用只输出最终结果的模型，不用额外输出中间值的版本代替。\n\n",
              METRIC_EXPLANATION, "\n\n",
-             "### 耗时\n\n", *timing]
+             "### 耗时\n\n", *timing, "\n", kv_summary]
     rendered = "".join(lines)
     if len(rendered.encode("utf-8")) > MAX_SUMMARY_BYTES:
-        return ("".join(lines[:1]) +
-                "内容超出 Actions 页面 64 KiB 的 summary budget，此处省略；"
-                "完整证据见各 W2 job 的产物。\n")
+        fallback = ("".join(lines[:1]) +
+                    "内容超出 Actions 页面 64 KiB 的 summary budget，此处省略；"
+                    "完整证据见各 W2 job 的产物。\n")
+        return fallback + kv_summary if len((fallback + kv_summary).encode('utf-8')) <= MAX_SUMMARY_BYTES else fallback
     return rendered
 
 

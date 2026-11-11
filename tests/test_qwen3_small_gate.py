@@ -49,9 +49,9 @@ def test_corrupted_ir_fails_even_when_other_execution_path_passes(tmp_path, monk
 
     def corrupted(self, *args, **kwargs):
         result = original(self, *args, **kwargs)
-        ordinary = result.return_value.ndim == 3
+        ordinary = result.return_values[0].ndim == 3
         if ordinary == (target == "ordinary"):
-            result.return_value.flat[0] += 0.25
+            result.return_values[0].flat[0] += 0.25
         return result
 
     monkeypatch.setattr(IRInterpreter, "run", corrupted)

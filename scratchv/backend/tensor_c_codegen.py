@@ -34,8 +34,9 @@ unaffected. Neither explicit policy guarantees every ORT build's exact bits.
 from __future__ import annotations
 
 from copy import copy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 import math
+import re
 from typing import Mapping
 
 import numpy as np
@@ -77,11 +78,10 @@ class TensorSpec:
         return self.size * self.numpy_dtype.itemsize
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class TensorCArtifact:
     source: str
     inputs: tuple[TensorSpec, ...]
-    output: TensorSpec
     workspace_bytes: int
     constant_bytes: int
     function_name: str = "scratchv_run"
@@ -98,6 +98,29 @@ class TensorCArtifact:
     qemu_workspace_buffers: tuple[tuple[int, int], ...] = ()
     mean_policy: str = "sequential"
     nonlinear_policy: str = "libm"
+    outputs: tuple[TensorSpec, ...] = ()
+    abi_version: int = 1
+
+    def __init__(self, source, inputs, output=None, workspace_bytes=0, constant_bytes=0, **options):
+        # Keep the original five positional arguments and keyword options.
+        # Only the ordered collection is stored, so dataclass replacement and
+        # serialization do not accidentally read the single-result accessor.
+        values = dict(options, source=source, inputs=inputs,
+                      workspace_bytes=workspace_bytes, constant_bytes=constant_bytes)
+        if not values.get('outputs'):
+            values['outputs'] = (output,) if output is not None else ()
+        values['outputs'] = tuple(values['outputs'])
+        known = {item.name for item in fields(self)}
+        if values.keys() - known:
+            raise TypeError(f"Unknown artifact options: {values.keys() - known}")
+        for item in fields(self):
+            object.__setattr__(self, item.name, values.get(item.name, item.default))
+
+    @property
+    def output(self):
+        if len(self.outputs) != 1:
+            raise TensorCCodegenError('Multiple results: use artifact.outputs and the v2 ABI')
+        return self.outputs[0]
 
 
 def _shape(shape):
@@ -232,7 +255,10 @@ class TensorCCodegen:
                  max_constant_bytes=256 * 1024 * 1024, constant_storage="inline",
                  kernel_calls=False, matmul_policy="sequential", matmul_tile="1x4",
                  qemu_workspace_layout="none", matmul_rhs_layout="original",
-                 mean_policy="sequential", nonlinear_policy="libm"):
+                 mean_policy="sequential", nonlinear_policy="libm",
+                 function_name=None, abi_version=None):
+        self.function_name = function_name
+        self.abi_version = abi_version
         self.program = program
         self.initializers = {} if initializers is None else dict(initializers)
         self.max_workspace_bytes = max_workspace_bytes
@@ -289,7 +315,7 @@ class TensorCCodegen:
             raise TensorCCodegenError("Only one straight-line block without phi is supported")
         instructions = func.blocks[0].instructions
         if (not instructions or instructions[-1].opcode != OpCode.RETURN
-                or len(instructions[-1].operands) != 1
+                or not instructions[-1].operands
                 or any(i.opcode == OpCode.RETURN for i in instructions[:-1])):
             raise TensorCCodegenError("Exactly one final tensor RETURN is required")
         if instructions[-1].attrs or instructions[-1].dest is not None or instructions[-1].target:
@@ -427,49 +453,74 @@ class TensorCCodegen:
                     self.body[line] = f"{declaration}{offset + 4096}ULL);"
             high = padded_high
             qemu_workspace_buffers = (buffers[0], (second + 4096, buffers[1][1]))
-        returned = instructions[-1].operands[0]
-        if returned.name not in self.specs:
-            if not returned.is_constant:
-                raise TensorCCodegenError("Undefined return value")
-            self._register(returned)
-            self._constant(returned, np.asarray(returned.const_value,
-                           dtype=self.specs[returned.name].numpy_dtype))
-        output = self.specs[returned.name]
-        if returned.dtype != output.dtype:
-            raise TensorCCodegenError(f"RETURN {returned.name}: dtype disagrees with defined value")
-        # Empty shape on a builder-created intermediate still means "infer".
-        # Parameters/globals and an explicit function signature are boundaries:
-        # their empty shape is a scalar, never a wildcard for a tensor buffer.
+        returned_values = instructions[-1].operands
+        abi = self.abi_version if self.abi_version is not None else (2 if len(returned_values) > 1 else 1)
+        if type(abi) is not int or abi not in (1, 2) or (abi == 1 and len(returned_values) > 1):
+            raise TensorCCodegenError("Multiple outputs require ABI v2")
+        if abi == 2 and self.constant_storage != "external":
+            raise TensorCCodegenError("ABI v2 requires external constant storage")
+        function_name = self.function_name or (
+            "scratchv_run_v2" if abi == 2 else
+            "scratchv_run_external" if self.constant_storage == "external" else "scratchv_run")
+        if (not isinstance(function_name, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', function_name)
+                or function_name in {'auto', 'break', 'case', 'char', 'const', 'continue', 'default',
+                    'do', 'double', 'else', 'enum', 'extern', 'float', 'for', 'goto', 'if', 'inline',
+                    'int', 'long', 'register', 'restrict', 'return', 'short', 'signed', 'sizeof',
+                    'static', 'struct', 'switch', 'typedef', 'union', 'unsigned', 'void', 'volatile',
+                    'while', 'size_t', 'uintptr_t', 'int32_t', 'int64_t', 'uint32_t', 'uint64_t', 'inputs', 'weights', 'workspace', 'workspace_bytes', 'output', 'outputs'}):
+            raise TensorCCodegenError("Invalid C entry point")
+        if func.returns and len(func.returns) != len(returned_values):
+            raise TensorCCodegenError("Function return signature count disagrees with RETURN")
+        outputs = []
         bound_names = {value.name for value in [*program.global_values, *func.params]}
-        inferred_return = isinstance(returned.shape, (tuple, list)) and len(returned.shape) == 0
-        if ((not inferred_return or returned.name in bound_names)
-                and _shape(returned.shape) != output.shape):
-            raise TensorCCodegenError(f"RETURN {returned.name}: shape disagrees with defined value")
-        if func.returns:
-            if len(func.returns) != 1:
-                raise TensorCCodegenError("Function return signature must declare one tensor")
-            declared = func.returns[0]
-            if declared.dtype != output.dtype or _shape(declared.shape) != output.shape:
-                raise TensorCCodegenError("Function return signature dtype/shape disagrees with RETURN")
-        ctype = _TYPES[output.dtype][0]
-        self.body += ["if (!output) return 1;",
-                      f"for (size_t i=0; i<{output.size}ULL; ++i) (({ctype} *)output)[i] = {self.names[output.name]}[i];",
-                      "return 0;"]
+        for index, returned in enumerate(returned_values):
+            if returned.name not in self.specs:
+                if not returned.is_constant:
+                    raise TensorCCodegenError("Undefined return value")
+                self._register(returned)
+                self._constant(returned, np.asarray(returned.const_value,
+                               dtype=self.specs[returned.name].numpy_dtype))
+            output = self.specs[returned.name]
+            if returned.dtype != output.dtype:
+                raise TensorCCodegenError(f"RETURN {returned.name}: dtype disagrees with defined value")
+            inferred = isinstance(returned.shape, (tuple, list)) and len(returned.shape) == 0
+            if ((not inferred or returned.name in bound_names) and _shape(returned.shape) != output.shape):
+                raise TensorCCodegenError(f"RETURN {returned.name}: shape disagrees with defined value")
+            if func.returns:
+                declared = func.returns[index]
+                if declared.dtype != output.dtype or _shape(declared.shape) != output.shape:
+                    raise TensorCCodegenError("Function return signature dtype/shape disagrees with RETURN")
+            public_name = func.returns[index].name if abi == 2 and func.returns else output.name
+            outputs.append(TensorSpec(public_name, output.dtype, output.shape))
+            self._finite_check(output)
+        if abi == 1:
+            self.body.append("if (!output) return 1;")
+        for index, (returned, spec) in enumerate(zip(returned_values, outputs)):
+            pointer = f"outputs[{index}]" if abi == 2 else "output"
+            self.body.append(f"for (size_t i=0; i<{spec.size}ULL; ++i) "
+                             f"(({_TYPES[spec.dtype][0]} *){pointer})[i] = {self.names[returned.name]}[i];")
+        self.body.append("return 0;")
+        output = outputs[0]
         mean_prelude = TWO_FOUR_LANE_LAST_AXIS_C if self._mean_last_used else ""
         nonlinear_prelude = "".join(source for name, source in (
             ("trig", TRIG_REFERENCE_C), ("sigmoid", SIGMOID_REFERENCE_C),
             ("softmax", SOFTMAX_REFERENCE_C)) if name in self._nonlinear_used)
+        helpers = _PRELUDE + mean_prelude + nonlinear_prelude + _EXTERNAL_PRELUDE + "".join(self.kernels)
+        if re.search(r'\b' + re.escape(function_name) + r'\s*\(', helpers):
+            raise TensorCCodegenError("C entry point conflicts with a helper")
         if self.constant_storage == "external":
             source = (_PRELUDE + mean_prelude + nonlinear_prelude + _EXTERNAL_PRELUDE + "".join(self.kernels)
                       + "#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
-                      + "int scratchv_run_external(const void *const inputs[], "
+                      + f"int {function_name}(const void *const inputs[], "
                       "const void *const weights[], void *workspace, size_t workspace_bytes, "
-                      "void *output) {\n  "
-                      + "\n  ".join(self._external_prologue(inputs, output, high) + self.body)
+                      + ("void *const outputs[]) {\n  " if abi == 2 else "void *output) {\n  ")
+                      + "\n  ".join((self._external_prologue_v2(inputs, outputs, high) if abi == 2
+                                       else self._external_prologue(inputs, output, high)) + self.body)
                       + "\n}\n")
             return TensorCArtifact(
                 source, inputs, output, high, self.constant_bytes,
-                function_name="scratchv_run_external", constant_storage="external",
+                function_name=function_name, constant_storage="external",
+                outputs=tuple(outputs), abi_version=abi,
                 external_weights=tuple(self.external_weights),
                 external_initializers=tuple(self.external_initializers),
                 kernel_calls=self.kernel_calls,
@@ -485,10 +536,11 @@ class TensorCCodegen:
         source = (_PRELUDE + mean_prelude + nonlinear_prelude + "\n" + "\n".join(self.constants)
                   + f"\nstatic union {{ uint64_t align; unsigned char bytes[{max(high, 8)}]; }} sv_arena;\n"
                   + "#if defined(_WIN32)\n__declspec(dllexport)\n#endif\n"
-                  + "int scratchv_run(const void *const inputs[], void *output) {\n  "
+                  + f"int {function_name}(const void *const inputs[], void *output) {{\n  "
                   + "\n  ".join(self.body) + "\n}\n")
         return TensorCArtifact(source, inputs, output, high, self.constant_bytes,
-                               mean_policy=self.mean_policy, nonlinear_policy=self.nonlinear_policy)
+                               mean_policy=self.mean_policy, nonlinear_policy=self.nonlinear_policy,
+                               function_name=function_name)
 
     def _panel_inputs(self, program, initializers):
         """Select immutable 2D RHS storage; copy only IR containers we change.
@@ -672,6 +724,48 @@ class TensorCCodegen:
         lines = [", ".join(values[i:i + 8]) for i in range(0, len(values), 8)]
         self.constants.append(f"static const {_TYPES[spec.dtype][0]} {self.names[value.name]}"
                               f"[{max(spec.size, 1)}] = {{\n" + ",\n".join(lines or ["0"]) + "\n};")
+
+    def _external_prologue_v2(self, inputs, outputs, workspace_bytes):
+        """Check every pointer/range/table before any output or workspace write."""
+        lines = [f"if (workspace_bytes < {workspace_bytes}ULL) return 1;",
+                 f"if ({workspace_bytes}ULL && !sv_buffer(workspace, {workspace_bytes}ULL, 8)) return 1;",
+                 "unsigned char *sv_workspace = (unsigned char *)workspace;"]
+        tables = [("inputs", inputs), ("weights", self.external_weights), ("outputs", outputs)]
+        for table, specs in tables:
+            if specs:
+                lines.append(f"if (!sv_buffer({table}, {len(specs)}ULL * sizeof(void *), _Alignof(void *))) return 1;")
+                lines.append(f"if (sv_overlap(workspace, {workspace_bytes}ULL, {table}, {len(specs)}ULL * sizeof(void *))) return 1;")
+            for index, spec in enumerate(specs):
+                ptr = f"{table}[{index}]"
+                lines.append(f"if (!sv_buffer({ptr}, {spec.nbytes}ULL, {spec.numpy_dtype.itemsize})) return 1;")
+                lines.append(f"if (sv_overlap(workspace, {workspace_bytes}ULL, {ptr}, {spec.nbytes}ULL)) return 1;")
+                if table == "weights":
+                    ctype, name = _TYPES[spec.dtype][0], self.names[spec.name]
+                    lines.append(f"const {ctype} *{name} = (const {ctype} *){ptr};")
+                    if spec.dtype == DataType.FLOAT32:
+                        lines.append(f"for (size_t i=0; i<{spec.size}ULL; ++i) if (!sv_finite({name}[i])) return 2;")
+        # Keep this validation quadratic at runtime, without emitting a copy
+        # of the C expression for every output/weight pair. A full Qwen3 graph
+        # has 57 outputs and over 1,000 constants; unrolling those pairs made
+        # compiler optimization dominate the build and consume excessive RAM.
+        for table, specs in tables:
+            if specs:
+                sizes = ",".join(f"{spec.nbytes}ULL" for spec in specs)
+                lines.append(f"static const uint64_t sv_{table}_bytes[] = {{{sizes}}};")
+        lines.append(f"for (size_t sv_o=0; sv_o<{len(outputs)}ULL; ++sv_o) {{")
+        for table, specs in tables:
+            if not specs:
+                continue
+            lines.append(f"if (sv_overlap(outputs[sv_o], sv_outputs_bytes[sv_o], {table}, "
+                         f"{len(specs)}ULL * sizeof(void *))) return 1;")
+            lines.append(f"for (size_t sv_j=0; sv_j<{len(specs)}ULL; ++sv_j) {{")
+            if table == "outputs":
+                lines.append("if (sv_j == sv_o) continue;")
+            lines.append(f"if (sv_overlap(outputs[sv_o], sv_outputs_bytes[sv_o], "
+                         f"{table}[sv_j], sv_{table}_bytes[sv_j])) return 1;")
+            lines.append("}")
+        lines.append("}")
+        return lines + self.external_scalar_checks
 
     def _external_prologue(self, inputs, output, workspace_bytes):
         """Validate all external addresses before dereferencing tensor data."""
