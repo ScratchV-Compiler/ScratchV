@@ -43,6 +43,7 @@
     "tests/test_riscv_mean_policy.py",
     "tests/test_riscv_nonlinear_policy.py",
     "scripts/export_qwen3_kv_onnx.py",
+    "scripts/package_qwen3_kv_onnx.py",
     "scripts/summarize_kv_ci.py",
     "scripts/summarize_w2_ci.py",
     "tests/test_kv*.py",
