@@ -7,7 +7,7 @@
 # ubuntu-latest and fail on that runner.
 PY ?= python3
 
-.PHONY: quick-start install test test-peephole ci-peephole bench bench-topic06 bench-cnn bench-ir-verifier clean lint docs
+.PHONY: quick-start install test test-peephole ci-peephole bench-peephole bench bench-topic06 bench-cnn bench-ir-verifier clean lint docs
 
 # ── Beginner quick-start ─────────────────────────────────────────────────────
 
@@ -61,7 +61,12 @@ test-peephole:
 		tests/fixtures/asm_peephole/input_addi_fusion.s \
 		-o /tmp/peephole_out.s --report --json
 
+# Local entry point still runs tests before measuring.
 ci-peephole: test-peephole
+	$(MAKE) bench-peephole PY="$(PY)"
+
+# CI.test already owns the unit tests and CLI smoke.
+bench-peephole:
 	@mkdir -p benchmark_reports
 	$(PY) benchmarks/bench_asm_peephole.py \
 		--sizes 1 2 100 --fusion-ratio 0.3 --repeats 2 \
@@ -80,7 +85,7 @@ ci-peephole: test-peephole
 		--cnn-json benchmark_reports/cnn_peephole_compare.json \
 		--output-html benchmark_reports/peephole_benchmark.html \
 		--summary-output benchmark_reports/peephole_summary.md
-	@echo "Peephole CI checks done."
+	@echo "Peephole benchmarks done."
 
 # ── 模型性能基准 ──────────────────────────────────────────────────────────
 

@@ -25,6 +25,7 @@ jobs:
     outputs:
       llm: ${{ steps.scope.outputs.llm }}
       w4: ${{ steps.scope.outputs.w4 }}
+      docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -33,6 +34,11 @@ jobs:
       - name: Preserve deployment and documentation path scopes
         id: scope
         run: python3 scripts/ci_scope.py
+      - name: Check public instructions and Bash syntax
+        run: python3 scripts/check_linux_repro_docs.py --check-bash
+      - name: Check documentation links
+        if: steps.scope.outputs.docs_only == 'true'
+        run: python3 scripts/check_docs_links.py
 
   llm:
     name: Deployment acceptance
@@ -44,6 +50,8 @@ jobs:
       ci_covers_generic_regressions: true
 
   topic06:
+    needs: scope
+    if: needs.scope.outputs.docs_only == 'false'
     name: Topic 06 benchmark
     uses: ./.github/workflows/topic06-benchmark.yml
 
@@ -54,11 +62,14 @@ jobs:
     uses: ./.github/workflows/w4-full-numeric.yml
     with:
       run_full: false
+      ci_covers_generic_regressions: true
 
   # ═════════════════════════════════════════════════════════════════════════
   # 课题功能测试：所有14个模块的单元测试 + 集成测试
   # ═════════════════════════════════════════════════════════════════════════
   test:
+    needs: scope
+    if: needs.scope.outputs.docs_only == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -83,8 +94,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-3.12-${{ hashFiles('pyproject.toml', 'requirements/*.txt') }}
-          restore-keys: pip-3.12-
+          key: pip-${{ runner.os }}-py3.12-ci-test-${{ hashFiles('pyproject.toml', 'requirements/*.txt') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-ci-test-
 
       - name: Install dependencies
         run: |
@@ -92,23 +103,11 @@ jobs:
           echo "PY=python" >> "$GITHUB_ENV"
           echo "Using python: $(python -c 'import sys; print(sys.executable, sys.version)')"
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install -e ".[all]"
-          python -m pip install "pytest>=7,<10" "PyYAML==6.0.3"
-
-      - name: Install pinned CPU dependencies for Qwen and W3 tests
-        run: |
-          set -euo pipefail
-          # The full test suite collects W3 subgraph and workflow tests.
-          # Install their actual dependencies instead of skipping those tests.
-          $PY -m pip install "torch==2.7.1" --index-url https://download.pytorch.org/whl/cpu
-          $PY -m pip install -r requirements/qwen3-small-probe.txt "PyYAML==6.0.3"
-          $PY -m pip check
-          $PY -c "import torch, yaml, safetensors; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
-
-      # Unconditional: a docs-only change never selects the deployment scope, so
-      # this check cannot live behind a path filter.
-      - name: Check public instructions and Bash syntax
-        run: $PY scripts/check_linux_repro_docs.py --check-bash
+          # Resolve generic and pinned Qwen/W3 dependencies together.
+          # llm-deploy selects the fixed CPU Torch wheel and test versions.
+          python -m pip install -e ".[all,llm-deploy]"
+          python -m pip check
+          python -c "import torch, yaml, safetensors; assert torch.__version__ == '2.7.1+cpu' and torch.version.cuda is None, torch.__version__"
 
       - name: Prepare RISC-V test tools
         run: |
@@ -223,6 +222,7 @@ jobs:
           path: |
             benchmark_reports/test_results.xml
             benchmark_reports/tests.html
+            ${{ github.ref == 'refs/heads/main' && 'benchmark_reports/test_history.json' || '' }}
             benchmark_reports/ir_verifier_smoke/
           retention-days: 30
 
@@ -230,6 +230,8 @@ jobs:
   # 模型性能测试：ONNX模型管线 + DSL用例 + CNN RISC-V编译
   # ═════════════════════════════════════════════════════════════════════════
   benchmark:
+    needs: scope
+    if: needs.scope.outputs.docs_only == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -254,8 +256,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-3.12-${{ hashFiles('pyproject.toml', 'requirements/*.txt') }}
-          restore-keys: pip-3.12-
+          key: pip-${{ runner.os }}-py3.12-ci-benchmark-${{ hashFiles('pyproject.toml', 'requirements/*.txt') }}
+          restore-keys: pip-${{ runner.os }}-py3.12-ci-benchmark-
 
       - name: Install dependencies
         run: |
@@ -376,7 +378,7 @@ jobs:
 
       # ── 3.1.2 课题13：窥孔前后对比报告 ─────────────────────────────
       - name: Topic 13 peephole compare report
-        run: make -s ci-peephole
+        run: make -s bench-peephole
 
       # ── 3.1.3 课题12：指令统计基准 ──────────────────────────────────────
       - name: Topic 12 instruction-counter benchmark
@@ -494,6 +496,24 @@ jobs:
             --json-output benchmark_reports/regalloc_spill_compare.json \
             --markdown benchmark_reports/regalloc_spill_compare.md
 
+      # ── 保留推广主页（docs/promo/ScratchV.html 不会被顶替） ───────────
+      - name: Copy promotional page into Pages artifact
+        if: github.ref == 'refs/heads/main'
+        run: cp docs/promo/ScratchV.html benchmark_reports/ScratchV.html
+
+      # ── 文档课程 HTML 站点 ──────────────────────────────────────────────
+      - name: Build docs HTML course site
+        if: github.ref == 'refs/heads/main'
+        run: |
+          $PY scripts/build_docs_html.py --output-dir benchmark_reports/docs
+          $PY scripts/check_docs_links.py --html-dir benchmark_reports/docs
+          echo "Docs site built: benchmark_reports/docs/index.html"
+
+      # ── 优化历史页面 ──────────────────────────────────────────────────
+      - name: Generate optimization history page
+        if: github.ref == 'refs/heads/main'
+        run: $PY scratchv/ci/history_page.py -o benchmark_reports/history.html
+
       # ── 上报 ──────────────────────────────────────────────────────────
       - name: Upload benchmark reports
         if: always()
@@ -524,50 +544,6 @@ jobs:
             benchmark_reports/peephole_summary.md
           if-no-files-found: error
           retention-days: 30
-
-      # ── 保留推广主页（docs/promo/ScratchV.html 不会被顶替） ───────────
-      - name: Copy promotional page into Pages artifact
-        if: github.ref == 'refs/heads/main'
-        run: cp docs/promo/ScratchV.html benchmark_reports/ScratchV.html
-
-      # ── 文档课程 HTML 站点 ──────────────────────────────────────────────
-      - name: Build docs HTML course site
-        if: github.ref == 'refs/heads/main'
-        run: |
-          $PY -m pip install markdown
-          $PY scripts/build_docs_html.py --output-dir benchmark_reports/docs
-          $PY scripts/check_docs_links.py --html-dir benchmark_reports/docs
-          echo "Docs site built: benchmark_reports/docs/index.html"
-
-      # ── 优化历史页面 ──────────────────────────────────────────────────
-      - name: Generate optimization history page
-        if: github.ref == 'refs/heads/main'
-        run: $PY scratchv/ci/history_page.py -o benchmark_reports/history.html
-
-      # ── 测试可视化页面 ────────────────────────────────────────────────
-      - name: Generate test visualization page
-        if: github.ref == 'refs/heads/main'
-        run: |
-          $PY scratchv/ci/test_page.py \
-            --junit benchmark_reports/test_results.xml \
-            -o benchmark_reports/tests.html
-
-      # ── 精简 Pages 产物（移除大型编译产物） ──────────────────────────
-      - name: Clean large binaries before Pages deploy
-        if: github.ref == 'refs/heads/main'
-        run: |
-          rm -f benchmark_reports/*.bin benchmark_reports/*.elf
-          rm -f benchmark_reports/*.ll
-          rm -f benchmark_reports/cnn.onnx_*
-          rm -f benchmark_reports/_ll_* benchmark_reports/_sv.*
-          echo "Cleaned large binaries from Pages artifact"
-
-      # ── 上传 Pages 产物 ──────────────────────────────────────────────
-      - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
-        with:
-          path: benchmark_reports/
 
       - name: Write job summary
         if: always()
@@ -638,8 +614,8 @@ jobs:
   # GitHub Pages 部署 (仅 main 分支)
   # ═════════════════════════════════════════════════════════════════════════
   deploy-pages:
-    needs: benchmark
-    if: github.ref == 'refs/heads/main'
+    needs: acceptance
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.acceptance.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -648,6 +624,44 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Download compiler reports and site files
+        uses: actions/download-artifact@v4
+        with:
+          name: benchmark-reports
+          path: benchmark_reports
+      - name: Download peephole reports
+        uses: actions/download-artifact@v4
+        with:
+          name: peephole-benchmark-report
+          path: benchmark_reports
+      - name: Download this run's test reports
+        uses: actions/download-artifact@v4
+        with:
+          name: test-reports
+          path: test-reports
+      - name: Include the tested page and its JUnit source
+        run: |
+          set -euo pipefail
+          for report in tests.html test_results.xml test_history.json; do
+            test -s "test-reports/$report"
+            cp "test-reports/$report" benchmark_reports/
+          done
+
+      # ── 精简 Pages 产物（移除大型编译产物） ──────────────────────────
+      - name: Clean large binaries before Pages deploy
+        run: |
+          rm -f benchmark_reports/*.bin benchmark_reports/*.elf
+          rm -f benchmark_reports/*.ll
+          rm -f benchmark_reports/cnn.onnx_*
+          rm -f benchmark_reports/_ll_* benchmark_reports/_sv.*
+          echo "Cleaned large binaries from Pages artifact"
+
+      # ── 上传 Pages 产物 ──────────────────────────────────────────────
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: benchmark_reports/
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

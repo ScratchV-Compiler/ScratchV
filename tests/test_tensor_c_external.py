@@ -4,9 +4,10 @@ Set SCRATCHV_ZIG to a Zig executable, or install a host clang/gcc. Executable
 checks skip explicitly if no compiler is available; graph checks always run.
 """
 
-from contextlib import contextmanager
-from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
+from dataclasses import replace
+from functools import cache
 import ctypes
 import os
 from pathlib import Path
@@ -85,6 +86,23 @@ def library(tmp_path, artifact, compiler):
             _ctypes.FreeLibrary(loaded._handle)
 
 
+@pytest.fixture(scope="module")
+def compiled_graph(tmp_path_factory, host_cc):
+    """Build each native graph configuration once. Callers supply their own buffers."""
+    with ExitStack() as libraries:
+        @cache
+        def build(shape, storage, kernel_calls):
+            program, bindings, _ = graph(shape)
+            artifact = TensorCCodegen(
+                program, bindings, constant_storage=storage, kernel_calls=kernel_calls,
+            ).generate()
+            directory = tmp_path_factory.mktemp("graph-library")
+            function = libraries.enter_context(library(directory, artifact, host_cc))
+            return artifact, function
+
+        yield build
+
+
 def pointers(arrays):
     return (ctypes.c_void_p * len(arrays))(*(array.ctypes.data for array in arrays))
 
@@ -103,32 +121,29 @@ def arguments(artifact, x):
 
 @pytest.mark.parametrize("shape", [(2, 3), (2, 1, 3)])
 @pytest.mark.parametrize("kernel_calls", [False, True])
-def test_external_matches_inline_and_numpy(tmp_path, host_cc, shape, kernel_calls):
-    program, bindings, _ = graph(shape)
-    inline = TensorCCodegen(program, bindings).generate()
-    external = TensorCCodegen(program, bindings, constant_storage="external", kernel_calls=kernel_calls).generate()
+def test_external_matches_inline_and_numpy(compiled_graph, shape, kernel_calls):
+    _, bindings, _ = graph(shape)
+    inline, inline_run = compiled_graph(shape, "inline", False)
+    external, run = compiled_graph(shape, "external", kernel_calls)
     x = np.arange(np.prod(shape), dtype=np.float32).reshape(shape) / 4
     weights, workspace, output, args = arguments(external, x)
     expected = (x @ bindings["weight"] + bindings["bias"]) * np.float32(0.5)
     inline_output = np.empty_like(output)
-    with library(tmp_path / "inline", inline, host_cc) as run:
-        assert run(pointers([x]), inline_output.ctypes.data) == 0
-    with library(tmp_path / "external", external, host_cc) as run:
-        assert run(*args) == 0
-        np.testing.assert_array_equal(output, inline_output)
-        np.testing.assert_allclose(output, expected, rtol=0, atol=1e-6)
-        # Runtime data is not baked into the generated function or cached.
-        weights[0] *= np.float32(2)
-        assert run(*args) == 0
-        np.testing.assert_allclose(output, (x @ weights[0] + weights[1]) * weights[2],
-                                   rtol=0, atol=1e-6)
+    assert inline_run(pointers([x]), inline_output.ctypes.data) == 0
+    assert run(*args) == 0
+    np.testing.assert_array_equal(output, inline_output)
+    np.testing.assert_allclose(output, expected, rtol=0, atol=1e-6)
+    # Runtime data is not baked into the generated function or cached.
+    weights[0] *= np.float32(2)
+    assert run(*args) == 0
+    np.testing.assert_allclose(output, (x @ weights[0] + weights[1]) * weights[2],
+                               rtol=0, atol=1e-6)
     assert external.workspace_bytes == inline.workspace_bytes
 
 
 @pytest.mark.parametrize("kernel_calls", [False, True])
-def test_external_abi_rejects_malformed_buffers_before_writing(tmp_path, host_cc, kernel_calls):
-    program, bindings, _ = graph()
-    artifact = TensorCCodegen(program, bindings, constant_storage="external", kernel_calls=kernel_calls).generate()
+def test_external_abi_rejects_malformed_buffers_before_writing(compiled_graph, kernel_calls):
+    artifact, run = compiled_graph((2, 3), "external", kernel_calls)
     x = np.arange(6, dtype=np.float32).reshape(2, 3)
     weights, workspace, output, valid = arguments(artifact, x)
     bad_weight = (ctypes.c_void_p * 3)(0, weights[1].ctypes.data, weights[2].ctypes.data)
@@ -145,43 +160,42 @@ def test_external_abi_rejects_malformed_buffers_before_writing(tmp_path, host_cc
         (4, ctypes.addressof(valid[1])),
     ]
     original_input = x.copy()
-    with library(tmp_path, artifact, host_cc) as run:
-        for argument_index, replacement in cases:
-            args = list(valid)
-            args[argument_index] = replacement
-            assert run(*args) == 1, (argument_index, replacement)
-            assert np.all(output == -999)
-            np.testing.assert_array_equal(x, original_input)
-        assert run(*valid) == 0
+    for argument_index, replacement in cases:
+        args = list(valid)
+        args[argument_index] = replacement
+        assert run(*args) == 1, (argument_index, replacement)
+        assert np.all(output == -999)
+        np.testing.assert_array_equal(x, original_input)
+    assert run(*valid) == 0
 
 
 @pytest.mark.parametrize("kernel_calls", [False, True])
-def test_external_runtime_checks_finite_weights_and_scalar_literals(tmp_path, host_cc, kernel_calls):
-    program, bindings, _ = graph()
-    artifact = TensorCCodegen(program, bindings, constant_storage="external", kernel_calls=kernel_calls).generate()
+def test_external_runtime_checks_finite_weights_and_scalar_literals(compiled_graph, kernel_calls):
+    artifact, run = compiled_graph((2, 3), "external", kernel_calls)
     x = np.ones((2, 3), np.float32)
     weights, workspace, output, args = arguments(artifact, x)
-    with library(tmp_path, artifact, host_cc) as run:
-        weights[0][0, 0] = np.nan
-        assert run(*args) == 2
-        weights[0][0, 0] = bindings["weight"][0, 0]
-        weights[2][()] = 0.75
-        assert run(*args) == 2
-        weights[2][()] = 0.5
+    original = weights[0][0, 0]
+    weights[0][0, 0] = np.nan
+    assert run(*args) == 2
+    weights[0][0, 0] = original
+    weights[2][()] = 0.75
+    assert run(*args) == 2
+    weights[2][()] = 0.5
+    assert run(*args) == 0
+
+
+def test_external_runs_with_independent_workspaces(compiled_graph):
+    _, bindings, _ = graph()
+    artifact, run = compiled_graph((2, 3), "external", False)
+
+    def execute(index):
+        x = np.full((2, 3), index / 8, np.float32)
+        weights, workspace, output, args = arguments(artifact, x)
         assert run(*args) == 0
+        np.testing.assert_array_equal(output, (x @ bindings["weight"] + bindings["bias"]) * 0.5)
 
-
-def test_external_runs_with_independent_workspaces(tmp_path, host_cc):
-    program, bindings, _ = graph()
-    artifact = TensorCCodegen(program, bindings, constant_storage="external").generate()
-    with library(tmp_path, artifact, host_cc) as run:
-        def execute(index):
-            x = np.full((2, 3), index / 8, np.float32)
-            weights, workspace, output, args = arguments(artifact, x)
-            assert run(*args) == 0
-            np.testing.assert_array_equal(output, (x @ bindings["weight"] + bindings["bias"]) * 0.5)
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            list(executor.map(execute, range(32)))
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(execute, range(32)))
 
 
 def test_external_return_input_needs_no_weights_or_workspace(tmp_path, host_cc):

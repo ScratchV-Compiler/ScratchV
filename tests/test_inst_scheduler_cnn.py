@@ -1,6 +1,9 @@
 """CNN benchmark evidence must detect side effects, including same-size changes."""
 
+from copy import deepcopy
 import json
+from pathlib import Path
+import shutil
 
 import pytest
 
@@ -100,8 +103,57 @@ def test_cli_persists_failure_without_substituting_model(tmp_path):
     assert "missing.onnx" in report["error"]
 
 
-def test_tracked_cnn_all_paths_and_existing_standalone_identity(tmp_path):
-    report = cnn.run_benchmark()
+@pytest.fixture(scope="module")
+def prepared_cnn(tmp_path_factory):
+    """Run the real compiler and analysis once; retain this run's inputs for error tests."""
+    from scratchv.standalone import onnx_to_riscv_standalone as standalone
+
+    artifacts = tmp_path_factory.mktemp("cnn-preparation")
+    metadata = {}
+    convert = standalone.convert_onnx_to_riscv
+
+    def record_metadata(*args, **kwargs):
+        result = convert(*args, **kwargs)
+        if "metadata" in kwargs:
+            metadata.update(kwargs["metadata"])
+        return result
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(standalone, "convert_onnx_to_riscv", record_metadata)
+        report = cnn.run_benchmark(artifacts=artifacts)
+    assert report["status"] == "passed"
+    return artifacts, metadata, report
+
+
+@pytest.fixture
+def reuse_cnn_preparation(monkeypatch, prepared_cnn):
+    """Reuse immutable build files; keep benchmark error handling and acceptance checks real."""
+    from scratchv.standalone import onnx_to_riscv_standalone as standalone
+
+    artifacts, metadata, report = prepared_cnn
+
+    def copy_compilation(model, binary, assembly, **kwargs):
+        assert Path(model) == cnn.DEFAULT_MODEL
+        for destination in (binary, assembly):
+            shutil.copyfile(artifacts / Path(destination).name, destination)
+        if "metadata" in kwargs:
+            kwargs["metadata"].update(deepcopy(metadata))
+        return 0
+
+    def copy_analysis(path, label, llvm_mca):
+        primary = report["cases"][0]
+        assert label == "standalone/const-merge"
+        assert path.read_text() == primary["assembly"]["before"]
+        return deepcopy(primary)
+
+    monkeypatch.setattr(standalone, "convert_onnx_to_riscv", copy_compilation)
+    monkeypatch.setattr(cnn, "analyze_assembly", copy_analysis)
+    return deepcopy(report)
+
+
+def test_tracked_cnn_all_paths_and_existing_standalone_identity(tmp_path, reuse_cnn_preparation):
+    # prepared_cnn performs the complete, unmocked integration run before reuse is enabled.
+    report = reuse_cnn_preparation
     assert report["status"] == "passed"
     assert report["input"]["sha256"] == cnn.sha256(cnn.DEFAULT_MODEL.read_bytes())
     standalone, = report["cases"]
@@ -134,7 +186,9 @@ def test_tracked_cnn_all_paths_and_existing_standalone_identity(tmp_path):
     ["Unexpected compiler regression"],
     [cnn.LEGACY_TENSOR_REJECTION, "Unexpected compiler regression"],
 ])
-def test_other_compiler_failures_are_not_reclassified_as_unsupported(monkeypatch, errors):
+def test_other_compiler_failures_are_not_reclassified_as_unsupported(
+    monkeypatch, reuse_cnn_preparation, errors,
+):
     from scratchv.compiler import CompileResult
 
     monkeypatch.setattr(cnn.CompilerDriver, "compile",
@@ -144,10 +198,14 @@ def test_other_compiler_failures_are_not_reclassified_as_unsupported(monkeypatch
 
 
 @pytest.mark.parametrize("execution_status", ["baseline_failed", "failed"])
-def test_full_execution_failure_fails_the_benchmark(monkeypatch, execution_status):
+def test_full_execution_failure_fails_the_benchmark(
+    monkeypatch, reuse_cnn_preparation, execution_status,
+):
     monkeypatch.setattr("benchmarks.cnn_schedule_execution.execute_pair",
                         lambda *args: {"status": execution_status})
     report = cnn.run_benchmark(execute=True)
     assert report["status"] == "failed"
-    assert report["cases"][0]["acceptance"]["execution_equal"] is False
+    acceptance = report["cases"][0]["acceptance"]
+    assert acceptance["execution_equal"] is False
+    assert all(value is True for name, value in acceptance.items() if name != "execution_equal")
     assert report["whole_cnn_execution"] == execution_status

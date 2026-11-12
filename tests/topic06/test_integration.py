@@ -267,3 +267,78 @@ def test_interpreter_only_mode_cannot_replace_cost_model_baseline(tmp_path, monk
 
     assert exit_code == 2
     assert not baseline_file.exists()
+
+@pytest.mark.parametrize(
+    "failed_case,required_categories,extra_args,expected_exit",
+    [
+        (None, ["activation", "elementwise", "loop"], [], 0),
+        ("tensor_case", ["activation", "elementwise", "loop"], [], 0),
+        ("activation_bad", ["activation", "elementwise", "loop"], [], 1),
+        (None, ["activation", "missing"], [], 1),
+        ("tensor_case", ["activation", "elementwise", "loop"], ["--fail-on-test-failure"], 1),
+    ],
+    ids=["all-pass", "diagnostic-failure", "required-failure", "missing-category", "global-failure"],
+)
+def test_required_categories_use_one_run_and_preserve_all_results(
+    tmp_path, monkeypatch, failed_case, required_categories, extra_args, expected_exit,
+):
+    runner = _load_runner()
+    case_dir = tmp_path / "cases"
+    build_dir = tmp_path / "build"
+    report_dir = tmp_path / "reports"
+    names = {
+        "activation": ["activation_good", "activation_bad"],
+        "elementwise": ["elementwise_case"],
+        "loop": ["loop_case"],
+        "tensor": ["tensor_case"],
+    }
+    for category, cases in names.items():
+        directory = case_dir / category
+        directory.mkdir(parents=True)
+        for name in cases:
+            (directory / f"{name}.dsl").write_text("return 0", encoding="utf-8")
+            (directory / f"{name}.meta.json").write_text(
+                json.dumps({"inputs": {}, "expected_return": 0}), encoding="utf-8",
+            )
+    monkeypatch.setattr(runner, "TEST_DIR", case_dir)
+    monkeypatch.setattr(runner, "BUILD_DIR", build_dir)
+    monkeypatch.setattr(runner, "REPORT_DIR", report_dir)
+    monkeypatch.setattr(runner, "METADATA_FILE", report_dir / "metadata.json")
+    monkeypatch.setattr(runner, "load_baseline", lambda: {})
+    compiled = []
+    simulated = []
+
+    def compile_case(path):
+        compiled.append(path.stem)
+        output = build_dir / f"{path.stem}.s"
+        registers = build_dir / f"{path.stem}.registers.json"
+        output.write_text("li a0, 0\nret\n", encoding="utf-8")
+        registers.write_text(
+            json.dumps({"schema_version": 1, "register_map": {}}), encoding="utf-8",
+        )
+        return runner.subprocess.CompletedProcess([], 0, "", ""), output, registers
+
+    def simulate_case(path, initial_registers):
+        simulated.append(path.stem)
+        return {
+            "success": True,
+            "return_value": 1 if path.stem == failed_case else 0,
+            "instr_count": 2,
+            "backend": "tinyfive",
+        }
+
+    monkeypatch.setattr(runner, "run_compile", compile_case)
+    monkeypatch.setattr(runner, "run_simulation", simulate_case)
+    args = ["--verification-backend", "tinyfive", *extra_args]
+    for category in required_categories:
+        args.extend(["--require-category", category])
+    assert runner.main(args) == expected_exit
+
+    expected_names = sorted(name for cases in names.values() for name in cases)
+    assert sorted(compiled) == expected_names
+    assert sorted(simulated) == expected_names
+    metadata = json.loads((report_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert sorted(item["name"] for item in metadata["results"]) == expected_names
+    assert {
+        item["name"] for item in metadata["results"] if item["status"] != "PASS"
+    } == ({failed_case} if failed_case else set())

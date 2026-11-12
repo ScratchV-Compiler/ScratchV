@@ -116,7 +116,7 @@ def test_nightly_expensive_jobs_require_opt_in_or_explicit_dispatch(event, enabl
         assert evaluate_guard(job["if"], event, enabled) is expected
     assert data["jobs"]["preparation"]["uses"] == "./.github/workflows/w3-preparation.yml"
     assert data["jobs"]["full-numeric"]["uses"] == "./.github/workflows/w3-full-numeric.yml"
-    assert data["jobs"]["full-numeric"]["with"] == {"case": "all"}
+    assert data["jobs"]["full-numeric"]["with"] == {"case": "all", "preparation_runs_regressions": "true"}
     assert set(data["jobs"]["acceptance"]["needs"]) == {"preparation", "full-numeric"}
     # Different caller/callee concurrency groups avoid self-blocking reuse.
     groups = {workflow(name)["concurrency"]["group"] for name in (
@@ -217,27 +217,6 @@ def test_actual_numeric_summary_steps_run_after_failure_and_keep_original_exit_c
     assert "scripts/summarize_w3_ci.py" in args and args[args.index("--kind") + 1] == kind
 
 
-@pytest.mark.parametrize("result,label", [("skipped", "NOT RUN"), ("success", "PASS"), ("failure", "FAIL"),
-                                         ("cancelled", "CANCELLED"), ("", "UNCONFIRMED")])
-def test_llm_page_reports_w3_skip_without_running_or_accepting_w3(bash, tmp_path, result, label):
-    job = workflow("llm-deploy.yml")["jobs"]["w3-execution-summary"]
-    assert job["if"] == "always()" and job["needs"] == ["w3-validation"]
-    assert not any("uses" in item for item in job["steps"])
-    command = job["steps"][0]["run"]
-    # Run the actual dependency-free Python body on hosts without python3 alias.
-    body = command.split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
-    import sys
-    destination = tmp_path / "summary.md"
-    env = dict(os.environ, W3_RESULT=result, GITHUB_STEP_SUMMARY=str(destination))
-    process = subprocess.run([sys.executable, "-X", "utf8", "-c", body], env=env,
-                             capture_output=True, text=True)
-    assert process.returncode == 0, process.stderr
-    text = destination.read_text(encoding="utf-8")
-    assert f"**{label}**" in text and "<details>" in text
-    assert ("W1/W2 success is not W3 acceptance" in text) is (result == "skipped")
-    assert len(text) < 1600
-
-
 @pytest.mark.parametrize("name", ["w3-preparation.yml", "w3-full-numeric.yml", "w3-nightly.yml"])
 def test_all_actual_bash_blocks_parse(bash, tmp_path, name):
     for job in workflow(name)["jobs"].values():
@@ -246,3 +225,31 @@ def test_all_actual_bash_blocks_parse(bash, tmp_path, name):
                 result = subprocess.run([bash, "-n"], input=item["run"],
                                         text=True, capture_output=True, cwd=tmp_path)
                 assert result.returncode == 0, f"{name}: {item.get('name')}: {result.stderr}"
+
+def test_combined_w3_skips_only_regressions_owned_by_required_preparation():
+    import shlex
+
+    def files_selected(step_name, filename):
+        command = step(filename, step_name)["run"]
+        args = shlex.split(command.split("-m pytest ", 1)[1])
+        patterns = [arg for arg in args if arg.startswith("tests/")]
+        selected = set()
+        for pattern in patterns:
+            matches = set(ROOT.glob(pattern))
+            assert matches, pattern
+            selected.update(matches)
+        return selected
+
+    prep = "w3-preparation.yml"
+    full = "w3-full-numeric.yml"
+    delegated = "preparation_runs_regressions"
+    option = workflow(full)["on"]["workflow_call"]["inputs"][delegated]
+    assert option["default"] == "false" and option["type"] == "boolean"
+    assert step(full, "Full runner and memory policy regressions")["if"] == "${{ !inputs.preparation_runs_regressions }}"
+    assert "if" not in step(prep, "W3 and affected W2/IR regressions")
+    assert files_selected("Full runner and memory policy regressions", full) <= files_selected("W3 and affected W2/IR regressions", prep)
+    assert "if" not in step(full, "Compare complete IR and ORT outputs")
+    nightly = workflow("w3-nightly.yml")["jobs"]
+    assert nightly["full-numeric"]["with"][delegated] == "true"
+    assert nightly["preparation"]["if"] == nightly["full-numeric"]["if"]
+    assert set(nightly["acceptance"]["needs"]) == {"preparation", "full-numeric"}

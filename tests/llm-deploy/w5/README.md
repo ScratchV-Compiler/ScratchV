@@ -2,6 +2,23 @@
 
 本目录验证生成 CLI 的报告保存边界，以及真实 Docker 容器中的外部取消和进程清理。只使用小图，不下载或运行完整 Qwen3 模型。功能、实现和实跑说明见 [W5 开发说明](../../../docs/llm-deploy-v1.0/W5/README.md)。
 
+## CI 配置与报告检查
+
+[`tests/test_w5_ci.py`](../../test_w5_ci.py) 保留报告缺失、生成失败、日志写入失败、
+数值不符及旧字段兼容检查。生成失败会先返回错误，因此日志状态只在生成成功时逐项验证，
+另保留生成和日志同时失败的情况。模拟失败摘要只写入测试临时目录。
+
+[`tests/test_w4_workflows.py`](../../test_w4_workflows.py) 保留每个必跑项缺失的检查，
+共用状态判断各检查一次；汇总脚本不读取的事件类型不再重复展开。
+普通 PR 中输入、元数据、工作流和摘要单测的执行位置见
+[CI 说明](../../../docs/CI.md#避免重复执行单测)。独立调用专项仍保留这些检查。
+
+只检查上述配置和报告逻辑，不启动完整模型：
+
+```bash
+python -B -m pytest tests/test_ci_workflows.py tests/test_w4_workflows.py tests/test_w5_ci.py -q -p no:cacheprovider
+```
+
 ## 本轮 core 兼容与 main 整合验证（2026-10-30）
 
 本轮在整合 main 的 `013b3c7` 后，验证新旧核数接口、配置读写及相关真实小图。
