@@ -213,7 +213,7 @@ def collect_pair(stop, observed, *, uart_path=None):
         stop.wait(0.05)
 
 
-def measure(case, variant, tile, layout, phase, rep, prepared, folder, baseline):
+def measure(case, variant, tile, layout, phase, rep, prepared, folder, baseline, *, require_rss=True):
     inputs, reference, builds = prepared
     exe, workspace = builds[variant]
     observed = dict(combined_peak_bytes=0, samples=0, read_errors=0, exit_races=0)
@@ -239,11 +239,15 @@ def measure(case, variant, tile, layout, phase, rep, prepared, folder, baseline)
         baseline[case] = output.copy()
     if not np.array_equal(output.view(np.uint32), baseline[case].view(np.uint32)):
         raise ValueError(f"{folder}: FP32 bits differ between runs")
-    if not observed["samples"] or not report["sampled_peak_qemu_rss_bytes"]:
+    qemu_peak = report["sampled_peak_qemu_rss_bytes"] or None
+    if require_rss and (not observed["samples"] or not qemu_peak):
         raise RuntimeError(f"No RSS samples at {folder}")
+    if not observed["samples"]:
+        for key in ("combined_peak_bytes", "controller_bytes_at_peak", "guest_bytes_at_peak"):
+            observed[key] = None
     return dict(case=case, tile=tile, variant=variant, rhs_layout=layout, phase=phase, round=rep,
                 rhs_source="runtime" if "weight" in inputs else "constant", forward_s=report["forward_wall_s"],
-                qemu_s=report["qemu_wall_s"], qemu_peak_bytes=report["sampled_peak_qemu_rss_bytes"],
+                qemu_s=report["qemu_wall_s"], qemu_peak_bytes=qemu_peak,
                 qemu_rss_samples=report["qemu_rss_observed_samples"], qemu_rss_errors=report["qemu_rss_sample_errors"],
                 workspace_bytes=workspace, max_abs_vs_ort=error, bitwise_equal=True,
                 ort_bit_mismatches=int(np.count_nonzero(output.view(np.uint32) != reference.view(np.uint32))),

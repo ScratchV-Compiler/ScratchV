@@ -11,6 +11,8 @@ W5 让 QEMU 能根据提示词逐个生成 token。W6 给完整模型的单次�
 
 两个选项均可在完整前向入口启用。W5 的文本生成命令继续使用原末层。本次测量覆盖固定输入的一次前向，整条提示词生成 8 个 token 的耗时仍以 W5 的生成报告为准。[W5 生成报告](../W5/README.md)
 
+单 token Attention 小图另有一个可选实现。每步直接读 K，省去转置。4 个核按 K/V 头分工，各自完成算分、Softmax 和对 V 的加权求和。完整模型生成每个 token 要等多久，待 KV cache 接入后实测。
+
 ## 实测结果
 
 模型为 Qwen3-0.6B，28 层、256 个输入位置。使用同一组 `full_seed_0` 输入，固定 QEMU 4 核、FP32、工作区 padding 关闭。每种配置运行一次。
@@ -32,6 +34,7 @@ W5 让 QEMU 能根据提示词逐个生成 token。W6 给完整模型的单次�
 | Dense 矩阵乘法 | 用固定小图复测已有的 2×4 分块与列布局 | **3.754×**，达到 1.5× 目标 |
 | 单独测量 LM Head | 在 151,936 词的真实词表上比较两种算法 | **184.33 → 74.06 秒，2.489×**，达到 2× 目标 |
 | 独立 Attention 分数矩阵乘法 | 比较不同分块、四核分工、数据读写及向量指令 | 专项选定的 4×4 标量实现为 **1.285×**，低于 1.5× 目标 |
+| 单 token 完整 Attention | 与每步先转置 K 的原实现同批比较 | 两批算子耗时中位数在 255 个有效位置加速 **1.57× / 1.75×**，256 个位置加速 **1.88× / 1.84×**。计入 QEMU 启动和初始化，两步小图加速 **1.17× / 1.15×**。[实测报告](EXPERIMENTS.md#single-token-combined-speedup) |
 | 转置、矩阵乘法与 Softmax 组合图 | 算完一组分数就做 Softmax，复用临时空间 | 两批分别 **1.081×、1.068×**，工作区 **10 → 4 MiB** |
 | W6 专项验收 | 增加小图对照、完整前向数值与内存检查，以及定时工作流 | 本地小图验收因独立 Attention 未达标而失败。完整 Nightly 成功记录待取得 |
 
@@ -54,12 +57,15 @@ W5 让 QEMU 能根据提示词逐个生成 token。W6 给完整模型的单次�
 <summary>小图和完整前向命令</summary>
 
 ```bash
+python -m probes.w6_performance.attention_decode_sequence_run --compare-transpose-to-head-groups \
+  --seed 9100 --pairs 12 --output-dir output/w6-single-token-attention
+
 python -B -m probes.w6_performance.run --compare-candidates --output-dir output/w6-small-repeat/matmul
 
 python -B -m probes.w6_performance.full_forward --model-dir assets/qwen3-0.6b/onnx \
   --candidate-weight-transport file-backed-ram --output-dir output/w6-full-repeat
 ```
 
-小图数据写入 `matmul/result.json`，三组完整前向对照写入 `w6-full-repeat/comparison.json`。完整前向入口的两个选项是 `--lm-head-policy vocab-blocked` 和 `--qemu-weight-transport file-backed-ram`；上述对照命令自动为三组选择相应配置。[完整前向入口](../../../probes/w6_performance/full_forward.py) · [LM Head 数据](reports/lm-head-4core.json)
+单 token 小图的两批耗时和误差写入 `output/w6-single-token-attention/result.json`。其余两条命令分别生成矩阵乘法的 `matmul/result.json` 和三组完整前向的 `w6-full-repeat/comparison.json`。完整前向入口的两个选项是 `--lm-head-policy vocab-blocked` 和 `--qemu-weight-transport file-backed-ram`；上述对照命令自动为三组选择相应配置。[完整前向入口](../../../probes/w6_performance/full_forward.py) · [LM Head 数据](reports/lm-head-4core.json)
 
 </details>
