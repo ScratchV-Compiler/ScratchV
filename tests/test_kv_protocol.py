@@ -1,3 +1,4 @@
+import json
 import struct
 from types import SimpleNamespace
 import numpy as np
@@ -80,6 +81,31 @@ def test_success_commits_one_bank_after_transport(tmp_path,monkeypatch):
     assert a.shape==(1,1,128) and s.valid_length==4 and s.bank==1 and s.state=='READY'
     request=p.FrameDecoder().feed(s.serial.sent[0])[0]
     assert request.valid_length==3 and request.request==1
+
+
+@pytest.mark.parametrize('exit_code', [0, 7, -9])
+@pytest.mark.parametrize('quit_reply', [{}, None], ids=['reply', 'eof'])
+def test_shutdown_requires_zero_exit_even_after_close_ack(tmp_path, monkeypatch, exit_code, quit_reply):
+    s=mock_session(tmp_path,monkeypatch,p.Frame(p.ACK,42,1,3).encode())
+    def wait(timeout):
+        s.process.returncode=exit_code
+        return exit_code
+    s.process.wait=wait
+    monkeypatch.setattr(s.qmp,'command',lambda *args:quit_reply)
+    if exit_code == 0:
+        s.close()
+        assert s.state=='CLOSED' and s.report['passed']
+    else:
+        with pytest.raises(RuntimeError,match=f'QEMU shutdown failed \\({exit_code}\\)'):
+            s.close()
+        assert s.state=='FAULT' and not s.report['passed']
+    assert s.report['exit_code']==exit_code
+    assert s.report['qmp_quit_reply_received'] is (quit_reply is not None)
+    assert s.report['qemu_reaped'] and s.serial.closed
+    saved=json.loads((s.run_dir/'session.json').read_text())
+    assert saved['exit_code']==exit_code and saved['passed'] is (exit_code==0)
+    s.close();s.close()
+    assert len(s.serial.sent)==1  # Neither CLOSE nor model work is replayed.
 
 
 @pytest.mark.parametrize('response',[

@@ -1,5 +1,6 @@
 """Real QEMU lifecycle/failure gates. Run explicitly with the pinned toolchain."""
 import os
+import json
 import signal
 import threading
 import numpy as np
@@ -71,7 +72,45 @@ def test_continuous_requests_reset_and_reuse_metadata(executable,tmp_path):
         s.prefill([3]);s.decode(2)
     s.close();s.close()
     assert s.report['passed'] and s.report['qemu_reaped']
+    assert s.process.returncode==0 and s.report['exit_code']==0
     assert not s.monitor.thread.is_alive()
+
+
+@pytest.mark.skipif(not hasattr(os, 'WUNTRACED'), reason='POSIX stop/kill shutdown race')
+def test_crash_after_close_ack_is_not_success(executable, tmp_path, monkeypatch):
+    s=QemuSession(executable,tmp_path/'shutdown-crash',timeout=20).start()
+    try:
+        s.reset();s.prefill([1,2,3]);s.decode(4)
+        command,read=s.qmp.command,s.qmp.read
+        injected=False
+        def command_with_crash(name, arguments=None):
+            nonlocal injected
+            if name=='quit':
+                # Keep the real connection alive through the complete quit write,
+                # then kill QEMU before its reply. QMP permits EOF for quit only.
+                os.kill(s.process.pid,signal.SIGSTOP)
+                _,status=os.waitpid(s.process.pid,os.WUNTRACED)
+                assert os.WIFSTOPPED(status)
+                def read_after_kill():
+                    nonlocal injected
+                    if not injected:
+                        injected=True
+                        s.process.kill();s.process.wait(timeout=5)
+                    return read()
+                monkeypatch.setattr(s.qmp,'read',read_after_kill)
+            return command(name,arguments)
+        monkeypatch.setattr(s.qmp,'command',command_with_crash)
+        with pytest.raises(RuntimeError,match=r'QEMU shutdown failed \(-9\)'):
+            s.close()
+    finally:
+        s.close()
+    assert injected and s.process.returncode==-9
+    assert s.state=='FAULT' and not s.report['passed']
+    assert s.report['exit_code']==-9 and s.report['qemu_reaped']
+    assert s.report['qmp_quit_reply_received'] is False
+    assert not s.monitor.thread.is_alive()
+    saved=json.loads((s.run_dir/'session.json').read_text())
+    assert saved['exit_code']==-9 and not saved['passed']
 
 
 def test_cancelled_session_is_reaped(executable,tmp_path):

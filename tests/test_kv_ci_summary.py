@@ -36,7 +36,7 @@ def evidence(tmp_path, monkeypatch):
                   dict(case='qemu-1-greedy-generation', passed=True, generated_token_ids=[3]*4)],
         memory=dict(prefill_workspace_bytes=1000, decode_workspace_bytes=200, cache_bank_bytes=100)))
     write(tmp_path, 'w6-kv-cache/qemu-1/session.json', dict(schema='scratchv.kv-session.v1',
-        passed=True, state='CLOSED', qemu_reaped=True, cores=1, cache_layout=layout,
+        passed=True, state='CLOSED', qemu_reaped=True, exit_code=0, cores=1, cache_layout=layout,
         startup_s=0.5, sampled_peak_qemu_rss_bytes=5000,
         requests=[dict(kind=2, passed=True, forward_s=1.5),
                   dict(kind=3, passed=True, forward_s=0.2), dict(kind=3, passed=True, forward_s=0.4)]))
@@ -64,6 +64,7 @@ def test_measured_numbers_and_scope_are_visible_in_acceptance(evidence):
     assert '| 两块缓存区 | 200 |' in kv
     assert '| 采样 QEMU 进程峰值 RSS | 5,000 |' in kv
     assert '进程回收：完成' in kv
+    assert 'QEMU 退出码：0' in kv
     assert '完整 Qwen3-0.6B KV：**NOT RUN' in kv
 
 
@@ -104,6 +105,30 @@ def test_junit_failures_cannot_hide_behind_passing_model(evidence, tag):
 def test_incomplete_session_cannot_pass(evidence, field):
     change(evidence, 'w6-kv-cache/qemu-1/session.json', **{field: False})
     assert '**FAIL**' in render(evidence)
+
+
+@pytest.mark.parametrize('exit_code', [7, -9])
+def test_nonzero_qemu_exit_overrides_success_flags(evidence, exit_code):
+    change(evidence, 'w6-kv-cache/qemu-1/session.json', exit_code=exit_code)
+    text=render(evidence)
+    assert '**FAIL**' in text and '**PASS**' not in text
+    assert f'QEMU 退出码：{exit_code}' in text
+
+
+@pytest.mark.parametrize('exit_code', [None, False, True, '0', 0.0])
+def test_invalid_qemu_exit_evidence_cannot_pass(evidence, exit_code):
+    change(evidence, 'w6-kv-cache/qemu-1/session.json', exit_code=exit_code)
+    text=render(evidence)
+    assert '**INCOMPLETE' in text and '**PASS**' not in text
+
+
+def test_missing_qemu_exit_evidence_cannot_pass(evidence):
+    path=evidence/'w6-kv-cache/qemu-1/session.json'
+    value=json.loads(path.read_text())
+    del value['exit_code']
+    write(evidence, 'w6-kv-cache/qemu-1/session.json', value)
+    text=render(evidence)
+    assert '**INCOMPLETE' in text and '**PASS**' not in text
 
 
 @pytest.mark.parametrize('rows', [[], [{'case': 'x', 'passed': True, 'max_abs_by_output': [0]}],

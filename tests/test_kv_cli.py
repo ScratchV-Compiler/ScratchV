@@ -36,7 +36,8 @@ def test_mode_selection_and_static_capacity(cli,tmp_path):
         cli.parse_args(['--model','p.onnx','--decode-model','d.onnx','--tokenizer-dir','x','--output-dir','y','--prompt','a'])
 
 
-def test_reuse_completion_and_failure_reports(cli,tmp_path,monkeypatch):
+@pytest.mark.parametrize('failure_phase', ['prefill', 'close'])
+def test_reuse_completion_and_failure_reports(cli,tmp_path,monkeypatch,failure_phase):
     import scratchv.runtime.riscv_session as runtime
     path=tmp_path/'old';path.mkdir();(path/'executable.json').write_text('{}')
     (path/'report.json').write_text(json.dumps({'executable_sha256':cli.sha256_file(path/'executable.json')}))
@@ -52,7 +53,7 @@ def test_reuse_completion_and_failure_reports(cli,tmp_path,monkeypatch):
         def __init__(self,*a,**k):
             self.report={'passed':False,'qemu_reaped':False};self.runs=[];sessions.append(self)
         def __enter__(self):return self
-        def __exit__(self,kind,error,tb):self.report.update(passed=error is None,qemu_reaped=True)
+        def __exit__(self,kind,error,tb):self.report.update(passed=error is None,qemu_reaped=True,exit_code=0)
         def reset(self):pass
         def prefill(self,ids):return self.decode(1)
         def decode(self,token):
@@ -62,16 +63,27 @@ def test_reuse_completion_and_failure_reports(cli,tmp_path,monkeypatch):
     assert cli.main(arguments(tmp_path))==0
     report=json.loads((tmp_path/'out'/'report.json').read_text())
     assert report['passed'] and report['kv_cache'] and report['session']['qemu_reaped']
+    assert report['session']['exit_code']==0
     assert report['result']['generated_token_ids']==[3,3,3]
     assert len(sessions[0].runs)==3
     args=arguments(tmp_path)
     args[args.index(str(tmp_path/'out'))]=str(tmp_path/'failed')
-    def failure(self,ids):raise RuntimeError('guest failure')
-    monkeypatch.setattr(Session,'prefill',failure)
+    if failure_phase=='prefill':
+        def failure(self,ids):raise RuntimeError('guest failure')
+        monkeypatch.setattr(Session,'prefill',failure)
+        message='guest failure'
+    else:
+        def failure(self,kind,error,tb):
+            self.report.update(passed=False,qemu_reaped=True,exit_code=-9)
+            raise RuntimeError('QEMU shutdown failed (-9)')
+        monkeypatch.setattr(Session,'__exit__',failure)
+        message='QEMU shutdown failed (-9)'
     assert cli.main(args)==1
     report=json.loads((tmp_path/'failed'/'report.json').read_text())
     assert not report['passed'] and report['session']['qemu_reaped']
-    assert 'guest failure' in report['error']
+    assert message in report['error']
+    if failure_phase=='close':
+        assert report['session']['exit_code']==-9
 
 
 def test_common_compiler_cli_exposes_v2_and_reports_outputs(tmp_path):

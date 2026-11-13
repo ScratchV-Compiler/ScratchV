@@ -134,13 +134,19 @@ def render(directory):
             or not all(isinstance(row, dict) and row.get("passed") is True for row in requests)):
         problems.append("QEMU 请求记录缺失或未全部成功")
         requests = []
+    exit_code = session.get("exit_code")
+    exit_known = type(exit_code) is int
+    if session and not exit_known:
+        problems.append("QEMU 退出码缺失或无效")
     success = (outcome == "success" and not problems and bool(tests.get("passed"))
                and not tests.get("failed") and not tests.get("errors")
                and validation.get("passed") is True and len(metrics) == 4
                and all(row[1] for row in metrics) and session.get("passed") is True
-               and session.get("state") == "CLOSED" and session.get("qemu_reaped") is True)
+               and session.get("state") == "CLOSED" and session.get("qemu_reaped") is True
+               and exit_known and exit_code == 0)
     result = ("PASS" if success else "CANCELLED" if outcome == "cancelled" else
-              "FAIL" if outcome == "failure" or not problems else "INCOMPLETE")
+              "FAIL" if outcome == "failure" or (exit_known and exit_code != 0) or not problems
+              else "INCOMPLETE")
     lines = [heading, f"**{result}**（CI 步骤：{outcome}）\n\n", SCOPE, "\n"]
     if problems:
         lines.append("未完成证据：" + "；".join(_cell(problem) for problem in problems) + "。\n\n")
@@ -178,8 +184,9 @@ def render(directory):
     lines += ["\n| 内存项 | 字节 |\n", "| --- | --- |\n"]
     lines += [f"| {label} | {value:,} |\n" if type(value) is int and value >= 0
               else f"| {label} | 未记录 |\n" for label, value in sizes]
-    cleanup = session.get("state") == "CLOSED" and session.get("qemu_reaped") is True
-    lines.append(f"\nQEMU 进程回收：{'完成' if cleanup else '未确认'}。"
+    cleanup = session.get("qemu_reaped") is True
+    exit_text = str(exit_code) if exit_known else "未记录或无效"
+    lines.append(f"\nQEMU 退出码：{exit_text}。进程回收：{'完成' if cleanup else '未确认'}。"
                  "Prefill/Decode 请求时间包含通信和 guest 检查；总耗时包含缓存读取审计。"
                  "进程 RSS 与 guest 内存布局不同，本节不计算加速比。\n")
     return "".join(lines)

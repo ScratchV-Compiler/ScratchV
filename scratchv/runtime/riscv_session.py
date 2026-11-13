@@ -555,9 +555,10 @@ class QemuSession:
                 cleanup('log handle',handle.close)
         if self._previous_term is not None:
             cleanup('SIGTERM restore',lambda:signal.signal(signal.SIGTERM,self._previous_term))
-        self.report.update(state=self.state,valid_length=self.valid_length,
-                           qemu_reaped=self.process is not None and self.process.returncode is not None,
-                           passed=self.state=='CLOSED' and not errors)
+        exit_code = self.process.returncode if self.process is not None else None
+        self.report.update(state=self.state,valid_length=self.valid_length,exit_code=exit_code,
+                           qemu_reaped=exit_code is not None,
+                           passed=self.state=='CLOSED' and exit_code==0 and not errors)
         if self.report['passed'] and 'files' in self.report['weight_transport']:
             cleanup('weight transport',lambda:remove_transport(self.run_dir/'weight-transport',self.report['weight_transport']))
         if errors:
@@ -575,8 +576,10 @@ class QemuSession:
                 self._request(protocol.CLOSE)
                 self.qmp.cancelled = None
                 self.qmp.deadline = time.monotonic()+5
-                self.qmp.command('quit')
+                self.report['qmp_quit_reply_received'] = self.qmp.command('quit') is not None
                 self.process.wait(timeout=5)
+                if self.process.returncode != 0:
+                    raise RuntimeError(f'QEMU shutdown failed ({self.process.returncode})')
             self.state = 'CLOSED'
         except BaseException as exc:
             self._fault(exc)
