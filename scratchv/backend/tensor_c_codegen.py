@@ -40,6 +40,7 @@ from typing import Mapping
 
 import numpy as np
 
+from scratchv.backend.tensor_c_lm_head import MAX_HIDDEN, VOCAB_BLOCK, vocab_blocked_kernel
 from scratchv.backend.tensor_c_mean import TWO_FOUR_LANE_LAST_AXIS_C
 from scratchv.backend.tensor_c_nonlinear import (
     TRIG_REFERENCE_C, SIGMOID_REFERENCE_C, SOFTMAX_REFERENCE_C,
@@ -98,6 +99,7 @@ class TensorCArtifact:
     qemu_workspace_buffers: tuple[tuple[int, int], ...] = ()
     mean_policy: str = "sequential"
     nonlinear_policy: str = "libm"
+    lm_head_policy: str = "original"
 
 
 def _shape(shape):
@@ -232,7 +234,7 @@ class TensorCCodegen:
                  max_constant_bytes=256 * 1024 * 1024, constant_storage="inline",
                  kernel_calls=False, matmul_policy="sequential", matmul_tile="1x4",
                  qemu_workspace_layout="none", matmul_rhs_layout="original",
-                 mean_policy="sequential", nonlinear_policy="libm"):
+                 mean_policy="sequential", nonlinear_policy="libm", lm_head_policy="original"):
         self.program = program
         self.initializers = {} if initializers is None else dict(initializers)
         self.max_workspace_bytes = max_workspace_bytes
@@ -242,6 +244,7 @@ class TensorCCodegen:
         self.matmul_policy = matmul_policy
         self.mean_policy = mean_policy
         self.nonlinear_policy = nonlinear_policy
+        self.lm_head_policy = lm_head_policy
         self.matmul_tile = matmul_tile
         self.matmul_rhs_layout = matmul_rhs_layout
         self.qemu_workspace_layout = qemu_workspace_layout
@@ -282,6 +285,11 @@ class TensorCCodegen:
             raise TensorCCodegenError("qemu_workspace_layout must be 'none' or 'two-buffer-pad-4k'")
         if self.qemu_workspace_layout != "none" and self.constant_storage != "external":
             raise TensorCCodegenError("Experimental QEMU workspace layout requires external storage")
+        if self.lm_head_policy not in ("original", "vocab-blocked"):
+            raise TensorCCodegenError("lm_head_policy must be 'original' or 'vocab-blocked'")
+        if self.lm_head_policy == "vocab-blocked" and (
+                not self.kernel_calls or self.matmul_policy != "blocked_fma" or self.matmul_tile != "2x4"):
+            raise TensorCCodegenError("vocab-blocked LM head requires external kernel calls and blocked_fma/2x4")
         if len(program.functions) != 1:
             raise TensorCCodegenError("Exactly one function is required")
         func = program.functions[0]
@@ -303,6 +311,9 @@ class TensorCCodegen:
         program, initializers, self._rhs_panel_sources = self._panel_inputs(program, initializers)
         func = program.functions[0]
         instructions = func.blocks[0].instructions
+        self._lm_transpose = self._lm_head = None
+        if self.lm_head_policy == "vocab-blocked":
+            self._lm_transpose, self._lm_head = self._match_lm_head(program, initializers)
         self.matmul_rhs_panels = []
         self.specs, self.names, self.constants, self.body = {}, {}, [], []
         self.external_weights, self.external_initializers = [], []
@@ -373,6 +384,15 @@ class TensorCCodegen:
                 raise TensorCCodegenError(f"{value.name}: declared shape {value.shape} != inferred {shape}")
             spec = self._register(value, shape)
             defined.add(value.name)
+            if instruction is self._lm_transpose:
+                # The terminal MatMul consumes the original [vocabulary,hidden]
+                # bytes through its logical transposed spec. No other consumer
+                # can observe this alias; the matcher checks that before emission.
+                weight = instruction.operands[0]
+                self.names[value.name] = self.names[weight.name]
+                self.body.append("/* w6_lm_head_begin */")
+                self._finite_check(self.specs[weight.name])
+                continue
             needed = (max(spec.nbytes, 1) + 7) // 8 * 8
             choice = next((j for j, (_, size) in enumerate(free) if size >= needed), None)
             if choice is None:
@@ -481,6 +501,7 @@ class TensorCCodegen:
                 matmul_rhs_panels=tuple(self.matmul_rhs_panels),
                 qemu_workspace_layout=self.qemu_workspace_layout,
                 qemu_workspace_buffers=qemu_workspace_buffers,
+                lm_head_policy=self.lm_head_policy,
             )
         source = (_PRELUDE + mean_prelude + nonlinear_prelude + "\n" + "\n".join(self.constants)
                   + f"\nstatic union {{ uint64_t align; unsigned char bytes[{max(high, 8)}]; }} sv_arena;\n"
@@ -489,6 +510,30 @@ class TensorCCodegen:
                   + "\n  ".join(self.body) + "\n}\n")
         return TensorCArtifact(source, inputs, output, high, self.constant_bytes,
                                mean_policy=self.mean_policy, nonlinear_policy=self.nonlinear_policy)
+
+    @staticmethod
+    def _match_lm_head(program, initializers):
+        """Return the sole terminal tied weight transpose and its MatMul."""
+        func = program.functions[0]
+        instructions = func.blocks[0].instructions
+        if len(instructions) < 4:
+            raise TensorCCodegenError("Expected a tied terminal Transpose -> MatMul -> Return")
+        transpose, head, ret = instructions[-3:]
+        if (transpose.opcode != OpCode.TRANSPOSE or len(transpose.operands) != 1 or transpose.dest is None
+                or head.opcode != OpCode.MATMUL or len(head.operands) != 2 or head.dest is None
+                or head.operands[1].name != transpose.dest.name
+                or head.operands[0].name == transpose.dest.name or ret.operands[0].name != head.dest.name):
+            raise TensorCCodegenError("Expected a tied terminal Transpose -> MatMul -> Return")
+        weight = transpose.operands[0]
+        if (weight.name not in initializers or weight.dtype != DataType.FLOAT32
+                or len(weight.shape) != 2 or not (0 < weight.shape[1] <= MAX_HIDDEN and weight.shape[0] > 0)
+                or tuple(transpose.attrs.get("perm", (1, 0))) != (1, 0)
+                or any(value.name == transpose.dest.name for value in func.returns)):
+            raise TensorCCodegenError("Expected a bound FP32 [vocabulary,hidden] LM head weight")
+        if not any(op.opcode == OpCode.GATHER and op.operands and op.operands[0].name == weight.name
+                   and op.attrs.get("axis", 0) in (0, -2) for op in instructions[:-3]):
+            raise TensorCCodegenError("The LM head weight must also supply embedding Gather")
+        return transpose, head
 
     def _panel_inputs(self, program, initializers):
         """Select immutable 2D RHS storage; copy only IR containers we change.
@@ -967,6 +1012,17 @@ class TensorCCodegen:
         if op == OpCode.MATMUL:
             a, b, batch = details["a"], details["b"], details["batch"]
             m, k, n = a[-2], a[-1], b[-1]
+            if instruction is self._lm_head:
+                if len(a) != 3 or a[0] != 1 or m <= 0:
+                    raise TensorCCodegenError("LM head expects a single batch of positive-length rows")
+                tasks = (n + VOCAB_BLOCK - 1) // VOCAB_BLOCK
+                self.kernels.append(vocab_blocked_kernel(m, n, k))
+                self.body.append(
+                    f"struct w6_head ctx = {{{names[0]}, {names[1]}, {dst}}};\n"
+                    f"#if SCRATCHV_CORES > 1\n"
+                    f"sv_parallel_for({tasks}ULL, w6_head_range, &ctx);\n"
+                    f"#else\nw6_head_range(&ctx, 0, {tasks}ULL);\n#endif\n")
+                return False  # The normal kernel wrapper verifies all logits.
             left = _broadcast_offset(batch, a[:-2], "batch")
             right = _broadcast_offset(batch, b[:-2], "batch")
             if self.matmul_policy == "blocked_fma":

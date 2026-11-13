@@ -213,6 +213,7 @@ def matching_reuse_metadata(cli, monkeypatch, path):
     ({"matmul_policy": "blocked_fma"}, 1),
     ({"matmul_tile": "2x4"}, 1),
     ({"matmul_rhs_layout": "column-panel"}, 1),
+    ({"lm_head_policy": "vocab-blocked"}, 1),
     ({"qemu_workspace_layout": "two-buffer-pad-4k"}, 1),
 ])
 def test_reuse_rejects_changed_configuration_or_padding(cli, monkeypatch, tmp_path, changes, cores):

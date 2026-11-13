@@ -53,6 +53,7 @@ def test_unchanged_reuse_metadata_checks_bundle_layout_and_generated_sources(tmp
     assert executable.manifest == record["manifest"]
     assert executable.layout == record["layout"]
     assert executable.output.shape == (1, 256, 151936)
+    assert "lm_head_policy" not in executable.evidence  # Pre-W6 metadata remains compatible.
 
 
 @pytest.mark.parametrize("omission", ["all", "model.c", "guest.c", "start.S", "link.ld"])
@@ -891,3 +892,42 @@ def test_w4_core_alias_conflict_stops_before_output(tmp_path, entry, flags):
         module.main(["--model-dir", str(tmp_path / "model"), "--output-dir", str(output), *flags])
     assert exc.value.code == 2
     assert not output.exists()
+
+@pytest.mark.parametrize("built,reported,requested,accepted", [
+    (None, None, None, True),
+    ("original", "original", None, True),
+    (None, None, "vocab-blocked", False),
+    ("vocab-blocked", "vocab-blocked", None, False),
+    ("vocab-blocked", None, "vocab-blocked", False),
+    ("vocab-blocked", "vocab-blocked", "vocab-blocked", True),
+])
+def test_reuse_requires_matching_lm_head_policy(tmp_path, monkeypatch, built, reported, requested, accepted):
+    args, out = _mock_preflight_and_reuse(tmp_path, monkeypatch)
+    old = tmp_path / "previous/report.json"
+    record = json.loads(old.read_text())
+    record.update(matmul_policy="blocked_fma", matmul_tile="2x4")
+    if reported is not None:
+        record["lm_head_policy"] = reported
+    old.write_text(json.dumps(record))
+    exe = run.load_executable(None)
+    evidence = {"matmul_tile": "2x4"}
+    if built is not None:
+        evidence["lm_head_policy"] = built
+    monkeypatch.setattr(run, "load_executable", lambda *_: replace(exe, evidence=evidence))
+    args += ["--matmul-policy", "blocked_fma", "--matmul-tile", "2x4", "--build-only"]
+    if requested is not None:
+        args += ["--lm-head-policy", requested]
+    assert run.main(args) == (0 if accepted else 1)
+    report = json.loads((out / "report.json").read_text())
+    assert report["lm_head_policy"] == (requested or "original")
+    if not accepted:
+        assert "LM Head policy differs" in report["error"]
+    assert not report["full_qemu_forward_executed"]
+
+
+def test_load_rejects_unknown_lm_head_policy(tmp_path, monkeypatch):
+    path, record = _saved_executable(tmp_path, monkeypatch)
+    record["evidence"]["lm_head_policy"] = None
+    path.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="LM Head policy"):
+        run.load_executable(path)

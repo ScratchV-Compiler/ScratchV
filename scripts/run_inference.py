@@ -96,6 +96,9 @@ def prepare_executable(args, out, cores=UNSET, *, harts=UNSET):
         if (("cores" in record or "harts" in record)
                 and read_cores(record) != exe.cores):
             raise ValueError("Reused report core count differs from executable")
+        if (exe.evidence.get("lm_head_policy", "original") != "original"
+                or record.get("lm_head_policy", "original") != "original"):
+            raise ValueError("Reused build LM Head policy differs from the generation entry's original policy")
         # W4 stored arithmetic policy in the sibling report; W5 also keeps it
         # in the validated executable metadata.
         policy = exe.evidence.get("matmul_policy", record.get("matmul_policy"))

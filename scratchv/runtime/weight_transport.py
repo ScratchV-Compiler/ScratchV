@@ -24,10 +24,18 @@ def save_transport_report(directory, report):
     os.replace(pending, directory / "transport.json")
 
 
+def _transport_name(index, report):
+    if report.get("mode") == "file-backed-ram":
+        if index:
+            raise ValueError("A RAM transport owns exactly one image")
+        return "ram.bin"
+    return f"weights-{index:05d}.bin"
+
+
 def _files(directory, report):
     directory = _reject_links(directory)
     for index, row in enumerate(report["files"]):
-        name = f"weights-{index:05d}.bin"
+        name = _transport_name(index, report)
         if row["file"] != name:
             raise ValueError("Invalid weight transport filename/order")
         path = directory / name
@@ -65,7 +73,7 @@ def _observe_retained(directory, report):
         errors.append(f"directory: {type(exc).__name__}: {exc}")
         directory = None
     for index, row in owned:
-        name = f"weights-{index:05d}.bin"
+        name = _transport_name(index, report)
         try:
             if row["file"] != name:
                 raise ValueError("Invalid owned weight transport filename/order")
@@ -80,7 +88,10 @@ def _observe_retained(directory, report):
             remaining.append({"file": name, "nbytes": None, "error": detail})
         else:
             observed += 1
-            remaining.append({"file": name, "nbytes": info.st_size})
+            entry = {"file": name, "nbytes": info.st_size}
+            if report.get("mode") == "file-backed-ram":
+                entry["allocated_bytes"] = info.st_blocks * 512
+            remaining.append(entry)
     known = [row for row in remaining if row["nbytes"] is not None]
     known_bytes = sum(row["nbytes"] for row in known)
     report.update(retained=True if known else None if errors else False,
@@ -88,6 +99,8 @@ def _observe_retained(directory, report):
                   retained_observed_bytes=known_bytes,
                   retained_observation="partial" if errors and observed else "unavailable" if errors else "complete",
                   retained_observation_errors=errors)
+    if report.get("mode") == "file-backed-ram":
+        report["retained_allocated_bytes"] = None if errors else sum(row["allocated_bytes"] for row in known)
     if errors:
         raise OSError("Weight transport residual observation failed: " + "; ".join(errors))
 
