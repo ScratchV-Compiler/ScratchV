@@ -29,10 +29,9 @@
 
 | 指标 | 无缓存 | KV cache |
 |---|---:|---:|
-| 生成总耗时 | 1.663360 s | 0.415921 s |
+| 小模型token生成总耗时 | 1.663360 s | 0.415921 s |
 | 本次 4-token 调用的平均吞吐量 | 2.4048 token/s | 9.6172 token/s |
 | QEMU 启动次数 | 4 | 1 |
-| 模型调用 | 4 次完整历史重算 | 1 次 Prefill + 3 次 Decode |
 | 生成 token ID | `[17, 17, 17, 17]` | `[17, 17, 17, 17]` |
 
 计算方式：
@@ -46,9 +45,6 @@
              ≈ 74.9951%，即约 75.00%
 ```
 
-无缓存包含四次启动、加载、前向、输出传输与清理;缓存包含一次启动、加载、RESET、Prefill、三次 Decode、输出传输、选 token 与清理。两者都不包含模型导出和 C/ELF 编译。
-
-是单次样本
 
 实现入口：[同条件 benchmark](../../../probes/w6_kv_cache/run.py) 中的 `benchmark()`。保留的原始报告路径为 `output/kv-benchmark-serial-1/benchmark.json`。
 
