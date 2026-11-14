@@ -64,12 +64,25 @@ class IRExecutionError(RuntimeError):
         super().__init__(f"{code} {context}: {message}")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ExecutionResult:
-    return_value: np.ndarray | None
+    return_values: tuple[np.ndarray, ...]
     executed_steps: int
     diagnostics: tuple[VerificationError, ...] = ()
     memory_stats: dict | None = None
+
+    def __init__(self, return_value=None, executed_steps=0, diagnostics=(), memory_stats=None, return_values=()):
+        object.__setattr__(self, 'return_values', tuple(return_values) or (
+            (return_value,) if return_value is not None else ()))
+        object.__setattr__(self, 'executed_steps', executed_steps)
+        object.__setattr__(self, 'diagnostics', diagnostics)
+        object.__setattr__(self, 'memory_stats', memory_stats)
+
+    @property
+    def return_value(self):
+        if len(self.return_values) > 1:
+            raise ValueError('Multiple results: use return_values')
+        return self.return_values[0] if self.return_values else None
 
 
 @dataclass
@@ -116,7 +129,7 @@ class _MemoryObservation:
         arrays = [value.storage if isinstance(value, _MemorySlot) else value
                   for value in values.values()]
         if returned is not None:
-            arrays.append(returned)
+            arrays.extend(returned if isinstance(returned, tuple) else (returned,))
         storage = {}
         for array in arrays:
             key, size = _backing_storage(array)
@@ -139,7 +152,7 @@ class _MemoryObservation:
             "retained_values": len(values),
             "retained_logical_bytes": logical,
             "retained_numpy_storage_bytes": storage,
-            "return_logical_bytes": 0 if returned is None else int(returned.nbytes),
+            "return_logical_bytes": 0 if returned is None else sum(int(a.nbytes) for a in (returned if isinstance(returned, tuple) else (returned,))),
             "scope": "interpreter retained values at instruction boundaries; final return copy included in peaks",
             "notes": [
                 "Logical bytes count each retained binding, including views and ALLOCA storage.",
@@ -525,24 +538,22 @@ class IRInterpreter:
                     if not operands:
                         return ExecutionResult(None, steps, tuple(issues),
                                                memory_result(None))
-                    value = operands[0]
-                    if not isinstance(value, np.ndarray):
-                        raise OpError("MemoryError", "cannot return memory reference")
-                    reference = instr.operands[0]
-                    inferred_return = isinstance(reference.shape, (tuple, list)) and len(reference.shape) == 0
-                    if not inferred_return or reference.name in params or reference.name in globals_:
-                        checked_shape(reference, value.shape, position, instr)
-                    if function.returns:
-                        # verify_ir already checks declaration count and dtype.
-                        checked_shape(function.returns[0], value.shape, position, instr)
-                    if (
-                        np.issubdtype(value.dtype, np.floating)
-                        and not np.isfinite(value).all()
-                    ):
-                        raise OpError("NumericError", "return value must be finite")
-                    returned = value.copy()
-                    return ExecutionResult(returned, steps, tuple(issues),
-                                           memory_result(returned))
+                    results = []
+                    for index, value in enumerate(operands):
+                        if not isinstance(value, np.ndarray):
+                            raise OpError("MemoryError", "cannot return memory reference")
+                        reference = instr.operands[index]
+                        inferred_return = isinstance(reference.shape, (tuple, list)) and len(reference.shape) == 0
+                        if not inferred_return or reference.name in params or reference.name in globals_:
+                            checked_shape(reference, value.shape, position, instr)
+                        if function.returns:
+                            checked_shape(function.returns[index], value.shape, position, instr)
+                        if np.issubdtype(value.dtype, np.floating) and not np.isfinite(value).all():
+                            raise OpError("NumericError", "return value must be finite")
+                        results.append(value.copy())
+                    returned = tuple(results)
+                    return ExecutionResult(returned[0] if len(returned) == 1 else None,
+                                           steps, tuple(issues), memory_result(returned), returned)
                 if op == OpCode.ALLOCA:
                     size = instr.attrs.get("size", 4)
                     dtype = DTYPES[instr.dest.dtype]

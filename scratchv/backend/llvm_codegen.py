@@ -141,6 +141,11 @@ class LLVMCodegen:
                 func.params.append(val)
 
     def _emit_function(self, func: Function) -> None:
+        if len(func.returns) > 1 or any(
+            inst.opcode == OpCode.RETURN and len(inst.operands) > 1
+            for block in func.blocks for inst in block.instructions
+        ):
+            raise ValueError("LLVM backend does not support multiple return values; use Tensor-C v2")
         self._current_func = func.name
         self._named_values.clear()
         self._block_counter = 0

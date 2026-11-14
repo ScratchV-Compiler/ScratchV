@@ -176,18 +176,17 @@ class ONNXParser:
         for node in graph.node:
             self._translate_node(node, output_names)
 
-        # Add return if we have outputs
+        # A single terminator carries every declared graph result in order.
+        outputs = []
         for o in graph.output:
-            if o.name in self._value_map:
-                value = self._value_map[o.name]
-                if o.name in self._value_shapes and value.shape != self._value_shapes[o.name]:
-                    # Preserve the declaration even for direct global returns,
-                    # but do not overwrite the source's actual storage shape.
-                    value = replace(value, shape=self._value_shapes[o.name])
-                self.builder.ret(value)
-                break
-        else:
-            self.builder.ret()
+            if o.name not in self._value_map:
+                raise ONNXParseError(f"Graph output {o.name!r} has no value binding")
+            value = self._value_map[o.name]
+            if o.name in self._value_shapes and value.shape != self._value_shapes[o.name]:
+                value = replace(value, shape=self._value_shapes[o.name])
+            outputs.append(value)
+        func.returns = [replace(value, name=o.name) for o, value in zip(graph.output, outputs)]
+        self.builder.ret_many(outputs)
 
         return self.builder.program
 

@@ -282,7 +282,12 @@ def run_probe(out: Path, report: dict, model_seed: int = 0) -> None:
         case["pytorch_vs_ort"] = position_comparison(ort_named, pt, names, metadata, valid_length)
         result = IRInterpreter(programs["diagnostic"]).run(
             feed, initializers=parsers["diagnostic"].initializers)
-        ir_named = unpack_trace(result.return_value, schema)
+        # Diagnostic ABI: packed trace first, then explicitly named outputs.
+        if len(result.return_values) != len(names) + 1:
+            raise ValueError("Unexpected diagnostic IR output count")
+        ir_named = unpack_trace(result.return_values[0], schema)
+        case["ir_pack_layout"] = compare_outputs(
+            ir_named, dict(zip(names, result.return_values[1:])), names, ATOL)
         case["ir_vs_ort"] = position_comparison(ir_named, ort_named, names, metadata, valid_length)
         ordinary_result = IRInterpreter(programs["normal"]).run(
             feed, initializers=parsers["normal"].initializers)
@@ -298,6 +303,7 @@ def run_probe(out: Path, report: dict, model_seed: int = 0) -> None:
                                   "diagnostic": result.executed_steps}
         case["passed"] = all([
             case["capture_preserves_logits"]["passed"], case["ort_pack_layout"]["passed"],
+            case["ir_pack_layout"]["passed"],
             case["pytorch_vs_ort"]["passed"], case["ir_vs_ort"]["passed"],
             *[d["passed"] for d in case["ordinary_logits"].values()],
             *[d["passed"] for d in case["attention_checks"]],

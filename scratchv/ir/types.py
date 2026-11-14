@@ -187,6 +187,7 @@ class Function:
     """An IR function: a collection of basic blocks forming a CFG."""
     name: str
     params: list[Value] = field(default_factory=list)
+    # Ordered result signature; names are public labels, not SSA definitions.
     returns: list[Value] = field(default_factory=list)
     blocks: list[BasicBlock] = field(default_factory=list)
     # Local variables declared in this function

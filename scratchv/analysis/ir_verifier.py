@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import enum
 import math
+from numbers import Integral
 from dataclasses import dataclass, replace
 from typing import Optional
 
@@ -82,7 +83,7 @@ OPCODE_SPECS.update({
     OpCode.STORE: OpcodeSpec(2, 2, False),
     OpCode.BR: OpcodeSpec(0, 0, False),
     OpCode.BR_IF: OpcodeSpec(1, 2, False),
-    OpCode.RETURN: OpcodeSpec(0, 1, False),
+    OpCode.RETURN: OpcodeSpec(0, None, False),
     OpCode.FOR: OpcodeSpec(0, 0, True),
     OpCode.ENDFOR: OpcodeSpec(0, 0, False),
 })
@@ -201,8 +202,6 @@ class IRVerifier:
             self._check_value(value, (fi, -1, -1, "return", ri))
         for li, value in enumerate(func.locals):
             self._check_value(value, (fi, -1, -1, "local", li))
-        if len(func.returns) > 1:
-            self._emit("type-consistency", "return-signature", "at most one return type is supported", function_loc)
         if not func.blocks:
             self._emit("entry-existence", "no-entry", "function has no basic blocks", function_loc)
             return
@@ -431,12 +430,27 @@ class IRVerifier:
                     error("comparison", "BR_IF requires a supported cmp_op")
                 if all(isinstance(v.dtype, DataType) for v in inst.operands) and inst.operands[0].dtype != inst.operands[1].dtype:
                     error("comparison-types", "BR_IF comparison types differ")
-        if inst.opcode == OpCode.RETURN and len(func.returns) == 1:
-            if count != 1:
-                error("return-count", "declared return requires one value")
-            elif (isinstance(inst.operands[0].dtype, DataType) and isinstance(func.returns[0].dtype, DataType)
-                  and inst.operands[0].dtype != func.returns[0].dtype):
-                error("return-type", "returned dtype differs from declared return")
+        if inst.opcode == OpCode.RETURN and func.returns:
+            if count != len(func.returns):
+                error("return-count", "returned value count differs from declared return signature")
+            else:
+                for index, (actual, declared) in enumerate(zip(inst.operands, func.returns)):
+                    if (isinstance(actual.dtype, DataType) and isinstance(declared.dtype, DataType)
+                            and actual.dtype != declared.dtype):
+                        error("return-type", f"returned dtype at index {index} differs from declared return")
+                    shape = declared.shape
+                    if (not isinstance(shape, (tuple, list)) or any(
+                        isinstance(d, bool) or not isinstance(d, Integral) or d < 0 for d in shape)):
+                        error("return-shape", f"ShapeError: invalid declared result shape at index {index}")
+                    else:
+                        definition = definitions.get(actual.name)
+                        source = definition.value if definition is not None else actual
+                        boundary = any(actual.name == value.name for value in (
+                            *func.params, *self.program.global_values))
+                        actual_shape = actual.shape or source.shape
+                        if ((actual_shape or boundary) and isinstance(actual_shape, (tuple, list))
+                                and tuple(actual_shape) != tuple(shape)):
+                            error("return-shape", f"ShapeError: returned shape at index {index} differs from declared return")
         if inst.opcode in (OpCode.LOAD, OpCode.STORE):
             address = inst.operands[0]
             definition = definitions.get(address.name) if address.name not in ambiguous else None

@@ -1,0 +1,469 @@
+{
+  "schema": "scratchv.kv-cache-performance-report.v1",
+  "report_date": "2026-11-13",
+  "measurement_reexecuted_for_this_report": false,
+  "scope": "Archived local QEMU/TCG measurements; no physical RISC-V throughput claim; no matched full-model uncached performance baseline.",
+  "sources": {
+    "small": {
+      "path": "output/kv-benchmark-serial-1/benchmark.json",
+      "sha256": "29afb8d99ce0ed2a1e037f553c8ebb4a92071d3c01d7d78c1c65d55a096e7766"
+    },
+    "full": {
+      "path": "docs/llm-deploy-v1.0/W6/reports/full-validation-summary.json",
+      "sha256": "f3f7b3a31533aafbfc887beb7a7a4715db0be79a8bcefa7196293053d060c4a7"
+    },
+    "history": {
+      "path": "docs/llm-deploy-v1.0/W5/reports/validation-summary.json",
+      "sha256": "ee3744e48f819fcdb6e4b8e8c17b8fc78afdfe9d9610a1e1a2412f87abed7cfa"
+    }
+  },
+  "small_matched_benchmark": {
+    "scope": "QEMU/TCG wall time; not real RISC-V hardware",
+    "cores": 1,
+    "warmups": 0,
+    "prompt_length": 17,
+    "max_new_tokens": 4,
+    "policies": "FP32 sequential/libm",
+    "uncached_total_s": 1.6633602550027717,
+    "cached_total_s": 0.4159211320002214,
+    "generated_token_ids": [
+      17,
+      17,
+      17,
+      17
+    ],
+    "passed": true,
+    "measurement_date": "2026-11-10",
+    "configuration": {
+      "layers": 2,
+      "hidden_size": 32,
+      "q_heads": 4,
+      "kv_heads": 2,
+      "head_dim": 16,
+      "vocab_size": 128,
+      "seed": 0,
+      "batch": 1,
+      "capacity": 256
+    },
+    "sampling": {
+      "measured_pairs": 1,
+      "order": [
+        "uncached",
+        "cached"
+      ],
+      "host_page_cache_cleared": false
+    },
+    "uncached_qemu_processes": 4,
+    "cached_qemu_processes": 1,
+    "cached_startup_s": 0.03143076200285577,
+    "cached_requests": [
+      {
+        "kind": 1,
+        "request": 1,
+        "committed_before": 0,
+        "passed": true,
+        "forward_s": 0.0019364699983270839,
+        "committed_after": 0,
+        "total_s": 0.0019432289991527796
+      },
+      {
+        "kind": 2,
+        "request": 2,
+        "committed_before": 0,
+        "passed": true,
+        "forward_s": 0.3440588659977948,
+        "output_transfer_s": 0.0008289050019811839,
+        "committed_after": 17,
+        "total_s": 0.34489990399742965
+      },
+      {
+        "kind": 3,
+        "request": 3,
+        "committed_before": 17,
+        "passed": true,
+        "forward_s": 0.02055725999889546,
+        "output_transfer_s": 0.0006711499991070013,
+        "committed_after": 18,
+        "total_s": 0.021234832998743514
+      },
+      {
+        "kind": 3,
+        "request": 4,
+        "committed_before": 18,
+        "passed": true,
+        "forward_s": 0.0049132429994642735,
+        "output_transfer_s": 0.0005369710015656892,
+        "committed_after": 19,
+        "total_s": 0.005454518999613356
+      },
+      {
+        "kind": 3,
+        "request": 5,
+        "committed_before": 19,
+        "passed": true,
+        "forward_s": 0.004689819001214346,
+        "output_transfer_s": 0.0007099030008248519,
+        "committed_after": 20,
+        "total_s": 0.005402416998549597
+      },
+      {
+        "kind": 4,
+        "request": 6,
+        "committed_before": 20,
+        "passed": true,
+        "forward_s": 0.0007235779994516633,
+        "committed_after": 20,
+        "total_s": 0.0007256299977598246
+      }
+    ],
+    "uncached_runs": [
+      {
+        "step": 0,
+        "valid_length": 17,
+        "forward_wall_s": 0.40189480199842365,
+        "qemu_wall_s": 0.40801308899972355,
+        "elapsed_s": 0.4139816739989328,
+        "passed": true
+      },
+      {
+        "step": 1,
+        "valid_length": 18,
+        "forward_wall_s": 0.40176312899711775,
+        "qemu_wall_s": 0.4064838139966014,
+        "elapsed_s": 0.41244982500211336,
+        "passed": true
+      },
+      {
+        "step": 2,
+        "valid_length": 19,
+        "forward_wall_s": 0.4018640160029463,
+        "qemu_wall_s": 0.4066256340011023,
+        "elapsed_s": 0.4117415760010772,
+        "passed": true
+      },
+      {
+        "step": 3,
+        "valid_length": 20,
+        "forward_wall_s": 0.4016190589973121,
+        "qemu_wall_s": 0.40654907699718024,
+        "elapsed_s": 0.4126967699994566,
+        "passed": true
+      }
+    ],
+    "derived": {
+      "speedup": 3.9992203497895034,
+      "latency_reduction_percent": 74.99512623622667,
+      "uncached_tokens_per_s": 2.4047706971291882,
+      "cached_tokens_per_s": 9.61720790853654
+    }
+  },
+  "full_qwen3_0_6b": {
+    "model": "Qwen/Qwen3-0.6B",
+    "model_source": {
+      "model_id": "Qwen/Qwen3-0.6B",
+      "revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+      "checkpoint_sha256": "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b",
+      "dtype": "float32",
+      "pretrained": true
+    },
+    "layout": {
+      "layers": 28,
+      "kv_heads": 8,
+      "head_dim": 128,
+      "vocab_size": 151936,
+      "capacity": 256,
+      "pad_token_id": 151643
+    },
+    "policies": {
+      "matmul_policy": "blocked_fma",
+      "matmul_tile": "2x4",
+      "matmul_rhs_layout": "column-panel",
+      "mean_policy": "two-four-lane-last-axis",
+      "nonlinear_policy": "fp32-reference"
+    },
+    "packages": {
+      "torch": "2.7.1+cpu",
+      "transformers": "4.51.3",
+      "onnx": "1.18.0",
+      "onnxruntime": "1.22.1"
+    },
+    "compiler": {
+      "compile_seconds": 57.80089941500046,
+      "versions": {
+        "compiler": "0.14.1",
+        "qemu": "QEMU emulator version 11.1.2",
+        "target": "riscv64 / RV64GC / LP64D / QEMU virt / bare metal",
+        "math_library": "Zig-bundled musl"
+      },
+      "prefill_workspace_bytes": 695993352,
+      "decode_workspace_bytes": 685297168
+    },
+    "generated_token_ids": [
+      12095,
+      13,
+      576,
+      6722
+    ],
+    "generated_text": " Paris. The capital",
+    "generation_timings": {
+      "token_selection_s": 0.0012116489888285287,
+      "total_s": 291.813700065999,
+      "generated_tokens": 4,
+      "pending_tokens": 1
+    },
+    "qemu": {
+      "cores": 4,
+      "generated_token_ids": [
+        12095,
+        13,
+        576,
+        6722
+      ],
+      "generated_text": " Paris. The capital",
+      "startup_s": 11.72947393800132,
+      "validation_stage_s": 304.8866061269946,
+      "forward_s": [
+        236.45762427800219,
+        18.30465312799788,
+        18.125059456993768,
+        18.07566032599425
+      ],
+      "max_logits_abs": 2.0265579223632812e-05,
+      "max_valid_kv_abs": 0.000244140625,
+      "sampled_peak_qemu_rss_bytes": 5678350336,
+      "qemu_rss_scope": "QEMU process RSS; distinct from guest layout and not a hard limit",
+      "qemu_reaped": true,
+      "state": "CLOSED",
+      "committed_length_before_reset": 8,
+      "final_length": 0,
+      "requests": [
+        {
+          "kind": 1,
+          "request": 1,
+          "committed_before": 0,
+          "passed": true,
+          "forward_s": 0.15222501500102226,
+          "committed_after": 0,
+          "total_s": 0.15226777099451283
+        },
+        {
+          "kind": 2,
+          "request": 2,
+          "committed_before": 0,
+          "passed": true,
+          "forward_s": 236.45762427800219,
+          "output_transfer_s": 0.0156574510037899,
+          "committed_after": 5,
+          "total_s": 236.47329247999733
+        },
+        {
+          "kind": 3,
+          "request": 3,
+          "committed_before": 5,
+          "passed": true,
+          "forward_s": 18.30465312799788,
+          "output_transfer_s": 0.002468261001922656,
+          "committed_after": 6,
+          "total_s": 18.3071323549957
+        },
+        {
+          "kind": 3,
+          "request": 4,
+          "committed_before": 6,
+          "passed": true,
+          "forward_s": 18.125059456993768,
+          "output_transfer_s": 0.00133472300512949,
+          "committed_after": 7,
+          "total_s": 18.126401048000844
+        },
+        {
+          "kind": 3,
+          "request": 5,
+          "committed_before": 7,
+          "passed": true,
+          "forward_s": 18.07566032599425,
+          "output_transfer_s": 0.0019315460012876429,
+          "committed_after": 8,
+          "total_s": 18.077600368000276
+        },
+        {
+          "kind": 1,
+          "request": 6,
+          "committed_before": 8,
+          "passed": true,
+          "forward_s": 0.12062151700229151,
+          "committed_after": 0,
+          "total_s": 0.12062776899983874
+        },
+        {
+          "kind": 4,
+          "request": 7,
+          "committed_before": 0,
+          "passed": true,
+          "forward_s": 0.000735526999051217,
+          "committed_after": 0,
+          "total_s": 0.0007390320024569519
+        }
+      ],
+      "fma_conformance_passed": true
+    },
+    "weight_bytes": 2384795976,
+    "unshared_weight_bytes": 4769195172,
+    "atol": 0.001,
+    "limitations": [
+      "Full model QEMU covers one five-token prompt and four generated tokens on four cores; capacity boundary additionally checked in PyTorch, ORT and Host C.",
+      "Full uncached ONNX numerical comparison covers ten steps, but full uncached QEMU performance baseline was not rerun.",
+      "Timings are QEMU/TCG wall times and include audit work where stated, not physical RISC-V hardware measurements."
+    ],
+    "uncached_qemu_performance_comparison": "NOT_RUN",
+    "measurement_date": "2026-11-11",
+    "guest_ram_bytes": 3500146688,
+    "cache_bank_bytes": 58720256,
+    "stages": {
+      "torch": {
+        "status": "PASS",
+        "checked_steps": 10,
+        "max_abs": 0.000274658203125
+      },
+      "ort-prefill": {
+        "status": "PASS",
+        "checked_steps": 4,
+        "max_abs": 0.000274658203125
+      },
+      "ort-decode": {
+        "status": "PASS",
+        "checked_steps": 6,
+        "max_abs": 0.000274658203125
+      },
+      "baseline": {
+        "status": "PASS",
+        "checked_steps": 10,
+        "max_abs": 2.7477741241455078e-05
+      },
+      "build": {
+        "status": "PASS",
+        "checked_steps": 0,
+        "max_abs": null
+      },
+      "qemu": {
+        "status": "PASS",
+        "checked_steps": 4,
+        "max_abs": 0.000244140625
+      },
+      "host": {
+        "status": "PASS",
+        "checked_steps": 6,
+        "max_abs": 0.00030517578125
+      }
+    },
+    "derived": {
+      "decode_mean_s": 18.1684576369953,
+      "forward_request_sum_s": 290.9629971889881,
+      "prefill_over_mean_decode": 13.014732951052391,
+      "decode_tokens_per_s": 0.05504044536855799,
+      "full_sequence_logits_bytes": 155582464,
+      "current_step_logits_bytes": 607744,
+      "duplicate_graph_weight_reduction_percent": 49.99584017862878
+    }
+  },
+  "historical_uncached_qwen3_0_6b": {
+    "measurement_date": "2026-10-23",
+    "baseline_commit": "8ad347477f7f5ba15b2da7c91178b3c6668456cc",
+    "configuration": {
+      "model_id": "Qwen/Qwen3-0.6B",
+      "layers": 28,
+      "generation": {
+        "batch_size": 1,
+        "sequence_length": 256,
+        "dtype": "float32",
+        "use_cache": false,
+        "prompt_format": "raw_completion",
+        "add_special_tokens": false,
+        "sampling": "greedy_argmax_lowest_id"
+      },
+      "cores_requested": 4,
+      "cores": 4,
+      "matmul_policy": "blocked_fma",
+      "matmul_tile": "2x4",
+      "matmul_rhs_layout": "column-panel",
+      "mean_policy": "two-four-lane-last-axis",
+      "nonlinear_policy": "fp32-reference",
+      "qemu_workspace_layout": "none",
+      "execution": "one ELF/bundle; a fresh QEMU process per forward; no KV cache",
+      "versions": {
+        "compiler": "0.14.1",
+        "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+        "target": "riscv64 / RV64GC / LP64D / QEMU virt / bare metal",
+        "math_library": "Zig-bundled musl"
+      },
+      "host_environment": {
+        "platform": "Linux-6.18.40.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+        "python": "3.12.3",
+        "packages": {
+          "numpy": "2.2.6",
+          "onnxruntime": "1.22.1",
+          "tokenizers": "0.21.4"
+        },
+        "available_logical_cpus": 4,
+        "clocksource": "tsc",
+        "host_tree_sample_interval_s": 0.5,
+        "reference_provider": "CPUExecutionProvider"
+      },
+      "scope_note": "显式优化策略的历史完整模型结果；不是默认算术策略完整验收。默认单核与手动/auto 的覆盖另见小图记录。"
+    },
+    "generation_wall_s_definition": "单条用例生成调用经过时间，包含逐 token QEMU 调用与 Host 参考数值检查，不是编译耗时。",
+    "cases": [
+      {
+        "name": "france",
+        "prompt": "The capital of France is",
+        "max_new_tokens": 8,
+        "generated_token_ids": [
+          12095,
+          13,
+          576,
+          6722,
+          315,
+          15344,
+          374,
+          21718
+        ],
+        "generation_wall_s": 3375.0240403530006,
+        "forward_count": 8
+      },
+      {
+        "name": "germany",
+        "prompt": "The capital of Germany is",
+        "max_new_tokens": 8,
+        "generated_token_ids": [
+          19846,
+          13,
+          576,
+          6722,
+          315,
+          9625,
+          374,
+          12095
+        ],
+        "generation_wall_s": 3668.8521105910004,
+        "forward_count": 8
+      },
+      {
+        "name": "japan",
+        "prompt": "The capital of Japan is",
+        "max_new_tokens": 8,
+        "generated_token_ids": [
+          26194,
+          13,
+          576,
+          6722,
+          315,
+          279,
+          3639,
+          4180
+        ],
+        "generation_wall_s": 3489.654915645,
+        "forward_count": 8
+      }
+    ]
+  }
+}

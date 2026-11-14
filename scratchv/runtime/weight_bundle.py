@@ -377,3 +377,68 @@ def plan_guest_memory(code_capacity=128 * MIB, workspace_bytes=0, weight_bytes=0
             "stack_bottom": regions["stack"]["base"], "stack_top": regions["stack"]["end"],
             "input_base": regions["inputs"]["base"], "output_base": regions["outputs"]["base"],
             "workspace_base": regions["workspace"]["base"], "weights_base": regions["weights"]["base"]}
+
+
+def write_shared_weight_bundle(artifacts, directory):
+    """Deduplicate only identical logical tensors with identical physical bytes.
+
+    Derived constants with a different name, dtype, shape, or panel/transpose
+    layout remain distinct. Each graph receives an ordered index mapping.
+    Streaming hashes avoid making a second full checkpoint-sized byte string.
+    """
+    from scratchv.backend.tensor_c_codegen import TensorSpec
+    specs, arrays, seen, mappings = [], [], {}, []
+    for artifact in artifacts:
+        if len(artifact.external_weights) != len(artifact.external_initializers):
+            raise WeightBundleError('Missing graph weight data')
+        _spec_metadata(artifact.external_weights)
+        mapping = []
+        for spec, array in zip(artifact.external_weights, artifact.external_initializers):
+            if (not isinstance(array, np.ndarray) or tuple(array.shape) != tuple(spec.shape)
+                    or array.dtype.newbyteorder('<') != spec.numpy_dtype.newbyteorder('<')):
+                raise WeightBundleError('Graph weight shape/dtype mismatch before deduplication')
+            digest = hashlib.sha256()
+            for chunk in _iter_array_chunks(array, spec.numpy_dtype.newbyteorder('<')):
+                digest.update(chunk)
+            panels = [row for row in artifact.matmul_rhs_panels if row.get('name') == spec.name]
+            # Folded-transpose SSA names differ between the two graphs. Bind
+            # identity to the original checkpoint tensor and physical layout;
+            # the hash still requires every stored byte to match exactly.
+            logical_name = panels[0]['source_weight'] if len(panels) == 1 else spec.name
+            layout_key = tuple((row['source_weight'], tuple(row['logical_shape']),
+                                tuple(row['physical_shape']), row['panel_columns'])
+                               for row in panels)
+            key = (logical_name, spec.dtype, tuple(spec.shape), artifact.matmul_rhs_layout,
+                   layout_key, digest.hexdigest())
+            index = seen.get(key)
+            if index is None:
+                index = len(specs)
+                seen[key] = index
+                specs.append(TensorSpec(f'w{index}:{spec.name}', spec.dtype, tuple(spec.shape)))
+                arrays.append(array)
+            mapping.append(index)
+        mappings.append(tuple(mapping))
+    manifest = write_weight_bundle(specs, arrays, directory)
+    return manifest, tuple(specs), tuple(mappings)
+
+
+def plan_session_memory(cache_bank_bytes, *, prefill_input_bytes, decode_input_bytes,
+                        prefill_workspace_bytes, decode_workspace_bytes, logits_bytes,
+                        weight_bytes, cores=1):
+    """Disjoint persistent banks and a common serial workspace (all 64 aligned)."""
+    values = {key: _integer(value, key) for key, value in (
+        ('cache_bank_bytes', cache_bank_bytes), ('prefill_input_bytes', prefill_input_bytes),
+        ('decode_input_bytes', decode_input_bytes), ('prefill_workspace_bytes', prefill_workspace_bytes),
+        ('decode_workspace_bytes', decode_workspace_bytes), ('logits_bytes', logits_bytes),
+        ('weight_bytes', weight_bytes))}
+    inputs = _align(values['prefill_input_bytes']) + _align(values['decode_input_bytes'])
+    logits = _align(values['logits_bytes'])
+    bank = _align(values['cache_bank_bytes'])
+    layout = plan_guest_memory(input_bytes=inputs, output_bytes=logits + 2*bank,
+                              workspace_bytes=max(values['prefill_workspace_bytes'], values['decode_workspace_bytes']),
+                              weight_bytes=values['weight_bytes'], cores=cores)
+    layout.update(prefill_input_base=layout['input_base'],
+                  decode_input_base=layout['input_base'] + _align(values['prefill_input_bytes']),
+                  logits_base=layout['output_base'], cache_bank_bytes=bank,
+                  cache_bases=[layout['output_base'] + logits, layout['output_base'] + logits + bank])
+    return layout

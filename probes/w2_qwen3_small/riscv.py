@@ -244,11 +244,19 @@ def run_probe(model_dir, out, report, *, cc=None, qemu=None, timeout=180):
         _require_valid(original, "after-parse")
         parsers[kind] = parser
         programs[kind] = {level: _optimize(original, level) for level in ("none", "basic", "all")}
+        # The legacy single-output RV64 trace gate transports the packed
+        # trace. Keep the independent named outputs for ORT and multi-result IR.
+        compile_path = path
+        if kind == "diagnostic":
+            packed_model = onnx.load(path)
+            del packed_model.graph.output[1:]
+            compile_path = out / "diagnostics-packed.onnx"
+            onnx.save(packed_model, compile_path)
         for level in ("none", "all"):
             directory = out / "build" / f"{kind}-{level}"
             directory.mkdir(parents=True)
             driver = CompilerDriver(CompilerConfig(backend="tensor-c", optimize_level=level, verify_ir=True))
-            result = driver.compile(str(path), str(directory / "model.c"))
+            result = driver.compile(str(compile_path), str(directory / "model.c"))
             if not result.success:
                 raise RuntimeError("; ".join(result.errors))
             artifact = driver.tensor_artifact
@@ -286,7 +294,7 @@ def run_probe(model_dir, out, report, *, cc=None, qemu=None, timeout=180):
         for kind, expected in (("normal", ordinary_ref), ("diagnostic", diagnostic_ref)):
             for level in ("none", "basic", "all"):
                 actual = IRInterpreter(programs[kind][level]).run(
-                    feed, initializers=parsers[kind].initializers).return_value
+                    feed, initializers=parsers[kind].initializers).return_values[0]
                 comparison = tensor_diff(actual, expected, ATOL)
                 case["optimized_ir"].append({"graph": kind, "optimization": level, **comparison})
             for level in ("none", "all"):

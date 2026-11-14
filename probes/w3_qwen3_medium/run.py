@@ -105,13 +105,13 @@ def run_ir_variant(program, initializers, feed, *, kind, level, schema, names,
         row["memory_stats"] = result.memory_stats
         if kind == "diagnostic":
             try:
-                values = unpack_trace(result.return_value, schema)
+                values = unpack_trace(result.return_values[0], schema)
             except Exception:
                 # Malformed packed output cannot honestly use the named schema.
                 # Preserve its original bytes for debugging before failing.
                 raw = out / f"traces/{case_name}/ir_{kind}_{level}_invalid_pack.npy"
                 raw.parent.mkdir(parents=True, exist_ok=True)
-                np.save(raw, result.return_value, allow_pickle=False)
+                np.save(raw, result.return_values[0], allow_pickle=False)
                 row["invalid_packed_trace"] = str(raw.relative_to(out)).replace("\\", "/")
                 raise
         else:
