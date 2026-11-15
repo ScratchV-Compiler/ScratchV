@@ -85,7 +85,7 @@ Prefill 与 Decode 复用工作区，所以会话实际分配由 2465.000 KiB �
 
 完整 France 的 346.226 秒中，Prefill 占 72.87%，7 次 Decode 占 9.60%，ORT 占 13.56%，启动占 3.90%。后续优先验证完整模型的短 Prefill，再分析长文本 Decode 的入口检查。
 
-[详细实验报告](EXPERIMENTS.md)保留分阶段耗时、优化原理、此前的 Dense / LM Head / Attention 对照及原始数据链接。[三页 PPT](W6-summary.pptx)仍是接入 KV 前的历史版本，本次没有更新。
+[详细实验报告](EXPERIMENTS.md)保留分阶段耗时、优化原理、此前的 Dense / LM Head / Attention 对照及原始数据链接。[三页 PPT](W6-summary.pptx)同步概括本次功能、完整模型与短 Prefill 结果及复现入口。
 
 </details>
 
