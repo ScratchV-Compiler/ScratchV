@@ -1,0 +1,2393 @@
+{
+  "schema": "scratchv.w6-prefill-short.v1",
+  "status": "PASS",
+  "passed": true,
+  "scope": "Two-layer random-weight Qwen3; QEMU/TCG wall time, not full-model or hardware performance",
+  "configuration": {
+    "cores": 4,
+    "dtype": "FP32",
+    "policies": {
+      "matmul_policy": "blocked_fma",
+      "matmul_tile": "2x4",
+      "matmul_rhs_layout": "column-panel",
+      "mean_policy": "two-four-lane-last-axis",
+      "nonlinear_policy": "fp32-reference",
+      "qemu_workspace_layout": "none",
+      "lm_head_policy": "original",
+      "attention_decode_policy": "original"
+    },
+    "prompt_token_ids": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "measured_pairs": 6,
+    "warmups_per_variant": 1,
+    "correctness_prefill_lengths": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "decode_steps_after_length_5": 2,
+    "atol": 0.001,
+    "numeric_rule": "All finite valid elements: max_abs < atol; greedy tokens equal"
+  },
+  "timing_scope": {
+    "call_wall_s": "Outer Prefill/Decode call wall time including Host input preparation; excludes subsequent K/V dump and comparison",
+    "total_s": "Runtime request wall time: command send, forward, logits QMP transfer and validation; excludes Host input preparation",
+    "forward_s": "Runtime command send to UART response, including guest validation and forward",
+    "output_transfer_s": "Part of total_s: QMP stop, complete logits read/validation and resume",
+    "excluded": "All call/request/forward timing columns exclude export/build, session startup, RESET, debug K/V dump, ORT and comparisons. Host input preparation is included in call_wall_s, but excluded from total_s and forward_s",
+    "pairing": "Two resident sessions; one executes at a time; one warmup each; alternating AB/BA",
+    "units": "Elapsed wall seconds; concurrent threads' CPU times are not added"
+  },
+  "setup": {
+    "export_s": 1.2594176679995144,
+    "codegen_s": 0.15520539800127153
+  },
+  "reference": {
+    "session_start_s": 0.009170135999738704,
+    "graph_optimization": "disabled",
+    "steps": [
+      {
+        "kind": "prefill",
+        "valid_length": 1,
+        "ort_s": 0.004084754997165874,
+        "outputs": "output/prefill-short-final-20261115/ort/prefill-1.npz"
+      },
+      {
+        "kind": "prefill",
+        "valid_length": 2,
+        "ort_s": 0.003748857998289168,
+        "outputs": "output/prefill-short-final-20261115/ort/prefill-2.npz"
+      },
+      {
+        "kind": "prefill",
+        "valid_length": 3,
+        "ort_s": 0.0011286699991615023,
+        "outputs": "output/prefill-short-final-20261115/ort/prefill-3.npz"
+      },
+      {
+        "kind": "prefill",
+        "valid_length": 4,
+        "ort_s": 0.001064779000444105,
+        "outputs": "output/prefill-short-final-20261115/ort/prefill-4.npz"
+      },
+      {
+        "kind": "prefill",
+        "valid_length": 5,
+        "ort_s": 0.001054518997989362,
+        "outputs": "output/prefill-short-final-20261115/ort/prefill-5.npz"
+      },
+      {
+        "kind": "decode",
+        "step": 1,
+        "input_token": 5,
+        "valid_length": 6,
+        "ort_decode_s": 0.0005617649985651951,
+        "ort_full_prefill_s": 0.0012335190003796015,
+        "decoded_vs_full_prefill": {
+          "passed": true,
+          "valid_length": 6,
+          "logits_max_abs": 5.960464477539063e-08,
+          "valid_kv_max_abs": 2.384185791015625e-07,
+          "greedy_token": 5,
+          "reference_greedy_token": 5,
+          "outputs": [
+            {
+              "name": "logits",
+              "max_abs": 5.960464477539063e-08,
+              "elements": 128,
+              "future_cache_zero": null,
+              "passed": true
+            },
+            {
+              "name": "layer_0.key",
+              "max_abs": 0.0,
+              "elements": 192,
+              "future_cache_zero": true,
+              "passed": true
+            },
+            {
+              "name": "layer_0.value",
+              "max_abs": 0.0,
+              "elements": 192,
+              "future_cache_zero": true,
+              "passed": true
+            },
+            {
+              "name": "layer_1.key",
+              "max_abs": 2.384185791015625e-07,
+              "elements": 192,
+              "future_cache_zero": true,
+              "passed": true
+            },
+            {
+              "name": "layer_1.value",
+              "max_abs": 2.2351741790771484e-08,
+              "elements": 192,
+              "future_cache_zero": true,
+              "passed": true
+            }
+          ]
+        },
+        "outputs": "output/prefill-short-final-20261115/ort/decode-1.npz"
+      },
+      {
+        "kind": "decode",
+        "step": 2,
+        "input_token": 5,
+        "valid_length": 7,
+        "ort_decode_s": 0.00047110399827943183,
+        "ort_full_prefill_s": 0.001071942002454307,
+        "decoded_vs_full_prefill": {
+          "passed": true,
+          "valid_length": 7,
+          "logits_max_abs": 5.960464477539063e-08,
+          "valid_kv_max_abs": 2.384185791015625e-07,
+          "greedy_token": 5,
+          "reference_greedy_token": 5,
+          "outputs": [
+            {
+              "name": "logits",
+              "max_abs": 5.960464477539063e-08,
+              "elements": 128,
+              "future_cache_zero": null,
+              "passed": true
+            },
+            {
+              "name": "layer_0.key",
+              "max_abs": 0.0,
+              "elements": 224,
+              "future_cache_zero": true,
+              "passed": true
+            },
+            {
+              "name": "layer_0.value",
+              "max_abs": 0.0,
+              "elements": 224,
+              "future_cache_zero": true,
+              "passed": true
+            },
+            {
+              "name": "layer_1.key",
+              "max_abs": 2.384185791015625e-07,
+              "elements": 224,
+              "future_cache_zero": true,
+              "passed": true
+            },
+            {
+              "name": "layer_1.value",
+              "max_abs": 2.9802322387695312e-08,
+              "elements": 224,
+              "future_cache_zero": true,
+              "passed": true
+            }
+          ]
+        },
+        "outputs": "output/prefill-short-final-20261115/ort/decode-2.npz"
+      }
+    ]
+  },
+  "builds": {
+    "prefill-256": {
+      "prefill_length": 256,
+      "prefill_graph": "output/prefill-short-final-20261115/prefill-256/prefill.onnx",
+      "decode_graph": "output/prefill-short-final-20261115/prefill-256/decode.onnx",
+      "shared_decode_artifact": true,
+      "prefill_workspace_bytes": 2524160,
+      "decode_workspace_bytes": 331336,
+      "cache_bank_bytes": 131072,
+      "allocated_workspace_bytes": 2524160,
+      "weight_bytes": 631896,
+      "compile_s": 1.257604556001752,
+      "versions": {
+        "compiler": "0.14.1",
+        "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+        "target": "riscv64 / RV64GC / LP64D / QEMU virt / bare metal",
+        "math_library": "Zig-bundled musl"
+      },
+      "raw_build_report": "output/prefill-short-final-20261115/prefill-256/build/build.json"
+    },
+    "prefill-5": {
+      "prefill_length": 5,
+      "prefill_graph": "output/prefill-short-final-20261115/prefill-5/prefill.onnx",
+      "decode_graph": "output/prefill-short-final-20261115/prefill-256/decode.onnx",
+      "shared_decode_artifact": true,
+      "prefill_workspace_bytes": 138136,
+      "decode_workspace_bytes": 331336,
+      "cache_bank_bytes": 131072,
+      "allocated_workspace_bytes": 331336,
+      "weight_bytes": 631896,
+      "compile_s": 1.3084014170017326,
+      "versions": {
+        "compiler": "0.14.1",
+        "qemu": "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)",
+        "target": "riscv64 / RV64GC / LP64D / QEMU virt / bare metal",
+        "math_library": "Zig-bundled musl"
+      },
+      "raw_build_report": "output/prefill-short-final-20261115/prefill-5/build/build.json"
+    }
+  },
+  "sessions": {
+    "prefill-256": {
+      "startup_s": 0.03749803399841767,
+      "weight_staging_s": 0.005202774998906534,
+      "raw_report": "output/prefill-short-final-20261115/prefill-256/qemu/session.json",
+      "closed": true,
+      "qemu_reaped": true,
+      "passed": true
+    },
+    "prefill-5": {
+      "startup_s": 0.034752649000438396,
+      "weight_staging_s": 0.004844094000873156,
+      "raw_report": "output/prefill-short-final-20261115/prefill-5/qemu/session.json",
+      "closed": true,
+      "qemu_reaped": true,
+      "passed": true
+    }
+  },
+  "correctness": [
+    {
+      "variant": "prefill-256",
+      "kind": "prefill",
+      "valid_length": 1,
+      "reset": {
+        "kind": 1,
+        "request": 1,
+        "committed_before": 0,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.022170825002831407,
+        "total_s": 0.022179722000146285
+      },
+      "call_wall_s": 0.26832138800091343,
+      "request": {
+        "kind": 2,
+        "request": 2,
+        "committed_before": 0,
+        "committed_after": 1,
+        "passed": true,
+        "forward_s": 0.26594061399737257,
+        "output_transfer_s": 0.0021412099995359313,
+        "total_s": 0.2680948779998289
+      },
+      "cache_dump_s": 0.007534966000093846,
+      "comparison_s": 0.0001631400009500794,
+      "comparison": {
+        "passed": true,
+        "valid_length": 1,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 1,
+        "reference_greedy_token": 1,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 32,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 32,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 32,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 32,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-256",
+      "kind": "prefill",
+      "valid_length": 2,
+      "reset": {
+        "kind": 1,
+        "request": 3,
+        "committed_before": 1,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.03519701199911651,
+        "total_s": 0.03520300299715018
+      },
+      "call_wall_s": 0.2326770010004111,
+      "request": {
+        "kind": 2,
+        "request": 4,
+        "committed_before": 0,
+        "committed_after": 2,
+        "passed": true,
+        "forward_s": 0.23030750299949432,
+        "output_transfer_s": 0.0021645380002155434,
+        "total_s": 0.23248065799998585
+      },
+      "cache_dump_s": 0.0078740930002823,
+      "comparison_s": 0.00431580799704534,
+      "comparison": {
+        "passed": true,
+        "valid_length": 2,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 2,
+        "reference_greedy_token": 2,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 64,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 64,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 64,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 64,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-256",
+      "kind": "prefill",
+      "valid_length": 3,
+      "reset": {
+        "kind": 1,
+        "request": 5,
+        "committed_before": 2,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.01351766199877602,
+        "total_s": 0.013522310997359455
+      },
+      "call_wall_s": 0.2436435400013579,
+      "request": {
+        "kind": 2,
+        "request": 6,
+        "committed_before": 0,
+        "committed_after": 3,
+        "passed": true,
+        "forward_s": 0.24137504899772466,
+        "output_transfer_s": 0.0020671490019594785,
+        "total_s": 0.2434621350002999
+      },
+      "cache_dump_s": 0.010310088000551332,
+      "comparison_s": 0.00015604600048391148,
+      "comparison": {
+        "passed": true,
+        "valid_length": 3,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 3,
+        "reference_greedy_token": 3,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 96,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 96,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 96,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 96,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-256",
+      "kind": "prefill",
+      "valid_length": 4,
+      "reset": {
+        "kind": 1,
+        "request": 7,
+        "committed_before": 3,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.01221697800065158,
+        "total_s": 0.012222448000102304
+      },
+      "call_wall_s": 0.24908507900181576,
+      "request": {
+        "kind": 2,
+        "request": 8,
+        "committed_before": 0,
+        "committed_after": 4,
+        "passed": true,
+        "forward_s": 0.2467622650001431,
+        "output_transfer_s": 0.0021260309986246284,
+        "total_s": 0.24889581000024918
+      },
+      "cache_dump_s": 0.005099989000882488,
+      "comparison_s": 0.00015898100173217244,
+      "comparison": {
+        "passed": true,
+        "valid_length": 4,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 4,
+        "reference_greedy_token": 4,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-256",
+      "kind": "prefill",
+      "valid_length": 5,
+      "reset": {
+        "kind": 1,
+        "request": 9,
+        "committed_before": 4,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.010902901998633752,
+        "total_s": 0.01090680899869767
+      },
+      "call_wall_s": 0.2434561029986071,
+      "request": {
+        "kind": 2,
+        "request": 10,
+        "committed_before": 0,
+        "committed_after": 5,
+        "passed": true,
+        "forward_s": 0.24137861399867688,
+        "output_transfer_s": 0.0018875890018534847,
+        "total_s": 0.24327231400093297
+      },
+      "cache_dump_s": 0.007039427000563592,
+      "comparison_s": 0.00013675900117959827,
+      "comparison": {
+        "passed": true,
+        "valid_length": 5,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 5,
+        "reference_greedy_token": 5,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-256",
+      "kind": "decode",
+      "step": 1,
+      "input_token": 5,
+      "valid_length": 6,
+      "call_wall_s": 0.03875023599903216,
+      "request": {
+        "kind": 3,
+        "request": 11,
+        "committed_before": 5,
+        "committed_after": 6,
+        "passed": true,
+        "forward_s": 0.0367898430013156,
+        "output_transfer_s": 0.0019401040008233394,
+        "total_s": 0.03873726100209751
+      },
+      "cache_dump_s": 0.0050775010022334754,
+      "comparison_s": 0.00041207100002793595,
+      "comparison": {
+        "passed": true,
+        "valid_length": 6,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 5,
+        "reference_greedy_token": 5,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 192,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 192,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 192,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 192,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-256",
+      "kind": "decode",
+      "step": 2,
+      "input_token": 5,
+      "valid_length": 7,
+      "call_wall_s": 0.017048423997039208,
+      "request": {
+        "kind": 3,
+        "request": 12,
+        "committed_before": 6,
+        "committed_after": 7,
+        "passed": true,
+        "forward_s": 0.015105308997590328,
+        "output_transfer_s": 0.0019200210008420981,
+        "total_s": 0.01703410700065433
+      },
+      "cache_dump_s": 0.00545512199823861,
+      "comparison_s": 0.0004650819973903708,
+      "comparison": {
+        "passed": true,
+        "valid_length": 7,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 5,
+        "reference_greedy_token": 5,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 224,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 224,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 224,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 224,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-5",
+      "kind": "prefill",
+      "valid_length": 1,
+      "reset": {
+        "kind": 1,
+        "request": 1,
+        "committed_before": 0,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.02000185300130397,
+        "total_s": 0.02000746300109313
+      },
+      "call_wall_s": 0.04531294100161176,
+      "request": {
+        "kind": 2,
+        "request": 2,
+        "committed_before": 0,
+        "committed_after": 1,
+        "passed": true,
+        "forward_s": 0.04228154000156792,
+        "output_transfer_s": 0.002801515001920052,
+        "total_s": 0.045103954998921836
+      },
+      "cache_dump_s": 0.005437719002657104,
+      "comparison_s": 0.000160064002557192,
+      "comparison": {
+        "passed": true,
+        "valid_length": 1,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 1,
+        "reference_greedy_token": 1,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 32,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 32,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 32,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 32,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-5",
+      "kind": "prefill",
+      "valid_length": 2,
+      "reset": {
+        "kind": 1,
+        "request": 3,
+        "committed_before": 1,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.013350692999665625,
+        "total_s": 0.013356193001527572
+      },
+      "call_wall_s": 0.02087632999973721,
+      "request": {
+        "kind": 2,
+        "request": 4,
+        "committed_before": 0,
+        "committed_after": 2,
+        "passed": true,
+        "forward_s": 0.01787767600035295,
+        "output_transfer_s": 0.0027485600003274158,
+        "total_s": 0.020631646999390796
+      },
+      "cache_dump_s": 0.005187090002436889,
+      "comparison_s": 0.0005125009993207641,
+      "comparison": {
+        "passed": true,
+        "valid_length": 2,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 2,
+        "reference_greedy_token": 2,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 64,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 64,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 64,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 64,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-5",
+      "kind": "prefill",
+      "valid_length": 3,
+      "reset": {
+        "kind": 1,
+        "request": 5,
+        "committed_before": 2,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.011313676001009298,
+        "total_s": 0.011318094002490398
+      },
+      "call_wall_s": 0.020317276001151185,
+      "request": {
+        "kind": 2,
+        "request": 6,
+        "committed_before": 0,
+        "committed_after": 3,
+        "passed": true,
+        "forward_s": 0.017971142999158474,
+        "output_transfer_s": 0.0021491400002560113,
+        "total_s": 0.02013470000019879
+      },
+      "cache_dump_s": 0.005414339997514617,
+      "comparison_s": 0.00016827899889904074,
+      "comparison": {
+        "passed": true,
+        "valid_length": 3,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 3,
+        "reference_greedy_token": 3,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 96,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 96,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 96,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 96,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-5",
+      "kind": "prefill",
+      "valid_length": 4,
+      "reset": {
+        "kind": 1,
+        "request": 7,
+        "committed_before": 3,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.010558898997260258,
+        "total_s": 0.010562495997874066
+      },
+      "call_wall_s": 0.023394053998345044,
+      "request": {
+        "kind": 2,
+        "request": 8,
+        "committed_before": 0,
+        "committed_after": 4,
+        "passed": true,
+        "forward_s": 0.020907280002575135,
+        "output_transfer_s": 0.002307434999238467,
+        "total_s": 0.023220405000756728
+      },
+      "cache_dump_s": 0.005466923998028506,
+      "comparison_s": 0.00015304000044125132,
+      "comparison": {
+        "passed": true,
+        "valid_length": 4,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 4,
+        "reference_greedy_token": 4,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-5",
+      "kind": "prefill",
+      "valid_length": 5,
+      "reset": {
+        "kind": 1,
+        "request": 9,
+        "committed_before": 4,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.012086856000678381,
+        "total_s": 0.012091534998035058
+      },
+      "call_wall_s": 0.04141022700059693,
+      "request": {
+        "kind": 2,
+        "request": 10,
+        "committed_before": 0,
+        "committed_after": 5,
+        "passed": true,
+        "forward_s": 0.03892788099983591,
+        "output_transfer_s": 0.002290011998411501,
+        "total_s": 0.04122302199903061
+      },
+      "cache_dump_s": 0.005596094000793528,
+      "comparison_s": 0.00015648699991288595,
+      "comparison": {
+        "passed": true,
+        "valid_length": 5,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 5,
+        "reference_greedy_token": 5,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-5",
+      "kind": "decode",
+      "step": 1,
+      "input_token": 5,
+      "valid_length": 6,
+      "call_wall_s": 0.030676692000270123,
+      "request": {
+        "kind": 3,
+        "request": 11,
+        "committed_before": 5,
+        "committed_after": 6,
+        "passed": true,
+        "forward_s": 0.028404098000464728,
+        "output_transfer_s": 0.0022552500013262033,
+        "total_s": 0.030665319001855096
+      },
+      "cache_dump_s": 0.005844310999236768,
+      "comparison_s": 0.00032392399953096174,
+      "comparison": {
+        "passed": true,
+        "valid_length": 6,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 5,
+        "reference_greedy_token": 5,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 192,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 192,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 192,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 192,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-5",
+      "kind": "decode",
+      "step": 2,
+      "input_token": 5,
+      "valid_length": 7,
+      "call_wall_s": 0.023321477998251794,
+      "request": {
+        "kind": 3,
+        "request": 12,
+        "committed_before": 6,
+        "committed_after": 7,
+        "passed": true,
+        "forward_s": 0.021334270997613203,
+        "output_transfer_s": 0.0019483539981592912,
+        "total_s": 0.023310056996706408
+      },
+      "cache_dump_s": 0.004978517998097232,
+      "comparison_s": 0.00015388199972221628,
+      "comparison": {
+        "passed": true,
+        "valid_length": 7,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 5,
+        "reference_greedy_token": 5,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 224,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 224,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 224,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 224,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    }
+  ],
+  "warmups": [
+    {
+      "variant": "prefill-256",
+      "reset": {
+        "kind": 1,
+        "request": 13,
+        "committed_before": 7,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.024222620002547046,
+        "total_s": 0.024227739999332698
+      },
+      "call_wall_s": 0.25495276100264164,
+      "request": {
+        "kind": 2,
+        "request": 14,
+        "committed_before": 0,
+        "committed_after": 5,
+        "passed": true,
+        "forward_s": 0.25181563600199297,
+        "output_transfer_s": 0.002719120999245206,
+        "total_s": 0.25454123000235995
+      },
+      "cache_dump_s": 0.0065609489975031465,
+      "comparison_s": 0.0003482940010144375,
+      "comparison": {
+        "passed": true,
+        "valid_length": 5,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 5,
+        "reference_greedy_token": 5,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "prefill-5",
+      "reset": {
+        "kind": 1,
+        "request": 13,
+        "committed_before": 7,
+        "committed_after": 0,
+        "passed": true,
+        "forward_s": 0.008379086000786629,
+        "total_s": 0.008383454998693196
+      },
+      "call_wall_s": 0.019763380001677433,
+      "request": {
+        "kind": 2,
+        "request": 14,
+        "committed_before": 0,
+        "committed_after": 5,
+        "passed": true,
+        "forward_s": 0.016960011998889968,
+        "output_transfer_s": 0.0026070669991895556,
+        "total_s": 0.019572257999243448
+      },
+      "cache_dump_s": 0.005035993999626953,
+      "comparison_s": 0.00014865200137137435,
+      "comparison": {
+        "passed": true,
+        "valid_length": 5,
+        "logits_max_abs": 0.0,
+        "valid_kv_max_abs": 0.0,
+        "greedy_token": 5,
+        "reference_greedy_token": 5,
+        "outputs": [
+          {
+            "name": "logits",
+            "max_abs": 0.0,
+            "elements": 128,
+            "future_cache_zero": null,
+            "passed": true
+          },
+          {
+            "name": "layer_0.key",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_0.value",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.key",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          },
+          {
+            "name": "layer_1.value",
+            "max_abs": 0.0,
+            "elements": 160,
+            "future_cache_zero": true,
+            "passed": true
+          }
+        ]
+      }
+    }
+  ],
+  "pairs": [
+    {
+      "pair": 1,
+      "order": [
+        "prefill-256",
+        "prefill-5"
+      ],
+      "runs": {
+        "prefill-256": {
+          "reset": {
+            "kind": 1,
+            "request": 15,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.010213592999207322,
+            "total_s": 0.01021748099810793
+          },
+          "call_wall_s": 0.2708002919971477,
+          "request": {
+            "kind": 2,
+            "request": 16,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.2683218229976774,
+            "output_transfer_s": 0.0021203899996180553,
+            "total_s": 0.2704482849985652
+          },
+          "cache_dump_s": 0.005144894999830285,
+          "comparison_s": 0.00015807000090717338,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        },
+        "prefill-5": {
+          "reset": {
+            "kind": 1,
+            "request": 15,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.012702698000794044,
+            "total_s": 0.012708599999314174
+          },
+          "call_wall_s": 0.026874292001593858,
+          "request": {
+            "kind": 2,
+            "request": 16,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.023289400000066962,
+            "output_transfer_s": 0.0031908450000628363,
+            "total_s": 0.026518929000303615
+          },
+          "cache_dump_s": 0.005967929999314947,
+          "comparison_s": 0.00018875699970521964,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "pair": 2,
+      "order": [
+        "prefill-5",
+        "prefill-256"
+      ],
+      "runs": {
+        "prefill-5": {
+          "reset": {
+            "kind": 1,
+            "request": 17,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.01016314499793225,
+            "total_s": 0.010167061998799909
+          },
+          "call_wall_s": 0.02129055099794641,
+          "request": {
+            "kind": 2,
+            "request": 18,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.019172583997715265,
+            "output_transfer_s": 0.001919911002914887,
+            "total_s": 0.021098014996823622
+          },
+          "cache_dump_s": 0.004467819999263156,
+          "comparison_s": 0.00015735899796709418,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        },
+        "prefill-256": {
+          "reset": {
+            "kind": 1,
+            "request": 17,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.012538843999209348,
+            "total_s": 0.01254257099935785
+          },
+          "call_wall_s": 0.22953229099948658,
+          "request": {
+            "kind": 2,
+            "request": 18,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.22724302399728913,
+            "output_transfer_s": 0.002098483997542644,
+            "total_s": 0.22934932399948593
+          },
+          "cache_dump_s": 0.004660891001549317,
+          "comparison_s": 0.00015162799900281243,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "pair": 3,
+      "order": [
+        "prefill-256",
+        "prefill-5"
+      ],
+      "runs": {
+        "prefill-256": {
+          "reset": {
+            "kind": 1,
+            "request": 19,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.014060538000194356,
+            "total_s": 0.014065878000110388
+          },
+          "call_wall_s": 0.2391502889986441,
+          "request": {
+            "kind": 2,
+            "request": 20,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.23693419700066443,
+            "output_transfer_s": 0.0020240580015524756,
+            "total_s": 0.2389647669988335
+          },
+          "cache_dump_s": 0.004988979002519045,
+          "comparison_s": 0.00013824199777445756,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        },
+        "prefill-5": {
+          "reset": {
+            "kind": 1,
+            "request": 19,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.013331425001524622,
+            "total_s": 0.013336755000636913
+          },
+          "call_wall_s": 0.020697260999440914,
+          "request": {
+            "kind": 2,
+            "request": 20,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.01860820000001695,
+            "output_transfer_s": 0.0018905239994637668,
+            "total_s": 0.020504685999185313
+          },
+          "cache_dump_s": 0.006587398998817662,
+          "comparison_s": 0.00015891099974396639,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "pair": 4,
+      "order": [
+        "prefill-5",
+        "prefill-256"
+      ],
+      "runs": {
+        "prefill-5": {
+          "reset": {
+            "kind": 1,
+            "request": 21,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.012071467001078418,
+            "total_s": 0.01207610600249609
+          },
+          "call_wall_s": 0.01965031700092368,
+          "request": {
+            "kind": 2,
+            "request": 22,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.017827970998041565,
+            "output_transfer_s": 0.0016342290000466164,
+            "total_s": 0.019466067999019288
+          },
+          "cache_dump_s": 0.006902969002112513,
+          "comparison_s": 0.0001514569994469639,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        },
+        "prefill-256": {
+          "reset": {
+            "kind": 1,
+            "request": 21,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.009878739998384845,
+            "total_s": 0.009883407998131588
+          },
+          "call_wall_s": 0.23022477299673483,
+          "request": {
+            "kind": 2,
+            "request": 22,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.22705545799908577,
+            "output_transfer_s": 0.0029768999993393663,
+            "total_s": 0.23003968199918745
+          },
+          "cache_dump_s": 0.006659470996964956,
+          "comparison_s": 0.00030208300086087547,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "pair": 5,
+      "order": [
+        "prefill-256",
+        "prefill-5"
+      ],
+      "runs": {
+        "prefill-256": {
+          "reset": {
+            "kind": 1,
+            "request": 23,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.011716941000486258,
+            "total_s": 0.011762066002120264
+          },
+          "call_wall_s": 0.22952430300210835,
+          "request": {
+            "kind": 2,
+            "request": 24,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.22719487600261346,
+            "output_transfer_s": 0.0021052919983048923,
+            "total_s": 0.22930787200311897
+          },
+          "cache_dump_s": 0.004707495001639472,
+          "comparison_s": 0.00015891099974396639,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        },
+        "prefill-5": {
+          "reset": {
+            "kind": 1,
+            "request": 23,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.016369025001040427,
+            "total_s": 0.01637398400271195
+          },
+          "call_wall_s": 0.02561168899774202,
+          "request": {
+            "kind": 2,
+            "request": 24,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.023561742000310915,
+            "output_transfer_s": 0.0018576920010673348,
+            "total_s": 0.025424433002626756
+          },
+          "cache_dump_s": 0.004507046000071568,
+          "comparison_s": 0.0001858629984781146,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "pair": 6,
+      "order": [
+        "prefill-5",
+        "prefill-256"
+      ],
+      "runs": {
+        "prefill-5": {
+          "reset": {
+            "kind": 1,
+            "request": 25,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.012400139999954263,
+            "total_s": 0.012405609999404987
+          },
+          "call_wall_s": 0.025195799997163704,
+          "request": {
+            "kind": 2,
+            "request": 26,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.02319054799954756,
+            "output_transfer_s": 0.0017938810015039053,
+            "total_s": 0.024988417000713525
+          },
+          "cache_dump_s": 0.004883369001618121,
+          "comparison_s": 0.00015737899957457557,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        },
+        "prefill-256": {
+          "reset": {
+            "kind": 1,
+            "request": 25,
+            "committed_before": 5,
+            "committed_after": 0,
+            "passed": true,
+            "forward_s": 0.011316115000227,
+            "total_s": 0.011320943998725852
+          },
+          "call_wall_s": 0.2411837839972577,
+          "request": {
+            "kind": 2,
+            "request": 26,
+            "committed_before": 0,
+            "committed_after": 5,
+            "passed": true,
+            "forward_s": 0.23904129299990018,
+            "output_transfer_s": 0.0019553070014808327,
+            "total_s": 0.24100259099941468
+          },
+          "cache_dump_s": 0.0047455879976041615,
+          "comparison_s": 0.00015599600010318682,
+          "comparison": {
+            "passed": true,
+            "valid_length": 5,
+            "logits_max_abs": 0.0,
+            "valid_kv_max_abs": 0.0,
+            "greedy_token": 5,
+            "reference_greedy_token": 5,
+            "outputs": [
+              {
+                "name": "logits",
+                "max_abs": 0.0,
+                "elements": 128,
+                "future_cache_zero": null,
+                "passed": true
+              },
+              {
+                "name": "layer_0.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_0.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.key",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              },
+              {
+                "name": "layer_1.value",
+                "max_abs": 0.0,
+                "elements": 160,
+                "future_cache_zero": true,
+                "passed": true
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "raw_directory": "output/prefill-short-final-20261115",
+  "model": {
+    "name": "seeded-small-Qwen3",
+    "seed": 0,
+    "layout": {
+      "layers": 2,
+      "kv_heads": 2,
+      "head_dim": 16,
+      "vocab_size": 128,
+      "capacity": 256,
+      "pad_token_id": 0
+    },
+    "hidden_size": 32,
+    "same_weights": true,
+    "packages": {
+      "torch": "2.7.1+cpu",
+      "transformers": "4.51.3",
+      "onnx": "1.18.0",
+      "onnxruntime": "1.22.1"
+    }
+  },
+  "statistics": {
+    "prefill-256": {
+      "call_wall_s": {
+        "median": 0.23468753099768946,
+        "minimum": 0.22952430300210835,
+        "maximum": 0.2708002919971477
+      },
+      "total_s": {
+        "median": 0.23450222449901048,
+        "minimum": 0.22930787200311897,
+        "maximum": 0.2704482849985652
+      },
+      "forward_s": {
+        "median": 0.23208861049897678,
+        "minimum": 0.22705545799908577,
+        "maximum": 0.2683218229976774
+      },
+      "output_transfer_s": {
+        "median": 0.002101887997923768,
+        "minimum": 0.0019553070014808327,
+        "maximum": 0.0029768999993393663
+      }
+    },
+    "prefill-5": {
+      "call_wall_s": {
+        "median": 0.023243175497555058,
+        "minimum": 0.01965031700092368,
+        "maximum": 0.026874292001593858
+      },
+      "total_s": {
+        "median": 0.023043215998768574,
+        "minimum": 0.019466067999019288,
+        "maximum": 0.026518929000303615
+      },
+      "forward_s": {
+        "median": 0.021181565998631413,
+        "minimum": 0.017827970998041565,
+        "maximum": 0.023561742000310915
+      },
+      "output_transfer_s": {
+        "median": 0.0018741080002655508,
+        "minimum": 0.0016342290000466164,
+        "maximum": 0.0031908450000628363
+      }
+    },
+    "call_wall_s_speedup": {
+      "ratio_of_medians": 10.097051111728524,
+      "paired_ratios": [
+        10.076555392829963,
+        10.780946487558081,
+        11.554682960470188,
+        11.716084426826953,
+        8.96170116005796,
+        9.572380477079824
+      ],
+      "median_paired_ratio": 10.428750940194021
+    },
+    "total_s_speedup": {
+      "ratio_of_medians": 10.17662745128728,
+      "paired_ratios": [
+        10.198310987425957,
+        10.87065887639265,
+        11.654153933804595,
+        11.81747038029339,
+        9.019193150912264,
+        9.644572162875825
+      ],
+      "median_paired_ratio": 10.534484931909304
+    },
+    "forward_s_speedup": {
+      "ratio_of_medians": 10.957103479222098,
+      "paired_ratios": [
+        11.521199472588641,
+        11.852498548154434,
+        12.732784310166949,
+        12.735911339772105,
+        9.64253305208144,
+        10.307703509402355
+      ],
+      "median_paired_ratio": 11.686849010371539
+    }
+  },
+  "numeric_summary": {
+    "checked_requests": 28,
+    "logits_max_abs": 0.0,
+    "valid_kv_max_abs": 0.0,
+    "all_greedy_tokens_equal": true,
+    "all_future_cache_zero": true,
+    "passed": true
+  },
+  "probe_elapsed_s": 8.716830358000152,
+  "publication": {
+    "source_report": "output/prefill-short-final-20261115/report.json",
+    "raw_data_location": "Local output directory; raw ONNX, ELF, logs and tensor dumps are not stored in Git",
+    "measurement_code": {
+      "upstream_main": "79d2063",
+      "w6_branch": "811b86c",
+      "uncommitted_changes": true,
+      "description": "Merged W6 code plus uncommitted KV integration and short Prefill support, including the fixed FP32 cache-tail buffer for exporter compatibility"
+    },
+    "scope": "Copy of the final completed small-model measurement; publishing this summary does not constitute a new run",
+    "audit": {
+      "checked_qemu_requests": 28,
+      "logits_elements": 3584,
+      "valid_kv_elements": 16128,
+      "all_reported_errors_match_raw_tensors": true,
+      "paired_statistics_recalculated": true,
+      "both_qemu_sessions_closed_and_reaped": true
+    }
+  }
+}

@@ -47,7 +47,14 @@ def load_model(model_dir=None, seed=0):
     return model.eval().cpu()
 
 
-def make_wrappers(model, capacity=256):
+def _check_prefill_length(value):
+    if type(value) is not int or not 1 <= value <= 256:
+        raise ValueError('prefill_length must be an integer in [1, 256]')
+    return value
+
+
+def make_wrappers(model, capacity=256, *, prefill_length=256):
+    prefill_length = _check_prefill_length(prefill_length)
     import torch
     from transformers.models.qwen3.modeling_qwen3 import (
         apply_rotary_pos_emb,
@@ -68,6 +75,13 @@ def make_wrappers(model, capacity=256):
                     torch.arange(capacity).reshape(1, capacity))
             self.register_buffer('cos_table', cos[0])
             self.register_buffer('sin_table', sin[0])
+            if not decode and prefill_length < capacity:
+                # A fixed FP32 buffer exports as an initializer in both ONNX
+                # exporters. hidden.new_zeros introduces unsupported dynamic
+                # ConstantOfShape/CastLike nodes in the Dynamo exporter.
+                self.register_buffer('cache_tail', torch.zeros(
+                    1, model.config.num_key_value_heads, capacity-prefill_length,
+                    model.config.head_dim, dtype=torch.float32))
             if decode:
                 # Gather one column of this identity at the runtime position.
                 # This expresses a functional update with ordinary ONNX ops;
@@ -79,6 +93,8 @@ def make_wrappers(model, capacity=256):
             cos_sin = ((torch.index_select(self.cos_table, 0, index.reshape(1)).unsqueeze(0),
                         torch.index_select(self.sin_table, 0, index.reshape(1)).unsqueeze(0)) if self.decode else
                        (self.cos_table.unsqueeze(0), self.sin_table.unsqueeze(0)))
+            if not self.decode and prefill_length < capacity:
+                cos_sin = tuple(table[:, :prefill_length] for table in cos_sin)
             slot = torch.index_select(self.slot_table, 0, index.reshape(1)).reshape(1, 1, capacity, 1) if self.decode else None
             present = []
             for i, layer in enumerate(self.model.model.layers):
@@ -93,11 +109,18 @@ def make_wrappers(model, capacity=256):
                 if self.decode:
                     k = past[2*i] * (1.0 - slot) + k * slot
                     v = past[2*i+1] * (1.0 - slot) + v * slot
-                present.extend((k, v))
+                if not self.decode and prefill_length < capacity:
+                    # Only the returned cache uses the 256-position ABI. The
+                    # attention calculation below keeps its compact K/V.
+                    present.extend((torch.cat((k, self.cache_tail), dim=2),
+                                    torch.cat((v, self.cache_tail), dim=2)))
+                else:
+                    present.extend((k, v))
                 groups = attn.num_key_value_groups
                 def repeat(tensor):
                     return torch.cat([tensor.unsqueeze(2)] * groups, dim=2).reshape(
-                        1, model.config.num_attention_heads, capacity, attn.head_dim)
+                        1, model.config.num_attention_heads,
+                        capacity if self.decode else prefill_length, attn.head_dim)
                 scores = torch.matmul(q, repeat(k).transpose(2, 3)) * attn.scaling
                 probs = torch.softmax(scores + attention_mask, dim=-1, dtype=torch.float32)
                 context = torch.matmul(probs, repeat(v)).transpose(1, 2).contiguous()
@@ -111,7 +134,9 @@ def make_wrappers(model, capacity=256):
     return Wrapper(False).eval(), Wrapper(True).eval()
 
 
-def export_models(directory, *, model_dir=None, seed=0, mode=None, exporter=None):
+def export_models(directory, *, model_dir=None, seed=0, mode=None, exporter=None,
+                  prefill_length=256):
+    prefill_length = _check_prefill_length(prefill_length)
     import numpy as np
     import onnx
     import torch
@@ -124,12 +149,14 @@ def export_models(directory, *, model_dir=None, seed=0, mode=None, exporter=None
     config = model.config
     layout = KVCacheLayout(config.num_hidden_layers, config.num_key_value_heads,
                            config.head_dim, config.vocab_size)
-    wrappers = make_wrappers(model)
-    feeds = [prepare_prefill([1, 2, 3], layout),
+    wrappers = make_wrappers(model, prefill_length=prefill_length)
+    feeds = [prepare_prefill(list(range(1, min(3, prefill_length)+1)), layout,
+                             prefill_length=prefill_length),
              prepare_decode(4, 3, layout, [np.zeros(layout.shape, np.float32)
                                          for _ in layout.cache_names])]
     report = {'schema': 'scratchv.kv-export.v1', 'layout': layout.to_dict(),
-              'seed': seed, 'checkpoint': str(model_dir) if model_dir else 'seeded-small',
+              'seed': seed, 'prefill_length': prefill_length,
+              'checkpoint': str(model_dir) if model_dir else 'seeded-small',
               'packages': {name: importlib.metadata.version(name) for name in
                            ('torch', 'transformers', 'onnx', 'onnxruntime')}, 'graphs': {}}
     exporter = exporter or ('dynamo' if model_dir is not None else 'legacy')
@@ -187,14 +214,19 @@ def main():
     parser.add_argument('--mode', choices=('prefill', 'decode'),
                         help='Export one graph per process, sharing a new output directory')
     parser.add_argument('--exporter', choices=('legacy', 'dynamo'))
+    parser.add_argument('--prefill-length', type=int, default=256,
+                        help='Static Prefill input length, 1..256; KV capacity remains 256')
     parser.add_argument('--threads', type=int, default=4)
     args = parser.parse_args()
     if args.threads < 1:
         parser.error('--threads must be positive')
+    if not 1 <= args.prefill_length <= 256:
+        parser.error('--prefill-length must be in [1, 256]')
     import torch
     torch.set_num_threads(args.threads)
     _, _, _, report = export_models(args.output_dir, model_dir=args.model_dir, seed=args.seed,
-                                   mode=args.mode, exporter=args.exporter)
+                                   mode=args.mode, exporter=args.exporter,
+                                   prefill_length=args.prefill_length)
     print(json.dumps(report, indent=2))
 
 
