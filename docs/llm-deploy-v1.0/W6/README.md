@@ -1,6 +1,6 @@
 # W6 · 文本生成性能优化
 
-[详细实验报告](EXPERIMENTS.md) · [完整模型数据](reports/kv-cache-integration-4core.json) · [短 Prefill 数据](reports/prefill-short-4core.json)
+[生成耗时分布与优化建议](EXPERIMENTS.md) · [完整模型数据](reports/kv-cache-integration-4core.json) · [短 Prefill 数据](reports/prefill-short-4core.json) · [其他原始实验数据](reports/)
 
 ## 本分支增加了什么
 
@@ -80,14 +80,7 @@ Prefill 与 Decode 复用工作区，所以会话实际分配由 2465.000 KiB �
 
 短 Prefill 在导出时固定输入长度：5 位置图只计算 5 行投影和 MLP、5×5 Attention，返回时将 K/V 补零至 256，再接原 Decode。最多接收 5 个提示词 token，超长输入会报错；目前不自动按输入长度选图。关闭工作区 padding 不等于取消模型输入补齐。
 
-<details>
-<summary>耗时分析、历史实验与 PPT</summary>
-
-完整 France 的 346.226 秒中，Prefill 占 72.87%，7 次 Decode 占 9.60%，ORT 占 13.56%，启动占 3.90%。后续优先验证完整模型的短 Prefill，再分析长文本 Decode 的入口检查。
-
-[详细实验报告](EXPERIMENTS.md)保留分阶段耗时、优化原理、此前的 Dense / LM Head / Attention 对照及原始数据链接。[三页 PPT](W6-summary.pptx)同步概括本次功能、完整模型与短 Prefill 结果及复现入口。
-
-</details>
+[三页 PPT](W6-summary.pptx)概括本次功能、完整模型与短 Prefill 结果及复现入口。
 
 ## 如何复现
 
@@ -126,6 +119,6 @@ python scripts/run_inference.py --kv-cache \
 
 - 复用构建：将 `--model`、`--decode-model` 替换为 `--reuse-build output/w6-kv-repeat/executable.json`，使用新输出目录，其余参数保持一致。只编译时加 `--build-only`。
 - KV 原实现：两项优化参数都改为 `original`，重新构建。只跑 France：将 `--reference-suite` 换为 `--prompt "The capital of France is" --max-new-tokens 8`。
-- 无 KV 对照及逐阶段测量范围见[详细实验](EXPERIMENTS.md#kv-integration)。
+- 无 KV 对照：去掉 `--kv-cache` 和 `--decode-model`，将 `--model` 改为 `assets/qwen3-0.6b/onnx/model.onnx`，两项优化策略均设为 `original`，只跑 France 8 个 token；其余算术选项和核数保持一致，使用新输出目录。
 
 </details>
