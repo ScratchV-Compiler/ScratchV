@@ -1,5 +1,7 @@
 # KV cache 推理性能报告
 
+本页记录 KV cache 接入时的测量。W6 接入后的三条用例、开启缓存前后的同条件对照和分阶段耗时，见 [W6 报告](../W6/README.md)及[详细分析](../W6/EXPERIMENTS.md#kv-integration)。
+
 ## 1. 提高了多少速度
 
 目前有两类可以量化的结果：

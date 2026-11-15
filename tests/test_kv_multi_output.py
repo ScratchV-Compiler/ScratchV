@@ -1,6 +1,6 @@
 """Ordered results, output lifetime, ABI safety and shared cache RAM contract."""
 import ctypes
-from dataclasses import replace
+from dataclasses import asdict, replace
 import shutil
 import subprocess
 import numpy as np
@@ -11,7 +11,7 @@ from scratchv.ir.builder import IRBuilder
 from scratchv.ir.types import DataType, Value
 from scratchv.analysis.ir_verifier import verify_ir
 from scratchv.frontend.onnx_parser import ONNXParser, ONNXParseError
-from scratchv.backend.tensor_c_codegen import TensorCCodegen, TensorCCodegenError
+from scratchv.backend.tensor_c_codegen import TensorCArtifact, TensorCCodegen, TensorCCodegenError, TensorSpec
 from scratchv.verification.ir_interpreter import IRInterpreter
 from scratchv.runtime.weight_bundle import write_shared_weight_bundle, plan_session_memory
 
@@ -27,6 +27,69 @@ def graph():
     f.returns = [Value(n,shape=(2,3)) for n in ('early','input','alias','final')]
     b.ret_many([early,x,early,final])
     return b.program
+
+
+@pytest.mark.parametrize('keyword_output', [False, True])
+def test_artifact_legacy_output_replacement_and_serialization(keyword_output):
+    original = TensorSpec('old', DataType.FLOAT32, (2,))
+    replacement = TensorSpec('new', DataType.FLOAT32, (3,))
+    options = dict(lm_head_policy='vocab-blocked')
+    if keyword_output:
+        artifact = TensorCArtifact('source', (), output=original, workspace_bytes=16,
+                                   constant_bytes=8, **options)
+    else:
+        artifact = TensorCArtifact('source', (), original, 16, 8, **options)
+
+    updated = replace(artifact, output=replacement)
+    assert updated.output == replacement
+    assert updated.outputs == (replacement,)
+    assert artifact.output == original
+    assert replace(updated).outputs == (replacement,)
+    assert updated.lm_head_policy == 'vocab-blocked'
+    assert (updated.workspace_bytes, updated.constant_bytes) == (16, 8)
+    serialized = asdict(updated)
+    assert 'output' not in serialized
+    assert serialized['outputs'] == (asdict(replacement),)
+    assert serialized['lm_head_policy'] == 'vocab-blocked'
+    assert replace(updated, outputs=(original,)).output == original
+    # Explicit output wins over the old single outputs field supplied by replace.
+    assert TensorCArtifact('source', (), replacement, outputs=(original,)).output == replacement
+    with pytest.raises(TensorCCodegenError, match='outputs'):
+        TensorCArtifact('source', (), replacement, outputs=(original, replacement))
+
+
+@pytest.mark.parametrize('count', [1, 2])
+def test_artifact_v2_replacement_uses_ordered_outputs(count):
+    outputs = tuple(TensorSpec(f'output_{i}', DataType.FLOAT32, (2,)) for i in range(count))
+    artifact = TensorCArtifact('source', (), outputs=outputs, abi_version=2,
+                               constant_storage='external', lm_head_policy='vocab-blocked')
+    replacement = TensorSpec('new', DataType.FLOAT32, (3,))
+    with pytest.raises(TensorCCodegenError, match='outputs'):
+        _ = artifact.output
+    with pytest.raises(TensorCCodegenError, match='outputs'):
+        replace(artifact, output=replacement)
+    with pytest.raises(TensorCCodegenError, match='outputs'):
+        TensorCArtifact('source', (), outputs[0], outputs=outputs, abi_version=2)
+    updated = replace(artifact, outputs=(*outputs[:-1], replacement))
+    assert updated.abi_version == 2
+    assert updated.outputs == (*outputs[:-1], replacement)
+    assert updated.lm_head_policy == 'vocab-blocked'
+    assert asdict(updated)['outputs'] == tuple(asdict(spec) for spec in updated.outputs)
+    assert replace(updated).outputs == updated.outputs
+
+
+def test_codegen_single_result_explicit_v2_retains_pointer_table_abi():
+    builder = IRBuilder()
+    x = Value('x', shape=(2,))
+    builder.new_function('main', [x])
+    builder.new_block('entry')
+    builder.ret(x)
+    artifact = TensorCCodegen(builder.program, constant_storage='external', abi_version=2).generate()
+    assert artifact.abi_version == 2
+    assert len(artifact.outputs) == 1
+    assert 'void *const outputs[]' in artifact.source
+    with pytest.raises(TensorCCodegenError, match='outputs'):
+        _ = artifact.output
 
 
 def test_interpreter_returns_owned_ordered_aliases_and_accounts_for_copies():

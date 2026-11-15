@@ -38,6 +38,12 @@ def _offsets(specs):
     return tuple(offsets), cursor
 
 
+def _prefill_length(executable):
+    """Old metadata omitted this field and always used 256 input positions."""
+    return _integer(executable.evidence.get('prefill_length', 256), 'prefill_length',
+                    minimum=1, maximum=executable.cache_layout.capacity)
+
+
 @dataclass(frozen=True)
 class SessionExecutable:
     elf_path: Path
@@ -50,8 +56,13 @@ class SessionExecutable:
     evidence: dict
     cores: int
 
+    @property
+    def prefill_length(self):
+        return _prefill_length(self)
+
 
 def _guest_source(prefill, decode, manifest, mappings, layout, cache, identity):
+    prefill_length = cache.validate_graphs(prefill, decode)
     po, _ = _offsets(prefill.inputs)
     do, _ = _offsets(decode.inputs[:3])
     def weights(indices):
@@ -148,7 +159,7 @@ void sv_main(void) {{
         }}
         u32 next_length,target;
         if(kind==2) {{
-            if(valid_length || !bytes || bytes%8 || bytes>2048)frame(105,0);
+            if(valid_length || !bytes || bytes%8 || bytes>{prefill_length*8})frame(105,0);
             next_length=bytes/8;target=0;
         }} else if(kind==3) {{
             if(!valid_length || valid_length>=256 || bytes!=8)frame(106,0);
@@ -164,9 +175,9 @@ void sv_main(void) {{
         if(kind==2) {{
             int64_t *ids=(int64_t *)pinputs[0];
             float *mask=(float *)pinputs[1];
-            for(u32 i=0;i<256;++i)ids[i]=i<next_length ? (int64_t)get64(payload+8*i) : {cache.pad_token_id};
-            for(u32 q=0;q<256;++q)for(u32 k=0;k<256;++k)
-                mask[q*256+k]=(k<=q && k<next_length) ? 0.0f : -0x1.fffffep127f;
+            for(u32 i=0;i<{prefill_length};++i)ids[i]=i<next_length ? (int64_t)get64(payload+8*i) : {cache.pad_token_id};
+            for(u32 q=0;q<{prefill_length};++q)for(u32 k=0;k<{prefill_length};++k)
+                mask[q*{prefill_length}+k]=(k<=q && k<next_length) ? 0.0f : -0x1.fffffep127f;
             *(int64_t *)pinputs[2]=next_length-1;
             status={prefill.function_name}(pinputs,pweights,(void *)0x{layout['workspace_base']:x}UL,
                                            {layout['regions']['workspace']['nbytes']}UL,outputs);
@@ -200,7 +211,7 @@ void sv_main(void) {{
 def build_session(prefill, decode, cache_layout, build_dir, toolchain, *, cores=1, timeout=600):
     """Link separately compiled Prefill/Decode into one code-only ELF and bundle."""
     cores = validate_cores(cores)
-    cache_layout.validate_graphs(prefill, decode)
+    prefill_length = cache_layout.validate_graphs(prefill, decode)
     if prefill.function_name == decode.function_name:
         raise ValueError('Prefill and Decode entry points must differ')
     build_dir = Path(build_dir).resolve()
@@ -250,7 +261,7 @@ def build_session(prefill, decode, cache_layout, build_dir, toolchain, *, cores=
         raise RuntimeError(result.stderr.decode(errors='replace')[-12000:])
     evidence = validate_external_elf(build_dir/'model.elf',layout)
     evidence.update(identity=identity,cores=cores,prefill_input_bytes=pi,decode_input_bytes=di,compile_seconds=time.perf_counter()-start,
-        cache_layout=cache_layout.to_dict(),weight_mappings=mappings,command=command,
+        cache_layout=cache_layout.to_dict(),prefill_length=prefill_length,weight_mappings=mappings,command=command,
         prefill_workspace_bytes=prefill.workspace_bytes,decode_workspace_bytes=decode.workspace_bytes,
         versions=toolchain_versions(toolchain),
         sources={name:sha256_file(build_dir/name) for name in sources})
@@ -282,6 +293,7 @@ class QemuSession:
         if cancelled is not None and not callable(cancelled):
             raise TypeError('cancelled must be callable')
         self.executable, self.timeout, self.cancelled, self.deadline = executable,float(timeout),cancelled,deadline
+        self.prefill_length = _prefill_length(executable)
         self.run_dir = Path(run_dir).resolve()
         self.state = 'NEW'
         self.valid_length = self.bank = self.request_id = 0
@@ -294,6 +306,7 @@ class QemuSession:
         self.report = {'schema':'scratchv.kv-session.v1','passed':False,'state':self.state,
                        'cores':executable.cores,'identity':executable.evidence['identity'],
                        'cache_layout':executable.cache_layout.to_dict(),
+                       'prefill_length':self.prefill_length,
                        'memory':executable.layout,'requests':[],'weight_transport':{}}
         self.runs = self.report['requests']
 
@@ -483,7 +496,8 @@ class QemuSession:
         return self._request(protocol.RESET,length=0)
 
     def prefill(self, prompt_ids):
-        feed = prepare_prefill(prompt_ids,self.executable.cache_layout)
+        feed = prepare_prefill(prompt_ids,self.executable.cache_layout,
+                               prefill_length=self.prefill_length)
         if self.valid_length:
             raise ValueError('Prefill requires RESET')
         length = int(feed['logit_index'][0])+1
@@ -627,6 +641,13 @@ def load_session_executable(path):
 def _validate_session_metadata(executable):
     evidence = executable.evidence
     cache = executable.cache_layout
+    prefill_length = executable.prefill_length
+    # Three input buffers start on 64-byte boundaries: INT64 IDs, FP32 mask,
+    # and one INT64 logit index. This also checks legacy records (length 256).
+    mask_offset = (prefill_length*8+63)//64*64
+    index_offset = (mask_offset+prefill_length*prefill_length*4+63)//64*64
+    if evidence['prefill_input_bytes'] != index_offset+8:
+        raise ValueError('Prefill input bytes differ from the compiled sequence length')
     expected = plan_session_memory(cache.bank_bytes,
         prefill_input_bytes=evidence['prefill_input_bytes'],decode_input_bytes=evidence['decode_input_bytes'],
         prefill_workspace_bytes=evidence['prefill_workspace_bytes'],
