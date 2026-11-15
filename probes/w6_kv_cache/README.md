@@ -2,6 +2,8 @@
 
 用项目两层随机权重 Qwen3 验证固定容量 256 的 Prefill/Decode。默认执行 PyTorch、ONNX Runtime、IR 解释器和编译后的 Host C；`--qemu` 额外构建真实 RISC-V ELF 并执行常驻会话。没有模拟目标数值或用 Host 结果替代 QEMU。
 
+加速结果、完整模型计时、提速原因和比较范围见 [KV cache 推理性能报告](../../docs/llm-deploy-v1.0/kv-cache-performance/README.md)。
+
 ```bash
 .venv-llm/bin/python probes/w6_kv_cache/run.py \
   --output-dir output/kv-check --qemu --cores 1
@@ -10,8 +12,6 @@
 `--cores` 支持 1/2/4；`--benchmark` 额外比较相同权重、固定 17 token 提示词和 4 token 预算的无缓存/缓存生成。请单独执行性能测量，避免其他验证争用 CPU。所有输出必须放在新目录。
 
 `export.json` 包含接口、opset、算子及形状清单；`validation.json` 包含逐步误差与内存；`qemu-N/session.json` 包含请求编号、提交长度、阶段耗时及回收记录。`--benchmark` 还产生 `benchmark.json`。失败时检查日志和未删除的构建/会话目录；大型文件写在 `output/`，不发布为模型验收资产。
-
-完整操作说明和已完成的验证范围见 [W6](../../docs/llm-deploy-v1.0/W6/README.md)。
 
 ## 完整预训练 Qwen3-0.6B
 
