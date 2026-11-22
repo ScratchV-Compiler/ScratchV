@@ -27,7 +27,9 @@ from probes.w4_qwen3_full.fma_conformance import run_probe as run_fma_probe
 from scratchv.backend.tensor_c_codegen import TensorCCodegen, TensorSpec, _shape
 from scratchv.ir.types import DataType
 from scratchv.runtime.riscv_harts import read_cores, resolve_cores
-from scratchv.runtime.riscv_external import build_external, run_external, ExternalExecutable, validate_external_elf
+from scratchv.runtime.riscv_external import (
+    build_external, run_external, ExternalExecutable, validate_external_elf, validate_lm_head_policy,
+)
 from scratchv.runtime.riscv_tensor import discover_toolchain, RiscVToolchain, input_layout, toolchain_versions
 from scratchv.runtime.weight_bundle import write_weight_bundle, validate_weight_bundle, plan_guest_memory
 
@@ -146,6 +148,7 @@ def load_executable(path):
         record["evidence"], cores=read_cores(record))
     if read_cores(exe.evidence) != exe.cores:
         raise ValueError("Reused core count does not match build evidence")
+    validate_lm_head_policy(exe.evidence.get("lm_head_policy", "original"))
     mean_policy = exe.evidence.get("mean_policy", "sequential")
     if not isinstance(mean_policy, str) or mean_policy not in ("sequential", "two-four-lane-last-axis"):
         raise ValueError("Unsupported reused Mean policy")
@@ -232,6 +235,8 @@ def main(argv=None):
                      default="none",
                      help="QEMU-only experimental two-buffer workspace layout (default: none); "
                           "padding adds 4 KiB and may reduce performance; unsupported graphs fail")
+    cli.add_argument("--qemu-weight-transport", choices=("loader", "file-backed-ram"), default="loader",
+                     help="How the bare-metal guest receives its weights (default: QEMU loader)")
     add_core_argument(cli)
     cli.add_argument("--timeout", type=float, default=10800)
     cli.add_argument("--build-timeout", type=float, default=900)
@@ -243,6 +248,9 @@ def main(argv=None):
                      help="Explicit FP32 Trig/Sigmoid/Softmax order; default preserves platform libm")
     cli.add_argument("--matmul-tile", choices=("1x4", "2x4", "1x8"), default="1x4",
                      help="MatMul output tile (default: 1x4); 2x4/1x8 require blocked_fma")
+    cli.add_argument("--lm-head-policy", choices=("original", "vocab-blocked"), default="original",
+                     help="Final tied LM Head implementation (default: original); "
+                          "vocab-blocked uses the shared weight with blocked_fma and the 2x4 tile")
     cli.add_argument("--reuse-build", type=Path, help="Local executable.json; verified before every run")
     cli.add_argument("--matmul-rhs-layout", choices=("original", "column-panel"), default="original",
                      help="Experimental immutable MatMul RHS packing (default: original); "
@@ -252,6 +260,8 @@ def main(argv=None):
         cli.error("--matmul-tile 2x4/1x8 requires --matmul-policy blocked_fma")
     if args.matmul_rhs_layout != "original" and args.matmul_policy != "blocked_fma":
         cli.error("--matmul-rhs-layout column-panel requires --matmul-policy blocked_fma")
+    if args.lm_head_policy == "vocab-blocked" and (args.matmul_policy != "blocked_fma" or args.matmul_tile != "2x4"):
+        cli.error("--lm-head-policy vocab-blocked requires --matmul-policy blocked_fma and --matmul-tile 2x4")
     requested_cores = args.cores if args.cores == "auto" else int(args.cores)
     args.cores = resolve_cores(requested_cores)
     if requested_cores == "auto":
@@ -266,6 +276,8 @@ def main(argv=None):
               "matmul_tile": args.matmul_tile, "mean_policy": args.mean_policy,
               "nonlinear_policy": args.nonlinear_policy,
               "matmul_rhs_layout": args.matmul_rhs_layout,
+              "lm_head_policy": args.lm_head_policy,
+              "qemu_weight_transport": args.qemu_weight_transport,
               "qemu_workspace_layout_requested": args.qemu_workspace_layout,
               "gates": {"build:riscv-full": False, "smoke:qemu-full": False,
                         "numeric:qemu-full-qwen3": False},
@@ -325,6 +337,10 @@ def main(argv=None):
                     or previous.get("matmul_rhs_layout", "original") != args.matmul_rhs_layout):
                 raise ValueError("Reused build MatMul RHS layout differs from requested "
                                  "--matmul-rhs-layout; rebuild the executable")
+            if (exe.evidence.get("lm_head_policy", "original") != args.lm_head_policy
+                    or previous.get("lm_head_policy", "original") != args.lm_head_policy):
+                raise ValueError("Reused build LM Head policy differs from requested --lm-head-policy; "
+                                 "rebuild the executable")
             previous_panels = previous.get("build", {}).get("matmul_rhs_panels", [])
             built_panels = exe.evidence.get("matmul_rhs_panels", [])
             if (not isinstance(previous_panels, list) or not isinstance(built_panels, list)
@@ -361,7 +377,7 @@ def main(argv=None):
                 max_constant_bytes=3 * 1024**3, max_workspace_bytes=1024**3,
                 kernel_calls=True, matmul_policy=args.matmul_policy, matmul_tile=args.matmul_tile,
                 mean_policy=args.mean_policy, nonlinear_policy=args.nonlinear_policy,
-                matmul_rhs_layout=args.matmul_rhs_layout,
+                matmul_rhs_layout=args.matmul_rhs_layout, lm_head_policy=args.lm_head_policy,
                 qemu_workspace_layout=args.qemu_workspace_layout).generate())
             report["codegen"] = {"source_bytes": len(artifact.source.encode()),
                                   "constant_bytes": artifact.constant_bytes,
@@ -374,6 +390,7 @@ def main(argv=None):
                                   "nonlinear_policy": artifact.nonlinear_policy,
                                   "matmul_tile": artifact.matmul_tile,
                                   "matmul_rhs_layout": artifact.matmul_rhs_layout,
+                                  "lm_head_policy": artifact.lm_head_policy,
                                   "matmul_rhs_panels": list(artifact.matmul_rhs_panels),
                                   "output": spec_json(artifact.output)}
             stage("write_weight_bundle", lambda: write_weight_bundle(artifact.external_weights,
@@ -414,7 +431,9 @@ def main(argv=None):
                 report["cases"].append(row)
                 stage(f"{name}_ort", lambda: ort_reference(model_dir, feed, case_dir / "ort.npy"))
                 row["ort_sha256"] = sha256_file(case_dir / "ort.npy")
-                actual, run = stage(f"{name}_qemu", lambda: run_external(exe, feed, case_dir / "qemu", timeout=args.timeout))
+                actual, run = stage(f"{name}_qemu", lambda: run_external(
+                    exe, feed, case_dir / "qemu", timeout=args.timeout,
+                    qemu_weight_transport=args.qemu_weight_transport))
                 if sha256_file(exe.toolchain.qemu) != report["execution_tool_binary_sha256"]["qemu"]:
                     raise ValueError("QEMU executable changed after FMA preflight")
                 row["qemu"] = run

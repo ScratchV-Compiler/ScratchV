@@ -48,16 +48,25 @@ class KVCacheLayout:
         return asdict(self)
 
     def validate_graphs(self, prefill, decode):
-        """Validate names/order/types/shapes of two TensorC artifacts."""
+        """Validate both signatures and return the static Prefill input length.
+
+        Prefill may process fewer positions than the cache capacity. Its K/V
+        outputs still cover all 256 positions, exactly like Decode's inputs.
+        """
         from scratchv.ir.types import DataType
+        if not prefill.inputs or len(prefill.inputs[0].shape) != 2:
+            raise ValueError('Prefill input_ids must have shape [1, prefill_length]')
+        prefill_length = _integer(prefill.inputs[0].shape[1], 'prefill_length',
+                                  minimum=1, maximum=self.capacity)
         def spec(name, dtype, shape):
             return (name, dtype, shape)
         expected_outputs = [spec('logits', DataType.FLOAT32, (1, 1, self.vocab_size))]
         expected_outputs += [spec(name, DataType.FLOAT32, self.shape) for name in self.cache_names]
         for artifact, is_decode in ((prefill, False), (decode, True)):
-            inputs = [spec('input_ids', DataType.INT64, (1, 1 if is_decode else self.capacity)),
+            inputs = [spec('input_ids', DataType.INT64, (1, 1 if is_decode else prefill_length)),
                       spec('attention_mask', DataType.FLOAT32,
-                           (1, 1, 1 if is_decode else self.capacity, self.capacity)),
+                           (1, 1, 1, self.capacity) if is_decode else
+                           (1, 1, prefill_length, prefill_length)),
                       spec('position_ids' if is_decode else 'logit_index', DataType.INT64,
                            (1, 1) if is_decode else (1,))]
             if is_decode:
@@ -67,12 +76,21 @@ class KVCacheLayout:
                 raise ValueError('Prefill/Decode tensors differ from KV ABI v1')
             if artifact.abi_version != 2 or artifact.constant_storage != 'external':
                 raise ValueError('KV session requires external Tensor-C ABI v2')
+        return prefill_length
 
 
-def prepare_prefill(tokens, layout: KVCacheLayout):
+def prepare_prefill(tokens, layout: KVCacheLayout, *, prefill_length=256):
+    """Prepare a prompt for a fixed-length Prefill graph without truncation."""
+    prefill_length = _integer(prefill_length, 'prefill_length', minimum=1, maximum=layout.capacity)
     tokens = _token_sequence(tokens, vocab_size=layout.vocab_size, name='tokens')
+    if len(tokens) > prefill_length:
+        raise ValueError(f'Prompt has {len(tokens)} tokens, exceeds prefill_length={prefill_length}')
     prepared = prepare_inputs(tokens, pad_token_id=layout.pad_token_id, vocab_size=layout.vocab_size)
-    return {**prepared.as_feed(), 'logit_index': np.array([len(tokens)-1], np.int64)}
+    feed = prepared.as_feed()
+    if prefill_length != layout.capacity:
+        feed = {'input_ids': prepared.input_ids[:, :prefill_length].copy(),
+                'attention_mask': prepared.attention_mask[:, :, :prefill_length, :prefill_length].copy()}
+    return {**feed, 'logit_index': np.array([len(tokens)-1], np.int64)}
 
 
 def prepare_decode(token, position, layout: KVCacheLayout, cache):

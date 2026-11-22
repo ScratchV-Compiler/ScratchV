@@ -213,6 +213,7 @@ def matching_reuse_metadata(cli, monkeypatch, path):
     ({"matmul_policy": "blocked_fma"}, 1),
     ({"matmul_tile": "2x4"}, 1),
     ({"matmul_rhs_layout": "column-panel"}, 1),
+    ({"lm_head_policy": "vocab-blocked"}, 1),
     ({"qemu_workspace_layout": "two-buffer-pad-4k"}, 1),
 ])
 def test_reuse_rejects_changed_configuration_or_padding(cli, monkeypatch, tmp_path, changes, cores):
@@ -854,3 +855,33 @@ def test_old_wrapper_harts_assignment_reaches_core_selection_once(
         value if value == "auto" else int(value))
     assert runtime.cores == [value if value == "auto" else int(value)]
     assert len(runtime.prepared) == 1
+
+
+def test_optional_lm_head_policy_reuse_and_case_timing_scope(cli, runtime, tmp_path, monkeypatch):
+    assert cli.main(argv(tmp_path, '--prompt', 'text', '--max-new-tokens', '2',
+                         '--matmul-policy', 'blocked_fma', '--matmul-tile', '2x4',
+                         '--lm-head-policy', 'vocab-blocked')) == 0
+    value = report(tmp_path)
+    assert value['lm_head_policy'] == 'vocab-blocked'
+    timing = value['cases'][0]['timings']
+    assert timing['generation_and_validation_s'] >= timing['generation_call_s'] >= 0
+    assert timing['ort_s'] == timing['numeric_comparison_s'] == 0
+    assert timing['result_validation_s'] >= 0
+    metadata = tmp_path / 'old/executable.json'
+    matching_reuse_metadata(cli, monkeypatch, metadata)
+    metadata.with_name('report.json').write_text(json.dumps({
+        'executable_sha256': 'matching', 'lm_head_policy': 'vocab-blocked'}))
+    exe = SimpleNamespace(cores=1, evidence={'matmul_policy': 'blocked_fma',
+        'matmul_tile': '2x4', 'lm_head_policy': 'vocab-blocked'})
+    monkeypatch.setattr(cli, 'load_executable', lambda path: exe)
+    # The orchestration fixture replaced this helper; load the module's actual
+    # helper to test metadata validation without building a model.
+    spec = spec_from_file_location('w5_real_policy_helper', Path(cli.__file__))
+    real = module_from_spec(spec)
+    spec.loader.exec_module(real)
+    monkeypatch.setattr(real, 'sha256_file', lambda path: 'matching')
+    monkeypatch.setattr(real, 'load_executable', lambda path: exe)
+    args = real.parse_args(['--reuse-build', str(metadata), '--tokenizer-dir', 'tokens',
+        '--output-dir', str(tmp_path / 'new'), '--prompt', 'text',
+        '--matmul-policy', 'blocked_fma', '--matmul-tile', '2x4', '--lm-head-policy', 'vocab-blocked'])
+    assert real.prepare_executable(args, tmp_path / 'new', 1) is exe

@@ -2,7 +2,8 @@
 """Build/reuse one RV64 ELF and weight bundle for Host-driven QEMU generation.
 
 Raw completion is the default; chat and the frozen reference suite are explicit.
-Each forward uses the existing bounded QEMU runner; weights/ELF are not rebuilt.
+The ordinary path restarts QEMU per forward; --kv-cache keeps one QEMU session.
+Both paths reuse their ELF and weight bundle throughout generation.
 """
 from __future__ import annotations
 
@@ -69,6 +70,9 @@ def parse_args(argv=None):
                      help="Explicit FP32 Trig/Sigmoid/Softmax order; default preserves platform libm")
     cli.add_argument("--matmul-tile", choices=("1x4", "2x4", "1x8"), default="1x4")
     cli.add_argument("--matmul-rhs-layout", choices=("original", "column-panel"), default="original")
+    cli.add_argument("--lm-head-policy", choices=("original", "vocab-blocked"), default="original")
+    cli.add_argument("--attention-decode-policy", choices=("original", "kv-heads"), default="original",
+                     help="Optional KV Decode Attention; Prefill retains the original implementation")
     cli.add_argument("--verify-onnx", type=Path, help="Optional ORT numeric/greedy oracle for every step")
     args = cli.parse_args(argv, namespace=CoreNamespace())
     if any(not np.isfinite(t) or t <= 0 for t in (args.timeout, args.total_timeout, args.build_timeout)):
@@ -85,8 +89,14 @@ def parse_args(argv=None):
         cli.error("nondefault tile/RHS layout requires --matmul-policy blocked_fma")
     if args.reuse_build and args.cc:
         cli.error("--cc cannot change a reused build")
+    if args.lm_head_policy != "original" and (args.matmul_policy != "blocked_fma" or args.matmul_tile != "2x4"):
+        cli.error("--lm-head-policy vocab-blocked requires --matmul-policy blocked_fma --matmul-tile 2x4")
+    if args.attention_decode_policy != "original" and (
+            not args.kv_cache or args.matmul_policy != "blocked_fma"
+            or args.matmul_tile != "2x4" or args.nonlinear_policy != "fp32-reference"):
+        cli.error("--attention-decode-policy kv-heads requires --kv-cache, blocked_fma/2x4 and fp32-reference")
     if args.kv_cache:
-        if args.mode != "raw" or args.reference_suite:
+        if args.mode != "raw":
             cli.error("--kv-cache currently supports raw completion only")
         if args.model and not args.decode_model:
             cli.error("--kv-cache with --model requires --decode-model")
@@ -109,6 +119,9 @@ def prepare_executable(args, out, cores=UNSET, *, harts=UNSET):
         if (("cores" in record or "harts" in record)
                 and read_cores(record) != exe.cores):
             raise ValueError("Reused report core count differs from executable")
+        if (exe.evidence.get("lm_head_policy", "original") != args.lm_head_policy
+                or record.get("lm_head_policy", "original") != args.lm_head_policy):
+            raise ValueError("Reused build LM Head policy differs from requested --lm-head-policy")
         # W4 stored arithmetic policy in the sibling report; W5 also keeps it
         # in the validated executable metadata.
         policy = exe.evidence.get("matmul_policy", record.get("matmul_policy"))
@@ -144,6 +157,7 @@ def prepare_executable(args, out, cores=UNSET, *, harts=UNSET):
         max_constant_bytes=3 * 1024**3, max_workspace_bytes=1024**3, kernel_calls=True,
         matmul_policy=args.matmul_policy, matmul_tile=args.matmul_tile, mean_policy=args.mean_policy,
         nonlinear_policy=args.nonlinear_policy,
+        lm_head_policy=args.lm_head_policy,
         matmul_rhs_layout=args.matmul_rhs_layout, qemu_workspace_layout="none",
     ).generate()
     write_weight_bundle(artifact.external_weights, artifact.external_initializers, out / "weights")
@@ -214,6 +228,23 @@ def compare_step(actual, expected, valid_length, vocab_size):
             "elements_compared": int(actual.size)}
 
 
+def load_reference_suite(tokenizer):
+    fixture = json.loads((ROOT / "probes/w5_generation/references.json").read_text(encoding="utf-8"))
+    meta = {"pad_token_id": tokenizer.pad_token_id,
+            "generation_eos_token_ids": list(tokenizer.generation_eos_token_ids),
+            "model_vocab_size": tokenizer.model_vocab_size,
+            "tokenizer_vocab_size": tokenizer.tokenizer_vocab_size}
+    if fixture["status"] != "frozen" or fixture["tokenizer"] != meta or len(fixture["cases"]) != 3:
+        raise ValueError("Reference suite/tokenizer differs from the frozen contract")
+    return fixture
+
+
+def require_full_cached_executable(exe):
+    from scratchv.runtime.kv_cache import KVCacheLayout
+    if exe.cache_layout != KVCacheLayout(28, 8, 128, 151936, pad_token_id=151643):
+        raise ValueError("Reference suite requires the complete 28-layer Qwen3 KV executable")
+
+
 def cached_main(args):
     from scratchv.frontend.onnx_parser import ONNXParser
     from scratchv.runtime.cached_generation import generate_cached
@@ -223,105 +254,262 @@ def cached_main(args):
         build_session, QemuSession, save_session_executable, load_session_executable)
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    cores = resolve_cores(args.cores if args.cores == 'auto' else int(args.cores))
+    requested = args.cores if args.cores == "auto" else int(args.cores)
+    cores = resolve_cores(requested)
     started = time.perf_counter()
-    report = {'schema_version': 1, 'passed': False, 'status': 'FAIL', 'kv_cache': True,
-              'mode': 'raw', 'cores': cores, 'capacity': args.kv_capacity,
-              'execution': 'one resident QEMU; one Prefill then single-token Decode',
-              'full_model_gate': 'NOT_RUN', 'numeric_steps': [], 'generation_timings': {}}
+    policies = {"matmul_policy": args.matmul_policy, "matmul_tile": args.matmul_tile,
+                "matmul_rhs_layout": args.matmul_rhs_layout, "mean_policy": args.mean_policy,
+                "nonlinear_policy": args.nonlinear_policy, "lm_head_policy": args.lm_head_policy,
+                "attention_decode_policy": args.attention_decode_policy}
+    report = {"schema_version": 1, "passed": False, "status": "FAIL", "stage": "prepare",
+              "kv_cache": True, "mode": "raw", "cores": cores, "cores_requested": requested,
+              "harts": cores, "harts_requested": requested, "capacity": args.kv_capacity,
+              "qemu_workspace_layout": "none", **policies,
+              "execution": "one resident QEMU and one ELF/bundle; each case resets KV, then one Prefill and N-1 Decode calls",
+              "numeric_scope": "all vocabulary logits at the current token; no cache tensor dump",
+              "full_model_gate": "NOT_RUN", "cases": [], "numeric_steps": [],
+              "generation_timings": {}, "timings": {"checkpoint_save_s": 0.0},
+              "timing_scope": "case generation_and_validation_s includes ORT, numeric checks and final text/stop checks; excludes build, session startup, report saving and terminal display; checkpoint_save_s excludes the final report write"}
     session = None
+    previous = {}
+    exit_code = 1
+
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt(f"generation interrupted by signal {signum}")
+
+    def save():
+        if session is not None:
+            report["session"] = session.report
+            report["runs"] = session.runs
+        report["elapsed_seconds"] = time.perf_counter() - started
+        atomic_text(out / "report.json", json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+
+    def checkpoint():
+        begin = time.perf_counter()
+        try:
+            save()
+        finally:
+            report["timings"]["checkpoint_save_s"] += time.perf_counter() - begin
+
     try:
+        if threading.current_thread() is threading.main_thread():
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                previous[sig] = signal.getsignal(sig)
+                signal.signal(sig, interrupted)
         tokenizer = Qwen3Tokenizer.from_directory(args.tokenizer_dir)
         if args.reuse_build:
-            prior = json.loads(args.reuse_build.with_name('report.json').read_text())
-            if prior.get('executable_sha256') != sha256_file(args.reuse_build):
-                raise ValueError('Reused KV executable metadata changed')
+            prior = json.loads(args.reuse_build.with_name("report.json").read_text())
+            if prior.get("executable_sha256") != sha256_file(args.reuse_build):
+                raise ValueError("Reused KV executable metadata changed")
             exe = load_session_executable(args.reuse_build)
             if exe.cores != cores:
-                raise ValueError('Reused KV core count differs from requested configuration')
-            policies = {'matmul_policy': args.matmul_policy, 'matmul_tile': args.matmul_tile,
-                        'matmul_rhs_layout': args.matmul_rhs_layout, 'mean_policy': args.mean_policy,
-                        'nonlinear_policy': args.nonlinear_policy}
-            if exe.evidence.get('policies') != policies:
-                raise ValueError('Reused KV arithmetic policies differ from requested configuration')
+                raise ValueError("Reused KV core count differs from requested configuration")
+            stored_policies = dict(exe.evidence.get("policies", {}))
+            for key in ("lm_head_policy", "attention_decode_policy"):
+                stored_policies.setdefault(key, "original")
+            if stored_policies != policies:
+                raise ValueError("Reused KV arithmetic policies differ from requested configuration")
             if args.qemu:
                 exe = replace(exe, toolchain=discover_toolchain(exe.toolchain.cc, args.qemu))
         else:
             artifacts = []
-            for mode, path in (('prefill', args.model), ('decode', args.decode_model)):
+            for mode, path in (("prefill", args.model), ("decode", args.decode_model)):
                 parser = ONNXParser()
                 program = parser.parse(str(path.resolve()), mmap_external_data=True)
                 artifacts.append(TensorCCodegen(program, parser.initializers,
-                    constant_storage='external', abi_version=2, function_name=f'sv_{mode}_v2',
+                    constant_storage="external", abi_version=2, function_name=f"sv_{mode}_v2",
                     max_constant_bytes=3*1024**3, max_workspace_bytes=1024**3, kernel_calls=True,
                     matmul_policy=args.matmul_policy, matmul_tile=args.matmul_tile,
                     matmul_rhs_layout=args.matmul_rhs_layout, mean_policy=args.mean_policy,
-                    nonlinear_policy=args.nonlinear_policy).generate())
+                    nonlinear_policy=args.nonlinear_policy, lm_head_policy=args.lm_head_policy,
+                    attention_decode_policy=args.attention_decode_policy if mode == "decode" else "original").generate())
             outputs = artifacts[0].outputs
-            if len(outputs)<3 or len(outputs)%2!=1 or len(outputs[1].shape)!=4:
-                raise ValueError('Invalid KV output signature')
+            if len(outputs) < 3 or len(outputs) % 2 != 1 or len(outputs[1].shape) != 4:
+                raise ValueError("Invalid KV output signature")
             cache = KVCacheLayout((len(outputs)-1)//2, outputs[1].shape[1], outputs[1].shape[3],
                                   outputs[0].shape[2], pad_token_id=tokenizer.pad_token_id)
-            exe = build_session(*artifacts, cache, out/'build', discover_toolchain(args.cc,args.qemu),
+            exe = build_session(*artifacts, cache, out / "build", discover_toolchain(args.cc, args.qemu),
                                 cores=cores, timeout=args.build_timeout)
-            exe = replace(exe, evidence={**exe.evidence, 'policies': {
-                'matmul_policy': args.matmul_policy, 'matmul_tile': args.matmul_tile,
-                'matmul_rhs_layout': args.matmul_rhs_layout, 'mean_policy': args.mean_policy,
-                'nonlinear_policy': args.nonlinear_policy}})
+            exe = replace(exe, evidence={**exe.evidence, "policies": policies})
         if (exe.cache_layout.vocab_size != tokenizer.model_vocab_size
                 or exe.cache_layout.pad_token_id != tokenizer.pad_token_id):
-            raise ValueError('Tokenizer differs from the KV executable vocabulary/padding')
-        report['build'] = exe.evidence
-        report['executable_sha256'] = save_session_executable(exe, out)
+            raise ValueError("Tokenizer differs from the KV executable vocabulary/padding")
+        if args.reference_suite:
+            require_full_cached_executable(exe)
+        report["build"] = exe.evidence
+        report["executable_sha256"] = save_session_executable(exe, out)
+        report["timings"]["prepare_s"] = time.perf_counter() - started
         if args.build_only:
-            report.update(status='BUILD_ONLY')
-            return 0
-        oracle = oracle_session(args.verify_onnx) if args.verify_onnx else None
-        deadline = time.monotonic()+args.total_timeout
-        session = QemuSession(exe, out/'session', timeout=args.timeout, deadline=deadline)
-        class CheckedSession:
-            def reset(self):
-                self.history = []
-                return session.reset()
-            def check(self, actual):
-                if oracle is not None:
-                    prepared = prepare_inputs(self.history,pad_token_id=tokenizer.pad_token_id,
-                                              vocab_size=tokenizer.model_vocab_size)
-                    expected = oracle.run(None,prepared.as_feed())[0]
-                    expected = last_valid_logits(expected,len(self.history),vocab_size=tokenizer.model_vocab_size)
-                    observed = cached_logits(actual,tokenizer.model_vocab_size)
-                    error = float(np.max(np.abs(observed.astype(np.float64)-expected.astype(np.float64))))
-                    equal = greedy_token(observed)==greedy_token(expected)
-                    report['numeric_steps'].append(dict(max_abs_error=error,greedy_equal=equal,
-                                                         valid_length=len(self.history)))
-                    if error>ATOL or not equal:
-                        raise ValueError('Cached logits differ from the uncached ORT oracle')
-                return actual
-            def prefill(self, ids):
-                self.history = list(ids)
-                return self.check(session.prefill(ids))
-            def decode(self, token):
-                self.history.append(token)
-                return self.check(session.decode(token))
-        with session:
-            result = generate_cached(args.prompt,tokenizer=tokenizer,session=CheckedSession(),
-                max_new_tokens=8 if args.max_new_tokens is None else args.max_new_tokens,
-                timeout_seconds=max(0,deadline-time.monotonic()),timings=report['generation_timings'])
-        report['result'] = asdict(result)
-        report.update(passed=True,status='PASS')
-        print(result.generated_text)
-        return 0
-    except BaseException as exc:
-        report['error'] = f'{type(exc).__name__}: {exc}'
-        if isinstance(exc, KeyboardInterrupt):
-            return 130
-        return 1
+            report.update(status="BUILD_ONLY", stage="build_complete")
+        else:
+            report["stage"] = "reference_contract"
+            fixture = load_reference_suite(tokenizer) if args.reference_suite else None
+            if fixture is not None:
+                cases = fixture["cases"]
+                if (len({case["name"] for case in cases}) != 3
+                        or any(case["max_new_tokens"] != 8 or len(case["generated_token_ids"]) != 8
+                               for case in cases)):
+                    raise ValueError("KV reference suite requires three distinct frozen 8-token cases")
+            else:
+                cases = [{"name": "turn-0", "prompt": args.prompt,
+                          "max_new_tokens": 8 if args.max_new_tokens is None else args.max_new_tokens}]
+            report["stage"] = "oracle_prepare"
+            begin = time.perf_counter()
+            oracle = (reference_session(args.verify_onnx, fixture) if fixture is not None else
+                      oracle_session(args.verify_onnx) if args.verify_onnx else None)
+            report["timings"]["oracle_prepare_s"] = time.perf_counter() - begin
+            deadline = time.monotonic() + args.total_timeout
+            session = QemuSession(exe, out / "session", timeout=args.timeout, deadline=deadline)
+
+            class CheckedSession:
+                def __init__(self, case, timings):
+                    self.case, self.timings = case, timings
+                    self.history = []
+                    self.step = 0
+                    self.prefill_count = self.decode_count = 0
+                    self.reference_history = list(case["prompt_token_ids"]) if fixture is not None else None
+
+                def reset(self):
+                    self.history = []
+                    return session.reset()
+
+                def check(self, actual):
+                    if oracle is not None:
+                        begin = time.perf_counter()
+                        prepared = prepare_inputs(self.history, pad_token_id=tokenizer.pad_token_id,
+                                                  vocab_size=tokenizer.model_vocab_size)
+                        feed = (checked_inputs(self.reference_history, prepared, tokenizer.pad_token_id)
+                                if fixture is not None else prepared.as_feed())
+                        expected = oracle.run(["logits"], feed)[0]
+                        self.timings["ort_s"] += time.perf_counter() - begin
+                        begin = time.perf_counter()
+                        expected = last_valid_logits(expected, len(self.history), vocab_size=tokenizer.model_vocab_size)
+                        observed = cached_logits(actual, tokenizer.model_vocab_size)
+                        error = float(np.max(np.abs(observed.astype(np.float64) - expected.astype(np.float64))))
+                        qemu_id, ort_id = greedy_token(observed), greedy_token(expected)
+                        comparison = {"case": self.case["name"], "step": self.step,
+                            "phase": "prefill" if self.step == 0 else "decode",
+                            "valid_length": len(self.history), "max_abs_error": error, "max_abs": error,
+                            "atol": ATOL, "rtol": 0.0, "greedy_equal": qemu_id == ort_id,
+                            "qemu_token_id": qemu_id, "ort_token_id": ort_id,
+                            "elements_compared": int(observed.size), "passed": error < ATOL and qemu_id == ort_id}
+                        if fixture is not None:
+                            frozen_id = self.case["generated_token_ids"][self.step]
+                            comparison.update(reference_token_id=frozen_id,
+                                              reference_token_passed=qemu_id == ort_id == frozen_id)
+                            comparison["passed"] &= comparison["reference_token_passed"]
+                        report["numeric_steps"].append(comparison)
+                        self.timings["numeric_comparison_s"] += time.perf_counter() - begin
+                        if not comparison["passed"]:
+                            raise ValueError("Cached logits, greedy token or frozen token differ from the ORT reference")
+                        if fixture is not None:
+                            self.reference_history.append(frozen_id)
+                    self.step += 1
+                    return actual
+
+                def forward(self, phase, value):
+                    if fixture is not None:
+                        if self.step >= len(self.case["generated_token_ids"]):
+                            raise ValueError("Cached forward called after the frozen reference ended")
+                        if self.history != self.reference_history:
+                            raise ValueError("Cached input history differs from the frozen reference")
+                    run_start = len(session.runs)
+                    try:
+                        return self.check(getattr(session, phase)(value))
+                    finally:
+                        for run in session.runs[run_start:]:
+                            run.update(case=self.case["name"], phase=phase)
+
+                def prefill(self, ids):
+                    self.history = list(ids)
+                    self.prefill_count += 1
+                    return self.forward("prefill", ids)
+
+                def decode(self, token):
+                    self.history.append(token)
+                    self.decode_count += 1
+                    return self.forward("decode", token)
+
+            report["stage"] = "session_start"
+            session_start = time.perf_counter()
+            with session:
+                report["timings"]["session_start_s"] = time.perf_counter() - session_start
+                report["stage"] = "generation"
+                if fixture is not None:
+                    report["full_model_gate"] = "RUNNING"
+                    checkpoint()
+                for case in cases:
+                    report["active_case"] = case["name"]
+                    numeric_start = len(report["numeric_steps"])
+                    timings = {"ort_s": 0.0, "numeric_comparison_s": 0.0}
+                    report["generation_timings"] = timings
+                    checked = CheckedSession(case, timings)
+                    begin = time.perf_counter()
+                    result = generate_cached(case["prompt"], tokenizer=tokenizer, session=checked,
+                        max_new_tokens=case["max_new_tokens"],
+                        timeout_seconds=max(0.0, deadline-time.monotonic()), timings=timings)
+                    timings["generation_call_s"] = time.perf_counter() - begin
+                    check_start = time.perf_counter()
+                    row = {"name": case["name"], "prompt": case["prompt"],
+                           "max_new_tokens": case["max_new_tokens"], **asdict(result),
+                           "numeric_step_count": len(report["numeric_steps"]) - numeric_start,
+                           "prefill_count": checked.prefill_count, "decode_count": checked.decode_count,
+                           "forward_count": checked.prefill_count + checked.decode_count,
+                           "timings": timings}
+                    if fixture is not None:
+                        row["reference_passed"] = (
+                            row["numeric_step_count"] == row["forward_count"] == 8
+                            and row["prefill_count"] == 1 and row["decode_count"] == 7
+                            and list(result.prompt_token_ids) == case["prompt_token_ids"]
+                            and list(result.generated_token_ids) == case["generated_token_ids"]
+                            and result.generated_text == case["generated_text"]
+                            and result.stop_reason == case["stop_reason"]
+                            and case["required_substring"] in result.generated_text)
+                    timings["result_validation_s"] = time.perf_counter() - check_start
+                    timings["generation_and_validation_s"] = time.perf_counter() - begin
+                    if not report["cases"]:
+                        timings["first_case_with_session_start_s"] = time.perf_counter() - session_start
+                    report["cases"].append(row)
+                    if fixture is None:
+                        report["result"] = asdict(result)
+                        report["generation_timings"] = timings
+                    if fixture is not None and not row["reference_passed"]:
+                        raise ValueError(f"Frozen reference mismatch: {case['name']}")
+                    checkpoint()
+                    print(result.generated_text, flush=True)
+            report["timings"]["resident_session_s"] = time.perf_counter() - session_start
+            if fixture is not None:
+                if len(report["cases"]) != 3 or not all(row["reference_passed"] for row in report["cases"]):
+                    raise ValueError("All three frozen cases must pass")
+                report["full_model_gate"] = "PASS"
+            report.update(passed=True, status="PASS", stage="complete")
+        exit_code = 0
+    except (GenerationCancelledError, KeyboardInterrupt, SystemExit) as exc:
+        if isinstance(exc, SystemExit) and exc.code not in (130, 143):
+            raise
+        report.update(status="CANCELLED", error=f"{type(exc).__name__}: {exc}")
+        if report["full_model_gate"] == "RUNNING":
+            report["full_model_gate"] = "CANCELLED"
+        exit_code = exc.code if isinstance(exc, SystemExit) else 130
+        print(report["error"], file=sys.stderr, flush=True)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+        if report["full_model_gate"] == "RUNNING":
+            report["full_model_gate"] = "FAIL"
+        print(report["error"], file=sys.stderr, flush=True)
     finally:
-        if session is not None:
-            report['session'] = session.report
-            report['runs'] = session.runs
-        report['elapsed_seconds'] = time.perf_counter()-started
-        atomic_text(out/'report.json',json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False)+'\n')
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        try:
+            save()
+        except Exception as exc:
+            exit_code = exit_code or 1
+            print(f"Report save failed: {type(exc).__name__}: {exc}; "
+                  f"{out / 'report.json'} was not updated and may be missing or stale.",
+                  file=sys.stderr, flush=True)
+        finally:
+            gc.collect()
+    return exit_code
 
 
 def main(argv=None):
@@ -338,6 +526,7 @@ def main(argv=None):
               "qemu_workspace_layout": "none", "matmul_policy": args.matmul_policy,
               "mean_policy": args.mean_policy, "nonlinear_policy": args.nonlinear_policy,
               "matmul_tile": args.matmul_tile, "matmul_rhs_layout": args.matmul_rhs_layout,
+              "lm_head_policy": args.lm_head_policy, "attention_decode_policy": args.attention_decode_policy,
               "cases": [], "runs": [], "numeric_steps": [], "qemu_forwards": 0,
               "full_model_gate": "NOT_RUN", "container_reproduction": "NOT_ASSERTED",
               "execution": "one ELF/bundle; a fresh QEMU process per forward; no KV cache"}
@@ -383,13 +572,7 @@ def main(argv=None):
             fixture = None
             if args.reference_suite:
                 report["stage"] = "reference_contract"
-                fixture = json.loads((ROOT / "probes/w5_generation/references.json").read_text(encoding="utf-8"))
-                meta = {"pad_token_id": tokenizer.pad_token_id,
-                        "generation_eos_token_ids": list(tokenizer.generation_eos_token_ids),
-                        "model_vocab_size": tokenizer.model_vocab_size,
-                        "tokenizer_vocab_size": tokenizer.tokenizer_vocab_size}
-                if fixture["status"] != "frozen" or fixture["tokenizer"] != meta or len(fixture["cases"]) != 3:
-                    raise ValueError("Reference suite/tokenizer differs from the frozen contract")
+                fixture = load_reference_suite(tokenizer)
                 cases = fixture["cases"]
             else:
                 texts = args.chat_turn or [args.prompt]
@@ -419,9 +602,13 @@ def main(argv=None):
                     feed = checked_inputs(reference_history, prepared, tokenizer.pad_token_id)
                 else:
                     feed = prepared.as_feed()
+                ort_start = time.perf_counter()
                 expected = session.run(["logits"], feed)[0] if session is not None else None
+                if session is not None:
+                    timings["ort_s"] += time.perf_counter() - ort_start
                 actual = adapter(prepared)
                 if expected is not None:
+                    comparison_start = time.perf_counter()
                     comparison = compare_step(actual, expected, prepared.valid_length, adapter.vocab_size)
                     comparison.update(case=case["name"], step=step, valid_length=prepared.valid_length)
                     if fixture is not None:
@@ -439,6 +626,7 @@ def main(argv=None):
                         comparison["passed"] = (comparison["passed"]
                             and comparison["selected_row_passed"] and comparison["reference_token_passed"])
                     report["numeric_steps"].append(comparison)
+                    timings["numeric_comparison_s"] += time.perf_counter() - comparison_start
                     if not comparison["passed"]:
                         # The outer handler saves the failure after preserving its cause.
                         raise ValueError("QEMU/ORT full logits, selected row or frozen token differ; see numeric_steps")
@@ -448,14 +636,18 @@ def main(argv=None):
 
             for case in cases:
                 numeric_start, run_start = len(report["numeric_steps"]), len(adapter.runs)
+                timings = {"ort_s": 0.0, "numeric_comparison_s": 0.0}
+                generation_start = time.perf_counter()
                 reference_history = list(case["prompt_token_ids"]) if fixture is not None else None
                 remaining = max(0.0, deadline - time.monotonic())
                 kwargs = {"forward": forward, "max_new_tokens": case["max_new_tokens"],
                           "timeout_seconds": remaining}
                 result = (conversation.turn(case["prompt"], **kwargs) if conversation else
                           generate(case["prompt"], tokenizer=tokenizer, **kwargs))
+                timings["generation_call_s"] = time.perf_counter() - generation_start
+                validation_start = time.perf_counter()
                 row = {"name": case["name"], "prompt": case["prompt"],
-                       "max_new_tokens": case["max_new_tokens"], **asdict(result)}
+                       "max_new_tokens": case["max_new_tokens"], **asdict(result), "timings": timings}
                 if fixture is not None:
                     row["numeric_step_count"] = len(report["numeric_steps"]) - numeric_start
                     row["forward_count"] = len(adapter.runs) - run_start
@@ -466,6 +658,8 @@ def main(argv=None):
                         and result.generated_text == case["generated_text"]
                         and result.stop_reason == case["stop_reason"]
                         and case["required_substring"] in result.generated_text)
+                timings["result_validation_s"] = time.perf_counter() - validation_start
+                timings["generation_and_validation_s"] = time.perf_counter() - generation_start
                 report["cases"].append(row)
                 if fixture is not None and not row["reference_passed"]:
                     raise ValueError(f"Frozen reference mismatch: {case['name']}")
