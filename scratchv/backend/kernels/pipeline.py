@@ -37,6 +37,9 @@ UNROLL: dict[str, int] = {
     'add': 32,           'add-fp32': 32,
     'reducesum': 32,     'reducesum-fp32': 32,
     'matmul': 1,         'matmul-fp32': 1,
+    # ScratchV杯第一题：当前是 O0 基线（DEVELOPMENT.md 第 7 章那类"新循环形态"，
+    # 不套 unrolled_loop），固定不展开。以后做展开时在这里填实测量。
+    'fwht': 1,
 }
 
 # 寄存器分块 (mr, nr)（DEVELOPMENT.md §6.3）。(0,0) = 走通用三重循环。
@@ -55,6 +58,31 @@ BLOCKING: dict[str, tuple[int, int]] = {
     'matmul-fp32': (4, 4),
 }
 
+# 段对齐：抬高 .data/.bss 的 sh_addralign，让平台 wrapper 里的 input_tensor
+# 落在缓存行边界上。实测对 add / reducesum 有效（d_miss 少 1~2），matmul 无收益
+# 甚至偶有反效果，所以按题开关。换 wrapper/链接器/工具链后必须重新扫。
+SECTION_ALIGN = 64
+ALIGN: dict[str, int] = {
+    'add-fp32': SECTION_ALIGN,
+    'matmul-fp32': SECTION_ALIGN,
+    'reducesum-fp32': SECTION_ALIGN,
+}
+
+# 段尾填充：改变 .text 长度会把 .data/.bss 整体平移，从而改变 L1 组映射。
+# 数值是对 riscv-ai-2 的数据点扫出来的（换 wrapper/工具链/N 集合必须重扫）。
+# 只给了 reducesum：它靠这 16 字节把 2614/3449 两个点的 d_miss 各降 1。
+TEXT_PAD: dict[str, int] = {
+    'reducesum-fp32': 16,
+}
+
+
+def _align_trailer(align: int) -> str:
+    if not align:
+        return ''
+    return (f'\n# ---- 段对齐：抬高 .data/.bss 的 sh_addralign 到 {align} ----\n'
+            f'.data\n.balign {align}\n.word 0\n'
+            f'.bss\n.balign {align}\n.space 1\n')
+
 
 def build_program(problem: str, unroll: int | None = None) -> str:
     """按题名生成一份自包含的 .s。
@@ -72,5 +100,10 @@ def build_program(problem: str, unroll: int | None = None) -> str:
     u = UNROLL.get(problem, 1) if unroll is None else unroll
     blk = BLOCKING.get(problem, (0, 0))
     if body_name == 'matmul':
-        return '\n'.join(body.build(target, dtype, u, blk))
-    return '\n'.join(body.build(target, dtype, u))
+        text = '\n'.join(body.build(target, dtype, u, blk))
+    else:
+        text = '\n'.join(body.build(target, dtype, u))
+    pad = TEXT_PAD.get(problem, 0)
+    if pad:
+        text += f'\n.text\n.space {pad}\n'
+    return text + _align_trailer(ALIGN.get(problem, 0))

@@ -16,6 +16,7 @@ class DtypePolicy:
     load: str                    # 载入助记符
     store: str                   # 存储助记符
     add: str                     # 加法助记符
+    sub: str                     # 减法助记符（fwht 的蝶形要用）
     acc: str                     # 累加器寄存器名
     tmp1: str                    # 临时寄存器 1
     tmp2: str                    # 临时寄存器 2
@@ -29,7 +30,7 @@ class DtypePolicy:
 
 POLICIES: dict[str, DtypePolicy] = {
     'q16': DtypePolicy(
-        name='q16', load='lw', store='sw', add='add',
+        name='q16', load='lw', store='sw', add='add', sub='sub',
         # 整数路径下累加器和临时值都是整数寄存器；用 s2/s3/s4，
         # 与三个 body 里用到的 t0-t6 / a3-a5 不相交。
         acc='s2', tmp1='s3', tmp2='s4', prod='s5',
@@ -43,12 +44,13 @@ POLICIES: dict[str, DtypePolicy] = {
         comparison='exact',
     ),
     'f32': DtypePolicy(
-        name='f32', load='flw', store='fsw', add='fadd.s',
+        name='f32', load='flw', store='fsw', add='fadd.s', sub='fsub.s',
         # 浮点路径下累加器和临时值都在浮点寄存器组，与整数寄存器天然不相交。
         acc='ft0', tmp1='ft1', tmp2='ft2', prod='ft3',
-        # 浮点没有定点重标定，乘完直接累加。
-        mac=('fmul.s {p}, {t1}, {t2}', 'fadd.s {acc}, {acc}, {p}'),
-        zero=('li {r}, 0', 'fmv.w.x {acc}, {r}'),
+        # 浮点没有定点重标定，乘完直接累加；RV32F 的融合乘加 `fmadd.s`
+        # 把 `fmul.s`+`fadd.s` 两条并成一条（少一条指令，且只舍入一次）。
+        mac=('fmadd.s {acc}, {t1}, {t2}, {acc}',),
+        zero=('fmv.w.x {acc}, zero',),
         bank='fp',
         comparison='tolerance',          # 浮点不能逐位比，要看平台给的容差
     ),
